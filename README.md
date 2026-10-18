@@ -1,0 +1,221 @@
+# boxvibe
+
+Pandora in the terminal, written in Rust with [ratatui](https://ratatui.rs).
+A sibling of [tubevibe](https://github.com/mortbrew/tubevibe): the same look,
+Omarchy colour sync, icon sets and a `config.toml` that the app keeps up to
+date. A header line with the version and what just happened, titled panels,
+your stations (then Settings and About) on the left, a large CarPlay-style
+**Now Playing** card with the four big buttons (thumbs down, play/pause, skip,
+thumbs up), a table of the songs played and up next, and the keys that work
+right now drawn as key caps at the bottom.
+
+> Early (0.1.0): it plays your stations, but cover art, search and station
+> editing are still to come. Feedback welcome.
+
+![Now Playing (Gruvbox)](screenshots/gruvbox-main.png)
+
+![Settings, typing the Pandora password](screenshots/gruvbox-settings.png)
+
+![About, with a new version out](screenshots/gruvbox-about.png)
+
+## What it does
+
+- **Log in inside the app**: the first time, boxvibe opens **Settings** at the
+  account section and asks for your Pandora email (or username), then the password, and
+  saves them to `~/.config/boxvibe/config.toml`, a file only you can read
+  (mode 600). From then on it logs in by itself. Change the account or log
+  out in Settings any time
+- **Your stations** (Shuffle too) on the left; `Enter` plays one, and the
+  last one you played starts again next time
+- **Now Playing**: title, artist, album, your thumb, a progress bar with the
+  time, and the volume
+- **Thumbs up / down** (`+` / `-`). Like in Pandora, a thumbs down skips the
+  song. **Tired of this song** (`z`) keeps it off all your stations for a month
+- **Songs**: the ones you heard and the few Pandora sent up next, in one
+  table. `Tab` moves into it, where `+` / `-` rate a song you already heard
+- **Settings** (account, audio quality, volume, autoplay, notifications,
+  theme, icons, update check, edit `config.toml` in `$EDITOR`) and **About**
+  (links, version, and the update button) below the stations
+- **Updates itself** from GitHub releases: see [Updating](#updating)
+- **Gapless-ish playback**: the next song downloads while this one plays.
+  MP3 and AAC (MP4) are decoded in Rust ([symphonia](https://github.com/pdeljanov/Symphonia)
+  through [rodio](https://github.com/RustAudio/rodio)), no ffmpeg or mpv needed
+- **Themes** (`t`): *Omarchy* (follows your current Omarchy theme, live, and
+  is Tokyo Night elsewhere) plus Tokyo Night, Gruvbox, Catppuccin, Catppuccin
+  Latte, Rosé Pine Dawn, Nord, Everforest and Kanagawa
+- **Icon sets** (`i`): colour emoji, Nerd Font or plain Unicode
+- **Song change notifications** with `notify-send` (mako on Omarchy)
+- Whatever you change in the app (theme, icons, volume, last station) is
+  saved to `config.toml` right away, keeping your comments
+
+## Requirements
+
+- Linux with ALSA (PipeWire's and PulseAudio's ALSA plugins work, as on Omarchy)
+- A Pandora account (free or paid). Pandora only works in the US
+- Optional: a [Nerd Font](https://www.nerdfonts.com) for `icons = "nerd"`
+  (Omarchy ships one), `notify-send` (`libnotify`) for notifications
+
+## Build (Arch / Omarchy)
+
+```sh
+sudo pacman -S --needed rust alsa-lib pkgconf     # or rustup for Rust 1.88+
+git clone https://github.com/mortbrew/boxvibe
+cd boxvibe
+cargo build --release
+./target/release/boxvibe
+```
+
+To have it in your `PATH`: `install -Dm755 target/release/boxvibe ~/.local/bin/boxvibe`
+(or `cargo install --locked --path .`).
+
+On Debian / Ubuntu the packages are `libasound2-dev pkg-config`; on Fedora
+`alsa-lib-devel pkgconf-pkg-config`.
+
+Try it without an account (made-up stations, no network, no sound):
+
+```sh
+./target/release/boxvibe --demo
+```
+
+## Keys
+
+| Key | Action |
+|---|---|
+| `space` `p` | play / pause |
+| `n` | skip |
+| `+` `u` | thumbs up |
+| `-` `d` | thumbs down (skips the song) |
+| `z` | tired of this song (off for a month) |
+| `←` `→` (`[` `]`) | volume |
+| `j` `k` `↑` `↓` | move · `g` `G` first / last |
+| `Enter` | play the station · open Settings / About · change a setting · Update Now |
+| `Tab` | menu ⇄ the panel on the right (the songs table, Settings, About) |
+| `Esc` | back to the menu |
+| `s` | go to the stations |
+| `t` | next theme |
+| `i` | next icon set |
+| `?` | every key |
+| `q` `Ctrl+c` | quit |
+
+When a setting asks you to type (email, password): `Enter` saves, `Esc`
+cancels, `Ctrl+u` clears.
+
+## Configuration
+
+`~/.config/boxvibe/config.toml` (`--config FILE` picks another one). Every key
+is optional, and the app writes the ones you change from it. Keys this version
+doesn't know (a typo, or a setting from a newer boxvibe) and values of the
+wrong type are skipped with a warning in the status bar; only a file that is
+not valid TOML stops it.
+
+```toml
+[pandora]
+username = "you@example.com"   # saved from Settings → Email or username
+password = "…"                 # saved once a login works (the file is mode 600)
+audio_quality = "high"         # high: MP3 192 kbps if your plan has it (Plus, Premium), else 128
+                               # standard: MP3 128 kbps (old low / medium values mean standard)
+user_agent = ""                # empty: boxvibe's default (a desktop Firefox); see below
+last_station = ""              # the station to start on, kept by the app
+
+[player]
+volume = 70                    # 0–100
+autoplay = true                # start the last station right after logging in
+
+[ui]
+theme = "omarchy"              # omarchy | tokyo-night | gruvbox | catppuccin | catppuccin-latte
+                               # | rose-pine | nord | everforest | kanagawa
+icons = "emoji"                # emoji | nerd | unicode
+notify = true                  # a desktop notification when the song changes
+check_updates = true           # look for a new release on GitHub at startup
+```
+
+`--theme NAME` and `--icons SET` change them for one run without saving.
+
+## Updating
+
+The same way tubevibe does it. At startup (unless `check_updates = false`)
+boxvibe asks GitHub, in the background, for the latest release of
+`mortbrew/boxvibe` (`api.github.com/repos/mortbrew/boxvibe/releases/latest`)
+and compares its tag with its own version. If it is newer, the header says
+so, **About** gets a ⬆ in the menu, and the About page shows it. If GitHub
+can't be reached (or there are no releases yet), nothing is shown.
+
+On About, **Update Now** (`Enter`) downloads the release's
+`boxvibe-<arch>-linux.tar.gz`, takes the `boxvibe` binary out of it, checks
+that it runs and reports the new version, and puts it in place of the running
+one ([self-replace](https://crates.io/crates/self-replace)). Restart boxvibe
+to use it. The button is only offered for a release binary in a folder you
+can write to (like `~/.local/bin`); for a build from source, `cargo install`,
+a system package, or a platform without a release download, About explains
+why and shows the command to update by hand instead.
+
+`BOXVIBE_FAKE_VERSION=0.0.1 boxvibe` pretends to be an older version, to try it.
+
+Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed
+(Linux x86_64 and aarch64).
+
+## How it talks to Pandora
+
+boxvibe uses the same API as the pandora.com website
+(`https://www.pandora.com/api/`), written from the community
+[API notes](https://6xq.net/pandora-apidoc/rest/) and from how the site
+behaves, with parts adapted from
+[Music Assistant](https://github.com/music-assistant/server)'s Pandora
+provider (Apache-2.0, see [THIRD_PARTY.md](THIRD_PARTY.md)):
+
+1. `HEAD https://www.pandora.com/` for the `csrftoken` cookie, sent back as
+   the `X-CsrfToken` header and the cookie on every call
+2. `POST /api/v1/auth/login` with your email (or username) and password. The
+   answer has the auth token (sent as `X-AuthToken` from then on) and your
+   plan's flags: `highQualityStreamingAvailable` unlocks 192 kbps MP3
+3. `v1/station/getStations`, `v1/playlist/getFragment` (a few songs at a
+   time, as `mp3-hifi` or `mp3`), `v1/station/addFeedback` (thumbs),
+   `v1/listener/addTiredSong` and `v1/station/trackStarted` (sent when a song
+   starts, like the site does)
+4. When the login expires (HTTP 401) boxvibe logs in again with the saved
+   password and retries once. When another device is playing on the account
+   (429 `STREAM_VIOLATION`) it takes over with `v1/station/playbackResumed`
+   and says so in the header line. Ads, artist messages and curator
+   messages are skipped
+
+What that means:
+
+- No rewinding or seeking, and Pandora limits skips (about 6 per station per
+  hour on free accounts)
+- Stations only for now: no on-demand albums or playlists, even with Premium
+- One stream per account: playing in boxvibe stops Pandora on your phone
+- **Pandora's bot check**: the website's login is guarded by HUMAN
+  (PerimeterX). boxvibe sends no captcha or bot-check answers; it logs in the
+  way a plain browser request does, and if Pandora refuses it, it says
+  "Pandora's bot check blocked the login". That depends on your network
+  (home connections usually pass; servers and VPNs often don't). Waiting,
+  another network, or logging in once on pandora.com in a browser may help;
+  `[pandora] user_agent` lets you change the browser boxvibe says it is
+- The API is unofficial: Pandora could change or close it
+
+## Screenshots
+
+`tools/screenshots.sh` renders the screenshots in `screenshots/` from demo
+mode (the About one makes up a 0.2.0 release to show the update button): boxvibe draws a frame with ratatui's TestBackend as HTML and headless
+Chrome turns it into a PNG.
+
+## Development
+
+```sh
+cargo test
+cargo clippy --all-targets -- -D warnings
+BOXVIBE_DECODE=song.mp3:song.m4a cargo test decodes_real_files -- --ignored
+cargo test live_site -- --ignored   # www.pandora.com still hands out a csrftoken (no login)
+```
+
+## Disclaimer
+
+boxvibe is not made by or affiliated with Pandora. It uses an unofficial API,
+which may go against Pandora's Terms of Service; use it at your own risk.
+Your password is stored in plain text in `config.toml` (readable only by you).
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT), at your option. Parts of the Pandora code are
+adapted from Music Assistant (Apache-2.0): see [THIRD_PARTY.md](THIRD_PARTY.md).

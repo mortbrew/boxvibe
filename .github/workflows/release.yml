@@ -1,0 +1,59 @@
+# On every `v*` tag: build Linux (x86_64, aarch64) and attach the archives to
+# the GitHub release, like tubevibe. File names carry no version, so links can
+# point at https://github.com/mortbrew/boxvibe/releases/latest/download/<file>.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Release (once; the builds below add their files to it)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "boxvibe $TAG"
+
+  linux:
+    needs: create
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - name: Package
+        run: |
+          mkdir -p dist/boxvibe
+          cp target/release/boxvibe README.md dist/boxvibe/
+          tar -C dist -czf dist/boxvibe-${{ matrix.arch }}-linux.tar.gz boxvibe
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          fail_on_unmatched_files: true
+          files: dist/boxvibe-${{ matrix.arch }}-linux.tar.gz

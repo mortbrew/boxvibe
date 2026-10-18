@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=boxvibe
+GenericName=Pandora in the terminal
+Comment=Listen to your Pandora stations from the terminal
+Exec=boxvibe
+Terminal=true
+Icon=multimedia-audio-player
+Categories=AudioVideo;Audio;Player;ConsoleOnly;
+Keywords=pandora;music;radio;terminal;

@@ -7,6 +7,8 @@ pub struct Icons {
     pub station: &'static str,
     pub shuffle: &'static str,
     pub shared: &'static str,
+    /// A favorite station.
+    pub favorite: &'static str,
     pub play: &'static str,
     pub pause: &'static str,
     pub skip: &'static str,
@@ -34,6 +36,7 @@ const EMOJI: Icons = Icons {
     station: "📻",
     shuffle: "🔀",
     shared: "👥",
+    favorite: "⭐",
     // One cell each, like tubevibe: emoji play/pause signs differ per terminal.
     play: "▶",
     pause: "‖",
@@ -60,6 +63,7 @@ const NERD: Icons = Icons {
     station: "\u{f0439}",
     shuffle: "\u{f074}",
     shared: "\u{f0c0}",
+    favorite: "\u{f005}",
     play: "\u{f04b}",
     pause: "\u{f04c}",
     skip: "\u{f051}",
@@ -88,6 +92,7 @@ const UNICODE: Icons = Icons {
     station: "◉",
     shuffle: "⇄",
     shared: "⚇",
+    favorite: "★",
     play: "▶",
     pause: "‖",
     skip: "»",

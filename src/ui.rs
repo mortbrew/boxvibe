@@ -75,6 +75,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_menu(frame, app, ic, left);
     match app.view {
         View::Player => draw_player(frame, app, ic, right),
+        View::Stations => draw_stations(frame, app, ic, right),
         View::Settings => draw_settings(frame, app, ic, right),
         View::About => draw_about(frame, app, ic, right),
     }
@@ -189,7 +190,7 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let now_h = if app.has_now_playing() { 2 } else { 0 };
-    let [now_area, head, list_area, _, rule, app_area] = Layout::vertical([
+    let [now_area, stations_row, favs_area, _, rule, app_area] = Layout::vertical([
         Constraint::Length(now_h),
         Constraint::Length(1),
         Constraint::Fill(1),
@@ -198,11 +199,6 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         Constraint::Length(3),
     ])
     .areas(inner);
-    let count = if app.stations.is_empty() { String::new() } else { format!(" ({})", app.stations.len()) };
-    frame.render_widget(
-        Paragraph::new(Span::styled(format!(" STATIONS{count}"), Style::new().fg(p.orange).bold())),
-        head,
-    );
     let selected = app.menu_selected();
     // Without the keys, the entry of the page shown stays shaded.
     let shown = |item: MenuItem| {
@@ -211,6 +207,7 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             (MenuItem::Settings, View::Settings)
                 | (MenuItem::About, View::About)
                 | (MenuItem::NowPlaying, View::Player)
+                | (MenuItem::Stations, View::Stations)
         )
     };
     let row_style = |item: MenuItem| {
@@ -233,37 +230,39 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         frame.render_widget(Paragraph::new(Line::from(pad(&text, entry.width as usize)).style(style)), entry);
         frame.render_widget(inset_rule(&p, line.width), line);
     }
-    if app.stations.is_empty() {
-        let text = match &app.session {
-            Session::SigningIn => format!(" {} Signing in…", ic.loading),
-            Session::LoggedIn => format!(" {} Loading stations…", ic.loading),
-            _ => " Log in from Settings".into(),
-        };
-        frame.render_widget(Paragraph::new(text).fg(p.muted), list_area);
-    } else {
-        let items: Vec<ListItem> = app
-            .stations
+    let mut style = Style::new().fg(p.fg);
+    if let Some(sel) = row_style(MenuItem::Stations) {
+        style = style.patch(sel);
+    }
+    let count = if app.stations.is_empty() { String::new() } else { format!(" ({})", app.stations.len()) };
+    let text = format!("   {} Stations{count}", pad(ic.station, 2));
+    frame.render_widget(Paragraph::new(Line::from(pad(&text, stations_row.width as usize)).style(style)), stations_row);
+    // FAVORITES, like tubevibe's tabs: only once a station is starred.
+    let favorites = &app.config.ui.favorites;
+    if !favorites.is_empty() && favs_area.height > 1 {
+        let [gap, head, list_area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(favs_area);
+        frame.render_widget(inset_rule(&p, gap.width), gap);
+        frame.render_widget(
+            Paragraph::new(Span::styled(format!(" FAVORITES ({})", favorites.len()), Style::new().fg(p.orange).bold())),
+            head,
+        );
+        let items: Vec<ListItem> = favorites
             .iter()
             .enumerate()
-            .map(|(i, s)| {
-                let playing = app.current_station.as_deref() == Some(s.id.as_str());
-                let icon = if s.is_shuffle {
-                    ic.shuffle
-                } else if s.is_shared {
-                    ic.shared
-                } else {
-                    ic.station
-                };
+            .map(|(i, f)| {
+                let playing = app.current_station.as_deref() == Some(f.id.as_str());
                 let mut style = if playing { Style::new().fg(p.green).bold() } else { Style::new().fg(p.fg) };
-                if let Some(sel) = row_style(MenuItem::Station(i)) {
+                if let Some(sel) = row_style(MenuItem::Favorite(i)) {
                     style = style.patch(sel);
                 }
                 let mark = if playing { ic.play } else { " " };
-                ListItem::new(Line::from(format!(" {} {} {}", pad(mark, 1), pad(icon, 2), s.name))).style(style)
+                let line = format!(" {} {} {}", pad(mark, 1), pad(ic.favorite, 2), f.name);
+                ListItem::new(Line::from(pad(&line, list_area.width as usize))).style(style)
             })
             .collect();
         let at = match selected {
-            MenuItem::Station(i) => Some(i),
+            MenuItem::Favorite(i) => Some(i),
             _ => None,
         };
         let mut state = ListState::default().with_selected(at);
@@ -288,6 +287,48 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         lines.push(Line::from(pad(&text, app_area.width as usize)).style(style));
     }
     frame.render_widget(Paragraph::new(lines), app_area);
+}
+
+// --- Stations ---
+
+fn draw_stations(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
+    let p = app.palette;
+    let focused = app.focus == Focus::Content;
+    let count = if app.stations.is_empty() { String::new() } else { format!(" ({})", app.stations.len()) };
+    let block = panel(title(format!("{} Stations{count}", ic.station), &p), &p, focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if app.stations.is_empty() {
+        let text = match &app.session {
+            Session::SigningIn => format!(" {} Signing in…", ic.loading),
+            Session::LoggedIn => format!(" {} Loading stations…", ic.loading),
+            _ => " Log in from Settings".into(),
+        };
+        frame.render_widget(Paragraph::new(text).fg(p.muted), inner);
+        return;
+    }
+    let items: Vec<ListItem> = app
+        .stations
+        .iter()
+        .map(|s| {
+            let playing = app.current_station.as_deref() == Some(s.id.as_str());
+            let icon = if s.is_shuffle {
+                ic.shuffle
+            } else if s.is_shared {
+                ic.shared
+            } else {
+                ic.station
+            };
+            let star = if app.is_favorite(&s.id) { ic.favorite } else { " " };
+            let style = if playing { Style::new().fg(p.green).bold() } else { Style::new().fg(p.fg) };
+            let mark = if playing { ic.play } else { " " };
+            let line = format!(" {} {} {} {}", pad(mark, 1), pad(icon, 2), pad(star, 2), s.name);
+            ListItem::new(Line::from(pad(&line, inner.width as usize))).style(style)
+        })
+        .collect();
+    let list = List::new(items).highlight_style(selection(&p, focused));
+    let mut state = ListState::default().with_selected(Some(app.stations_index()));
+    frame.render_stateful_widget(list, inner, &mut state);
 }
 
 // --- Player ---
@@ -318,7 +359,7 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let Some(song) = &app.now else {
         let text = match (&app.session, &app.current_station) {
             (Session::LoggedIn, Some(_)) => format!("{} Getting songs from Pandora…", ic.loading),
-            (Session::LoggedIn, None) => "Pick a station on the left and press Enter".into(),
+            (Session::LoggedIn, None) => "Open Stations on the left, pick one and press Enter".into(),
             (Session::SigningIn, _) => format!("{} Signing in…", ic.loading),
             _ => "Not logged in: open Settings to log in".into(),
         };
@@ -734,13 +775,17 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     let pause = if app.audio.is_paused() { "Play" } else { "Pause" };
     let mut keys = vec![("j/k ↑↓", "Move")];
     match (app.focus, app.view) {
+        (Focus::Menu, _) if matches!(app.menu_selected(), MenuItem::Favorite(_)) => {
+            keys.extend([("Enter", "Play"), ("f", "Unfavorite")])
+        }
         (Focus::Menu, View::Player) => keys.extend([("Enter", "Open"), ("Tab", "Up Next")]),
         (Focus::Menu, _) => keys.extend([("Enter", "Open"), ("Tab", "Page")]),
         (Focus::Content, View::Player) if app.pane == Pane::UpNext => {
-            keys.extend([("Tab", "History"), ("Esc", "Stations")])
+            keys.extend([("Tab", "History"), ("Esc", "Menu")])
         }
-        (Focus::Content, View::Player) => keys.extend([("Tab", "Stations"), ("Esc", "Stations")]),
+        (Focus::Content, View::Player) => keys.extend([("Tab", "Menu"), ("Esc", "Menu")]),
         (Focus::Content, View::Settings) => keys.extend([("Enter", "Change"), ("Esc", "Menu")]),
+        (Focus::Content, View::Stations) => keys.extend([("Enter", "Play"), ("f", "Favorite"), ("Esc", "Menu")]),
         (Focus::Content, View::About) => {
             if app.update_button_ready() {
                 keys = vec![("Enter", if app.restart_ready() { "Restart Now" } else { "Update Now" })];
@@ -811,10 +856,11 @@ fn draw_help(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             "MOVING AROUND",
             &[
                 ("j k ↑ ↓", "move in the list · g G first / last"),
-                ("Enter", "play the station · open Settings / About"),
+                ("Enter", "play the station · open Stations / Settings / About"),
                 ("N", "Now Playing (also the menu's top entry)"),
-                ("s", "back to the stations"),
-                ("Tab", "stations → Up Next → History (rate past songs there)"),
+                ("s", "Stations: every station, Enter plays one"),
+                ("f F", "favorite / unfavorite: the menu's FAVORITES"),
+                ("Tab", "menu → Up Next → History (rate past songs there)"),
                 ("Esc", "back to the menu"),
             ],
         ),
@@ -928,7 +974,7 @@ mod tests {
         assert!(lines[1].starts_with("│ ▶ NOW PLAYING"), "{}", lines[1]);
         let menu: String = lines[2].chars().take(30).collect();
         assert!(menu.starts_with("│  ──") && menu.ends_with("──  │"), "inset rule: {menu:?}");
-        assert!(lines[3].contains("STATIONS"), "{}", lines[3]);
+        assert!(lines[3].contains("Stations ("), "{}", lines[3]);
         assert!(lines[35].contains(" N  Now Playing"), "key bar: {}", lines[35]);
     }
 
@@ -942,6 +988,29 @@ mod tests {
             let up = lines.iter().position(|l| l.contains("Up Next (")).expect("Up Next");
             assert_eq!(up, usize::from(want), "Up Next right under Now Playing");
         }
+    }
+
+    #[test]
+    fn stations_page_and_favorites_section() {
+        let mut app = demo();
+        let (lines, _) = screen(&app, 120, 36);
+        assert!(!lines.iter().any(|l| l.contains("FAVORITES")), "hidden while empty");
+        let fav = app.stations[1].clone();
+        app.config.ui.favorites.push(crate::config::Favorite { id: fav.id.clone(), name: fav.name.clone() });
+        app.view = View::Stations;
+        app.focus = crate::app::Focus::Content;
+        let (lines, _) = screen(&app, 120, 36);
+        assert!(lines.iter().any(|l| l.starts_with("│ FAVORITES (1)")), "the menu's section");
+        let side = |l: &String, menu: bool| -> String {
+            if menu { l.chars().take(30).collect() } else { l.chars().skip(30).collect() }
+        };
+        assert!(lines.iter().any(|l| side(l, true).contains(&fav.name)), "in the menu");
+        assert!(
+            lines.iter().any(|l| side(l, false).contains("⭐") && l.contains(&fav.name)),
+            "starred on the page: {lines:#?}"
+        );
+        assert!(lines[0].contains("Stations ("), "the page: {}", lines[0]);
+        assert!(lines[35].contains(" f  Favorite"), "key bar: {}", lines[35]);
     }
 
     #[test]

@@ -89,6 +89,17 @@ pub struct UiConfig {
     pub menu_width: u16,
     /// Rows of the Now Playing pane ([`NOW_PLAYING_SIZE`]); Up Next and History get the rest.
     pub now_playing_size: u16,
+    /// Stations starred with `f`, in the order starred: the menu's FAVORITES.
+    pub favorites: Vec<Favorite>,
+}
+
+/// A favorite station: its id to play it, its name to show before the
+/// stations load. Written as `{ id = "…", name = "…" }`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Favorite {
+    pub id: String,
+    pub name: String,
 }
 
 impl Default for UiConfig {
@@ -102,6 +113,7 @@ impl Default for UiConfig {
             border_style: BorderStyle::Plain,
             menu_width: MENU_WIDTH.default,
             now_playing_size: NOW_PLAYING_SIZE.default,
+            favorites: Vec::new(),
         }
     }
 }
@@ -318,7 +330,8 @@ fn section<T: serde::de::DeserializeOwned + Default>(
             Ok(_) if unknown && name == "pandora" && OLD_PANDORA_KEYS.contains(&key.as_str()) => {
                 warnings.push(ConfigWarning::Old(path))
             }
-            Ok(_) if unknown => warnings.push(ConfigWarning::Unknown(path)),
+            // A favorite with a key boxvibe doesn't know still counts.
+            Ok(_) if unknown && path != "ui.favorites" => warnings.push(ConfigWarning::Unknown(path)),
             Ok(_) => {
                 good.insert(key, value);
             }
@@ -394,6 +407,7 @@ impl Config {
                 *value = size.default;
             }
         }
+        c.ui.favorites.retain(|f| !f.id.is_empty());
         Ok((c, warnings))
     }
 
@@ -601,6 +615,17 @@ mod tests {
         let (c, w) = Config::parse("[ui]\nnow_playing_size = \"big\"\n").unwrap();
         assert_eq!((c.ui.now_playing_size, w.len()), (17, 1));
         assert_eq!(Config::parse("").unwrap().0.ui.now_playing_size, 17, "missing: the default");
+    }
+
+    #[test]
+    fn favorites_read_and_tolerate_junk() {
+        let text =
+            "[ui]\nfavorites = [{ id = \"1\", name = \"Jazz\" }, { id = \"2\", extra = 3 }, { name = \"no id\" }]\n";
+        let (c, _) = Config::parse(text).unwrap();
+        let ids: Vec<&str> = c.ui.favorites.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!((ids, c.ui.favorites[0].name.as_str()), (vec!["1", "2"], "Jazz"));
+        let (c, w) = Config::parse("[ui]\nfavorites = \"jazz\"\nmenu_width = 24\n").unwrap();
+        assert_eq!((c.ui.favorites.len(), c.ui.menu_width, w.len()), (0, 24, 1));
     }
 
     #[test]

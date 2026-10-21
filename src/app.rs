@@ -1,8 +1,9 @@
 //! The app's state and what each key does.
 //!
-//! Like tubevibe, the left panel is the menu: the stations, then Settings,
-//! About and Quit. The right side shows what the menu entry opens: the
-//! player (Now Playing and the songs table), Settings or About. There is no
+//! Like tubevibe, the left panel is the menu: NOW PLAYING, Stations, the
+//! FAVORITES section (like tubevibe's tabs), then Settings, About and Quit.
+//! The right side shows what the menu entry opens: the player (Now Playing,
+//! Up Next and History), the station list, Settings or About. There is no
 //! separate login screen: the account lives in Settings, and the first run
 //! opens Settings on it.
 
@@ -23,6 +24,8 @@ use crate::update::{Progress, Replace, Update};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Player,
+    /// Every station, to pick one (`Enter`) or star it (`f`).
+    Stations,
     Settings,
     About,
 }
@@ -34,12 +37,15 @@ pub enum Focus {
     Content,
 }
 
-/// The entries under the stations in the menu.
+/// The menu's entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuItem {
     /// At the top once a station plays: back to the player.
     NowPlaying,
-    Station(usize),
+    /// Opens the station list on the right.
+    Stations,
+    /// A starred station, by its index in `[ui] favorites`.
+    Favorite(usize),
     Settings,
     About,
     Quit,
@@ -164,6 +170,8 @@ pub struct App {
     pub focus: Focus,
     pub menu_cursor: usize,
     pub settings_cursor: usize,
+    /// Selected row of the station list.
+    pub stations_cursor: usize,
     /// Which song pane has the keys while the player has them.
     pub pane: Pane,
     /// Selected row of Up Next (0 = the next song).
@@ -216,6 +224,7 @@ impl App {
             focus: Focus::Menu,
             menu_cursor: 0,
             settings_cursor: 0,
+            stations_cursor: 0,
             pane: Pane::UpNext,
             next_cursor: 0,
             history_cursor: 0,
@@ -309,7 +318,8 @@ impl App {
     pub fn menu_items(&self) -> Vec<MenuItem> {
         let top = self.has_now_playing().then_some(MenuItem::NowPlaying);
         top.into_iter()
-            .chain((0..self.stations.len()).map(MenuItem::Station))
+            .chain([MenuItem::Stations])
+            .chain((0..self.config.ui.favorites.len()).map(MenuItem::Favorite))
             .chain([MenuItem::Settings, MenuItem::About, MenuItem::Quit])
             .collect()
     }
@@ -322,9 +332,17 @@ impl App {
     fn open_menu_item(&mut self) {
         match self.menu_selected() {
             MenuItem::NowPlaying => self.show_now_playing(),
-            MenuItem::Station(i) => {
-                self.view = View::Player;
-                self.tune(i);
+            MenuItem::Stations => self.show_stations(),
+            MenuItem::Favorite(i) => {
+                let Some(fav) = self.config.ui.favorites.get(i).cloned() else { return };
+                match self.stations.iter().position(|s| s.id == fav.id) {
+                    Some(at) => {
+                        self.view = View::Player;
+                        self.tune(at);
+                    }
+                    None if self.stations.is_empty() => self.status = "The stations are still loading".into(),
+                    None => self.status = format!("{} isn't one of your stations any more (f removes it)", fav.name),
+                }
             }
             MenuItem::Settings => {
                 self.view = View::Settings;
@@ -349,12 +367,77 @@ impl App {
         self.point_menu_at_view();
     }
 
+    /// Stations (menu entry or `s`): the list, with the keys on it.
+    fn show_stations(&mut self) {
+        self.view = View::Stations;
+        self.focus = Focus::Content;
+        if let Some(at) = self.current_station.as_ref().and_then(|id| self.stations.iter().position(|s| &s.id == id)) {
+            self.stations_cursor = at;
+        }
+    }
+
+    pub fn stations_index(&self) -> usize {
+        self.stations_cursor.min(self.stations.len().saturating_sub(1))
+    }
+
+    pub fn is_favorite(&self, id: &str) -> bool {
+        self.config.ui.favorites.iter().any(|f| f.id == id)
+    }
+
+    /// `f`: stars or unstars the station under the cursor (the list, a
+    /// favorite in the menu) or else the one playing; saved as `[ui] favorites`.
+    fn toggle_favorite(&mut self) {
+        let (id, name) = match (self.focus, self.view, self.menu_selected()) {
+            (Focus::Content, View::Stations, _) => match self.stations.get(self.stations_index()) {
+                Some(s) => (s.id.clone(), s.name.clone()),
+                None => return,
+            },
+            (Focus::Menu, _, MenuItem::Favorite(i)) => {
+                let f = &self.config.ui.favorites[i];
+                (f.id.clone(), f.name.clone())
+            }
+            _ => match self.current_station.as_ref().and_then(|id| self.stations.iter().find(|s| &s.id == id)) {
+                Some(s) => (s.id.clone(), s.name.clone()),
+                None => {
+                    self.status = "Open Stations to pick one to favorite".into();
+                    return;
+                }
+            },
+        };
+        let selected = self.menu_selected();
+        if let Some(at) = self.config.ui.favorites.iter().position(|f| f.id == id) {
+            self.config.ui.favorites.remove(at);
+            self.status = format!("Removed {name} from Favorites");
+        } else {
+            self.config.ui.favorites.push(config::Favorite { id, name: name.clone() });
+            self.status = format!("{name} added to Favorites");
+        }
+        // The menu cursor stays on its entry (or the one that took its place).
+        if let Some(i) = self.menu_items().iter().position(|m| *m == selected) {
+            self.menu_cursor = i;
+        }
+        self.menu_cursor = self.menu_cursor.min(self.menu_items().len() - 1);
+        self.save_favorites();
+    }
+
+    fn save_favorites(&mut self) {
+        let mut list = toml_edit::Array::new();
+        for f in &self.config.ui.favorites {
+            let mut t = toml_edit::InlineTable::new();
+            t.insert("id", f.id.as_str().into());
+            t.insert("name", f.name.as_str().into());
+            list.push(t);
+        }
+        self.save(&[("ui", "favorites", toml_edit::Value::Array(list))]);
+    }
+
     /// The menu entry of what the right side shows.
     fn point_menu_at_view(&mut self) {
         let items = self.menu_items();
         let want = match self.view {
             View::Settings => Some(MenuItem::Settings),
             View::About => Some(MenuItem::About),
+            View::Stations => Some(MenuItem::Stations),
             View::Player if self.has_now_playing() => Some(MenuItem::NowPlaying),
             View::Player => None,
         };
@@ -424,15 +507,31 @@ impl App {
                 self.stations = stations;
                 let last = &self.config.pandora.last_station;
                 let at = self.stations.iter().position(|s| &s.id == last);
-                self.menu_cursor = at.unwrap_or(0) + usize::from(self.has_now_playing());
+                self.stations_cursor = at.unwrap_or(0);
+                // Favorites keep the names Pandora uses now.
+                let mut renamed = false;
+                for f in &mut self.config.ui.favorites {
+                    if let Some(s) = self.stations.iter().find(|s| s.id == f.id)
+                        && s.name != f.name
+                    {
+                        f.name = s.name.clone();
+                        renamed = true;
+                    }
+                }
+                if renamed {
+                    self.save_favorites();
+                }
                 if self.stations.is_empty() {
                     self.status = "This account has no stations yet: create one on pandora.com".into();
                 } else if self.config.ui.autoplay_last_station && self.current_station.is_none() {
                     // Shuffle comes first in the list: start on a real station.
                     if at.is_none() && self.stations.len() > 1 && self.stations[0].is_shuffle {
-                        self.menu_cursor = 1;
+                        self.stations_cursor = 1;
                     }
-                    self.tune(self.menu_cursor);
+                    self.tune(self.stations_cursor);
+                } else if self.current_station.is_none() && self.view == View::Player {
+                    // Nothing playing: the station list, to pick one.
+                    self.show_stations();
                 }
             }
             Reply::Playlist { station_id, songs } => {
@@ -567,11 +666,12 @@ impl App {
         self.requested.clear();
         self.buffering = None;
         self.next_cursor = 0;
-        // The NOW PLAYING entry appears above the stations: the cursor stays on its row.
-        if !self.has_now_playing() && matches!(self.menu_selected(), MenuItem::Station(_)) {
+        // The NOW PLAYING entry appears on top: the cursor stays on its entry.
+        let first = !self.has_now_playing();
+        self.current_station = Some(station.id.clone());
+        if first {
             self.menu_cursor += 1;
         }
-        self.current_station = Some(station.id.clone());
         self.playlist_pending = true;
         self.backend.send(Request::Playlist { station_id: station.id.clone() });
         if self.config.pandora.last_station != station.id {
@@ -920,10 +1020,9 @@ impl App {
             KeyCode::Char('z') => self.tired(),
             KeyCode::Char('N') => self.show_now_playing(),
             KeyCode::Char('s') => {
-                self.view = View::Player;
-                self.focus = Focus::Menu;
-                self.point_menu_at_view();
+                self.show_stations();
             }
+            KeyCode::Char('f') | KeyCode::Char('F') => self.toggle_favorite(),
             KeyCode::Tab => self.next_focus(true),
             KeyCode::BackTab => self.next_focus(false),
             KeyCode::Esc => {
@@ -975,6 +1074,15 @@ impl App {
             (Focus::Menu, _) => self.open_menu_item(),
             (Focus::Content, View::Settings) => self.change_setting(),
             (Focus::Content, View::About) => self.press_update(),
+            (Focus::Content, View::Stations) => {
+                if self.stations.is_empty() {
+                    return;
+                }
+                self.view = View::Player;
+                self.focus = Focus::Menu;
+                self.tune(self.stations_index());
+                self.point_menu_at_view();
+            }
             (Focus::Content, View::Player) => {}
         }
     }
@@ -985,6 +1093,9 @@ impl App {
             (Focus::Menu, _) => self.menu_cursor = clamp(self.menu_cursor, self.menu_items().len()),
             (Focus::Content, View::Settings) => self.settings_cursor = clamp(self.settings_cursor, Setting::ALL.len()),
             (Focus::Content, View::Player) => self.move_song(by),
+            (Focus::Content, View::Stations) => {
+                self.stations_cursor = clamp(self.stations_index(), self.stations.len().max(1))
+            }
             (Focus::Content, View::About) => {}
         }
     }
@@ -1130,14 +1241,15 @@ mod tests {
         let app = demo();
         let items = app.menu_items();
         assert_eq!(items[0], MenuItem::NowPlaying, "a station plays: NOW PLAYING on top");
-        assert_eq!(items.len(), app.stations.len() + 4);
+        assert_eq!(items[1], MenuItem::Stations);
+        assert_eq!(items.len(), 5, "no favorites yet: no FAVORITES entries");
         assert_eq!(&items[items.len() - 3..], [MenuItem::Settings, MenuItem::About, MenuItem::Quit]);
     }
 
     #[test]
     fn enter_on_settings_and_about_opens_them() {
         let mut app = demo();
-        app.menu_cursor = app.stations.len() + 1;
+        app.menu_cursor = 2;
         app.on_key(key(KeyCode::Enter));
         assert_eq!((app.view, app.focus), (View::Settings, Focus::Content));
         app.on_key(key(KeyCode::Esc));
@@ -1146,8 +1258,9 @@ mod tests {
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.view, View::About);
         app.on_key(key(KeyCode::Char('s')));
-        assert_eq!((app.view, app.focus), (View::Player, Focus::Menu));
-        assert_eq!(app.menu_selected(), MenuItem::NowPlaying);
+        assert_eq!((app.view, app.focus), (View::Stations, Focus::Content));
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.menu_selected(), MenuItem::Stations);
     }
 
     #[test]
@@ -1177,11 +1290,53 @@ mod tests {
         assert!(!app.menu_items().contains(&MenuItem::NowPlaying));
         app.on_key(key(KeyCode::Char('N')));
         assert!(app.status.starts_with("Nothing is playing"), "{}", app.status);
-        // Enter on the second station: the entry appears and the cursor stays on that station.
-        app.menu_cursor = 1;
+        assert_eq!((app.view, app.focus), (View::Stations, Focus::Content), "the list, to pick one");
+        // Enter on the second station: it plays and NOW PLAYING appears, selected.
+        app.on_key(key(KeyCode::Char('j')));
         app.on_key(key(KeyCode::Enter));
-        assert_eq!(app.menu_items()[0], MenuItem::NowPlaying);
-        assert_eq!(app.menu_selected(), MenuItem::Station(1));
+        assert_eq!(app.current_station.as_deref(), Some(app.stations[1].id.as_str()));
+        assert_eq!((app.view, app.menu_selected()), (View::Player, MenuItem::NowPlaying));
+    }
+
+    #[test]
+    fn f_stars_stations_into_a_favorites_section_that_plays_them() {
+        let path = crate::config::temp_dir("favorites").join("config.toml");
+        let mut config = Config::default();
+        config.ui.autoplay_last_station = false;
+        let mut app = App::new(config, None, &[], true);
+        app.settle(Duration::from_millis(150));
+        // The demo never saves: point it at a file to see what would be.
+        app.demo = false;
+        app.config_path = Some(path.clone());
+        app.on_key(key(KeyCode::Char('s')));
+        app.on_key(key(KeyCode::Char('j')));
+        app.on_key(key(KeyCode::Char('j')));
+        app.on_key(key(KeyCode::Char('f')));
+        let third = app.stations[2].clone();
+        assert!(app.is_favorite(&third.id));
+        assert_eq!(
+            app.menu_items(),
+            [MenuItem::Stations, MenuItem::Favorite(0), MenuItem::Settings, MenuItem::About, MenuItem::Quit]
+        );
+        let saved = Config::load(&path).0.ui.favorites;
+        assert_eq!(
+            (saved.len(), saved[0].id.as_str(), saved[0].name.as_str()),
+            (1, third.id.as_str(), third.name.as_str())
+        );
+        // Enter on the favorite in the menu plays it.
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(app.menu_selected(), MenuItem::Favorite(0));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.current_station.as_deref(), Some(third.id.as_str()));
+        assert_eq!((app.view, app.menu_selected()), (View::Player, MenuItem::Favorite(0)), "the cursor stays on it");
+        // F on it in the menu unstars it: the section goes.
+        app.on_key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT));
+        assert!(
+            app.config.ui.favorites.is_empty() && !app.menu_items().iter().any(|m| matches!(m, MenuItem::Favorite(_)))
+        );
+        assert!(Config::load(&path).0.ui.favorites.is_empty());
+        assert!(app.menu_cursor < app.menu_items().len());
     }
 
     #[test]

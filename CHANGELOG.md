@@ -2,6 +2,19 @@
 
 ## 0.2.0 (unreleased)
 
+### Stations page and Favorites (`ui-refresh`)
+
+- The menu no longer lists every station: a **Stations** entry (also `s`) opens the station list on the
+  right; `Enter` plays the highlighted station and shows Now Playing
+- `f` (or `F`) stars the highlighted station (on the Stations page), the favorite under the menu cursor,
+  or else the playing station; again unstars it. Starred stations show ⭐ on the page and appear in a
+  **FAVORITES** section in the menu, like tubevibe's tabs, where `Enter` plays them. No favorites, no section.
+- Saved as `[ui] favorites = [{ id = "…", name = "…" }, …]`; names follow Pandora's when the stations load,
+  unknown keys in an entry are fine, and entries without an id are skipped
+- With autoplay off (or no last station) boxvibe opens on the Stations page
+- Tests: `f_stars_stations_into_a_favorites_section_that_plays_them`, `favorites_read_and_tolerate_junk`,
+  `stations_page_and_favorites_section`
+
 ### Now Playing size setting (`ui-refresh`)
 
 - Settings → LOOK → **Now Playing size** sets how many rows the Now Playing pane gets (9–25, step 2,

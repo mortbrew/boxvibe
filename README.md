@@ -93,11 +93,13 @@ Try it without an account (made-up stations, no network, no sound):
 | `z` | tired of this song (off for a month) |
 | `←` `→` (`[` `]`) | volume |
 | `j` `k` `↑` `↓` | move · `g` `G` first / last |
-| `Enter` | play the station · open Settings / About · change a setting · Update Now |
-| `Tab` | stations → Up Next → History on the player (`Shift+Tab` back); menu ⇄ Settings / About |
+| `Enter` | play the station · open Stations / Settings / About · change a setting · Update Now |
+| `Tab` | menu → Up Next → History on the player (`Shift+Tab` back); menu ⇄ Stations / Settings / About |
 | `Esc` | back to the menu |
 | `N` (Shift+n) | Now Playing: back to the player from Settings or About (also the menu's top entry) |
-| `s` | go to the stations |
+| `s` | Stations: every station on the right, `Enter` plays one |
+| `f` `F` | favorite / unfavorite the station (the menu's FAVORITES section) |
+| `{` `}` | menu narrower / wider |
 | `t` | next theme |
 | `i` | next icon set |
 | `?` | every key |
@@ -138,6 +140,7 @@ autoplay_last_station = true   # start the station played last when boxvibe open
 border_style = "plain"         # plain | rounded | thick | double | none
 menu_width = 30                # the menu, in columns: 20–40, step 2 (at most half the screen); also { and }
 now_playing_size = 17          # rows for Now Playing: 9–25, step 2
+favorites = []                 # starred stations, { id = "…", name = "…" }, set with f
 ```
 
 `--theme NAME` and `--icons SET` change them for one run without saving.

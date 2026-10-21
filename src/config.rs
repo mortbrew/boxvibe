@@ -59,13 +59,11 @@ impl Default for PandoraConfig {
 pub struct PlayerConfig {
     /// 0–100.
     pub volume: u8,
-    /// Start playing the last station as soon as the login is done.
-    pub autoplay: bool,
 }
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self { volume: 70, autoplay: true }
+        Self { volume: 70 }
     }
 }
 
@@ -82,6 +80,9 @@ pub struct UiConfig {
     pub notifications: bool,
     /// Ask GitHub, each time the app opens, whether there is a newer version.
     pub check_updates: bool,
+    /// Start the station played last as soon as boxvibe opens (and has
+    /// logged in). boxvibe 0.1's `[player] autoplay` reads as this.
+    pub autoplay_last_station: bool,
     /// How every pane's border is drawn.
     pub border_style: BorderStyle,
     /// Columns of the left menu ([`MENU_WIDTH`]; never more than half the screen).
@@ -95,6 +96,7 @@ impl Default for UiConfig {
             icons: IconSet::Emoji,
             notifications: true,
             check_updates: true,
+            autoplay_last_station: true,
             border_style: BorderStyle::Plain,
             menu_width: MENU_WIDTH.default,
         }
@@ -341,6 +343,17 @@ impl Config {
     /// Reads a config and lists what was skipped; only invalid TOML fails.
     pub fn parse(text: &str) -> Result<(Self, Vec<ConfigWarning>), toml::de::Error> {
         let mut table: toml::Table = toml::from_str(text)?;
+        // 0.1's `[player] autoplay` is now `[ui] autoplay_last_station` (which wins when both are there).
+        let old_autoplay = match table.get_mut("player") {
+            Some(toml::Value::Table(player)) => player.remove("autoplay"),
+            _ => None,
+        };
+        if let Some(value) = old_autoplay {
+            let ui = table.entry("ui").or_insert_with(|| toml::Value::Table(toml::Table::new()));
+            if let toml::Value::Table(ui) = ui {
+                ui.entry("autoplay_last_station").or_insert(value);
+            }
+        }
         // Both the 0.1 name and the new one: the new one wins.
         if let Some(toml::Value::Table(ui)) = table.get_mut("ui")
             && ui.contains_key("notifications")
@@ -506,7 +519,7 @@ mod tests {
     #[test]
     fn wrong_types_fall_back_to_their_default() {
         let (c, w) = Config::parse("[player]\nvolume = \"loud\"\nautoplay = false\n[ui]\nicons = \"fancy\"\n").unwrap();
-        assert_eq!((c.player.volume, c.player.autoplay, c.ui.icons), (70, false, IconSet::Emoji));
+        assert_eq!((c.player.volume, c.ui.autoplay_last_station, c.ui.icons), (70, false, IconSet::Emoji));
         assert_eq!(w.len(), 2);
         let (c, _) = Config::parse("ui = 5\n").unwrap();
         assert_eq!(c, Config::default());
@@ -583,6 +596,20 @@ mod tests {
                 .border_style
                 == *b)
         );
+    }
+
+    #[test]
+    fn autoplay_last_station_and_its_old_name() {
+        assert!(Config::default().ui.autoplay_last_station, "0.1 started the last station: still on");
+        let (c, w) = Config::parse("[ui]\nautoplay_last_station = false\n").unwrap();
+        assert!(!c.ui.autoplay_last_station && w.is_empty());
+        let (c, w) = Config::parse("[player]\nautoplay = false\nvolume = 40\n").unwrap();
+        assert_eq!((c.ui.autoplay_last_station, c.player.volume, w.len()), (false, 40, 0));
+        let (c, _) = Config::parse("[player]\nautoplay = false\n[ui]\nautoplay_last_station = true\n").unwrap();
+        assert!(c.ui.autoplay_last_station, "the new name wins");
+        let (c, w) = Config::parse("[ui]\nautoplay_last_station = \"yes\"\n[player]\nautoplay = 3\n").unwrap();
+        assert!(c.ui.autoplay_last_station, "a wrong type: the default");
+        assert_eq!(w.len(), 1, "{w:?}");
     }
 
     #[test]

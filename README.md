@@ -127,7 +127,6 @@ last_station = ""              # the station to start on, kept by the app
 
 [player]
 volume = 70                    # 0–100
-autoplay = true                # start the last station right after logging in
 
 [ui]
 theme = "omarchy"              # omarchy | tokyo-night | gruvbox | catppuccin | catppuccin-latte
@@ -135,6 +134,7 @@ theme = "omarchy"              # omarchy | tokyo-night | gruvbox | catppuccin | 
 icons = "emoji"                # emoji | nerd | unicode
 notifications = true           # a desktop notification when the song changes (Settings toggles it)
 check_updates = true           # look for a new release on GitHub at startup
+autoplay_last_station = true   # start the station played last when boxvibe opens (0.1: [player] autoplay)
 border_style = "plain"         # plain | rounded | thick | double | none
 menu_width = 30                # the station menu, in columns: 20–40, step 2 (at most half the screen)
 ```

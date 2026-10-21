@@ -104,7 +104,7 @@ impl Setting {
             Self::LogOut => "Log out",
             Self::Quality => "Audio quality",
             Self::Volume => "Volume",
-            Self::Autoplay => "Play the last station on start",
+            Self::Autoplay => "Autoplay last station on open",
             Self::Notify => "Song change notifications",
             Self::Theme => "Theme",
             Self::Icons => "Icons",
@@ -126,7 +126,9 @@ impl Setting {
                 "high is 192 kbps MP3 where your plan has it (Plus, Premium), else 128 kbps; standard is 128."
             }
             Self::Volume => "Also ← and → anywhere.",
-            Self::Autoplay => "After logging in, the station you played last starts by itself.",
+            Self::Autoplay => {
+                "When boxvibe opens and logs in, the station you played last starts by itself. Saved as [ui] autoplay_last_station."
+            }
             Self::Notify => {
                 "A desktop notification (notify-send, mako on Omarchy) for every new song. Saved as [ui] notifications."
             }
@@ -419,7 +421,7 @@ impl App {
                 self.menu_cursor = at.unwrap_or(0) + usize::from(self.has_now_playing());
                 if self.stations.is_empty() {
                     self.status = "This account has no stations yet: create one on pandora.com".into();
-                } else if self.config.player.autoplay && self.current_station.is_none() {
+                } else if self.config.ui.autoplay_last_station && self.current_station.is_none() {
                     // Shuffle comes first in the list: start on a real station.
                     if at.is_none() && self.stations.len() > 1 && self.stations[0].is_shuffle {
                         self.menu_cursor = 1;
@@ -716,7 +718,7 @@ impl App {
                 (Quality::Standard, _) => "standard (MP3 128 kbps)".into(),
             },
             Setting::Volume => format!("{}%", self.config.player.volume),
-            Setting::Autoplay => on(self.config.player.autoplay),
+            Setting::Autoplay => on(self.config.ui.autoplay_last_station),
             Setting::Notify => on(self.config.ui.notifications),
             Setting::Theme => theme::label(&self.config.ui.theme),
             Setting::Icons => crate::icons::label(self.config.ui.icons).into(),
@@ -758,8 +760,18 @@ impl App {
                 self.change_volume(if v >= 100 { -100 } else { 10 });
             }
             Setting::Autoplay => {
-                self.config.player.autoplay = !self.config.player.autoplay;
-                self.save(&[("player", "autoplay", self.config.player.autoplay.into())]);
+                let on = !self.config.ui.autoplay_last_station;
+                self.config.ui.autoplay_last_station = on;
+                self.save(&[("ui", "autoplay_last_station", on.into())]);
+                // boxvibe 0.1's name for it goes.
+                if !self.demo
+                    && let Some(path) = &self.config_path
+                    && let Err(e) = config::remove_value(path, "player", "autoplay")
+                {
+                    self.status = format!("⚠ {e}");
+                } else {
+                    self.status = format!("Autoplay last station on open: {}", if on { "on" } else { "off" });
+                }
             }
             Setting::Notify => {
                 let on = !self.config.ui.notifications;
@@ -1136,7 +1148,7 @@ mod tests {
     #[test]
     fn no_now_playing_entry_before_a_station_plays() {
         let mut config = Config::default();
-        config.player.autoplay = false;
+        config.ui.autoplay_last_station = false;
         let mut app = App::new(config, None, &[], true);
         app.settle(Duration::from_millis(150));
         assert!(!app.menu_items().contains(&MenuItem::NowPlaying));
@@ -1238,6 +1250,34 @@ mod tests {
         let (saved, w) = Config::load(&path);
         assert!(w.is_empty(), "{w:?}");
         assert_eq!((saved.ui.border_style, saved.ui.menu_width), (crate::config::BorderStyle::Rounded, 32));
+    }
+
+    #[test]
+    fn the_autoplay_toggle_is_saved() {
+        let path = crate::config::temp_dir("autoplay").join("config.toml");
+        std::fs::write(&path, "[player]\nautoplay = true\nvolume = 50\n").unwrap();
+        let mut config = Config::default();
+        config.ui.check_updates = false;
+        let mut app = App::new(config, Some(path.clone()), &[], false);
+        app.prompt = None;
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.settings_cursor = Setting::ALL.iter().position(|(_, s)| *s == Setting::Autoplay).unwrap();
+        assert_eq!(app.setting_value(Setting::Autoplay), "on");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.setting_value(Setting::Autoplay), "off");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("autoplay_last_station = false") && !text.contains("\nautoplay ="), "{text}");
+        assert!(!Config::load(&path).0.ui.autoplay_last_station);
+    }
+
+    #[test]
+    fn autoplay_off_waits_for_a_station() {
+        let mut config = Config::default();
+        config.ui.autoplay_last_station = false;
+        let mut app = App::new(config, None, &[], true);
+        app.settle(Duration::from_millis(150));
+        assert!(!app.stations.is_empty() && app.current_station.is_none() && app.now.is_none());
     }
 
     #[test]

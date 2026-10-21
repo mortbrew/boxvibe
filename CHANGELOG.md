@@ -91,6 +91,16 @@
   way tubevibe lays out its menu and content (Up Next and History keep their one-column gap)
 - Test: `the_menu_and_the_page_touch`
 
+### Autoplay last station on open toggle (`ui-refresh`)
+
+- Settings → PLAYBACK → **Autoplay last station on open**, saved as `[ui] autoplay_last_station =
+  true | false`. It is on by default, as before: once boxvibe has logged in, the station played last
+  starts by itself. Off, boxvibe waits for you to pick a station.
+- boxvibe 0.1's `[player] autoplay` still reads as this setting (the new key wins when both are there),
+  and saving the toggle takes the old key out. A wrong type warns and uses the default, like every key.
+- Tests: `autoplay_last_station_and_its_old_name`, `the_autoplay_toggle_is_saved`,
+  `autoplay_off_waits_for_a_station`
+
 ## 0.1.0 (unreleased)
 
 First version.

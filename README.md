@@ -96,6 +96,7 @@ Try it without an account (made-up stations, no network, no sound):
 | `Enter` | play the station · open Settings / About · change a setting · Update Now |
 | `Tab` | stations → Up Next → History on the player (`Shift+Tab` back); menu ⇄ Settings / About |
 | `Esc` | back to the menu |
+| `N` (Shift+n) | Now Playing: back to the player from Settings or About (also the menu's top entry) |
 | `s` | go to the stations |
 | `t` | next theme |
 | `i` | next icon set |

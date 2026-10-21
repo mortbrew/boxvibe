@@ -172,6 +172,14 @@ pub fn logo_title<'a>(p: &Palette, ic: &Icons) -> Line<'a> {
 
 // --- Menu ---
 
+/// How far the menu's rules stay from each side of the frame (tubevibe's `SEPARATOR_INSET`).
+const SEPARATOR_INSET: &str = "  ";
+
+fn inset_rule<'a>(p: &Palette, width: u16) -> Paragraph<'a> {
+    let w = usize::from(width).saturating_sub(2 * SEPARATOR_INSET.len());
+    Paragraph::new(format!("{SEPARATOR_INSET}{}", "─".repeat(w))).fg(p.line)
+}
+
 fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let p = app.palette;
     let focused = app.focus == Focus::Menu;
@@ -180,7 +188,9 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let block = panel(logo_title(&p, ic), &p, focused).title(version);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let [head, list_area, _, rule, app_area] = Layout::vertical([
+    let now_h = if app.has_now_playing() { 2 } else { 0 };
+    let [now_area, head, list_area, _, rule, app_area] = Layout::vertical([
+        Constraint::Length(now_h),
         Constraint::Length(1),
         Constraint::Fill(1),
         Constraint::Length(1),
@@ -195,12 +205,13 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     );
     let selected = app.menu_selected();
     // Without the keys, the entry of the page shown stays shaded.
-    let shown = |item: MenuItem| match (item, app.view) {
-        (MenuItem::Settings, View::Settings) | (MenuItem::About, View::About) => true,
-        (MenuItem::Station(i), View::Player) => {
-            app.stations.get(i).is_some_and(|s| app.current_station.as_deref() == Some(s.id.as_str()))
-        }
-        _ => false,
+    let shown = |item: MenuItem| {
+        matches!(
+            (item, app.view),
+            (MenuItem::Settings, View::Settings)
+                | (MenuItem::About, View::About)
+                | (MenuItem::NowPlaying, View::Player)
+        )
     };
     let row_style = |item: MenuItem| {
         if focused && item == selected {
@@ -211,6 +222,17 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             None
         }
     };
+    if now_h > 0 {
+        // NOW PLAYING on top, back to the player; a rule under it, inset like tubevibe's.
+        let [entry, line] = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(now_area);
+        let mut style = Style::new().fg(p.green).bold();
+        if let Some(sel) = row_style(MenuItem::NowPlaying) {
+            style = style.patch(sel);
+        }
+        let text = format!(" {} NOW PLAYING", pad(ic.play, 1));
+        frame.render_widget(Paragraph::new(Line::from(pad(&text, entry.width as usize)).style(style)), entry);
+        frame.render_widget(inset_rule(&p, line.width), line);
+    }
     if app.stations.is_empty() {
         let text = match &app.session {
             Session::SigningIn => format!(" {} Signing in…", ic.loading),
@@ -242,12 +264,12 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             .collect();
         let at = match selected {
             MenuItem::Station(i) => Some(i),
-            _ => app.stations.iter().position(|s| app.current_station.as_deref() == Some(s.id.as_str())),
+            _ => None,
         };
         let mut state = ListState::default().with_selected(at);
         frame.render_stateful_widget(List::new(items), list_area, &mut state);
     }
-    frame.render_widget(Paragraph::new("─".repeat(rule.width as usize)).fg(p.line), rule);
+    frame.render_widget(inset_rule(&p, rule.width), rule);
     let entries = [
         (MenuItem::Settings, ic.settings, "Settings"),
         (MenuItem::About, ic.about, "About"),
@@ -723,6 +745,9 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
             keys.push(("Esc", "Menu"));
         }
     }
+    if app.view != View::Player && app.has_now_playing() {
+        keys.push(("N", "Now Playing"));
+    }
     keys.extend([
         ("space", pause),
         ("n", "Skip"),
@@ -781,6 +806,7 @@ fn draw_help(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             &[
                 ("j k ↑ ↓", "move in the list · g G first / last"),
                 ("Enter", "play the station · open Settings / About"),
+                ("N", "Now Playing (also the menu's top entry)"),
                 ("s", "back to the stations"),
                 ("Tab", "stations → Up Next → History (rate past songs there)"),
                 ("Esc", "back to the menu"),
@@ -884,6 +910,19 @@ mod tests {
             let end = lines[0].chars().position(|c| c == '┐').unwrap();
             assert_eq!(end + 1, menu, "menu_width {width} at {cols} columns");
         }
+    }
+
+    #[test]
+    fn now_playing_heads_the_menu_with_an_inset_rule() {
+        let mut app = demo();
+        app.view = View::Settings;
+        app.focus = crate::app::Focus::Content;
+        let (lines, _) = screen(&app, 120, 36);
+        assert!(lines[1].starts_with("│ ▶ NOW PLAYING"), "{}", lines[1]);
+        let menu: String = lines[2].chars().take(30).collect();
+        assert!(menu.starts_with("│  ──") && menu.ends_with("──  │"), "inset rule: {menu:?}");
+        assert!(lines[3].contains("STATIONS"), "{}", lines[3]);
+        assert!(lines[35].contains(" N  Now Playing"), "key bar: {}", lines[35]);
     }
 
     #[test]

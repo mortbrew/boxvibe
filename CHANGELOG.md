@@ -72,6 +72,19 @@
 - Tests: `border_style_and_menu_width`, `border_style_and_menu_width_are_saved`,
   `every_border_style_draws_and_the_menu_width_holds`
 
+### NOW PLAYING in the menu, `N` to get there (`ui-refresh`)
+
+- Once a station plays, a **NOW PLAYING** entry heads the menu, with a rule under it inset two columns
+  from each side of the frame (tubevibe's `SEPARATOR_INSET`; the rule above Settings now matches).
+  `Enter` on it shows the player again from Settings or About, and the song keeps playing. While the
+  player is shown, this entry is the one shaded in the menu, the way tubevibe marks the tab shown.
+- `N` (Shift+n) jumps there from anywhere (`n` still skips). The key bar shows `N Now Playing` on
+  Settings and About, and Help lists it. tubevibe has no single key for this: its playing video is a
+  tab in the menu, which this entry copies.
+- The menu cursor stays on the station you picked when the entry appears
+- Tests: `now_playing_from_the_menu_and_with_shift_n`, `no_now_playing_entry_before_a_station_plays`,
+  `now_playing_heads_the_menu_with_an_inset_rule`
+
 ## 0.1.0 (unreleased)
 
 First version.

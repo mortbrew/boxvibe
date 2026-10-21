@@ -37,6 +37,8 @@ pub enum Focus {
 /// The entries under the stations in the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuItem {
+    /// At the top once a station plays: back to the player.
+    NowPlaying,
     Station(usize),
     Settings,
     About,
@@ -291,9 +293,15 @@ impl App {
 
     // --- The menu ---
 
+    /// The menu has its NOW PLAYING entry: a station is playing.
+    pub fn has_now_playing(&self) -> bool {
+        self.current_station.is_some()
+    }
+
     pub fn menu_items(&self) -> Vec<MenuItem> {
-        (0..self.stations.len())
-            .map(MenuItem::Station)
+        let top = self.has_now_playing().then_some(MenuItem::NowPlaying);
+        top.into_iter()
+            .chain((0..self.stations.len()).map(MenuItem::Station))
             .chain([MenuItem::Settings, MenuItem::About, MenuItem::Quit])
             .collect()
     }
@@ -305,6 +313,7 @@ impl App {
 
     fn open_menu_item(&mut self) {
         match self.menu_selected() {
+            MenuItem::NowPlaying => self.show_now_playing(),
             MenuItem::Station(i) => {
                 self.view = View::Player;
                 self.tune(i);
@@ -321,16 +330,25 @@ impl App {
         }
     }
 
+    /// NOW PLAYING (menu entry or `N`): the player, with the menu on it.
+    fn show_now_playing(&mut self) {
+        if !self.has_now_playing() {
+            self.status = "Nothing is playing yet: pick a station".into();
+            return;
+        }
+        self.view = View::Player;
+        self.focus = Focus::Menu;
+        self.point_menu_at_view();
+    }
+
     /// The menu entry of what the right side shows.
     fn point_menu_at_view(&mut self) {
         let items = self.menu_items();
         let want = match self.view {
             View::Settings => Some(MenuItem::Settings),
             View::About => Some(MenuItem::About),
-            View::Player => {
-                let at = self.stations.iter().position(|s| Some(&s.id) == self.current_station.as_ref());
-                at.map(MenuItem::Station)
-            }
+            View::Player if self.has_now_playing() => Some(MenuItem::NowPlaying),
+            View::Player => None,
         };
         if let Some(i) = want.and_then(|w| items.iter().position(|m| *m == w)) {
             self.menu_cursor = i;
@@ -398,7 +416,7 @@ impl App {
                 self.stations = stations;
                 let last = &self.config.pandora.last_station;
                 let at = self.stations.iter().position(|s| &s.id == last);
-                self.menu_cursor = at.unwrap_or(0);
+                self.menu_cursor = at.unwrap_or(0) + usize::from(self.has_now_playing());
                 if self.stations.is_empty() {
                     self.status = "This account has no stations yet: create one on pandora.com".into();
                 } else if self.config.player.autoplay && self.current_station.is_none() {
@@ -523,6 +541,7 @@ impl App {
         self.stations.clear();
         self.current_station = None;
         self.menu_cursor = 0;
+        self.view = View::Settings;
         self.session = Session::LoggedOut;
         self.config.pandora.password.clear();
         self.save(&[("pandora", "password", "".into())]);
@@ -540,6 +559,10 @@ impl App {
         self.requested.clear();
         self.buffering = None;
         self.next_cursor = 0;
+        // The NOW PLAYING entry appears above the stations: the cursor stays on its row.
+        if !self.has_now_playing() && matches!(self.menu_selected(), MenuItem::Station(_)) {
+            self.menu_cursor += 1;
+        }
         self.current_station = Some(station.id.clone());
         self.playlist_pending = true;
         self.backend.send(Request::Playlist { station_id: station.id.clone() });
@@ -870,6 +893,7 @@ impl App {
             KeyCode::Char('+') | KeyCode::Char('u') | KeyCode::Char('=') => self.rate(true),
             KeyCode::Char('-') | KeyCode::Char('d') => self.rate(false),
             KeyCode::Char('z') => self.tired(),
+            KeyCode::Char('N') => self.show_now_playing(),
             KeyCode::Char('s') => {
                 self.view = View::Player;
                 self.focus = Focus::Menu;
@@ -1070,14 +1094,15 @@ mod tests {
     fn menu_has_stations_then_settings_about_quit() {
         let app = demo();
         let items = app.menu_items();
-        assert_eq!(items.len(), app.stations.len() + 3);
+        assert_eq!(items[0], MenuItem::NowPlaying, "a station plays: NOW PLAYING on top");
+        assert_eq!(items.len(), app.stations.len() + 4);
         assert_eq!(&items[items.len() - 3..], [MenuItem::Settings, MenuItem::About, MenuItem::Quit]);
     }
 
     #[test]
     fn enter_on_settings_and_about_opens_them() {
         let mut app = demo();
-        app.menu_cursor = app.stations.len();
+        app.menu_cursor = app.stations.len() + 1;
         app.on_key(key(KeyCode::Enter));
         assert_eq!((app.view, app.focus), (View::Settings, Focus::Content));
         app.on_key(key(KeyCode::Esc));
@@ -1087,7 +1112,41 @@ mod tests {
         assert_eq!(app.view, View::About);
         app.on_key(key(KeyCode::Char('s')));
         assert_eq!((app.view, app.focus), (View::Player, Focus::Menu));
-        assert!(matches!(app.menu_selected(), MenuItem::Station(_)));
+        assert_eq!(app.menu_selected(), MenuItem::NowPlaying);
+    }
+
+    #[test]
+    fn now_playing_from_the_menu_and_with_shift_n() {
+        let mut app = demo();
+        app.view = View::About;
+        app.focus = Focus::Content;
+        app.on_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT));
+        assert_eq!((app.view, app.focus, app.menu_selected()), (View::Player, Focus::Menu, MenuItem::NowPlaying));
+        let title = app.now.as_ref().map(|s| s.title.clone());
+        app.view = View::Settings;
+        app.menu_cursor = 0;
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.view, View::Player);
+        assert_eq!(app.now.as_ref().map(|s| s.title.clone()), title, "only shows it: the song plays on");
+        // Lowercase n still skips.
+        app.on_key(key(KeyCode::Char('n')));
+        assert_ne!(app.now.as_ref().map(|s| s.title.clone()), title);
+    }
+
+    #[test]
+    fn no_now_playing_entry_before_a_station_plays() {
+        let mut config = Config::default();
+        config.player.autoplay = false;
+        let mut app = App::new(config, None, &[], true);
+        app.settle(Duration::from_millis(150));
+        assert!(!app.menu_items().contains(&MenuItem::NowPlaying));
+        app.on_key(key(KeyCode::Char('N')));
+        assert!(app.status.starts_with("Nothing is playing"), "{}", app.status);
+        // Enter on the second station: the entry appears and the cursor stays on that station.
+        app.menu_cursor = 1;
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.menu_items()[0], MenuItem::NowPlaying);
+        assert_eq!(app.menu_selected(), MenuItem::Station(1));
     }
 
     #[test]

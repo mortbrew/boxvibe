@@ -87,6 +87,8 @@ pub struct UiConfig {
     pub border_style: BorderStyle,
     /// Columns of the left menu ([`MENU_WIDTH`]; never more than half the screen).
     pub menu_width: u16,
+    /// Rows of the Now Playing pane ([`NOW_PLAYING_SIZE`]); Up Next and History get the rest.
+    pub now_playing_size: u16,
 }
 
 impl Default for UiConfig {
@@ -99,6 +101,7 @@ impl Default for UiConfig {
             autoplay_last_station: true,
             border_style: BorderStyle::Plain,
             menu_width: MENU_WIDTH.default,
+            now_playing_size: NOW_PLAYING_SIZE.default,
         }
     }
 }
@@ -133,6 +136,9 @@ impl Size {
 
 /// Columns; 30 is what boxvibe 0.1 gave a 120-column terminal.
 pub const MENU_WIDTH: Size = Size { key: "menu_width", min: 20, max: 40, step: 2, default: 30 };
+
+/// Rows; 17 is what Now Playing always had on a tall terminal.
+pub const NOW_PLAYING_SIZE: Size = Size { key: "now_playing_size", min: 9, max: 25, step: 2, default: 17 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -379,12 +385,14 @@ impl Config {
         }
         c.player.volume = c.player.volume.min(100);
         // Sizes out of range: said, and back to the default.
-        if !MENU_WIDTH.contains(c.ui.menu_width) {
-            warnings.push(ConfigWarning::BadValue {
-                key: format!("ui.{}", MENU_WIDTH.key),
-                error: format!("{} is not between {} and {}", c.ui.menu_width, MENU_WIDTH.min, MENU_WIDTH.max),
-            });
-            c.ui.menu_width = MENU_WIDTH.default;
+        for (size, value) in [(MENU_WIDTH, &mut c.ui.menu_width), (NOW_PLAYING_SIZE, &mut c.ui.now_playing_size)] {
+            if !size.contains(*value) {
+                warnings.push(ConfigWarning::BadValue {
+                    key: format!("ui.{}", size.key),
+                    error: format!("{} is not between {} and {}", value, size.min, size.max),
+                });
+                *value = size.default;
+            }
         }
         Ok((c, warnings))
     }
@@ -582,6 +590,17 @@ mod tests {
         remove_value(&path, "ui", "notify").unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("notifications = false") && !text.contains("notify ="), "{text}");
+    }
+
+    #[test]
+    fn now_playing_size_reads_and_falls_back() {
+        let (c, w) = Config::parse("[ui]\nnow_playing_size = 11\n").unwrap();
+        assert_eq!((c.ui.now_playing_size, w.len()), (11, 0));
+        let (c, w) = Config::parse("[ui]\nnow_playing_size = 99\n").unwrap();
+        assert_eq!((c.ui.now_playing_size, w.len()), (17, 1));
+        let (c, w) = Config::parse("[ui]\nnow_playing_size = \"big\"\n").unwrap();
+        assert_eq!((c.ui.now_playing_size, w.len()), (17, 1));
+        assert_eq!(Config::parse("").unwrap().0.ui.now_playing_size, 17, "missing: the default");
     }
 
     #[test]

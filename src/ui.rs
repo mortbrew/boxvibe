@@ -292,8 +292,13 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 
 // --- Player ---
 
+/// Now Playing's rows: its setting, leaving Up Next and History room on a short screen.
+pub fn now_playing_height(app: &App, height: u16) -> u16 {
+    app.config.ui.now_playing_size.min(height.saturating_sub(9).max(8))
+}
+
 fn draw_player(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
-    let card_h = if area.height >= 30 { 17 } else { area.height.saturating_sub(9).clamp(8, 17) };
+    let card_h = now_playing_height(app, area.height);
     let [card, songs] = Layout::vertical([Constraint::Length(card_h), Constraint::Fill(1)]).areas(area);
     draw_now_playing(frame, app, ic, card);
     // Up Next bottom-left, History bottom-right, side by side.
@@ -925,6 +930,18 @@ mod tests {
         assert!(menu.starts_with("│  ──") && menu.ends_with("──  │"), "inset rule: {menu:?}");
         assert!(lines[3].contains("STATIONS"), "{}", lines[3]);
         assert!(lines[35].contains(" N  Now Playing"), "key bar: {}", lines[35]);
+    }
+
+    #[test]
+    fn now_playing_size_sets_the_pane_height() {
+        let mut app = demo();
+        for (size, rows, want) in [(17, 36, 17), (9, 36, 9), (25, 36, 25), (25, 20, 9)] {
+            app.config.ui.now_playing_size = size;
+            assert_eq!(now_playing_height(&app, rows - 2), want, "{size} on {rows} rows");
+            let (lines, _) = screen(&app, 120, rows);
+            let up = lines.iter().position(|l| l.contains("Up Next (")).expect("Up Next");
+            assert_eq!(up, usize::from(want), "Up Next right under Now Playing");
+        }
     }
 
     #[test]

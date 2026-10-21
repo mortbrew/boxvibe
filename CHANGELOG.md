@@ -2,6 +2,14 @@
 
 ## 0.2.0 (unreleased)
 
+### Now Playing size setting (`ui-refresh`)
+
+- Settings → LOOK → **Now Playing size** sets how many rows the Now Playing pane gets (9–25, step 2,
+  default 17); Up Next and History get the rest. Saved as `[ui] now_playing_size`; a missing or bad value
+  is the default, with a warning for a bad one. On a short terminal Up Next and History keep some room.
+- Tests: `now_playing_size_is_saved`, `now_playing_size_reads_and_falls_back`,
+  `now_playing_size_sets_the_pane_height`
+
 ### Resize the menu with { and } (`ui-refresh`)
 
 - `{` makes the left menu 2 columns narrower and `}` 2 wider (20–40, never more than half the screen),

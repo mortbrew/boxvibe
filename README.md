@@ -104,9 +104,11 @@ cancels, `Ctrl+u` clears.
 
 `~/.config/boxvibe/config.toml` (`--config FILE` picks another one). Every key
 is optional, and the app writes the ones you change from it. Keys this version
-doesn't know (a typo, or a setting from a newer boxvibe) and values of the
-wrong type are skipped with a warning in the status bar; only a file that is
-not valid TOML stops it.
+doesn't know (a typo, a leftover from testing, an old `[pandora]` key from the
+JSON-API boxvibe, or a setting from a newer boxvibe) and values of the wrong
+type are skipped with a warning in the status bar. Nothing in the file can stop
+boxvibe from starting: one that is not valid TOML is moved to
+`config.toml.bad-<UTC time>` and boxvibe starts with the defaults and says so.
 
 ```toml
 [pandora]

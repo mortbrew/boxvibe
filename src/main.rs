@@ -56,7 +56,8 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let path = args.config.clone().or_else(Config::default_path);
     let (mut config, warnings) = match &path {
-        Some(p) => Config::load(p)?,
+        // Never fails: what was wrong is a line in the status bar.
+        Some(p) => Config::load(p),
         None => (Config::default(), Vec::new()),
     };
     if let Some(theme) = &args.theme {

@@ -31,6 +31,22 @@
   key is taken out, and when both are there `notifications` wins
 - Tests: `notifications_on_by_default_and_the_old_name_reads`, `the_notifications_toggle_is_saved`
 
+### config.toml can never stop boxvibe from starting (`config-tolerance`)
+
+- A file that isn't valid TOML (or isn't text) is moved to `config.toml.bad-<UTC time>` (e.g.
+  `config.toml.bad-20261021T011403Z`), boxvibe starts with the defaults, and the status bar says where
+  the file went; settings saved from then on go to a fresh file. A config path that can't be read is
+  left alone and the defaults are used.
+- Old `[pandora]` keys from the JSON-API boxvibe and from testing (`partner_user`, `partner_password`,
+  `device`, `encrypt_password`, `decrypt_password`, `rpc_host`, …) are skipped with "left over from the
+  old Pandora API" instead of "made by a newer boxvibe"; old `low` / `medium` qualities still read as
+  `standard`
+- Unknown keys and sections, wrong types, a section that is a value (or an array of tables), and keys
+  that only fail together are all skipped with a warning; everything else in the file still applies
+- Edit config.toml: a file broken in the editor keeps the settings in use and isn't moved
+- Tests: `junk_configs_always_start`, `a_broken_file_is_moved_aside_and_the_defaults_start`,
+  `an_unreadable_path_starts_with_defaults`, `utc_stamps`
+
 ## 0.1.0 (2026-10-20)
 
 First version.

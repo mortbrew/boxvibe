@@ -760,7 +760,8 @@ impl App {
     /// After the editor closes: read config.toml again.
     pub fn reload_config(&mut self) {
         let Some(path) = self.config_path.clone() else { return };
-        match Config::load(&path) {
+        // A file broken in the editor keeps the settings in use (and the file as it is).
+        match Config::read(&path) {
             Ok((config, warnings)) => {
                 let login_changed = config.pandora.username != self.config.pandora.username
                     || config.pandora.password != self.config.pandora.password;
@@ -773,7 +774,10 @@ impl App {
                     self.log_in();
                 }
             }
-            Err(e) => self.status = format!("⚠ {e}"),
+            Err(warning) => {
+                let why = ConfigWarning::summary(&[warning]).unwrap_or_default();
+                self.status = format!("{why} · kept the settings in use");
+            }
         }
     }
 
@@ -1137,7 +1141,7 @@ mod tests {
         assert_eq!(app.setting_value(Setting::Notify), "on");
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.setting_value(Setting::Notify), "off");
-        let (saved, _) = Config::load(&path).unwrap();
+        let (saved, _) = Config::load(&path);
         assert!(!saved.ui.notifications);
         assert!(!std::fs::read_to_string(&path).unwrap().contains("notify ="), "the 0.1 name is gone");
     }

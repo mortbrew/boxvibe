@@ -84,6 +84,23 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if app.help {
         draw_help(frame, app, body);
     }
+    if app.confirm_quit {
+        draw_confirm_quit(frame, &p, area);
+    }
+}
+
+/// tubevibe's confirm box: " Confirm " on a red border, the question, then the keys.
+fn draw_confirm_quit(frame: &mut Frame, p: &Palette, screen: Rect) {
+    let lines = vec![
+        Line::from(""),
+        Line::from("Quit boxvibe?"),
+        Line::from(Span::styled("y = yes · any other key = no", Style::new().fg(p.muted))),
+    ];
+    let width = 40.min(screen.width.saturating_sub(4)).max(screen.width.min(8));
+    let area = centered(screen, width, 5);
+    frame.render_widget(Clear, area);
+    let block = framed().border_style(Style::new().fg(p.red)).title(" Confirm ").style(Style::new().bg(p.background));
+    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center).block(block), area);
 }
 
 // --- Pieces ---
@@ -811,6 +828,9 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.prompt.is_some() {
         return vec![("Enter", "Save"), ("Esc", "Cancel"), ("Ctrl+u", "Clear"), ("Ctrl+c", "Quit")];
     }
+    if app.confirm_quit {
+        return vec![("y", "Yes, Quit"), ("Other Key", "No")];
+    }
     if app.help {
         return vec![("Esc", "Close"), ("?", "Close")];
     }
@@ -913,7 +933,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
                 ("{ }", "menu narrower / wider (saved)"),
                 ("i", "emoji / Nerd Font / Unicode icons"),
                 ("?", "this help"),
-                ("Q Ctrl+c", "quit"),
+                ("Q Ctrl+c", "quit (asks first) / quit now"),
             ],
         ),
     ];
@@ -960,6 +980,18 @@ mod tests {
         let mut app = App::new(Config::default(), None, &[], true);
         app.demo_warm_up(3, std::time::Duration::ZERO);
         app
+    }
+
+    #[test]
+    fn shift_q_shows_tubevibes_confirm_box() {
+        let mut app = demo();
+        app.confirm_quit = true;
+        let (lines, _) = screen(&app, 120, 36);
+        let all = lines.join("\n");
+        assert!(all.contains(" Confirm "), "{all}");
+        assert!(all.contains("Quit boxvibe?"), "{all}");
+        assert!(all.contains("y = yes · any other key = no"), "{all}");
+        assert_eq!(key_caps(&app), vec![("y", "Yes, Quit"), ("Other Key", "No")]);
     }
 
     #[test]

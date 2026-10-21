@@ -208,6 +208,8 @@ pub struct App {
     pub hifi: Option<bool>,
     /// Restart Now was pressed: once quit, start the new version.
     pub restart: bool,
+    /// Shift+Q asked "Quit boxvibe?": y quits, any other key doesn't (like tubevibe).
+    pub confirm_quit: bool,
     pub quit: bool,
 }
 
@@ -252,6 +254,7 @@ impl App {
             edit_config: false,
             hifi: None,
             restart: false,
+            confirm_quit: false,
             quit: false,
             config,
             config_path,
@@ -996,6 +999,12 @@ impl App {
             self.quit = true;
             return;
         }
+        if self.confirm_quit {
+            // y quits; any other key is no, as in tubevibe.
+            self.confirm_quit = false;
+            self.quit = matches!(key.code, KeyCode::Char('y' | 'Y'));
+            return;
+        }
         if self.prompt.is_some() {
             return self.prompt_key(key);
         }
@@ -1006,7 +1015,7 @@ impl App {
         }
         match key.code {
             // Only Shift+Q quits, so a stray lowercase q can't end playback.
-            KeyCode::Char('Q') => self.quit = true,
+            KeyCode::Char('Q') => self.confirm_quit = true,
             KeyCode::Char('?') => self.help = true,
             KeyCode::Char(' ') | KeyCode::Char('p') => self.audio.toggle_pause(),
             KeyCode::Char('n') => {
@@ -1246,8 +1255,31 @@ mod tests {
     fn only_shift_q_quits() {
         let mut app = demo();
         app.on_key(key(KeyCode::Char('q')));
-        assert!(!app.quit);
+        assert!(!app.quit && !app.confirm_quit);
         app.on_key(KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT));
+        assert!(app.confirm_quit && !app.quit, "Q asks first");
+        app.on_key(key(KeyCode::Char('y')));
+        assert!(app.quit);
+    }
+
+    #[test]
+    fn quit_box_any_other_key_is_no() {
+        for no in [KeyCode::Char('n'), KeyCode::Enter, KeyCode::Esc, KeyCode::Char('Q')] {
+            let mut app = demo();
+            app.on_key(KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT));
+            app.on_key(key(no));
+            assert!(!app.quit && !app.confirm_quit, "{no:?}");
+        }
+    }
+
+    #[test]
+    fn ctrl_c_quits_at_once_even_in_the_quit_box() {
+        let mut app = demo();
+        app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(app.quit);
+        let mut app = demo();
+        app.on_key(KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT));
+        app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(app.quit);
     }
 

@@ -803,7 +803,7 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         ("n", "Skip"),
         ("+/u", "Like"),
         ("-/d", "Dislike"),
-        ("←→", "Volume"),
+        ("⇧←→", "Volume"),
         ("t", "Theme"),
         ("{/}", "Menu Size"),
         ("i", "Icons"),
@@ -849,7 +849,7 @@ fn draw_help(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
                 ("+ u =", "like (thumbs up)"),
                 ("- d", "dislike (thumbs down, skips the song)"),
                 ("z", "tired of this song (a month off)"),
-                ("← → [ ]", "volume"),
+                ("Shift ← →", "volume down / up"),
             ],
         ),
         (

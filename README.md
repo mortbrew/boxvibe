@@ -91,7 +91,7 @@ Try it without an account (made-up stations, no network, no sound):
 | `+` `u` | thumbs up |
 | `-` `d` | thumbs down (skips the song) |
 | `z` | tired of this song (off for a month) |
-| `←` `→` (`[` `]`) | volume |
+| `Shift+←` `Shift+→` | volume down / up |
 | `j` `k` `↑` `↓` | move · `g` `G` first / last |
 | `Enter` | play the station · open Stations / Settings / About · change a setting · Update Now |
 | `Tab` | menu → Up Next → History on the player (`Shift+Tab` back); menu ⇄ Stations / Settings / About |

@@ -1034,8 +1034,9 @@ impl App {
             KeyCode::Char('g') | KeyCode::Home => self.move_cursor(-1000),
             KeyCode::Char('G') | KeyCode::End => self.move_cursor(1000),
             KeyCode::Enter => self.enter(),
-            KeyCode::Right | KeyCode::Char('>') | KeyCode::Char(']') => self.change_volume(5),
-            KeyCode::Left | KeyCode::Char('<') | KeyCode::Char('[') => self.change_volume(-5),
+            // Volume: Shift+← / Shift+→ (plain arrows are left free).
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => self.change_volume(5),
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => self.change_volume(-5),
             KeyCode::Char('{') => self.resize_menu(-1),
             KeyCode::Char('}') => self.resize_menu(1),
             KeyCode::Char('t') => self.next_theme(),
@@ -1245,6 +1246,21 @@ mod tests {
         let mut app = App::new(Config::default(), None, &[], true);
         app.demo_warm_up(2, Duration::ZERO);
         app
+    }
+
+    #[test]
+    fn shift_arrows_change_the_volume_and_plain_arrows_do_not() {
+        let mut app = demo();
+        app.config.player.volume = 50;
+        app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+        assert_eq!(app.config.player.volume, 55);
+        app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+        app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+        assert_eq!(app.config.player.volume, 45);
+        for code in [KeyCode::Left, KeyCode::Right, KeyCode::Char('['), KeyCode::Char(']')] {
+            app.on_key(key(code));
+        }
+        assert_eq!(app.config.player.volume, 45, "only Shift+arrows touch the volume");
     }
 
     #[test]

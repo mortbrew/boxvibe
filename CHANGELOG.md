@@ -12,6 +12,17 @@
 - The updater matches tubevibe's current one (`no_news`, `latest_or_unknown`)
 - Tests: `restart_now_after_the_update_is_in`, `up_to_date_only_on_a_real_version`
 
+### Up Next and History side by side (`up-next-history`)
+
+- The single Songs table is gone: under Now Playing, **Up Next** is on the left and **History** on the
+  right, like boxvibe's first layout, each a whyd-style table with column headers (`#`, title, artist,
+  time; title, artist, rated) and text cut with "…"
+- `Tab` goes stations → Up Next → History → stations (`Shift+Tab` back); the pane with the keys has the
+  bright border and the selection bar
+- `+` / `-` in History rate that song (no skip); in Up Next they say "Rate it once it plays"; anywhere
+  else they rate the playing song. The History selection stays on its song as new ones are added.
+- Tests: `tab_goes_menu_up_next_history_and_back`, `rating_a_played_song_in_history`
+
 ## 0.1.0 (2026-10-20)
 
 First version.

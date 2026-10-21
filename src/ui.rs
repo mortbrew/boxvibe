@@ -13,7 +13,7 @@ use ratatui::widgets::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Focus, MenuItem, Prompt, Row, Session, Setting, View};
+use crate::app::{App, Focus, MenuItem, Pane, Prompt, Session, Setting, View};
 use crate::icons::{Icons, icons};
 use crate::pandora::{Rating, Song};
 use crate::theme::Palette;
@@ -222,7 +222,11 @@ fn draw_player(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let card_h = if area.height >= 30 { 17 } else { area.height.saturating_sub(9).clamp(8, 17) };
     let [card, songs] = Layout::vertical([Constraint::Length(card_h), Constraint::Fill(1)]).areas(area);
     draw_now_playing(frame, app, ic, card);
-    draw_songs(frame, app, ic, songs);
+    // Up Next bottom-left, History bottom-right, side by side.
+    let [next, history] =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).spacing(1).areas(songs);
+    draw_up_next(frame, app, next);
+    draw_history(frame, app, ic, history);
 }
 
 fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
@@ -364,70 +368,90 @@ fn draw_volume(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn draw_songs(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
+/// A whyd-style songs table: column headers, cut text ending in "…", the
+/// selected row as a bar while the pane has the keys.
+#[allow(clippy::too_many_arguments)]
+fn song_table<'a>(
+    frame: &mut Frame,
+    app: &App,
+    block: Block<'a>,
+    header: &[&'static str],
+    widths: &[Constraint],
+    rows: Vec<Vec<(String, Style)>>,
+    selected: usize,
+    focused: bool,
+    area: Rect,
+) {
     let p = app.palette;
-    let focused = app.focus == Focus::Content;
-    let rows = app.song_rows();
-    let played = rows.iter().filter(|r| matches!(r, Row::Played(_))).count();
-    let next = rows.iter().filter(|r| matches!(r, Row::Next(_))).count();
-    let block = panel(title(format!("Songs: {played} played, {next} up next"), &p), &p, focused);
-    if rows.is_empty() {
-        frame.render_widget(Paragraph::new(" Songs you play show here").fg(p.muted).block(block), area);
-        return;
-    }
-    let header = TableRow::new(["WHEN", "TITLE", "ARTIST", "ALBUM", "TIME", "RATED"])
-        .style(Style::new().fg(p.muted).add_modifier(Modifier::BOLD));
-    let widths = [
-        Constraint::Length(7),
-        Constraint::Fill(3),
-        Constraint::Fill(2),
-        Constraint::Fill(3),
-        Constraint::Length(5),
-        Constraint::Length(11),
-    ];
-    // The columns' real widths, to end cut text with "…".
     let inner = block.inner(area);
-    let cols = Layout::horizontal(widths).spacing(2).split(inner);
-    let fit = |text: &str, col: usize| truncate(text, cols[col].width as usize);
-    let selected = app.song_index();
+    let cols = Layout::horizontal(widths.to_vec()).spacing(2).split(inner);
     let body: Vec<TableRow> = rows
-        .iter()
-        .map(|row| {
-            let song = app.row_song(*row).expect("a row has its song");
-            let (when, style) = match row {
-                Row::Played(n) => (format!("{n} ago"), Style::new().fg(p.fg)),
-                Row::Now => (format!("{} now", ic.play), Style::new().fg(p.green).bold()),
-                Row::Next(n) => (format!("next {n}"), Style::new().fg(p.muted)),
-            };
-            let artist_style = match row {
-                Row::Played(_) => Style::new().fg(p.cyan),
-                _ => style,
-            };
-            let rated = match (row, song.rating) {
-                (Row::Next(_), _) => Span::raw(""),
-                (_, Rating::Up) => Span::styled(format!("{} liked", ic.up), Style::new().fg(p.green)),
-                (_, Rating::Down) => Span::styled(format!("{} disliked", ic.down), Style::new().fg(p.red)),
-                (_, Rating::None) => Span::styled("—", Style::new().fg(p.muted)),
-            };
-            let time = if song.length > 0 { clock(u64::from(song.length)) } else { String::new() };
-            TableRow::new(vec![
-                Cell::from(when),
-                Cell::from(fit(&song.title, 1)),
-                Cell::from(Span::styled(fit(&song.artist, 2), artist_style)),
-                Cell::from(fit(&song.album, 3)),
-                Cell::from(Line::from(time).alignment(Alignment::Right)),
-                Cell::from(rated),
-            ])
-            .style(style)
+        .into_iter()
+        .map(|cells| {
+            TableRow::new(cells.into_iter().enumerate().map(|(i, (text, style))| {
+                let text = truncate(&text, cols[i].width as usize);
+                Cell::from(Span::styled(text, style))
+            }))
         })
         .collect();
-    let table = Table::new(body, widths)
-        .header(header)
+    let table = Table::new(body, widths.to_vec())
+        .header(TableRow::new(header.to_vec()).style(Style::new().fg(p.muted).add_modifier(Modifier::BOLD)))
         .column_spacing(2)
         .block(block)
         .row_highlight_style(if focused { selection(&p, true) } else { Style::new() });
-    let mut state = TableState::default().with_selected(Some(selected));
+    let mut state = TableState::default().with_selected(focused.then_some(selected));
     frame.render_stateful_widget(table, area, &mut state);
+}
+
+fn draw_up_next(frame: &mut Frame, app: &App, area: Rect) {
+    let p = app.palette;
+    let focused = app.in_songs() && app.pane == Pane::UpNext;
+    let block = panel(title(format!("Up Next ({})", app.queue.len()), &p), &p, focused);
+    if app.queue.is_empty() {
+        let text = if app.now.is_some() { " Asking Pandora for more…" } else { " The next songs show here" };
+        frame.render_widget(Paragraph::new(text).fg(p.muted).block(block), area);
+        return;
+    }
+    let rows = app
+        .queue
+        .iter()
+        .enumerate()
+        .map(|(i, song)| {
+            let time = if song.length > 0 { clock(u64::from(song.length)) } else { String::new() };
+            vec![
+                (format!("{}", i + 1), Style::new().fg(p.muted)),
+                (song.title.clone(), Style::new().fg(p.fg)),
+                (song.artist.clone(), Style::new().fg(p.cyan)),
+                (format!("{time:>5}"), Style::new().fg(p.muted)),
+            ]
+        })
+        .collect();
+    let widths = [Constraint::Length(2), Constraint::Fill(3), Constraint::Fill(2), Constraint::Length(5)];
+    song_table(frame, app, block, &["#", "TITLE", "ARTIST", " TIME"], &widths, rows, app.next_index(), focused, area);
+}
+
+fn draw_history(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
+    let p = app.palette;
+    let focused = app.in_songs() && app.pane == Pane::History;
+    let block = panel(title(format!("History ({})", app.history.len()), &p), &p, focused);
+    if app.history.is_empty() {
+        frame.render_widget(Paragraph::new(" Songs you played show here").fg(p.muted).block(block), area);
+        return;
+    }
+    let rows = app
+        .history
+        .iter()
+        .map(|song| {
+            let rated = match song.rating {
+                Rating::Up => (format!("{} liked", ic.up), Style::new().fg(p.green)),
+                Rating::Down => (format!("{} disliked", ic.down), Style::new().fg(p.red)),
+                Rating::None => ("—".to_owned(), Style::new().fg(p.muted)),
+            };
+            vec![(song.title.clone(), Style::new().fg(p.fg)), (song.artist.clone(), Style::new().fg(p.cyan)), rated]
+        })
+        .collect();
+    let widths = [Constraint::Fill(3), Constraint::Fill(2), Constraint::Length(11)];
+    song_table(frame, app, block, &["TITLE", "ARTIST", "RATED"], &widths, rows, app.history_index(), focused, area);
 }
 
 // --- Settings ---
@@ -632,8 +656,12 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     let pause = if app.audio.is_paused() { "Play" } else { "Pause" };
     let mut keys = vec![("j/k ↑↓", "Move")];
     match (app.focus, app.view) {
-        (Focus::Menu, _) => keys.extend([("Enter", "Open"), ("Tab", "Songs")]),
-        (Focus::Content, View::Player) => keys.extend([("Tab/Esc", "Stations")]),
+        (Focus::Menu, View::Player) => keys.extend([("Enter", "Open"), ("Tab", "Up Next")]),
+        (Focus::Menu, _) => keys.extend([("Enter", "Open"), ("Tab", "Page")]),
+        (Focus::Content, View::Player) if app.pane == Pane::UpNext => {
+            keys.extend([("Tab", "History"), ("Esc", "Stations")])
+        }
+        (Focus::Content, View::Player) => keys.extend([("Tab", "Stations"), ("Esc", "Stations")]),
         (Focus::Content, View::Settings) => keys.extend([("Enter", "Change"), ("Esc", "Menu")]),
         (Focus::Content, View::About) => {
             if app.update_button_ready() {
@@ -703,7 +731,7 @@ fn draw_help(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
                 ("j k ↑ ↓", "move in the list · g G first / last"),
                 ("Enter", "play the station · open Settings / About"),
                 ("s", "back to the stations"),
-                ("Tab", "menu ⇄ page (the songs table: rate past songs)"),
+                ("Tab", "stations → Up Next → History (rate past songs there)"),
                 ("Esc", "back to the menu"),
             ],
         ),

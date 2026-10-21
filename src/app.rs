@@ -128,14 +128,11 @@ impl Setting {
     }
 }
 
-/// A row of the songs table, top to bottom: what played, what plays, what's next.
+/// The two song panes under Now Playing; Tab goes menu → Up Next → History.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Row {
-    /// History, `n` songs ago (1 = the last one).
-    Played(usize),
-    Now,
-    /// Up Next, 1 = the next one.
-    Next(usize),
+pub enum Pane {
+    UpNext,
+    History,
 }
 
 pub struct App {
@@ -147,8 +144,12 @@ pub struct App {
     pub focus: Focus,
     pub menu_cursor: usize,
     pub settings_cursor: usize,
-    /// The selected songs-table row (by track token; none: the playing song).
-    pub song_cursor: Option<String>,
+    /// Which song pane has the keys while the player has them.
+    pub pane: Pane,
+    /// Selected row of Up Next (0 = the next song).
+    pub next_cursor: usize,
+    /// Selected row of History (0 = the last song played).
+    pub history_cursor: usize,
     pub prompt: Option<Prompt>,
     pub query: String,
     pub palette: Palette,
@@ -195,7 +196,9 @@ impl App {
             focus: Focus::Menu,
             menu_cursor: 0,
             settings_cursor: 0,
-            song_cursor: None,
+            pane: Pane::UpNext,
+            next_cursor: 0,
+            history_cursor: 0,
             prompt: None,
             query: String::new(),
             palette: theme::TOKYO_NIGHT,
@@ -526,7 +529,7 @@ impl App {
         self.audio_cache.clear();
         self.requested.clear();
         self.buffering = None;
-        self.song_cursor = None;
+        self.next_cursor = 0;
         self.current_station = Some(station.id.clone());
         self.playlist_pending = true;
         self.backend.send(Request::Playlist { station_id: station.id.clone() });
@@ -539,6 +542,10 @@ impl App {
 
     fn push_history(&mut self, song: Song) {
         self.history.insert(0, song);
+        // The selected History row stays on its song as the list grows.
+        if self.history_cursor > 0 {
+            self.history_cursor = (self.history_cursor + 1).min(HISTORY_LEN - 1);
+        }
         self.history.truncate(HISTORY_LEN);
     }
 
@@ -621,42 +628,30 @@ impl App {
             .spawn();
     }
 
-    // --- The songs table ---
-
-    pub fn song_rows(&self) -> Vec<Row> {
-        let mut rows: Vec<Row> = (1..=self.history.len()).rev().map(Row::Played).collect();
-        if self.now.is_some() {
-            rows.push(Row::Now);
-        }
-        rows.extend((1..=self.queue.len()).map(Row::Next));
-        rows
-    }
-
-    pub fn row_song(&self, row: Row) -> Option<&Song> {
-        match row {
-            Row::Played(n) => self.history.get(n - 1),
-            Row::Now => self.now.as_ref(),
-            Row::Next(n) => self.queue.get(n - 1),
-        }
-    }
-
-    /// Index of the selected row (the playing song unless one was picked).
-    pub fn song_index(&self) -> usize {
-        let rows = self.song_rows();
-        let picked = self
-            .song_cursor
-            .as_ref()
-            .and_then(|token| rows.iter().position(|r| self.row_song(*r).is_some_and(|s| &s.track_token == token)));
-        picked.or_else(|| rows.iter().position(|r| *r == Row::Now)).unwrap_or(rows.len().saturating_sub(1))
-    }
+    // --- Up Next and History ---
 
     fn move_song(&mut self, by: i32) {
-        let rows = self.song_rows();
-        if rows.is_empty() {
-            return;
+        let (cursor, len) = match self.pane {
+            Pane::UpNext => (&mut self.next_cursor, self.queue.len()),
+            Pane::History => (&mut self.history_cursor, self.history.len()),
+        };
+        if len > 0 {
+            *cursor = (*cursor as i32 + by).clamp(0, len as i32 - 1) as usize;
         }
-        let at = (self.song_index() as i32 + by).clamp(0, rows.len() as i32 - 1) as usize;
-        self.song_cursor = self.row_song(rows[at]).map(|s| s.track_token.clone());
+    }
+
+    /// The selected rows, kept inside their lists as songs come and go.
+    pub fn next_index(&self) -> usize {
+        self.next_cursor.min(self.queue.len().saturating_sub(1))
+    }
+
+    pub fn history_index(&self) -> usize {
+        self.history_cursor.min(self.history.len().saturating_sub(1))
+    }
+
+    /// The player's panes have the keys.
+    pub fn in_songs(&self) -> bool {
+        self.focus == Focus::Content && self.view == View::Player
     }
 
     // --- Settings ---
@@ -843,12 +838,8 @@ impl App {
                 self.focus = Focus::Menu;
                 self.point_menu_at_view();
             }
-            KeyCode::Tab | KeyCode::BackTab => {
-                self.focus = if self.focus == Focus::Menu { Focus::Content } else { Focus::Menu };
-                if self.focus == Focus::Menu {
-                    self.point_menu_at_view();
-                }
-            }
+            KeyCode::Tab => self.next_focus(true),
+            KeyCode::BackTab => self.next_focus(false),
             KeyCode::Esc => {
                 self.focus = Focus::Menu;
                 self.point_menu_at_view();
@@ -863,6 +854,31 @@ impl App {
             KeyCode::Char('t') => self.next_theme(),
             KeyCode::Char('i') => self.next_icons(),
             _ => {}
+        }
+    }
+
+    /// Tab: menu → Up Next → History → menu on the player (Shift+Tab the
+    /// other way); menu ⇄ page elsewhere.
+    fn next_focus(&mut self, forward: bool) {
+        let order = [(Focus::Menu, Pane::UpNext), (Focus::Content, Pane::UpNext), (Focus::Content, Pane::History)];
+        if self.view == View::Player {
+            let at = if self.focus == Focus::Menu {
+                0
+            } else if self.pane == Pane::UpNext {
+                1
+            } else {
+                2
+            };
+            let to = if forward { (at + 1) % 3 } else { (at + 2) % 3 };
+            (self.focus, self.pane) = order[to];
+            if to == 0 {
+                self.pane = Pane::UpNext;
+            }
+        } else {
+            self.focus = if self.focus == Focus::Menu { Focus::Content } else { Focus::Menu };
+        }
+        if self.focus == Focus::Menu {
+            self.point_menu_at_view();
         }
     }
 
@@ -908,19 +924,16 @@ impl App {
         self.status = format!("Volume {volume}%");
     }
 
-    /// `+`/`-` act on the selected row of the songs table, else on the playing song.
+    /// `+`/`-` act on the selected History row while History has the keys,
+    /// else on the playing song.
     fn rate(&mut self, positive: bool) {
-        let picking = self.focus == Focus::Content && self.view == View::Player;
-        let row = if picking { self.song_rows().get(self.song_index()).copied() } else { Some(Row::Now) };
-        let Some(row) = row else { return };
-        if matches!(row, Row::Next(_)) {
+        if self.in_songs() && self.pane == Pane::UpNext {
             self.status = "Rate it once it plays".into();
             return;
         }
-        let song = match row {
-            Row::Played(n) => self.history.get_mut(n - 1),
-            _ => self.now.as_mut(),
-        };
+        let from_history = self.in_songs() && self.pane == Pane::History;
+        let at = self.history_index();
+        let song = if from_history { self.history.get_mut(at) } else { self.now.as_mut() };
         let Some(song) = song else { return };
         if song.station_id.is_empty() || song.track_token.is_empty() {
             return;
@@ -929,7 +942,7 @@ impl App {
         let request = Request::Rate { track_token: song.track_token.clone(), positive };
         self.backend.send(request);
         // Like Pandora: a thumbs down on the playing song skips it.
-        if !positive && row == Row::Now {
+        if !positive && !from_history {
             self.advance();
         }
     }
@@ -1069,24 +1082,34 @@ mod tests {
     }
 
     #[test]
-    fn songs_table_runs_from_played_to_next() {
-        let app = demo();
-        let rows = app.song_rows();
-        assert_eq!(rows[0], Row::Played(2));
-        assert_eq!(rows[app.song_index()], Row::Now, "the playing song is selected");
-        assert!(matches!(rows.last(), Some(Row::Next(_))));
+    fn tab_goes_menu_up_next_history_and_back() {
+        let mut app = demo();
+        assert_eq!(app.focus, Focus::Menu);
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!((app.focus, app.pane), (Focus::Content, Pane::UpNext));
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!((app.focus, app.pane), (Focus::Content, Pane::History));
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.focus, Focus::Menu);
+        app.on_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!((app.focus, app.pane), (Focus::Content, Pane::History));
     }
 
     #[test]
-    fn rating_a_played_song_from_the_table() {
+    fn rating_a_played_song_in_history() {
         let mut app = demo();
         app.focus = Focus::Content;
-        app.on_key(key(KeyCode::Char('k')));
-        let token = app.song_cursor.clone().unwrap();
+        app.pane = Pane::History;
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(app.history_index(), 1);
+        let token = app.history[1].track_token.clone();
         app.on_key(key(KeyCode::Char('d')));
-        assert_eq!(app.history[0].track_token, token);
-        assert_eq!(app.history[0].rating, Rating::Down);
+        assert_eq!((app.history[1].track_token.as_str(), app.history[1].rating), (token.as_str(), Rating::Down));
         assert!(app.now.is_some(), "rating History doesn't skip");
+        // Up Next can't be rated yet.
+        app.pane = Pane::UpNext;
+        app.on_key(key(KeyCode::Char('u')));
+        assert_eq!(app.status, "Rate it once it plays");
     }
 
     #[test]

@@ -226,7 +226,7 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         if let Some(sel) = row_style(MenuItem::NowPlaying) {
             style = style.patch(sel);
         }
-        let text = format!(" {} NOW PLAYING", pad(ic.play, 1));
+        let text = format!(" {} NOW PLAYING", pad(ic.play, 2));
         frame.render_widget(Paragraph::new(Line::from(pad(&text, entry.width as usize)).style(style)), entry);
         frame.render_widget(inset_rule(&p, line.width), line);
     }
@@ -235,7 +235,7 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         style = style.patch(sel);
     }
     let count = if app.stations.is_empty() { String::new() } else { format!(" ({})", app.stations.len()) };
-    let text = format!("   {} Stations{count}", pad(ic.station, 2));
+    let text = format!(" {} Stations{count}", pad(ic.station, 2));
     frame.render_widget(Paragraph::new(Line::from(pad(&text, stations_row.width as usize)).style(style)), stations_row);
     // FAVORITES, like tubevibe's tabs: only once a station is starred.
     let favorites = &app.config.ui.favorites;
@@ -256,8 +256,8 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
                 if let Some(sel) = row_style(MenuItem::Favorite(i)) {
                     style = style.patch(sel);
                 }
-                let mark = if playing { ic.play } else { " " };
-                let line = format!(" {} {} {}", pad(mark, 1), pad(ic.favorite, 2), f.name);
+                let icon = if playing { ic.play } else { ic.favorite };
+                let line = format!(" {} {}", pad(icon, 2), f.name);
                 ListItem::new(Line::from(pad(&line, list_area.width as usize))).style(style)
             })
             .collect();
@@ -280,7 +280,7 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         if let Some(sel) = row_style(item) {
             style = style.patch(sel);
         }
-        let mut text = format!("   {} {label}", pad(icon, 2));
+        let mut text = format!(" {} {label}", pad(icon, 2));
         if item == MenuItem::About && app.update.is_some() {
             text.push_str(&format!("  {} new", ic.update));
         }
@@ -971,7 +971,7 @@ mod tests {
         app.view = View::Settings;
         app.focus = crate::app::Focus::Content;
         let (lines, _) = screen(&app, 120, 36);
-        assert!(lines[1].starts_with("│ ▶ NOW PLAYING"), "{}", lines[1]);
+        assert!(lines[1].starts_with("│ ▶  NOW PLAYING"), "{}", lines[1]);
         let menu: String = lines[2].chars().take(30).collect();
         assert!(menu.starts_with("│  ──") && menu.ends_with("──  │"), "inset rule: {menu:?}");
         assert!(lines[3].contains("Stations ("), "{}", lines[3]);
@@ -1029,5 +1029,18 @@ mod tests {
         let row = lines.iter().find(|l| l.contains("Up Next (")).expect("Up Next pane");
         let (next, history) = (row.find("Up Next").unwrap(), row.find("History (").expect("on the same row"));
         assert!(next < history, "{row}");
+    }
+
+    #[test]
+    fn menu_text_is_left_justified_like_tubevibe() {
+        let mut app = demo();
+        app.config.ui.icons = crate::config::IconSet::Unicode;
+        let (lines, _) = screen(&app, 120, 36);
+        for word in ["NOW PLAYING", "Stations", "Settings", "About", "Quit"] {
+            let line = lines.iter().find(|l| l.chars().take(30).collect::<String>().contains(word)).expect(word);
+            let menu: Vec<char> = line.chars().take(30).collect();
+            assert_eq!(menu[1], ' ', "{word}: one space after the border: {line}");
+            assert_ne!(menu[2], ' ', "{word}: the icon at column 2: {line}");
+        }
     }
 }

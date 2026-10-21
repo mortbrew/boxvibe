@@ -342,11 +342,22 @@ fn draw_player(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let card_h = now_playing_height(app, area.height);
     let [card, songs] = Layout::vertical([Constraint::Length(card_h), Constraint::Fill(1)]).areas(area);
     draw_now_playing(frame, app, ic, card);
-    // Up Next bottom-left, History bottom-right, side by side.
-    let [next, history] =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).spacing(1).areas(songs);
+    // Up Next bottom-left, History bottom-right, side by side; stacked
+    // (Up Next on top) when the page is too narrow for two readable tables.
+    let [next, history] = if stack_songs(songs.width) {
+        Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(songs)
+    } else {
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).spacing(1).areas(songs)
+    };
     draw_up_next(frame, app, next);
     draw_history(frame, app, ic, history);
+}
+
+/// Below this many columns Up Next and History stack instead of sharing a row.
+pub const STACK_BELOW: u16 = 90;
+
+pub fn stack_songs(width: u16) -> bool {
+    width < STACK_BELOW
 }
 
 fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
@@ -1042,5 +1053,16 @@ mod tests {
             assert_eq!(menu[1], ' ', "{word}: one space after the border: {line}");
             assert_ne!(menu[2], ' ', "{word}: the icon at column 2: {line}");
         }
+    }
+
+    #[test]
+    fn up_next_and_history_stack_when_narrow() {
+        let app = demo();
+        assert!(stack_songs(STACK_BELOW - 1) && !stack_songs(STACK_BELOW));
+        let (lines, _) = screen(&app, 100, 40);
+        let next = lines.iter().position(|l| l.contains("Up Next (")).expect("Up Next");
+        let history = lines.iter().position(|l| l.contains("History (")).expect("History");
+        assert!(history > next, "History under Up Next on a narrow window");
+        assert!(!lines[next].contains("History ("), "{}", lines[next]);
     }
 }

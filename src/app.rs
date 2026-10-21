@@ -99,7 +99,7 @@ impl Setting {
             Self::Quality => "Audio quality",
             Self::Volume => "Volume",
             Self::Autoplay => "Play the last station on start",
-            Self::Notify => "Notify when the song changes",
+            Self::Notify => "Song change notifications",
             Self::Theme => "Theme",
             Self::Icons => "Icons",
             Self::CheckUpdates => "Look for new versions on startup",
@@ -119,7 +119,9 @@ impl Setting {
             }
             Self::Volume => "Also ← and → anywhere.",
             Self::Autoplay => "After logging in, the station you played last starts by itself.",
-            Self::Notify => "A desktop notification (notify-send) for every new song.",
+            Self::Notify => {
+                "A desktop notification (notify-send, mako on Omarchy) for every new song. Saved as [ui] notifications."
+            }
             Self::Theme => "Omarchy follows your current Omarchy theme; or pick a built-in one. Also t.",
             Self::Icons => "Emoji, Nerd Font (needs one installed) or plain Unicode. Also i.",
             Self::CheckUpdates => "Asks GitHub when boxvibe opens; About shows the new version and Update Now.",
@@ -617,7 +619,7 @@ impl App {
     }
 
     fn notify(&self, song: &Song) {
-        if self.demo || !self.config.ui.notify {
+        if self.demo || !self.config.ui.notifications {
             return;
         }
         let _ = std::process::Command::new("notify-send")
@@ -684,7 +686,7 @@ impl App {
             },
             Setting::Volume => format!("{}%", self.config.player.volume),
             Setting::Autoplay => on(self.config.player.autoplay),
-            Setting::Notify => on(self.config.ui.notify),
+            Setting::Notify => on(self.config.ui.notifications),
             Setting::Theme => theme::label(&self.config.ui.theme),
             Setting::Icons => crate::icons::label(self.config.ui.icons).into(),
             Setting::CheckUpdates => on(self.config.ui.check_updates),
@@ -727,8 +729,17 @@ impl App {
                 self.save(&[("player", "autoplay", self.config.player.autoplay.into())]);
             }
             Setting::Notify => {
-                self.config.ui.notify = !self.config.ui.notify;
-                self.save(&[("ui", "notify", self.config.ui.notify.into())]);
+                let on = !self.config.ui.notifications;
+                self.config.ui.notifications = on;
+                self.save(&[("ui", "notifications", on.into())]);
+                if !self.demo
+                    && let Some(path) = &self.config_path
+                    && let Err(e) = config::remove_value(path, "ui", "notify")
+                {
+                    self.status = format!("⚠ {e}");
+                } else {
+                    self.status = format!("Song change notifications {}", if on { "on" } else { "off" });
+                }
             }
             Setting::Theme => self.next_theme(),
             Setting::Icons => self.next_icons(),
@@ -1110,6 +1121,25 @@ mod tests {
         app.pane = Pane::UpNext;
         app.on_key(key(KeyCode::Char('u')));
         assert_eq!(app.status, "Rate it once it plays");
+    }
+
+    #[test]
+    fn the_notifications_toggle_is_saved() {
+        let path = crate::config::temp_dir("notifications").join("config.toml");
+        std::fs::write(&path, "[ui]\nnotify = true\n").unwrap();
+        let mut config = Config::default();
+        config.ui.check_updates = false;
+        let mut app = App::new(config, Some(path.clone()), &[], false);
+        app.prompt = None;
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.settings_cursor = Setting::ALL.iter().position(|(_, s)| *s == Setting::Notify).unwrap();
+        assert_eq!(app.setting_value(Setting::Notify), "on");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.setting_value(Setting::Notify), "off");
+        let (saved, _) = Config::load(&path).unwrap();
+        assert!(!saved.ui.notifications);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("notify ="), "the 0.1 name is gone");
     }
 
     #[test]

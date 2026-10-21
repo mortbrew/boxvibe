@@ -125,7 +125,7 @@ autoplay = true                # start the last station right after logging in
 theme = "omarchy"              # omarchy | tokyo-night | gruvbox | catppuccin | catppuccin-latte
                                # | rose-pine | nord | everforest | kanagawa
 icons = "emoji"                # emoji | nerd | unicode
-notify = true                  # a desktop notification when the song changes
+notifications = true           # a desktop notification when the song changes (Settings toggles it)
 check_updates = true           # look for a new release on GitHub at startup
 ```
 

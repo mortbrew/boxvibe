@@ -73,15 +73,17 @@ pub struct UiConfig {
     /// or one of the built-in themes (`t` cycles them).
     pub theme: String,
     pub icons: IconSet,
-    /// Song changes as a desktop notification (`notify-send`).
-    pub notify: bool,
+    /// Song changes as a desktop notification (`notify-send`). boxvibe 0.1
+    /// called it `notify`, which still reads.
+    #[serde(alias = "notify")]
+    pub notifications: bool,
     /// Ask GitHub, each time the app opens, whether there is a newer version.
     pub check_updates: bool,
 }
 
 impl Default for UiConfig {
     fn default() -> Self {
-        Self { theme: "omarchy".into(), icons: IconSet::Emoji, notify: true, check_updates: true }
+        Self { theme: "omarchy".into(), icons: IconSet::Emoji, notifications: true, check_updates: true }
     }
 }
 
@@ -192,7 +194,13 @@ fn section<T: serde::de::DeserializeOwned + Default>(
 impl Config {
     /// Reads a config and lists what was skipped; only invalid TOML fails.
     pub fn parse(text: &str) -> Result<(Self, Vec<ConfigWarning>), toml::de::Error> {
-        let table: toml::Table = toml::from_str(text)?;
+        let mut table: toml::Table = toml::from_str(text)?;
+        // Both the 0.1 name and the new one: the new one wins.
+        if let Some(toml::Value::Table(ui)) = table.get_mut("ui")
+            && ui.contains_key("notifications")
+        {
+            ui.remove("notify");
+        }
         let mut warnings = Vec::new();
         let mut c = Self::default();
         for (name, value) in table {
@@ -267,6 +275,16 @@ pub fn set_values(path: &Path, values: &[(&str, &str, toml_edit::Value)]) -> Res
         section[*key] = toml_edit::Item::Value(value.clone());
     }
     write_private(path, &doc.to_string()).map_err(|e| error(e.to_string()))
+}
+
+/// Removes `[table] key` from the file at `path`, if it is there (an old
+/// name of a setting that was just saved under its new one).
+pub fn remove_value(path: &Path, table: &str, key: &str) -> Result<(), ConfigError> {
+    let error = |reason: String| ConfigError::Write { path: path.into(), reason };
+    let Ok(text) = std::fs::read_to_string(path) else { return Ok(()) };
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| error(e.to_string()))?;
+    let removed = doc.get_mut(table).and_then(|t| t.as_table_like_mut()).and_then(|t| t.remove(key)).is_some();
+    if removed { write_private(path, &doc.to_string()).map_err(|e| error(e.to_string())) } else { Ok(()) }
 }
 
 #[cfg(test)]
@@ -354,6 +372,22 @@ mod tests {
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(crate::pandora::Quality::parse(&c.pandora.audio_quality), crate::pandora::Quality::Standard);
         assert_eq!(c.pandora.username, "me@example.com");
+    }
+
+    #[test]
+    fn notifications_on_by_default_and_the_old_name_reads() {
+        assert!(Config::default().ui.notifications);
+        let (c, w) = Config::parse("[ui]\nnotify = false\n").unwrap();
+        assert!(!c.ui.notifications && w.is_empty(), "{w:?}");
+        let (c, w) = Config::parse("[ui]\nnotify = false\nnotifications = true\ntheme = \"gruvbox\"\n").unwrap();
+        assert!(c.ui.notifications && w.is_empty(), "{w:?}");
+        assert_eq!(c.ui.theme, "gruvbox", "the rest still applies");
+        let path = temp_dir("notify").join("config.toml");
+        std::fs::write(&path, "[ui]\nnotify = true # old\n").unwrap();
+        set_values(&path, &[("ui", "notifications", false.into())]).unwrap();
+        remove_value(&path, "ui", "notify").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("notifications = false") && !text.contains("notify ="), "{text}");
     }
 
     #[test]

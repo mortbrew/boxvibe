@@ -23,6 +23,14 @@
   else they rate the playing song. The History selection stays on its song as new ones are added.
 - Tests: `tab_goes_menu_up_next_history_and_back`, `rating_a_played_song_in_history`
 
+### Song change notifications toggle (`notifications-toggle`)
+
+- Settings → PLAYBACK → **Song change notifications** turns the `notify-send` notification for each new
+  song on and off, saved as `[ui] notifications = true | false` (default on)
+- boxvibe 0.1's `notify = …` still reads as the same setting; the first time the toggle is saved the old
+  key is taken out, and when both are there `notifications` wins
+- Tests: `notifications_on_by_default_and_the_old_name_reads`, `the_notifications_toggle_is_saved`
+
 ## 0.1.0 (2026-10-20)
 
 First version.

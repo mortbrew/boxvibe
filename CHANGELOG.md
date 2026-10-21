@@ -12,6 +12,8 @@
   emoji variation selectors, so text never runs past the pane or hides the rating
 - Now Playing: the album art fills the pane's height; the time line and volume moved next to it, under
   the song info, which starts one line lower; the buttons no longer show keys under them
+- The Help window's title uses the menu's logo (same icon, blue "box", bold): "▣ boxvibe Help · Any Key
+  Closes", and any key now closes it (was Esc, `?`, `q` or Enter); test: `help_title_uses_the_menus_logo`
 - Volume is `Shift+←` / `Shift+→` (was `←` / `→`, `[` / `]`, `<` / `>`)
 - Tests: `menu_text_is_left_justified_like_tubevibe`, `up_and_down_wrap_around_the_ends`,
   `up_next_and_history_stack_when_narrow`, `long_song_text_is_cut_and_the_rating_stays_visible`,

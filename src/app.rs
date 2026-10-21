@@ -1000,9 +1000,8 @@ impl App {
             return self.prompt_key(key);
         }
         if self.help {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Enter) {
-                self.help = false;
-            }
+            // The title says "Any Key Closes", so any key does.
+            self.help = false;
             return;
         }
         match key.code {

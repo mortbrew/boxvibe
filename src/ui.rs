@@ -174,12 +174,21 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
 /// The logo on the menu's top border, like tubevibe's: the box icon and
 /// "box" in the theme's blue, "vibe" in the text colour.
 pub fn logo_title<'a>(p: &Palette, ic: &Icons) -> Line<'a> {
+    logo_line(p, ic, "")
+}
+
+/// The one place the logo is drawn: the menu's title and the Help window's
+/// title share it, with `rest` (bold, text colour) after "boxvibe".
+fn logo_line<'a>(p: &Palette, ic: &Icons, rest: &str) -> Line<'a> {
     Line::from(vec![
         Span::styled(format!(" {} ", ic.logo), Style::new().fg(p.blue).bold()),
         Span::styled("box", Style::new().fg(p.blue).bold()),
-        Span::styled("vibe ", Style::new().fg(p.fg).bold()),
+        Span::styled(format!("vibe{rest} "), Style::new().fg(p.fg).bold()),
     ])
 }
+
+/// The Help window's title: "<icon> boxvibe Help · Any Key Closes".
+const HELP_TITLE_REST: &str = " Help · Any Key Closes";
 
 // --- Menu ---
 
@@ -915,7 +924,7 @@ fn draw_help(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     )));
     let box_area = centered(area, 64, lines.len() as u16 + 2);
     frame.render_widget(Clear, box_area);
-    let block = panel(title(format!("{} Keys", ic.logo), &p), &p, true).style(Style::new().bg(p.background));
+    let block = panel(logo_line(&p, ic, HELP_TITLE_REST), &p, true).style(Style::new().bg(p.background));
     frame.render_widget(Paragraph::new(lines).block(block), box_area);
 }
 
@@ -960,6 +969,21 @@ mod tests {
         let x = top.chars().position(|c| c == 'b').unwrap() as u16;
         assert_eq!(buffer[(2, 0)].fg, p.blue);
         assert_eq!((buffer[(x, 0)].fg, buffer[(x + 3, 0)].fg), (p.blue, p.fg));
+    }
+
+    #[test]
+    fn help_title_uses_the_menus_logo() {
+        let mut app = demo();
+        app.config.ui.icons = crate::config::IconSet::Unicode;
+        app.help = true;
+        let (lines, buffer) = screen(&app, 120, 40);
+        let (y, row) = lines.iter().enumerate().find(|(_, l)| l.contains("Help · Any Key Closes")).unwrap();
+        assert!(row.contains("▣ boxvibe Help · Any Key Closes"), "{row}");
+        let (p, y) = (app.palette, y as u16);
+        let x = row.chars().position(|c| c == '▣').unwrap() as u16;
+        assert_eq!(buffer[(x, y)].fg, p.blue);
+        assert_eq!((buffer[(x + 2, y)].fg, buffer[(x + 5, y)].fg), (p.blue, p.fg));
+        assert!(buffer[(x + 5, y)].modifier.contains(ratatui::style::Modifier::BOLD));
     }
 
     #[test]

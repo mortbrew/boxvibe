@@ -1,6 +1,18 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.2.0 (unreleased)
+
+### Restart Now after Update Now (`restart-now`)
+
+- Once **Update Now** on About has put the new version in place, the button becomes **Restart Now**:
+  `Enter` quits cleanly (sound stopped) and starts the new binary in place of this one (`exec`, same
+  terminal, same arguments), like tubevibe 0.8.8. A build from source is never restarted.
+- The button shows ▶ ◀ while it has the keys and "(Tab to Select, Enter to Press)" when it doesn't; the
+  key bar says `Enter Restart Now`
+- The updater matches tubevibe's current one (`no_news`, `latest_or_unknown`)
+- Tests: `restart_now_after_the_update_is_in`, `up_to_date_only_on_a_real_version`
+
+## 0.1.0 (2026-10-20)
 
 First version.
 

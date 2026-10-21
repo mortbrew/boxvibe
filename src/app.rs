@@ -177,6 +177,8 @@ pub struct App {
     pub edit_config: bool,
     /// After a login: whether the plan streams 192 kbps MP3.
     pub hifi: Option<bool>,
+    /// Restart Now was pressed: once quit, start the new version.
+    pub restart: bool,
     pub quit: bool,
 }
 
@@ -217,6 +219,7 @@ impl App {
             self_update: Progress::Idle,
             edit_config: false,
             hifi: None,
+            restart: false,
             quit: false,
             config,
             config_path,
@@ -460,7 +463,7 @@ impl App {
                 }
             }
             Reply::SelfUpdated(Ok(version)) => {
-                self.status = format!("✔ boxvibe {version} installed · restart boxvibe to use it");
+                self.status = format!("✔ boxvibe {version} installed · Restart Now in About opens it");
                 self.self_update = Progress::Done(version);
             }
             Reply::SelfUpdated(Err(error)) => {
@@ -937,11 +940,16 @@ impl App {
         self.advance();
     }
 
-    /// About's Update Now button can be pressed: a new version is out, this
-    /// copy can be replaced, and no update is running or done.
+    /// About's button can be pressed: a new version is out, this copy can be
+    /// replaced, and no update is running (once done it is Restart Now).
     pub fn update_button_ready(&self) -> bool {
         self.update.as_ref().is_some_and(|u| matches!(u.replace, Replace::Ready(_)))
-            && matches!(self.self_update, Progress::Idle | Progress::Failed(_))
+            && matches!(self.self_update, Progress::Idle | Progress::Failed(_) | Progress::Done(_))
+    }
+
+    /// The update is in: the button restarts boxvibe into it.
+    pub fn restart_ready(&self) -> bool {
+        matches!(self.self_update, Progress::Done(_))
     }
 
     fn press_update(&mut self) {
@@ -950,8 +958,11 @@ impl App {
                 self.status = "⬇ Already updating…".into();
                 return;
             }
-            Progress::Done(version) => {
-                self.status = format!("✔ boxvibe {version} is installed · restart boxvibe to use it");
+            Progress::Done(_) => {
+                // Restart Now: quit cleanly (sound stopped, settings saved),
+                // then main starts the new binary in its place.
+                self.restart = true;
+                self.quit = true;
                 return;
             }
             Progress::Idle | Progress::Failed(_) => {}
@@ -1088,5 +1099,22 @@ mod tests {
         app.on_key(key(KeyCode::Enter));
         assert!(app.status.starts_with("Built from source"), "{}", app.status);
         assert_eq!(app.self_update, Progress::Idle);
+    }
+
+    #[test]
+    fn restart_now_after_the_update_is_in() {
+        let mut app = demo();
+        let ready = Replace::Ready("https://example.com/boxvibe-x86_64-linux.tar.gz".into());
+        app.update = Some(Update { version: "9.9.9".into(), how: String::new(), replace: ready });
+        app.view = View::About;
+        app.focus = Focus::Content;
+        app.self_update = Progress::Downloading(40);
+        app.on_key(key(KeyCode::Enter));
+        assert!(!app.quit, "pressing again while it downloads does nothing");
+        app.on_reply(Reply::SelfUpdated(Ok("9.9.9".into())));
+        assert!(app.status.contains("9.9.9 installed · Restart Now"), "{}", app.status);
+        assert!(app.update_button_ready() && app.restart_ready());
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.restart && app.quit, "Enter on Restart Now quits so main starts the new one");
     }
 }

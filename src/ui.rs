@@ -560,6 +560,8 @@ fn draw_about(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
                 ),
             ]));
             lines.push(Line::raw(""));
+            // The Update Now button: focused with Tab, pressed with Enter; once
+            // the new version is in, it is Restart Now.
             let ready = app.update_button_ready();
             let focused = app.focus == Focus::Content;
             let style = match (ready, focused) {
@@ -567,23 +569,27 @@ fn draw_about(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
                 (true, false) => Style::new().fg(p.green).bg(p.highlight).bold(),
                 (false, _) => Style::new().fg(p.muted).bg(p.highlight),
             };
-            let mut button = vec![Span::raw("   "), Span::styled(format!("  {} Update Now  ", ic.update), style)];
-            if ready {
-                let how = if focused { "  Enter installs it" } else { "  Tab, then Enter" };
-                button.push(Span::styled(how, Style::new().fg(p.muted)));
+            let label = if app.restart_ready() { "Restart Now" } else { "Update Now" };
+            let (left, right) = if ready && focused { (" ▶ ", " ◀") } else { ("   ", "  ") };
+            lines.push(Line::from(vec![
+                Span::styled(left, Style::new().fg(p.green).bold()),
+                Span::styled(format!("  {} {label}  ", ic.update), style),
+                Span::styled(right, Style::new().fg(p.green).bold()),
+            ]));
+            if ready && !focused {
+                lines.push(Line::from(Span::styled("   (Tab to Select, Enter to Press)", Style::new().fg(p.muted))));
             }
-            lines.push(Line::from(button));
             match &app.self_update {
                 Progress::Downloading(percent) => lines.push(Line::from(Span::styled(
                     format!("   {} Downloading… {percent}%", ic.loading),
                     Style::new().fg(p.yellow).bold(),
                 ))),
                 Progress::Done(version) => lines.push(Line::from(Span::styled(
-                    format!("   {} boxvibe {version} installed · restart boxvibe to use it", ic.ok),
+                    format!("   {} boxvibe {version} Installed · Restart Now Opens It", ic.ok),
                     Style::new().fg(p.green).bold(),
                 ))),
                 Progress::Failed(error) => lines.push(Line::from(Span::styled(
-                    format!("   {} Could not update: {error}", ic.warn),
+                    format!("   {} Could Not Update: {error}", ic.warn),
                     Style::new().fg(p.red),
                 ))),
                 Progress::Idle => {}
@@ -631,7 +637,7 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         (Focus::Content, View::Settings) => keys.extend([("Enter", "Change"), ("Esc", "Menu")]),
         (Focus::Content, View::About) => {
             if app.update_button_ready() {
-                keys = vec![("Enter", "Update Now")];
+                keys = vec![("Enter", if app.restart_ready() { "Restart Now" } else { "Update Now" })];
             } else {
                 keys.clear();
             }

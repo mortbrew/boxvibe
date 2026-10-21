@@ -30,7 +30,7 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
             app.open_password_prompt("hunter2hunter2");
             app.status = "Settings are saved to config.toml as you change them".into();
         }
-        "about" => {
+        "about" | "about-restart" => {
             app.view = View::About;
             app.focus = Focus::Content;
             // What About shows once GitHub has a newer release (made up here).
@@ -39,8 +39,15 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
                 how: String::new(),
                 replace: crate::update::Replace::Ready(String::new()),
             });
-            app.status =
-                format!("{} boxvibe 0.2.0 available · see About", crate::icons::icons(app.config.ui.icons).update);
+            if screen == "about-restart" {
+                // Update Now finished: the button is Restart Now.
+                app.self_update = crate::update::Progress::Done("0.2.0".into());
+                app.status = "✔ boxvibe 0.2.0 installed · Restart Now in About opens it".into();
+            }
+            if screen == "about" {
+                app.status =
+                    format!("{} boxvibe 0.2.0 available · see About", crate::icons::icons(app.config.ui.icons).update);
+            }
         }
         _ => {}
     }

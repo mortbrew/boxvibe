@@ -143,8 +143,9 @@ can't be reached (or there are no releases yet), nothing is shown.
 On About, **Update Now** (`Enter`) downloads the release's
 `boxvibe-<arch>-linux.tar.gz`, takes the `boxvibe` binary out of it, checks
 that it runs and reports the new version, and puts it in place of the running
-one ([self-replace](https://crates.io/crates/self-replace)). Restart boxvibe
-to use it. The button is only offered for a release binary in a folder you
+one ([self-replace](https://crates.io/crates/self-replace)). Then the button
+becomes **Restart Now**, which starts the new version in the same terminal with the
+same arguments. The button is only offered for a release binary in a folder you
 can write to (like `~/.local/bin`); for a build from source, `cargo install`,
 a system package, or a platform without a release download, About explains
 why and shows the command to update by hand instead.

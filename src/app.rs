@@ -340,8 +340,11 @@ impl App {
                 let Some(fav) = self.config.ui.favorites.get(i).cloned() else { return };
                 match self.stations.iter().position(|s| s.id == fav.id) {
                     Some(at) => {
+                        // Plays it and lands on Now Playing, cursor on NOW PLAYING.
                         self.view = View::Player;
+                        self.focus = Focus::Menu;
                         self.tune(at);
+                        self.point_menu_at_view();
                     }
                     None if self.stations.is_empty() => self.status = "The stations are still loading".into(),
                     None => self.status = format!("{} isn't one of your stations any more (f removes it)", fav.name),
@@ -532,9 +535,9 @@ impl App {
                         self.stations_cursor = 1;
                     }
                     self.tune(self.stations_cursor);
-                } else if self.current_station.is_none() && self.view == View::Player {
-                    // Nothing playing: the station list, to pick one.
-                    self.show_stations();
+                } else if self.current_station.is_none() && self.status.is_empty() {
+                    // Startup always stays on Now Playing (idle); Stations is opened by hand.
+                    self.status = "Nothing playing: open Stations (s) to pick one".into();
                 }
             }
             Reply::Playlist { station_id, songs } => {
@@ -1252,6 +1255,51 @@ mod tests {
     }
 
     #[test]
+    fn enter_on_a_favorite_plays_it_and_shows_now_playing() {
+        for playing_first in [false, true] {
+            let mut config = Config::default();
+            config.ui.autoplay_last_station = false;
+            let mut app = App::new(config, None, &[], true);
+            app.settle(Duration::from_millis(150));
+            if playing_first {
+                app.tune(0);
+            }
+            let fav = app.stations[1].clone();
+            app.config.ui.favorites.push(crate::config::Favorite { id: fav.id.clone(), name: fav.name.clone() });
+            app.view = View::Settings;
+            app.menu_cursor = app.menu_items().iter().position(|m| *m == MenuItem::Favorite(0)).unwrap();
+            app.focus = Focus::Menu;
+            app.on_key(key(KeyCode::Enter));
+            assert_eq!(app.current_station.as_deref(), Some(fav.id.as_str()));
+            assert_eq!((app.view, app.focus, app.menu_selected()), (View::Player, Focus::Menu, MenuItem::NowPlaying));
+        }
+    }
+
+    #[test]
+    fn enter_on_a_station_plays_it_and_shows_now_playing() {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.settle(Duration::from_millis(150));
+        app.on_key(key(KeyCode::Char('s')));
+        app.on_key(key(KeyCode::Char('j')));
+        let want = app.stations[app.stations_index()].id.clone();
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.current_station.as_deref(), Some(want.as_str()));
+        assert_eq!((app.view, app.menu_selected()), (View::Player, MenuItem::NowPlaying));
+    }
+
+    #[test]
+    fn startup_stays_on_an_idle_now_playing() {
+        let mut config = Config::default();
+        config.ui.autoplay_last_station = false;
+        let mut app = App::new(config, None, &[], true);
+        app.settle(Duration::from_millis(150));
+        assert_eq!(app.view, View::Player);
+        assert!(app.now.is_none() && app.current_station.is_none());
+        app.on_key(key(KeyCode::Char('s')));
+        assert_eq!(app.view, View::Stations, "s opens it by hand");
+    }
+
+    #[test]
     fn only_shift_q_quits() {
         let mut app = demo();
         app.on_key(key(KeyCode::Char('q')));
@@ -1377,10 +1425,13 @@ mod tests {
         config.ui.autoplay_last_station = false;
         let mut app = App::new(config, None, &[], true);
         app.settle(Duration::from_millis(150));
+        assert_eq!(app.view, View::Player, "startup never opens Stations by itself");
         assert!(!app.menu_items().contains(&MenuItem::NowPlaying));
         app.on_key(key(KeyCode::Char('N')));
         assert!(app.status.starts_with("Nothing is playing"), "{}", app.status);
-        assert_eq!((app.view, app.focus), (View::Stations, Focus::Content), "the list, to pick one");
+        assert_eq!(app.view, View::Player, "N with nothing playing stays put");
+        app.on_key(key(KeyCode::Char('s')));
+        assert_eq!((app.view, app.focus), (View::Stations, Focus::Content), "s opens the list");
         // Enter on the second station: it plays and NOW PLAYING appears, selected.
         app.on_key(key(KeyCode::Char('j')));
         app.on_key(key(KeyCode::Enter));
@@ -1419,7 +1470,8 @@ mod tests {
         assert_eq!(app.menu_selected(), MenuItem::Favorite(0));
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.current_station.as_deref(), Some(third.id.as_str()));
-        assert_eq!((app.view, app.menu_selected()), (View::Player, MenuItem::Favorite(0)), "the cursor stays on it");
+        assert_eq!((app.view, app.menu_selected()), (View::Player, MenuItem::NowPlaying), "on to Now Playing");
+        app.menu_cursor = app.menu_items().iter().position(|m| *m == MenuItem::Favorite(0)).unwrap();
         // F on it in the menu unstars it: the section goes.
         app.on_key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT));
         assert!(

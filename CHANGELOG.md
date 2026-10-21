@@ -2,6 +2,22 @@
 
 ## 0.2.0 (unreleased)
 
+### Layout and key fixes (`ui-refresh`)
+
+- The menu's entries are left-justified like tubevibe's: one space from the border, icons in one column
+- `↑` / `↓` (`k` / `j`) wrap around: up from the top goes to the bottom and down from the bottom to the
+  top, in the menu, Stations, Settings, Up Next and History (`g` / `G` still stop at the ends)
+- Up Next and History stack (Up Next on top) when the page is under 90 columns wide
+- Up Next and History cut long titles and artists with "…", turn tabs and newlines into spaces and drop
+  emoji variation selectors, so text never runs past the pane or hides the rating
+- Now Playing: the album art fills the pane's height; the time line and volume moved next to it, under
+  the song info, which starts one line lower; the buttons no longer show keys under them
+- Volume is `Shift+←` / `Shift+→` (was `←` / `→`, `[` / `]`, `<` / `>`)
+- Tests: `menu_text_is_left_justified_like_tubevibe`, `up_and_down_wrap_around_the_ends`,
+  `up_next_and_history_stack_when_narrow`, `long_song_text_is_cut_and_the_rating_stays_visible`,
+  `clean_and_truncate_keep_cells_honest`, `now_playing_art_fills_the_pane_with_info_time_and_volume_beside_it`,
+  `shift_arrows_change_the_volume_and_plain_arrows_do_not`
+
 ### Stations page and Favorites (`ui-refresh`)
 
 - The menu no longer lists every station: a **Stations** entry (also `s`) opens the station list on the

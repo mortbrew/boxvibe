@@ -121,6 +121,16 @@ fn pad(text: &str, cells: usize) -> String {
     format!("{text}{}", " ".repeat(cells.saturating_sub(w)))
 }
 
+/// Song text made safe for a table cell: tabs and newlines become spaces,
+/// and emoji variation selectors and joiners go, since terminals draw those
+/// wider than they measure and push the rest of the row (the rating) out.
+fn clean(text: &str) -> String {
+    text.chars()
+        .filter(|c| !matches!(c, '\u{FE0E}' | '\u{FE0F}' | '\u{200D}'))
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
 /// `text` cut to `cells` terminal cells, ending in "…" when cut.
 fn truncate(text: &str, cells: usize) -> String {
     if text.width() <= cells {
@@ -520,7 +530,7 @@ fn song_table<'a>(
         .into_iter()
         .map(|cells| {
             TableRow::new(cells.into_iter().enumerate().map(|(i, (text, style))| {
-                let text = truncate(&text, cols[i].width as usize);
+                let text = truncate(&clean(&text), cols[i].width as usize);
                 Cell::from(Span::styled(text, style))
             }))
         })
@@ -1064,5 +1074,35 @@ mod tests {
         let history = lines.iter().position(|l| l.contains("History (")).expect("History");
         assert!(history > next, "History under Up Next on a narrow window");
         assert!(!lines[next].contains("History ("), "{}", lines[next]);
+    }
+
+    #[test]
+    fn long_song_text_is_cut_and_the_rating_stays_visible() {
+        let mut app = demo();
+        app.config.ui.icons = crate::config::IconSet::Unicode;
+        let long = "A Very Long Song Title 🎵🎶 That Goes On ❤️ And On\tWith\nControl Characters Forever".to_owned();
+        for song in app.history.iter_mut().chain(app.queue.iter_mut()) {
+            song.title = long.clone();
+            song.artist = "An Artist Whose Name 名前 Is Also Far Too Long For Any Pane".into();
+        }
+        app.history[0].rating = Rating::Up;
+        for cols in [80u16, 100, 120, 160] {
+            let (lines, _) = screen(&app, cols, 40);
+            let rated = lines.iter().any(|l| l.contains("liked"));
+            assert!(rated, "{cols} cols: the rating shows: {lines:#?}");
+            assert!(lines.iter().any(|l| l.contains('…')), "{cols} cols: cut with an ellipsis");
+            let row = lines.iter().find(|l| l.contains("liked")).unwrap();
+            let end = row.trim_end().chars().last();
+            assert!(matches!(end, Some('│')), "{cols} cols: the pane's border closes the row: {row}");
+            assert!(!row.contains('\u{FE0F}') && !row.contains('\t'), "{cols} cols: cleaned: {row:?}");
+        }
+    }
+
+    #[test]
+    fn clean_and_truncate_keep_cells_honest() {
+        assert_eq!(clean("a\tb\nc ❤️ d"), "a b c ❤ d");
+        assert_eq!(truncate("abcdef", 4), "abc…");
+        assert_eq!(truncate("名前名前", 5), "名前…");
+        assert!(truncate("名前名前", 5).width() <= 5);
     }
 }

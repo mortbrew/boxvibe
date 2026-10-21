@@ -4,6 +4,7 @@
 
 ### Layout and key fixes (`ui-refresh`)
 
+- Quit is now `Q` (Shift+q) or `Ctrl+c`; lowercase `q` no longer quits
 - The menu's entries are left-justified like tubevibe's: one space from the border, icons in one column
 - `↑` / `↓` (`k` / `j`) wrap around: up from the top goes to the bottom and down from the bottom to the
   top, in the menu, Stations, Settings, Up Next and History (`g` / `G` still stop at the ends)

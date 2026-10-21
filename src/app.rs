@@ -1005,7 +1005,8 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Char('q') => self.quit = true,
+            // Only Shift+Q quits, so a stray lowercase q can't end playback.
+            KeyCode::Char('Q') => self.quit = true,
             KeyCode::Char('?') => self.help = true,
             KeyCode::Char(' ') | KeyCode::Char('p') => self.audio.toggle_pause(),
             KeyCode::Char('n') => {
@@ -1239,6 +1240,15 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn only_shift_q_quits() {
+        let mut app = demo();
+        app.on_key(key(KeyCode::Char('q')));
+        assert!(!app.quit);
+        app.on_key(KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT));
+        assert!(app.quit);
     }
 
     fn demo() -> App {

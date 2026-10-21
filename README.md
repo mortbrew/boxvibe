@@ -103,7 +103,7 @@ Try it without an account (made-up stations, no network, no sound):
 | `t` | next theme |
 | `i` | next icon set |
 | `?` | every key |
-| `q` `Ctrl+c` | quit |
+| `Q` (Shift+q) `Ctrl+c` | quit |
 
 When a setting asks you to type (email, password): `Enter` saves, `Esc`
 cancels, `Ctrl+u` clears.

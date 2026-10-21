@@ -850,7 +850,7 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         ("{/}", "Menu Size"),
         ("i", "Icons"),
         ("?", "Help"),
-        ("q", "Quit"),
+        ("Q", "Quit"),
     ]);
     keys
 }
@@ -913,7 +913,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
                 ("{ }", "menu narrower / wider (saved)"),
                 ("i", "emoji / Nerd Font / Unicode icons"),
                 ("?", "this help"),
-                ("q Ctrl+c", "quit"),
+                ("Q Ctrl+c", "quit"),
             ],
         ),
     ];

@@ -390,15 +390,12 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         );
         return;
     };
-    let [card, _, progress, volume] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1), Constraint::Length(1)])
-            .areas(inner);
-    // The art square: two cells wide per row, so it looks square.
-    let art_h = card.height.min(12);
-    let art_w = (art_h * 2 + 2).min(card.width / 3);
+    // The art fills the pane's height, two cells wide per row so it looks
+    // square; song info, the time line and the volume sit to its right.
+    let art_w = (inner.height * 2 + 2).min(inner.width / 2);
     let [art, _, info] =
-        Layout::horizontal([Constraint::Length(art_w), Constraint::Length(3), Constraint::Fill(1)]).areas(card);
-    draw_art(frame, &p, ic, song, Rect { height: art_h, ..art });
+        Layout::horizontal([Constraint::Length(art_w), Constraint::Length(3), Constraint::Fill(1)]).areas(inner);
+    draw_art(frame, &p, ic, song, art);
     let label = |text: &str| Span::styled(format!("{text:<9}"), Style::new().fg(p.muted));
     let state = if app.buffering.is_some() {
         Span::styled(format!("{} buffering…", ic.loading), Style::new().fg(p.yellow))
@@ -415,15 +412,23 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         Line::from(vec![label("rating"), rating_word(song.rating, &p, ic)]),
         Line::from(vec![label("state"), state]),
     ];
-    let buttons_h = if card.height >= 11 { 4 } else { 0 };
-    let [text, _, buttons] =
-        Layout::vertical([Constraint::Length(6), Constraint::Fill(1), Constraint::Length(buttons_h)]).areas(info);
+    let buttons_h = if info.height >= 13 { 3 } else { 0 };
+    let [_, text, _, progress, volume, _, buttons] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(6),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(buttons_h),
+    ])
+    .areas(info);
     frame.render_widget(Paragraph::new(lines), text);
+    draw_progress(frame, app, song, progress);
+    draw_volume(frame, app, ic, volume);
     if buttons_h > 0 {
         draw_buttons(frame, app, ic, song, buttons);
     }
-    draw_progress(frame, app, song, progress);
-    draw_volume(frame, app, ic, volume);
 }
 
 fn draw_art(frame: &mut Frame, p: &Palette, ic: &Icons, song: &Song, area: Rect) {
@@ -448,30 +453,25 @@ fn draw_art(frame: &mut Frame, p: &Palette, ic: &Icons, song: &Song, area: Rect)
     }
 }
 
-/// The four CarPlay buttons, each with its keys under it.
+/// The four CarPlay buttons (the key bar and help show their keys).
 fn draw_buttons(frame: &mut Frame, app: &App, ic: &Icons, song: &Song, area: Rect) {
     let p = app.palette;
     let play = if app.audio.is_paused() || !app.audio.is_active() { ic.play } else { ic.pause };
     let buttons = [
-        (ic.down, "-/d", if song.rating == Rating::Down { p.red } else { p.line }),
-        (play, "space", p.fg),
-        (ic.skip, "n", p.line),
-        (ic.up, "+/u", if song.rating == Rating::Up { p.green } else { p.line }),
+        (ic.down, if song.rating == Rating::Down { p.red } else { p.line }),
+        (play, p.fg),
+        (ic.skip, p.line),
+        (ic.up, if song.rating == Rating::Up { p.green } else { p.line }),
     ];
     let w: u16 = 9;
     let cells = Layout::horizontal([Constraint::Length(w); 4]).spacing(2).split(area);
-    for ((icon, key, color), cell) in buttons.iter().zip(cells.iter()) {
-        let [b, label] = Layout::vertical([Constraint::Length(3), Constraint::Length(1)]).areas(*cell);
+    for ((icon, color), cell) in buttons.iter().zip(cells.iter()) {
         let block = Block::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(*color));
         frame.render_widget(
             Paragraph::new(Span::styled(*icon, Style::new().fg(*color).bold()))
                 .alignment(Alignment::Center)
                 .block(block),
-            b,
-        );
-        frame.render_widget(
-            Paragraph::new(Span::styled(*key, Style::new().fg(p.muted))).alignment(Alignment::Center),
-            label,
+            *cell,
         );
     }
 }
@@ -1104,5 +1104,26 @@ mod tests {
         assert_eq!(truncate("abcdef", 4), "abc…");
         assert_eq!(truncate("名前名前", 5), "名前…");
         assert!(truncate("名前名前", 5).width() <= 5);
+    }
+
+    #[test]
+    fn now_playing_art_fills_the_pane_with_info_time_and_volume_beside_it() {
+        let mut app = demo();
+        app.config.ui.icons = crate::config::IconSet::Unicode;
+        let (lines, _) = screen(&app, 120, 36);
+        let rows = usize::from(now_playing_height(&app, 34));
+        let menu = |l: &String| l.chars().skip(30).collect::<String>();
+        let art_col = |l: &String| menu(l).chars().nth(2).unwrap_or(' ');
+        assert_eq!(art_col(&lines[1]), '╭', "art starts on the pane's first row: {}", lines[1]);
+        assert_eq!(art_col(&lines[rows - 2]), '╰', "and ends on its last: {}", lines[rows - 2]);
+        let title = app.now.as_ref().unwrap().title.clone();
+        assert!(menu(&lines[2]).contains(&title), "song info one line down: {}", lines[2]);
+        let time = lines.iter().position(|l| l.contains('●')).expect("time line");
+        let volume = lines.iter().position(|l| l.contains('%') && l.contains('▮')).expect("volume");
+        assert!(time < rows && volume == time + 1, "both inside Now Playing, beside the art");
+        assert!(menu(&lines[time]).chars().nth(2) == Some('│'), "beside the art: {}", lines[time]);
+        for key in ["-/d", "+/u", "space"] {
+            assert!(!lines[..rows].iter().any(|l| l.contains(key)), "no {key} under the buttons");
+        }
     }
 }

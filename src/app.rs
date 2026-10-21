@@ -777,7 +777,7 @@ impl App {
             Pane::History => (&mut self.history_cursor, self.history.len()),
         };
         if len > 0 {
-            *cursor = (*cursor as i32 + by).clamp(0, len as i32 - 1) as usize;
+            *cursor = step(*cursor, len, by);
         }
     }
 
@@ -1088,7 +1088,7 @@ impl App {
     }
 
     fn move_cursor(&mut self, by: i32) {
-        let clamp = |at: usize, len: usize| (at as i32 + by).clamp(0, len as i32 - 1) as usize;
+        let clamp = |at: usize, len: usize| step(at, len, by);
         match (self.focus, self.view) {
             (Focus::Menu, _) => self.menu_cursor = clamp(self.menu_cursor, self.menu_items().len()),
             (Focus::Content, View::Settings) => self.settings_cursor = clamp(self.settings_cursor, Setting::ALL.len()),
@@ -1221,6 +1221,17 @@ impl App {
     }
 }
 
+/// One row up or down wraps around the ends (↑ on the first row is the
+/// last); bigger jumps (g, G, Home, End) stop at them.
+pub fn step(at: usize, len: usize, by: i32) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let at = at.min(len - 1) as i32;
+    let len = len as i32;
+    if by.abs() == 1 { (at + by).rem_euclid(len) as usize } else { (at + by).clamp(0, len - 1) as usize }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1234,6 +1245,28 @@ mod tests {
         let mut app = App::new(Config::default(), None, &[], true);
         app.demo_warm_up(2, Duration::ZERO);
         app
+    }
+
+    #[test]
+    fn up_and_down_wrap_around_the_ends() {
+        assert_eq!((step(0, 5, -1), step(4, 5, 1), step(2, 5, 1)), (4, 0, 3));
+        assert_eq!((step(3, 5, -1000), step(1, 5, 1000), step(0, 0, -1)), (0, 4, 0), "g / G stop at the ends");
+        let mut app = demo();
+        let last = app.menu_items().len() - 1;
+        app.menu_cursor = 0;
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.menu_cursor, last, "menu: up from the top is the bottom");
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.menu_cursor, 0, "and down from the bottom is the top");
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.settings_cursor = 0;
+        app.on_key(key(KeyCode::Char('k')));
+        assert_eq!(app.settings_cursor, Setting::ALL.len() - 1, "settings wrap too");
+        app.view = View::Stations;
+        app.stations_cursor = app.stations.len() - 1;
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.stations_index(), 0, "stations wrap too");
     }
 
     #[test]

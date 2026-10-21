@@ -82,7 +82,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_status(frame, app, status);
     draw_keys(frame, &p, &key_caps(app), keys);
     if app.help {
-        draw_help(frame, app, ic, body);
+        draw_help(frame, app, body);
     }
 }
 
@@ -180,14 +180,26 @@ pub fn logo_title<'a>(p: &Palette, ic: &Icons) -> Line<'a> {
 /// The one place the logo is drawn: the menu's title and the Help window's
 /// title share it, with `rest` (bold, text colour) after "boxvibe".
 fn logo_line<'a>(p: &Palette, ic: &Icons, rest: &str) -> Line<'a> {
+    logo_line_with(p, Span::styled(format!(" {} ", ic.logo), Style::new().fg(p.blue).bold()), rest)
+}
+
+/// tubevibe's Help icon: the little keyboard, the same in every icon set,
+/// in the text colour with two spaces after it, like tubevibe's title.
+const HELP_ICON: &str = "⌨";
+
+fn help_title<'a>(p: &Palette) -> Line<'a> {
+    logo_line_with(p, Span::styled(format!(" {HELP_ICON}  "), Style::new().fg(p.fg).bold()), HELP_TITLE_REST)
+}
+
+fn logo_line_with<'a>(p: &Palette, icon: Span<'a>, rest: &str) -> Line<'a> {
     Line::from(vec![
-        Span::styled(format!(" {} ", ic.logo), Style::new().fg(p.blue).bold()),
+        icon,
         Span::styled("box", Style::new().fg(p.blue).bold()),
         Span::styled(format!("vibe{rest} "), Style::new().fg(p.fg).bold()),
     ])
 }
 
-/// The Help window's title: "<icon> boxvibe Help · Any Key Closes".
+/// The Help window's title: "⌨  boxvibe Help · Any Key Closes".
 const HELP_TITLE_REST: &str = " Help · Any Key Closes";
 
 // --- Menu ---
@@ -868,7 +880,7 @@ fn draw_keys(frame: &mut Frame, p: &Palette, keys: &[(&str, &str)], area: Rect) 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn draw_help(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
+fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette;
     let sections: [(&str, &[(&str, &str)]); 3] = [
         (
@@ -924,7 +936,7 @@ fn draw_help(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     )));
     let box_area = centered(area, 64, lines.len() as u16 + 2);
     frame.render_widget(Clear, box_area);
-    let block = panel(logo_line(&p, ic, HELP_TITLE_REST), &p, true).style(Style::new().bg(p.background));
+    let block = panel(help_title(&p), &p, true).style(Style::new().bg(p.background));
     frame.render_widget(Paragraph::new(lines).block(block), box_area);
 }
 
@@ -972,18 +984,20 @@ mod tests {
     }
 
     #[test]
-    fn help_title_uses_the_menus_logo() {
-        let mut app = demo();
-        app.config.ui.icons = crate::config::IconSet::Unicode;
-        app.help = true;
-        let (lines, buffer) = screen(&app, 120, 40);
-        let (y, row) = lines.iter().enumerate().find(|(_, l)| l.contains("Help · Any Key Closes")).unwrap();
-        assert!(row.contains("▣ boxvibe Help · Any Key Closes"), "{row}");
-        let (p, y) = (app.palette, y as u16);
-        let x = row.chars().position(|c| c == '▣').unwrap() as u16;
-        assert_eq!(buffer[(x, y)].fg, p.blue);
-        assert_eq!((buffer[(x + 2, y)].fg, buffer[(x + 5, y)].fg), (p.blue, p.fg));
-        assert!(buffer[(x + 5, y)].modifier.contains(ratatui::style::Modifier::BOLD));
+    fn help_title_uses_tubevibes_keyboard_and_the_logo_name() {
+        for set in [crate::config::IconSet::Unicode, crate::config::IconSet::Emoji, crate::config::IconSet::Nerd] {
+            let mut app = demo();
+            app.config.ui.icons = set;
+            app.help = true;
+            let (lines, buffer) = screen(&app, 120, 40);
+            let (y, row) = lines.iter().enumerate().find(|(_, l)| l.contains("Help · Any Key Closes")).unwrap();
+            assert!(row.contains("⌨  boxvibe Help · Any Key Closes"), "{row}");
+            let (p, y) = (app.palette, y as u16);
+            let x = row.chars().position(|c| c == '⌨').unwrap() as u16;
+            assert_eq!(buffer[(x, y)].fg, p.fg);
+            assert_eq!((buffer[(x + 3, y)].fg, buffer[(x + 6, y)].fg), (p.blue, p.fg));
+            assert!(buffer[(x + 6, y)].modifier.contains(ratatui::style::Modifier::BOLD));
+        }
     }
 
     #[test]

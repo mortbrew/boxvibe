@@ -120,6 +120,12 @@ impl Size {
         if value >= self.max || up > self.max { self.min } else { up.max(self.min) }
     }
 
+    /// One step narrower (`-1`) or wider (`1`), stopping at the ends.
+    pub fn step_by(self, value: u16, dir: i8) -> u16 {
+        let v = if dir < 0 { value.saturating_sub(self.step) } else { value.saturating_add(self.step) };
+        v.clamp(self.min, self.max)
+    }
+
     pub fn contains(self, value: u16) -> bool {
         (self.min..=self.max).contains(&value)
     }
@@ -576,6 +582,12 @@ mod tests {
         remove_value(&path, "ui", "notify").unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("notifications = false") && !text.contains("notify ="), "{text}");
+    }
+
+    #[test]
+    fn sizes_step_and_stop_at_the_ends() {
+        assert_eq!((MENU_WIDTH.step_by(30, 1), MENU_WIDTH.step_by(30, -1)), (32, 28));
+        assert_eq!((MENU_WIDTH.step_by(40, 1), MENU_WIDTH.step_by(20, -1)), (40, 20));
     }
 
     #[test]

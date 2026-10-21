@@ -2,6 +2,12 @@
 
 ## 0.2.0 (unreleased)
 
+### Resize the menu with { and } (`ui-refresh`)
+
+- `{` makes the left menu 2 columns narrower and `}` 2 wider (20–40, never more than half the screen),
+  saved to `[ui] menu_width` like Settings → LOOK → **Menu width**; the key bar and help show it
+- Tests: `braces_resize_the_menu_and_save_it`, `sizes_step_and_stop_at_the_ends`
+
 ### Restart Now after Update Now (`ui-refresh`)
 
 - Once **Update Now** on About has put the new version in place, the button becomes **Restart Now**:

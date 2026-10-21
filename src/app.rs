@@ -135,7 +135,7 @@ impl Setting {
             Self::Theme => "Omarchy follows your current Omarchy theme; or pick a built-in one. Also t.",
             Self::Icons => "Emoji, Nerd Font (needs one installed) or plain Unicode. Also i.",
             Self::BorderStyle => "How every pane's border is drawn: plain, rounded, thick, double or none.",
-            Self::MenuWidth => "The station menu's width, 20 to 40 columns (never more than half the screen).",
+            Self::MenuWidth => "The menu's width, 20 to 40 columns (never more than half the screen). Also { and }.",
             Self::CheckUpdates => "Asks GitHub when boxvibe opens; About shows the new version and Update Now.",
             Self::EditFile => "Opens config.toml in $EDITOR; boxvibe reads it again when you close it.",
         }
@@ -924,6 +924,8 @@ impl App {
             KeyCode::Enter => self.enter(),
             KeyCode::Right | KeyCode::Char('>') | KeyCode::Char(']') => self.change_volume(5),
             KeyCode::Left | KeyCode::Char('<') | KeyCode::Char('[') => self.change_volume(-5),
+            KeyCode::Char('{') => self.resize_menu(-1),
+            KeyCode::Char('}') => self.resize_menu(1),
             KeyCode::Char('t') => self.next_theme(),
             KeyCode::Char('i') => self.next_icons(),
             _ => {}
@@ -972,6 +974,14 @@ impl App {
             (Focus::Content, View::Player) => self.move_song(by),
             (Focus::Content, View::About) => {}
         }
+    }
+
+    /// `{` / `}`: the menu a step narrower or wider, saved as `[ui] menu_width`.
+    fn resize_menu(&mut self, dir: i8) {
+        let next = config::MENU_WIDTH.step_by(self.config.ui.menu_width, dir);
+        self.config.ui.menu_width = next;
+        self.save(&[("ui", "menu_width", i64::from(next).into())]);
+        self.status = format!("Menu width: {next} columns ({{ and }} change it)");
     }
 
     fn next_theme(&mut self) {
@@ -1250,6 +1260,22 @@ mod tests {
         let (saved, w) = Config::load(&path);
         assert!(w.is_empty(), "{w:?}");
         assert_eq!((saved.ui.border_style, saved.ui.menu_width), (crate::config::BorderStyle::Rounded, 32));
+    }
+
+    #[test]
+    fn braces_resize_the_menu_and_save_it() {
+        let path = crate::config::temp_dir("resize").join("config.toml");
+        let mut config = Config::default();
+        config.ui.check_updates = false;
+        let mut app = App::new(config, Some(path.clone()), &[], false);
+        app.prompt = None;
+        app.on_key(key(KeyCode::Char('}')));
+        assert_eq!(app.config.ui.menu_width, 32);
+        for _ in 0..20 {
+            app.on_key(key(KeyCode::Char('{')));
+        }
+        assert_eq!(app.config.ui.menu_width, 20, "stops at the narrowest");
+        assert_eq!(Config::load(&path).0.ui.menu_width, 20);
     }
 
     #[test]

@@ -136,7 +136,7 @@ notifications = true           # a desktop notification when the song changes (S
 check_updates = true           # look for a new release on GitHub at startup
 autoplay_last_station = true   # start the station played last when boxvibe opens (0.1: [player] autoplay)
 border_style = "plain"         # plain | rounded | thick | double | none
-menu_width = 30                # the station menu, in columns: 20–40, step 2 (at most half the screen)
+menu_width = 30                # the menu, in columns: 20–40, step 2 (at most half the screen); also { and }
 ```
 
 `--theme NAME` and `--icons SET` change them for one run without saving.

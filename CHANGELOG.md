@@ -2,7 +2,7 @@
 
 ## 0.2.0 (unreleased)
 
-### Restart Now after Update Now (`restart-now`)
+### Restart Now after Update Now (`ui-refresh`)
 
 - Once **Update Now** on About has put the new version in place, the button becomes **Restart Now**:
   `Enter` quits cleanly (sound stopped) and starts the new binary in place of this one (`exec`, same
@@ -12,7 +12,7 @@
 - The updater matches tubevibe's current one (`no_news`, `latest_or_unknown`)
 - Tests: `restart_now_after_the_update_is_in`, `up_to_date_only_on_a_real_version`
 
-### Up Next and History side by side (`up-next-history`)
+### Up Next and History side by side (`ui-refresh`)
 
 - The single Songs table is gone: under Now Playing, **Up Next** is on the left and **History** on the
   right, like boxvibe's first layout, each a whyd-style table with column headers (`#`, title, artist,
@@ -23,7 +23,7 @@
   else they rate the playing song. The History selection stays on its song as new ones are added.
 - Tests: `tab_goes_menu_up_next_history_and_back`, `rating_a_played_song_in_history`
 
-### Song change notifications toggle (`notifications-toggle`)
+### Song change notifications toggle (`ui-refresh`)
 
 - Settings → PLAYBACK → **Song change notifications** turns the `notify-send` notification for each new
   song on and off, saved as `[ui] notifications = true | false` (default on)
@@ -31,7 +31,7 @@
   key is taken out, and when both are there `notifications` wins
 - Tests: `notifications_on_by_default_and_the_old_name_reads`, `the_notifications_toggle_is_saved`
 
-### config.toml can never stop boxvibe from starting (`config-tolerance`)
+### config.toml can never stop boxvibe from starting (`ui-refresh`)
 
 - A file that isn't valid TOML (or isn't text) is moved to `config.toml.bad-<UTC time>` (e.g.
   `config.toml.bad-20261021T011403Z`), boxvibe starts with the defaults, and the status bar says where
@@ -47,7 +47,7 @@
 - Tests: `junk_configs_always_start`, `a_broken_file_is_moved_aside_and_the_defaults_start`,
   `an_unreadable_path_starts_with_defaults`, `utc_stamps`
 
-### The logo on the menu's frame, no header row (`logo-frame`)
+### The logo on the menu's frame, no header row (`ui-refresh`)
 
 - The logo sits on the left menu's top border, drawn like tubevibe's (` <icon> box` + `vibe `, bold):
   the box icon and "box" in the theme's blue, "vibe" in the text colour; the version is on the same
@@ -59,7 +59,20 @@
   Nerd Font and Unicode boxes are blue
 - Tests: `the_logo_and_version_sit_on_the_menus_top_border`, `up_next_and_history_sit_side_by_side`
 
-## 0.1.0 (2026-10-20)
+### Border styles and menu width (`ui-refresh`)
+
+- Settings → LOOK → **Border style** cycles plain / rounded / thick / double / none for every pane,
+  saved as `[ui] border_style` (tubevibe's set; `none` keeps the room and titles, and the focused
+  pane's title lights up instead)
+- **Menu width**: the station menu from 20 to 40 columns in steps of 2, saved as `[ui] menu_width`
+  (default 30, what 0.1 gave a 120-column terminal), never more than half the screen; out of range
+  values warn and use the default
+- tubevibe's other width settings (preview, comments) have no pane to size in boxvibe
+- `tools/screenshots.sh` also renders About with Restart Now and the rounded borders
+- Tests: `border_style_and_menu_width`, `border_style_and_menu_width_are_saved`,
+  `every_border_style_draws_and_the_menu_width_holds`
+
+## 0.1.0 (unreleased)
 
 First version.
 

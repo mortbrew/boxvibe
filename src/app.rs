@@ -69,13 +69,15 @@ pub enum Setting {
     Notify,
     Theme,
     Icons,
+    BorderStyle,
+    MenuWidth,
     CheckUpdates,
     EditFile,
 }
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 12] = [
+    pub const ALL: [(&'static str, Self); 14] = [
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
@@ -86,6 +88,8 @@ impl Setting {
         ("PLAYBACK", Self::Notify),
         ("LOOK", Self::Theme),
         ("LOOK", Self::Icons),
+        ("LOOK", Self::BorderStyle),
+        ("LOOK", Self::MenuWidth),
         ("BOXVIBE", Self::CheckUpdates),
         ("BOXVIBE", Self::EditFile),
     ];
@@ -102,6 +106,8 @@ impl Setting {
             Self::Notify => "Song change notifications",
             Self::Theme => "Theme",
             Self::Icons => "Icons",
+            Self::BorderStyle => "Border style",
+            Self::MenuWidth => "Menu width",
             Self::CheckUpdates => "Look for new versions on startup",
             Self::EditFile => "Edit config.toml",
         }
@@ -124,6 +130,8 @@ impl Setting {
             }
             Self::Theme => "Omarchy follows your current Omarchy theme; or pick a built-in one. Also t.",
             Self::Icons => "Emoji, Nerd Font (needs one installed) or plain Unicode. Also i.",
+            Self::BorderStyle => "How every pane's border is drawn: plain, rounded, thick, double or none.",
+            Self::MenuWidth => "The station menu's width, 20 to 40 columns (never more than half the screen).",
             Self::CheckUpdates => "Asks GitHub when boxvibe opens; About shows the new version and Update Now.",
             Self::EditFile => "Opens config.toml in $EDITOR; boxvibe reads it again when you close it.",
         }
@@ -689,6 +697,8 @@ impl App {
             Setting::Notify => on(self.config.ui.notifications),
             Setting::Theme => theme::label(&self.config.ui.theme),
             Setting::Icons => crate::icons::label(self.config.ui.icons).into(),
+            Setting::BorderStyle => self.config.ui.border_style.label().into(),
+            Setting::MenuWidth => format!("{} columns", self.config.ui.menu_width),
             Setting::CheckUpdates => on(self.config.ui.check_updates),
             Setting::EditFile => self
                 .config_path
@@ -743,6 +753,18 @@ impl App {
             }
             Setting::Theme => self.next_theme(),
             Setting::Icons => self.next_icons(),
+            Setting::BorderStyle => {
+                let next = self.config.ui.border_style.next();
+                self.config.ui.border_style = next;
+                self.save(&[("ui", "border_style", next.as_str().into())]);
+                self.status = format!("Border style: {}", next.label());
+            }
+            Setting::MenuWidth => {
+                let next = config::MENU_WIDTH.next(self.config.ui.menu_width);
+                self.config.ui.menu_width = next;
+                self.save(&[("ui", "menu_width", i64::from(next).into())]);
+                self.status = format!("Menu width: {next} columns");
+            }
             Setting::CheckUpdates => {
                 self.config.ui.check_updates = !self.config.ui.check_updates;
                 self.save(&[("ui", "check_updates", self.config.ui.check_updates.into())]);
@@ -1009,14 +1031,6 @@ impl App {
         }
     }
 
-    /// For screenshots: the password input, already typed in.
-    pub fn open_password_prompt(&mut self, typed: &str) {
-        self.view = View::Settings;
-        self.focus = Focus::Content;
-        self.open_prompt(Prompt::Password);
-        self.query = typed.into();
-    }
-
     /// For screenshots: play a few demo songs so History and the clock have something.
     pub fn demo_warm_up(&mut self, skips: usize, at: Duration) {
         self.settle(Duration::from_millis(150));
@@ -1144,6 +1158,27 @@ mod tests {
         let (saved, _) = Config::load(&path);
         assert!(!saved.ui.notifications);
         assert!(!std::fs::read_to_string(&path).unwrap().contains("notify ="), "the 0.1 name is gone");
+    }
+
+    #[test]
+    fn border_style_and_menu_width_are_saved() {
+        let path = crate::config::temp_dir("borders").join("config.toml");
+        let mut config = Config::default();
+        config.ui.check_updates = false;
+        let mut app = App::new(config, Some(path.clone()), &[], false);
+        app.prompt = None;
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        let at = |s: Setting| Setting::ALL.iter().position(|(_, x)| *x == s).unwrap();
+        app.settings_cursor = at(Setting::BorderStyle);
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.setting_value(Setting::BorderStyle), "Rounded");
+        app.settings_cursor = at(Setting::MenuWidth);
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.setting_value(Setting::MenuWidth), "32 columns");
+        let (saved, w) = Config::load(&path);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!((saved.ui.border_style, saved.ui.menu_width), (crate::config::BorderStyle::Rounded, 32));
     }
 
     #[test]

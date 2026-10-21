@@ -8,6 +8,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Cell, Clear, List, ListItem, ListState, Paragraph, Row as TableRow, Table, TableState, Wrap,
@@ -15,12 +16,52 @@ use ratatui::widgets::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Focus, MenuItem, Pane, Prompt, Session, Setting, View};
+use crate::config::BorderStyle;
 use crate::icons::{Icons, icons};
 use crate::pandora::{Rating, Song};
 use crate::theme::Palette;
 use crate::update::Progress;
 
+thread_local! {
+    /// `[ui] border_style` of the frame being drawn (set by [`draw`]), like tubevibe.
+    static BORDERS: std::cell::Cell<BorderStyle> = const { std::cell::Cell::new(BorderStyle::Plain) };
+}
+
+/// A border of blanks: no lines, but the same room, so nothing moves.
+const NO_BORDER: border::Set<'static> = border::Set {
+    top_left: " ",
+    top_right: " ",
+    bottom_left: " ",
+    bottom_right: " ",
+    vertical_left: " ",
+    vertical_right: " ",
+    horizontal_top: " ",
+    horizontal_bottom: " ",
+};
+
+/// The lines of `style`.
+pub fn border_set(style: BorderStyle) -> border::Set<'static> {
+    match style {
+        BorderStyle::Plain => BorderType::Plain.to_border_set(),
+        BorderStyle::Rounded => BorderType::Rounded.to_border_set(),
+        BorderStyle::Thick => BorderType::Thick.to_border_set(),
+        BorderStyle::Double => BorderType::Double.to_border_set(),
+        BorderStyle::None => NO_BORDER,
+    }
+}
+
+/// Every pane's frame, in the chosen border style.
+fn framed<'a>() -> Block<'a> {
+    Block::bordered().border_set(border_set(BORDERS.get()))
+}
+
+/// The menu's width: Menu Width, never more than half the screen.
+pub fn menu_width(app: &App, screen: u16) -> u16 {
+    app.config.ui.menu_width.min(screen / 2)
+}
+
 pub fn draw(frame: &mut Frame, app: &App) {
+    BORDERS.set(app.config.ui.border_style);
     let p = app.palette;
     let area = frame.area();
     // Built-in themes paint their background; Omarchy's is the terminal's own.
@@ -29,7 +70,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let ic = icons(app.config.ui.icons);
     let [body, status, keys] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1)]).areas(area);
-    let side = (body.width / 4).clamp(24, 32);
+    let side = menu_width(app, body.width);
     let [left, right] = Layout::horizontal([Constraint::Length(side), Constraint::Fill(1)]).spacing(1).areas(body);
     draw_menu(frame, app, ic, left);
     match app.view {
@@ -46,12 +87,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
 // --- Pieces ---
 
-/// A panel with its title on the top border; `focused` brightens the border.
+/// A panel with its title on the top border; `focused` brightens the
+/// border. With no border to light, its title does (as in tubevibe).
 fn panel<'a>(title: impl Into<Line<'a>>, p: &Palette, focused: bool) -> Block<'a> {
-    Block::bordered()
-        .border_type(BorderType::Plain)
-        .border_style(Style::new().fg(if focused { p.fg } else { p.line }))
-        .title(title)
+    let mut title = title.into();
+    if focused && BORDERS.get() == BorderStyle::None {
+        title = title.patch_style(Style::new().bg(p.highlight).add_modifier(Modifier::BOLD));
+    }
+    framed().border_style(Style::new().fg(if focused { p.fg } else { p.line })).title(title)
 }
 
 fn title<'a>(text: String, p: &Palette) -> Line<'a> {
@@ -545,8 +588,7 @@ fn draw_prompt(frame: &mut Frame, app: &App, prompt: Prompt, area: Rect) {
         Prompt::Email => ("Pandora email", app.query.clone()),
         Prompt::Password => ("Password · Enter logs in", "•".repeat(app.query.chars().count())),
     };
-    let block = Block::bordered()
-        .border_type(BorderType::Plain)
+    let block = framed()
         .border_style(Style::new().fg(p.cyan))
         .title(Span::styled(format!(" {label} "), Style::new().fg(p.cyan).bold()));
     frame.render_widget(Paragraph::new(shown.clone()).fg(p.fg).block(block), area);
@@ -818,6 +860,30 @@ mod tests {
         let x = top.chars().position(|c| c == 'b').unwrap() as u16;
         assert_eq!(buffer[(2, 0)].fg, p.blue);
         assert_eq!((buffer[(x, 0)].fg, buffer[(x + 3, 0)].fg), (p.blue, p.fg));
+    }
+
+    #[test]
+    fn every_border_style_draws_and_the_menu_width_holds() {
+        let mut app = demo();
+        for (style, corner) in [
+            (BorderStyle::Plain, '┌'),
+            (BorderStyle::Rounded, '╭'),
+            (BorderStyle::Thick, '┏'),
+            (BorderStyle::Double, '╔'),
+            (BorderStyle::None, ' '),
+        ] {
+            app.config.ui.border_style = style;
+            let (lines, _) = screen(&app, 120, 36);
+            assert_eq!(lines[0].chars().next(), Some(corner), "{style:?}: {}", lines[0]);
+            assert!(lines[0].contains("boxvibe") && lines[0].contains("Now Playing"), "titles stay: {}", lines[0]);
+        }
+        app.config.ui.border_style = BorderStyle::Plain;
+        for (width, cols, menu) in [(20, 120, 20), (40, 120, 40), (40, 60, 30)] {
+            app.config.ui.menu_width = width;
+            let (lines, _) = screen(&app, cols, 30);
+            let end = lines[0].chars().position(|c| c == '┐').unwrap();
+            assert_eq!(end + 1, menu, "menu_width {width} at {cols} columns");
+        }
     }
 
     #[test]

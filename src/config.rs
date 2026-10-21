@@ -82,11 +82,94 @@ pub struct UiConfig {
     pub notifications: bool,
     /// Ask GitHub, each time the app opens, whether there is a newer version.
     pub check_updates: bool,
+    /// How every pane's border is drawn.
+    pub border_style: BorderStyle,
+    /// Columns of the left menu ([`MENU_WIDTH`]; never more than half the screen).
+    pub menu_width: u16,
 }
 
 impl Default for UiConfig {
     fn default() -> Self {
-        Self { theme: "omarchy".into(), icons: IconSet::Emoji, notifications: true, check_updates: true }
+        Self {
+            theme: "omarchy".into(),
+            icons: IconSet::Emoji,
+            notifications: true,
+            check_updates: true,
+            border_style: BorderStyle::Plain,
+            menu_width: MENU_WIDTH.default,
+        }
+    }
+}
+
+/// A setting in columns, changed in steps from Settings (tubevibe's `Size`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Size {
+    pub key: &'static str,
+    pub min: u16,
+    pub max: u16,
+    pub step: u16,
+    pub default: u16,
+}
+
+impl Size {
+    /// One step up; past the largest, back to the smallest.
+    pub fn next(self, value: u16) -> u16 {
+        let up = value.saturating_add(self.step);
+        if value >= self.max || up > self.max { self.min } else { up.max(self.min) }
+    }
+
+    pub fn contains(self, value: u16) -> bool {
+        (self.min..=self.max).contains(&value)
+    }
+}
+
+/// Columns; 30 is what boxvibe 0.1 gave a 120-column terminal.
+pub const MENU_WIDTH: Size = Size { key: "menu_width", min: 20, max: 40, step: 2, default: 30 };
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BorderStyle {
+    /// `┌─┐`, the look boxvibe always had.
+    #[default]
+    Plain,
+    /// `╭─╮`
+    Rounded,
+    /// `┏━┓`
+    Thick,
+    /// `╔═╗`
+    Double,
+    /// No lines; the panes keep their room and titles.
+    None,
+}
+
+impl BorderStyle {
+    pub const ALL: [Self; 5] = [Self::Plain, Self::Rounded, Self::Thick, Self::Double, Self::None];
+
+    pub fn next(self) -> Self {
+        let at = Self::ALL.iter().position(|b| *b == self).unwrap_or(0);
+        Self::ALL[(at + 1) % Self::ALL.len()]
+    }
+
+    /// Value as written in `config.toml`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Rounded => "rounded",
+            Self::Thick => "thick",
+            Self::Double => "double",
+            Self::None => "none",
+        }
+    }
+
+    /// As Settings shows it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Plain => "Plain",
+            Self::Rounded => "Rounded",
+            Self::Thick => "Thick",
+            Self::Double => "Double",
+            Self::None => "None",
+        }
     }
 }
 
@@ -276,6 +359,14 @@ impl Config {
             }
         }
         c.player.volume = c.player.volume.min(100);
+        // Sizes out of range: said, and back to the default.
+        if !MENU_WIDTH.contains(c.ui.menu_width) {
+            warnings.push(ConfigWarning::BadValue {
+                key: format!("ui.{}", MENU_WIDTH.key),
+                error: format!("{} is not between {} and {}", c.ui.menu_width, MENU_WIDTH.min, MENU_WIDTH.max),
+            });
+            c.ui.menu_width = MENU_WIDTH.default;
+        }
         Ok((c, warnings))
     }
 
@@ -472,6 +563,26 @@ mod tests {
         remove_value(&path, "ui", "notify").unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("notifications = false") && !text.contains("notify ="), "{text}");
+    }
+
+    #[test]
+    fn border_style_and_menu_width() {
+        let (c, w) = Config::parse("[ui]\nborder_style = \"rounded\"\nmenu_width = 24\n").unwrap();
+        assert_eq!((c.ui.border_style, c.ui.menu_width, w.len()), (BorderStyle::Rounded, 24, 0));
+        let (c, w) = Config::parse("[ui]\nborder_style = \"wavy\"\nmenu_width = 5\n").unwrap();
+        assert_eq!((c.ui.border_style, c.ui.menu_width, w.len()), (BorderStyle::Plain, 30, 2));
+        let (c, w) = Config::parse("[ui]\nmenu_width = 70000\n").unwrap();
+        assert_eq!((c.ui.menu_width, w.len()), (30, 1));
+        assert_eq!((MENU_WIDTH.next(30), MENU_WIDTH.next(40), MENU_WIDTH.next(39)), (32, 20, 20));
+        assert_eq!(BorderStyle::None.next(), BorderStyle::Plain);
+        assert!(
+            BorderStyle::ALL.iter().all(|b| Config::parse(&format!("[ui]\nborder_style = \"{}\"\n", b.as_str()))
+                .unwrap()
+                .0
+                .ui
+                .border_style
+                == *b)
+        );
     }
 
     #[test]

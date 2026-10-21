@@ -3,20 +3,24 @@
 Pandora in the terminal, written in Rust with [ratatui](https://ratatui.rs).
 A sibling of [tubevibe](https://github.com/mortbrew/tubevibe): the same look,
 Omarchy colour sync, icon sets and a `config.toml` that the app keeps up to
-date. A header line with the version and what just happened, titled panels,
-your stations (then Settings and About) on the left, a large CarPlay-style
-**Now Playing** card with the four big buttons (thumbs down, play/pause, skip,
-thumbs up), a table of the songs played and up next, and the keys that work
-right now drawn as key caps at the bottom.
+date. Titled panels, your stations (then Settings and About) on the left with
+the logo and version on its frame, a large CarPlay-style **Now Playing** card
+with the four big buttons (thumbs down, play/pause, skip, thumbs up), **Up
+Next** and **History** side by side under it, a status bar, and the keys that
+work right now drawn as key caps at the bottom.
 
 > Early (0.1.0): it plays your stations, but cover art, search and station
 > editing are still to come. Feedback welcome.
 
 ![Now Playing (Gruvbox)](screenshots/gruvbox-main.png)
 
-![Settings, typing the Pandora password](screenshots/gruvbox-settings.png)
+![Settings](screenshots/gruvbox-settings.png)
 
 ![About, with a new version out](screenshots/gruvbox-about.png)
+
+![About, after Update Now: Restart Now](screenshots/gruvbox-about-restart.png)
+
+![Rounded borders (border_style = "rounded")](screenshots/gruvbox-rounded.png)
 
 ## What it does
 
@@ -31,10 +35,11 @@ right now drawn as key caps at the bottom.
   time, and the volume
 - **Thumbs up / down** (`+` / `-`). Like in Pandora, a thumbs down skips the
   song. **Tired of this song** (`z`) keeps it off all your stations for a month
-- **Songs**: the ones you heard and the few Pandora sent up next, in one
-  table. `Tab` moves into it, where `+` / `-` rate a song you already heard
-- **Settings** (account, audio quality, volume, autoplay, notifications,
-  theme, icons, update check, edit `config.toml` in `$EDITOR`) and **About**
+- **Up Next** and **History**: the few songs Pandora sent up next on the
+  left, the ones you heard on the right. `Tab` goes stations → Up Next →
+  History; in History `+` / `-` rate a song you already heard
+- **Settings** (account, audio quality, volume, autoplay, song change
+  notifications, theme, icons, border style, menu width, update check, edit `config.toml` in `$EDITOR`) and **About**
   (links, version, and the update button) below the stations
 - **Updates itself** from GitHub releases: see [Updating](#updating)
 - **Gapless-ish playback**: the next song downloads while this one plays.
@@ -89,7 +94,7 @@ Try it without an account (made-up stations, no network, no sound):
 | `←` `→` (`[` `]`) | volume |
 | `j` `k` `↑` `↓` | move · `g` `G` first / last |
 | `Enter` | play the station · open Settings / About · change a setting · Update Now |
-| `Tab` | menu ⇄ the panel on the right (the songs table, Settings, About) |
+| `Tab` | stations → Up Next → History on the player (`Shift+Tab` back); menu ⇄ Settings / About |
 | `Esc` | back to the menu |
 | `s` | go to the stations |
 | `t` | next theme |
@@ -129,6 +134,8 @@ theme = "omarchy"              # omarchy | tokyo-night | gruvbox | catppuccin | 
 icons = "emoji"                # emoji | nerd | unicode
 notifications = true           # a desktop notification when the song changes (Settings toggles it)
 check_updates = true           # look for a new release on GitHub at startup
+border_style = "plain"         # plain | rounded | thick | double | none
+menu_width = 30                # the station menu, in columns: 20–40, step 2 (at most half the screen)
 ```
 
 `--theme NAME` and `--icons SET` change them for one run without saving.

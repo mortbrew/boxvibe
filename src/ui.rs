@@ -1,6 +1,7 @@
-//! Drawing. A header line (name, version, what is going on), the menu on
-//! the left (stations, then Settings, About, Quit, like tubevibe), the
-//! chosen page on the right, and the keys as boxed key caps at the bottom.
+//! Drawing. The menu on the left with the logo and version on its top
+//! border (stations, then Settings, About, Quit, like tubevibe), the chosen
+//! page on the right, then a shaded status bar and the keys as boxed key
+//! caps at the bottom.
 //! Panels have titled borders, tables have column headers, and the selected
 //! row is a reverse-video bar.
 
@@ -26,9 +27,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let base = if app.follows_omarchy() { Style::new().fg(p.fg) } else { Style::new().fg(p.fg).bg(p.background) };
     frame.render_widget(Block::new().style(base), area);
     let ic = icons(app.config.ui.icons);
-    let [header, body, keys] =
-        Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1)]).areas(area);
-    draw_header(frame, app, header);
+    let [body, status, keys] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1)]).areas(area);
     let side = (body.width / 4).clamp(24, 32);
     let [left, right] = Layout::horizontal([Constraint::Length(side), Constraint::Fill(1)]).spacing(1).areas(body);
     draw_menu(frame, app, ic, left);
@@ -37,6 +37,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         View::Settings => draw_settings(frame, app, ic, right),
         View::About => draw_about(frame, app, ic, right),
     }
+    draw_status(frame, app, status);
     draw_keys(frame, &p, &key_caps(app), keys);
     if app.help {
         draw_help(frame, app, ic, body);
@@ -106,27 +107,24 @@ fn rating_word<'a>(rating: Rating, p: &Palette, ic: &Icons) -> Span<'a> {
     }
 }
 
-// --- Header ---
+// --- Status bar ---
 
-fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+/// What is going on, on a shaded bar above the keys (where tubevibe has it).
+fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette;
-    let status_color = if app.status.starts_with('⚠') { p.yellow } else { p.fg };
-    let left = Line::from(vec![
-        Span::styled(" box", Style::new().fg(p.fg).bold()),
-        Span::styled("vibe", Style::new().fg(p.orange).bold()),
-        Span::styled(format!(" {}  ", env!("CARGO_PKG_VERSION")), Style::new().fg(p.muted)),
-        Span::styled(app.status.clone(), Style::new().fg(status_color)),
-    ]);
-    let right = match &app.session {
-        Session::LoggedIn if app.demo => Span::styled("demo ", Style::new().fg(p.muted)),
-        Session::LoggedIn => Span::styled(format!("{} ", app.config.pandora.username), Style::new().fg(p.muted)),
-        Session::SigningIn => Span::styled("signing in… ", Style::new().fg(p.yellow)),
-        _ => Span::styled("not logged in ", Style::new().fg(p.muted)),
-    };
-    let right_w = right.width() as u16;
-    let [l, r] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(right_w)]).areas(area);
-    frame.render_widget(Paragraph::new(left), l);
-    frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), r);
+    let color = if app.status.starts_with('⚠') { p.yellow } else { p.fg };
+    frame.render_widget(Block::new().bg(p.highlight), area);
+    frame.render_widget(Paragraph::new(Span::styled(format!(" {}", app.status), Style::new().fg(color))), area);
+}
+
+/// The logo on the menu's top border, like tubevibe's: the box icon and
+/// "box" in the theme's blue, "vibe" in the text colour.
+pub fn logo_title<'a>(p: &Palette, ic: &Icons) -> Line<'a> {
+    Line::from(vec![
+        Span::styled(format!(" {} ", ic.logo), Style::new().fg(p.blue).bold()),
+        Span::styled("box", Style::new().fg(p.blue).bold()),
+        Span::styled("vibe ", Style::new().fg(p.fg).bold()),
+    ])
 }
 
 // --- Menu ---
@@ -134,13 +132,24 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let p = app.palette;
     let focused = app.focus == Focus::Menu;
-    let count = if app.stations.is_empty() { String::new() } else { format!(" ({})", app.stations.len()) };
-    let block = panel(title(format!("Stations{count}"), &p), &p, focused);
+    let version = Line::from(Span::styled(format!(" {} ", env!("CARGO_PKG_VERSION")), Style::new().fg(p.muted)))
+        .alignment(Alignment::Right);
+    let block = panel(logo_title(&p, ic), &p, focused).title(version);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let [list_area, _, rule, app_area] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1), Constraint::Length(3)])
-            .areas(inner);
+    let [head, list_area, _, rule, app_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(3),
+    ])
+    .areas(inner);
+    let count = if app.stations.is_empty() { String::new() } else { format!(" ({})", app.stations.len()) };
+    frame.render_widget(
+        Paragraph::new(Span::styled(format!(" STATIONS{count}"), Style::new().fg(p.orange).bold())),
+        head,
+    );
     let selected = app.menu_selected();
     // Without the keys, the entry of the page shown stays shaded.
     let shown = |item: MenuItem| match (item, app.view) {
@@ -556,9 +565,9 @@ fn draw_about(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let mut lines = vec![
         Line::raw(""),
         Line::from(vec![
-            Span::styled(format!("   {} ", ic.logo), Style::new().fg(p.orange)),
-            Span::styled("box", Style::new().fg(p.fg).bold()),
-            Span::styled("vibe", Style::new().fg(p.orange).bold()),
+            Span::styled(format!("   {} ", ic.logo), Style::new().fg(p.blue).bold()),
+            Span::styled("box", Style::new().fg(p.blue).bold()),
+            Span::styled("vibe", Style::new().fg(p.fg).bold()),
             Span::styled(format!("  {}", env!("CARGO_PKG_VERSION")), Style::new().fg(p.muted)),
         ]),
         Line::from(Span::styled("   Pandora in the terminal", Style::new().fg(p.fg))),
@@ -766,4 +775,57 @@ fn draw_help(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     frame.render_widget(Clear, box_area);
     let block = panel(title(format!("{} Keys", ic.logo), &p), &p, true).style(Style::new().bg(p.background));
     frame.render_widget(Paragraph::new(lines).block(block), box_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn screen(app: &App, cols: u16, rows: u16) -> (Vec<String>, ratatui::buffer::Buffer) {
+        let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let lines =
+            (0..rows).map(|y| (0..cols).map(|x| buffer[(x, y)].symbol().to_owned()).collect::<String>()).collect();
+        (lines, buffer)
+    }
+
+    fn demo() -> App {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.demo_warm_up(3, std::time::Duration::ZERO);
+        app
+    }
+
+    #[test]
+    fn the_logo_and_version_sit_on_the_menus_top_border() {
+        let mut app = demo();
+        app.config.ui.icons = crate::config::IconSet::Unicode;
+        app.status = "hello status".into();
+        let (lines, buffer) = screen(&app, 120, 36);
+        let top = &lines[0];
+        assert!(top.starts_with("┌ ▣ boxvibe ─"), "{top}");
+        let menu_end = top.find('┐').unwrap();
+        let version = format!(" {} ┐", env!("CARGO_PKG_VERSION"));
+        assert!(top[..menu_end + '┐'.len_utf8()].ends_with(&version), "{top}");
+        assert!(top.contains("Now Playing"), "no header row: Now Playing's border is the first row: {top}");
+        assert!(!lines.iter().any(|l| l.contains("demo@") || l.contains("not logged in ")));
+        assert!(lines[34].starts_with(" hello status"), "status bar above the keys: {}", lines[34]);
+        // "box" and its icon blue, "vibe" the text colour.
+        let p = app.palette;
+        let x = top.chars().position(|c| c == 'b').unwrap() as u16;
+        assert_eq!(buffer[(2, 0)].fg, p.blue);
+        assert_eq!((buffer[(x, 0)].fg, buffer[(x + 3, 0)].fg), (p.blue, p.fg));
+    }
+
+    #[test]
+    fn up_next_and_history_sit_side_by_side() {
+        let app = demo();
+        let (lines, _) = screen(&app, 120, 36);
+        let row = lines.iter().find(|l| l.contains("Up Next (")).expect("Up Next pane");
+        let (next, history) = (row.find("Up Next").unwrap(), row.find("History (").expect("on the same row"));
+        assert!(next < history, "{row}");
+    }
 }

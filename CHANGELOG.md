@@ -47,6 +47,18 @@
 - Tests: `junk_configs_always_start`, `a_broken_file_is_moved_aside_and_the_defaults_start`,
   `an_unreadable_path_starts_with_defaults`, `utc_stamps`
 
+### The logo on the menu's frame, no header row (`logo-frame`)
+
+- The logo sits on the left menu's top border, drawn like tubevibe's (` <icon> box` + `vibe `, bold):
+  the box icon and "box" in the theme's blue, "vibe" in the text colour; the version is on the same
+  border, right-aligned. About's logo uses the same colours.
+- The header row is gone (with the account name on its right), so Now Playing's border is the top row.
+  The status message moved to a shaded status bar above the keys, where tubevibe has it. The station
+  count is now a `STATIONS (n)` heading inside the menu.
+- With emoji icons, 📦 keeps the emoji font's own colours (terminals can't recolour colour emoji); the
+  Nerd Font and Unicode boxes are blue
+- Tests: `the_logo_and_version_sit_on_the_menus_top_border`, `up_next_and_history_sit_side_by_side`
+
 ## 0.1.0 (2026-10-20)
 
 First version.

@@ -85,6 +85,12 @@
 - Tests: `now_playing_from_the_menu_and_with_shift_n`, `no_now_playing_entry_before_a_station_plays`,
   `now_playing_heads_the_menu_with_an_inset_rule`
 
+### No gap between the menu and the page (`ui-refresh`)
+
+- The menu's frame and the right-hand pane's frame now touch, with no blank column between them, the
+  way tubevibe lays out its menu and content (Up Next and History keep their one-column gap)
+- Test: `the_menu_and_the_page_touch`
+
 ## 0.1.0 (unreleased)
 
 First version.

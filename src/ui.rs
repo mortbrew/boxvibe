@@ -71,7 +71,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let [body, status, keys] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1)]).areas(area);
     let side = menu_width(app, body.width);
-    let [left, right] = Layout::horizontal([Constraint::Length(side), Constraint::Fill(1)]).spacing(1).areas(body);
+    let [left, right] = Layout::horizontal([Constraint::Length(side), Constraint::Fill(1)]).areas(body);
     draw_menu(frame, app, ic, left);
     match app.view {
         View::Player => draw_player(frame, app, ic, right),
@@ -923,6 +923,15 @@ mod tests {
         assert!(menu.starts_with("│  ──") && menu.ends_with("──  │"), "inset rule: {menu:?}");
         assert!(lines[3].contains("STATIONS"), "{}", lines[3]);
         assert!(lines[35].contains(" N  Now Playing"), "key bar: {}", lines[35]);
+    }
+
+    #[test]
+    fn the_menu_and_the_page_touch() {
+        let app = demo();
+        let (lines, _) = screen(&app, 120, 36);
+        let top: Vec<char> = lines[0].chars().collect();
+        let end = top.iter().position(|c| *c == '┐').unwrap();
+        assert_eq!(top[end + 1], '┌', "no blank column between the frames, like tubevibe: {}", lines[0]);
     }
 
     #[test]

@@ -13,7 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Cell, Clear, List, ListItem, ListState, Paragraph, Row as TableRow, Table, TableState, Wrap,
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, Focus, MenuItem, Pane, Prompt, Session, Setting, View};
 use crate::config::BorderStyle;
@@ -128,6 +128,15 @@ fn selection(p: &Palette, focused: bool) -> Style {
     }
 }
 
+/// An icon padded to its worst-case width plus one spare cell when it may
+/// draw wider than it measures (Nerd Font glyphs in foot), so it never
+/// covers what follows.
+fn icon_cell(icon: &str) -> String {
+    let w = safe_width(icon).max(2);
+    let w = if icon.chars().any(is_pua) { w + 1 } else { w };
+    pad(icon, w)
+}
+
 fn clock(secs: u64) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
 }
@@ -138,29 +147,98 @@ fn pad(text: &str, cells: usize) -> String {
     format!("{text}{}", " ".repeat(cells.saturating_sub(w)))
 }
 
-/// Song text made safe for a table cell: tabs and newlines become spaces,
-/// and emoji variation selectors and joiners go, since terminals draw those
-/// wider than they measure and push the rest of the row (the rating) out.
-fn clean(text: &str) -> String {
-    text.chars()
-        .filter(|c| !matches!(c, '\u{FE0E}' | '\u{FE0F}' | '\u{200D}'))
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect()
+/// Private Use Area: Nerd Font icons, which foot (and others) may draw two
+/// cells wide although they measure one.
+fn is_pua(c: char) -> bool {
+    matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD)
 }
 
-/// `text` cut to `cells` terminal cells, ending in "…" when cut.
+/// Pictographs and symbols that have emoji forms: terminals disagree on how
+/// wide these are drawn (one cell or two), whatever unicode-width says.
+fn is_pictographic(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x2300..=0x23FF
+            | 0x24C2
+            | 0x25A0..=0x25FF
+            | 0x2600..=0x27BF
+            | 0x2B00..=0x2BFF
+            | 0x3030
+            | 0x303D
+            | 0x3297
+            | 0x3299
+            | 0x1F000..=0x1FAFF
+    )
+}
+
+/// Characters that take no cell, or join or restyle their neighbours:
+/// variation selectors, joiners, soft hyphen, BOM, bidi controls.
+fn is_zero_width(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x00AD | 0x034F | 0x061C | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F
+            | 0xFE00..=0xFE0F | 0xFEFF | 0xE0000..=0xE007F
+    ) || (c != ' ' && UnicodeWidthChar::width(c) == Some(0))
+}
+
+/// Song and station text made safe for a fixed-width cell: tabs, newlines
+/// and other controls become spaces; zero-width characters go; symbols whose
+/// drawn width terminals disagree on (one-cell pictographs that foot may draw
+/// as two-cell emoji, Nerd Font glyphs) go too, since a glyph drawn wider
+/// than measured shifts the rest of the row, the rating included.
+/// Two-cell emoji (🎵) stay: every terminal agrees on those.
+fn clean(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() {
+            out.push(' ');
+        } else if !(is_zero_width(c) || is_pua(c) || is_pictographic(c) && UnicodeWidthChar::width(c) != Some(2)) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The cells `c` may take on any terminal: ambiguous-width, pictographic and
+/// Private Use characters count as two so a cut never overflows.
+fn safe_char_width(c: char) -> usize {
+    if is_zero_width(c) || c.is_control() {
+        return 0;
+    }
+    let w = UnicodeWidthChar::width(c).unwrap_or(0);
+    let ambiguous = UnicodeWidthChar::width_cjk(c).unwrap_or(0) > w;
+    if is_pua(c) || is_pictographic(c) || ambiguous || !c.is_ascii() && w == 0 { 2 } else { w }
+}
+
+/// The worst-case width of `text` on any terminal.
+fn safe_width(text: &str) -> usize {
+    text.chars().map(safe_char_width).sum()
+}
+
+/// Clean `text` and cut it to fit `cells` with one cell to spare, measuring
+/// worst-case widths, ending in "…" when cut.
+fn fit(text: &str, cells: usize) -> String {
+    truncate(&clean(text), cells.saturating_sub(1))
+}
+
+/// `text` cut to `cells` cells (worst-case widths), ending in "…" when cut.
 fn truncate(text: &str, cells: usize) -> String {
-    if text.width() <= cells {
+    if safe_width(text) <= cells {
         return text.to_owned();
     }
     let mut out = String::new();
+    let mut used = 0;
     for c in text.chars() {
-        if out.width() + unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) + 1 > cells {
+        let w = safe_char_width(c);
+        if used + w + safe_char_width('…') > cells {
             break;
         }
+        used += w;
         out.push(c);
     }
-    out.push('…');
+    if cells > 0 {
+        out.push('…');
+    }
     out
 }
 
@@ -370,8 +448,9 @@ fn draw_stations(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             let star = if app.is_favorite(&s.id) { ic.favorite } else { " " };
             let style = if playing { Style::new().fg(p.green).bold() } else { Style::new().fg(p.fg) };
             let mark = if playing { ic.play } else { " " };
-            let line = format!(" {} {} {} {}", pad(mark, 1), pad(icon, 2), pad(star, 2), s.name);
-            ListItem::new(Line::from(pad(&line, inner.width as usize))).style(style)
+            let head = format!(" {} {} {} ", pad(mark, 1), icon_cell(icon), icon_cell(star));
+            let name = fit(&s.name, (inner.width as usize).saturating_sub(safe_width(&head)));
+            ListItem::new(Line::from(format!("{head}{name}"))).style(style)
         })
         .collect();
     let list = List::new(items).highlight_style(selection(&p, focused));
@@ -442,11 +521,15 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     } else {
         Span::styled(format!("{} playing", ic.play), Style::new().fg(p.green))
     };
+    let w = info.width as usize;
     let lines = vec![
-        Line::from(Span::styled(song.title.clone(), Style::new().fg(p.fg).bold())),
+        Line::from(Span::styled(fit(&song.title, w), Style::new().fg(p.fg).bold())),
         Line::raw(""),
-        Line::from(vec![label("artist"), Span::styled(song.artist.clone(), Style::new().fg(p.cyan).bold())]),
-        Line::from(vec![label("album"), Span::styled(song.album.clone(), Style::new().fg(p.fg))]),
+        Line::from(vec![
+            label("artist"),
+            Span::styled(fit(&song.artist, w.saturating_sub(9)), Style::new().fg(p.cyan).bold()),
+        ]),
+        Line::from(vec![label("album"), Span::styled(fit(&song.album, w.saturating_sub(9)), Style::new().fg(p.fg))]),
         Line::from(vec![label("rating"), rating_word(song.rating, &p, ic)]),
         Line::from(vec![label("state"), state]),
     ];
@@ -548,7 +631,9 @@ fn draw_volume(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 }
 
 /// A whyd-style songs table: column headers, cut text ending in "…", the
-/// selected row as a bar while the pane has the keys.
+/// selected row as a bar while the pane has the keys. The last column (time
+/// or rating) is its own table in its own rect, so however a terminal draws
+/// the song text it can never cover that column.
 #[allow(clippy::too_many_arguments)]
 fn song_table<'a>(
     frame: &mut Frame,
@@ -563,23 +648,47 @@ fn song_table<'a>(
 ) {
     let p = app.palette;
     let inner = block.inner(area);
-    let cols = Layout::horizontal(widths.to_vec()).spacing(2).split(inner);
-    let body: Vec<TableRow> = rows
-        .into_iter()
-        .map(|cells| {
-            TableRow::new(cells.into_iter().enumerate().map(|(i, (text, style))| {
-                let text = truncate(&clean(&text), cols[i].width as usize);
-                Cell::from(Span::styled(text, style))
-            }))
-        })
-        .collect();
-    let table = Table::new(body, widths.to_vec())
-        .header(TableRow::new(header.to_vec()).style(Style::new().fg(p.muted).add_modifier(Modifier::BOLD)))
+    frame.render_widget(block, area);
+    let (last_w, text_widths) = match widths.split_last() {
+        Some((Constraint::Length(w), rest)) => (*w, rest),
+        _ => (0, widths),
+    };
+    let [text_area, _, last_area] =
+        Layout::horizontal([Constraint::Fill(1), Constraint::Length(2), Constraint::Length(last_w)]).areas(inner);
+    let cols = Layout::horizontal(text_widths.to_vec()).spacing(2).split(text_area);
+    let n = text_widths.len();
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    for cells in rows {
+        let mut texts = Vec::new();
+        for (i, (text, style)) in cells.into_iter().enumerate() {
+            if i < n {
+                texts.push(Cell::from(Span::styled(fit(&text, cols[i].width as usize), style)));
+            } else {
+                right.push(TableRow::new([Cell::from(Span::styled(text, style))]));
+            }
+        }
+        left.push(TableRow::new(texts));
+    }
+    let head = Style::new().fg(p.muted).add_modifier(Modifier::BOLD);
+    let bar = if focused { selection(&p, true) } else { Style::new() };
+    let gap = Rect { x: text_area.x + text_area.width, width: 2, ..inner };
+    let sel = focused.then_some(selected);
+    let table = Table::new(left, text_widths.to_vec())
+        .header(TableRow::new(header[..n].to_vec()).style(head))
         .column_spacing(2)
-        .block(block)
-        .row_highlight_style(if focused { selection(&p, true) } else { Style::new() });
-    let mut state = TableState::default().with_selected(focused.then_some(selected));
-    frame.render_stateful_widget(table, area, &mut state);
+        .row_highlight_style(bar);
+    frame.render_stateful_widget(table, text_area, &mut TableState::default().with_selected(sel));
+    // The 2-cell gap: highlighted too, so the bar runs unbroken.
+    let gap_rows: Vec<TableRow> = (0..right.len().max(1)).map(|_| TableRow::new([""])).collect();
+    let gap_table = Table::new(gap_rows, [Constraint::Length(2)]).header(TableRow::new([""])).row_highlight_style(bar);
+    frame.render_stateful_widget(gap_table, gap, &mut TableState::default().with_selected(sel));
+    if last_w > 0 {
+        let table = Table::new(right, [Constraint::Length(last_w)])
+            .header(TableRow::new(header[n..].to_vec()).style(head))
+            .row_highlight_style(bar);
+        frame.render_stateful_widget(table, last_area, &mut TableState::default().with_selected(sel));
+    }
 }
 
 fn draw_up_next(frame: &mut Frame, app: &App, area: Rect) {
@@ -622,14 +731,14 @@ fn draw_history(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         .iter()
         .map(|song| {
             let rated = match song.rating {
-                Rating::Up => (format!("{} liked", ic.up), Style::new().fg(p.green)),
-                Rating::Down => (format!("{} disliked", ic.down), Style::new().fg(p.red)),
+                Rating::Up => (format!("{}liked", icon_cell(ic.up)), Style::new().fg(p.green)),
+                Rating::Down => (format!("{}disliked", icon_cell(ic.down)), Style::new().fg(p.red)),
                 Rating::None => ("—".to_owned(), Style::new().fg(p.muted)),
             };
             vec![(song.title.clone(), Style::new().fg(p.fg)), (song.artist.clone(), Style::new().fg(p.cyan)), rated]
         })
         .collect();
-    let widths = [Constraint::Fill(3), Constraint::Fill(2), Constraint::Length(11)];
+    let widths = [Constraint::Fill(3), Constraint::Fill(2), Constraint::Length(12)];
     song_table(frame, app, block, &["TITLE", "ARTIST", "RATED"], &widths, rows, app.history_index(), focused, area);
 }
 
@@ -1170,9 +1279,9 @@ mod tests {
 
     #[test]
     fn clean_and_truncate_keep_cells_honest() {
-        assert_eq!(clean("a\tb\nc ❤️ d"), "a b c ❤ d");
-        assert_eq!(truncate("abcdef", 4), "abc…");
-        assert_eq!(truncate("名前名前", 5), "名前…");
+        assert_eq!(clean("a\tb\nc ❤️ d 🎵"), "a b c  d 🎵");
+        assert_eq!(truncate("abcdef", 4), "ab…");
+        assert_eq!(truncate("名前名前", 6), "名前…");
         assert!(truncate("名前名前", 5).width() <= 5);
     }
 
@@ -1195,5 +1304,76 @@ mod tests {
         for key in ["-/d", "+/u", "space"] {
             assert!(!lines[..rows].iter().any(|l| l.contains(key)), "no {key} under the buttons");
         }
+    }
+
+    /// Every row of Up Next and History ends in its own column: the rating
+    /// cell starts with the expected icon, and no text crosses a border.
+    #[test]
+    fn song_text_never_reaches_the_rating_column_at_any_width() {
+        let titles = [
+            "Ünïcödé Àccénts Évérywhere Ça Va Très Bien Merci Beaucoup",
+            "東京の夜 名前 世界 音楽 歌 東京の夜 名前 世界 音楽 歌",
+            "❤️ Love ☀ Sun ★ Star ♪ Note 🎵🎶 👍👎 📻 \u{f164} Emoji ‍👩‍👩‍👧 Family\u{200B}Zero\tTab\nLine",
+        ];
+        for set in [crate::config::IconSet::Emoji, crate::config::IconSet::Nerd, crate::config::IconSet::Unicode] {
+            for (k, title) in titles.iter().enumerate() {
+                let mut app = demo();
+                app.config.ui.icons = set;
+                let ic = crate::icons::icons(set);
+                for song in app.history.iter_mut().chain(app.queue.iter_mut()) {
+                    song.title = (*title).into();
+                    song.artist = titles[(k + 1) % 3].into();
+                    song.rating = Rating::Up;
+                }
+                for cols in [60u16, 80, 89, 90, 100, 120, 160, 200] {
+                    let (_, buf) = screen(&app, cols, 44);
+                    let mut found = 0;
+                    for y in 0..44 {
+                        let row: Vec<&str> = (0..cols).map(|x| buf[(x, y)].symbol()).collect();
+                        for (x, sym) in row.iter().enumerate() {
+                            if *sym != "liked"
+                                && sym.starts_with('l')
+                                && row[x..].iter().take(5).copied().collect::<String>() == "liked"
+                            {
+                                found += 1;
+                                let icon_start = (0..x).rev().find(|&j| !row[j].is_empty() && row[j] != " ").unwrap();
+                                assert_eq!(row[icon_start], ic.up, "{cols} cols {set:?}: {}", row.concat());
+                                // Two cells of gap before the rating column hold only spaces.
+                                let border = row[x + 5..].iter().position(|s| *s == "│").expect("closing border");
+                                assert!(row[x + 5..x + 5 + border].iter().all(|s| *s == " " || s.is_empty()));
+                            }
+                        }
+                        // No song text ever paints a border cell.
+                        let line = row.concat();
+                        for bad in ["东", "東", "Ü", "Love", "Star"] {
+                            if let Some(pos) = line.find(bad) {
+                                let before = &line[..pos];
+                                assert!(
+                                    before.matches('│').count() % 2 == 1,
+                                    "{cols} cols: text outside a pane: {line}"
+                                );
+                            }
+                        }
+                    }
+                    assert!(found > 0, "{cols} cols {set:?}: a rating shows");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fit_is_conservative_about_risky_widths() {
+        for (text, cells) in [("❤ ★ ☀ \u{f164} 🎵 名前 é", 6usize), ("abcdef", 4), ("名前名前", 5), ("🎵🎵🎵", 4)]
+        {
+            let out = fit(text, cells);
+            assert!(safe_width(&out) < cells || cells == 0, "{text:?} -> {out:?}");
+            assert!(out.width() < cells, "{text:?} -> {out:?}");
+        }
+        assert_eq!(clean("a\u{200B}b\u{FE0F}c\u{200D}d\te\u{f164}f❤g"), "abcd efg");
+        assert_eq!(safe_char_width('★'), 2);
+        assert_eq!(safe_char_width('\u{f164}'), 2);
+        assert_eq!(safe_char_width('a'), 1);
+        assert_eq!(icon_cell("\u{f164}").width(), 3);
+        assert_eq!(icon_cell("👍").width(), 2);
     }
 }

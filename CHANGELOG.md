@@ -4,6 +4,7 @@
 
 ### Layout and key fixes (`ui-refresh`)
 
+- Up Next and History text can no longer run into the time or rating: that column is its own table in its own space, song text is cut by worst-case width with a cell to spare, and symbols terminals draw at different widths (one-cell pictographs like ❤ ☀, Nerd Font glyphs, joiners, zero-width marks) are dropped from song text. The same applies to the Stations list and Now Playing info
 - Quit is now `Q` (Shift+q) or `Ctrl+c`; lowercase `q` no longer quits. `Q` asks first in a "Quit boxvibe?" box like tubevibe's (`y` quits, any other key cancels); `Ctrl+c` quits at once
 - The menu's entries are left-justified like tubevibe's: one space from the border, icons in one column
 - `↑` / `↓` (`k` / `j`) wrap around: up from the top goes to the bottom and down from the bottom to the

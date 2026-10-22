@@ -518,7 +518,7 @@ fn draw_player(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     } else {
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).spacing(1).areas(songs)
     };
-    draw_up_next(frame, app, next);
+    draw_up_next(frame, app, ic, next);
     draw_history(frame, app, ic, history);
 }
 
@@ -803,7 +803,16 @@ fn song_table<'a>(
     }
 }
 
-fn draw_up_next(frame: &mut Frame, app: &App, area: Rect) {
+/// History's RATED cell: liked, disliked, or a dash.
+fn rated_cell(rating: Rating, p: &Palette, ic: &Icons) -> (String, Style) {
+    match rating {
+        Rating::Up => (format!("{}liked", icon_cell(ic.up)), Style::new().fg(p.green)),
+        Rating::Down => (format!("{}disliked", icon_cell(ic.down)), Style::new().fg(p.red)),
+        Rating::None => ("—".to_owned(), Style::new().fg(p.muted)),
+    }
+}
+
+fn draw_up_next(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let p = app.palette;
     let focused = app.in_songs() && app.pane == Pane::UpNext;
     let block = panel(title(format!("Up Next ({})", app.queue.len()), &p), &p, focused);
@@ -823,11 +832,19 @@ fn draw_up_next(frame: &mut Frame, app: &App, area: Rect) {
                 (song.title.clone(), Style::new().fg(p.fg)),
                 (song.artist.clone(), Style::new().fg(p.cyan)),
                 (format!("{time:>5}"), Style::new().fg(p.muted)),
+                rated_cell(song.rating, &p, ic),
             ]
         })
         .collect();
-    let widths = [Constraint::Length(2), Constraint::Fill(3), Constraint::Fill(2), Constraint::Length(5)];
-    song_table(frame, app, block, &["#", "TITLE", "ARTIST", " TIME"], &widths, rows, app.next_index(), focused, area);
+    let widths = [
+        Constraint::Length(2),
+        Constraint::Fill(3),
+        Constraint::Fill(2),
+        Constraint::Length(6),
+        Constraint::Length(12),
+    ];
+    let header = ["#", "TITLE", "ARTIST", " TIME", "RATED"];
+    song_table(frame, app, block, &header, &widths, rows, app.next_index(), focused, area);
 }
 
 fn draw_history(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
@@ -842,11 +859,7 @@ fn draw_history(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         .history
         .iter()
         .map(|song| {
-            let rated = match song.rating {
-                Rating::Up => (format!("{}liked", icon_cell(ic.up)), Style::new().fg(p.green)),
-                Rating::Down => (format!("{}disliked", icon_cell(ic.down)), Style::new().fg(p.red)),
-                Rating::None => ("—".to_owned(), Style::new().fg(p.muted)),
-            };
+            let rated = rated_cell(song.rating, &p, ic);
             vec![(song.title.clone(), Style::new().fg(p.fg)), (song.artist.clone(), Style::new().fg(p.cyan)), rated]
         })
         .collect();
@@ -1486,6 +1499,33 @@ mod tests {
             assert!(matches!(end, Some('│')), "{cols} cols: the pane's border closes the row: {row}");
             assert!(!row.contains('\u{FE0F}') && !row.contains('\t'), "{cols} cols: cleaned: {row:?}");
         }
+    }
+
+    #[test]
+    fn up_next_shows_each_songs_thumbs_and_updates_after_shift_u() {
+        let mut app = demo();
+        app.config.ui.icons = crate::config::IconSet::Unicode;
+        app.focus = crate::app::Focus::Content;
+        app.view = View::Player;
+        app.pane = Pane::UpNext;
+        let up_next = |app: &App| {
+            let (lines, _) = screen(app, 160, 40);
+            let y0 = lines.iter().position(|l| l.contains("Up Next (")).expect("Up Next");
+            let x0 = lines[y0].chars().position(|c| c == 'U').unwrap();
+            let rows: Vec<String> =
+                lines[y0 + 1..y0 + 4].iter().map(|l| l.chars().skip(x0).take(70).collect()).collect();
+            rows
+        };
+        let before = up_next(&app);
+        assert!(before[0].contains("TIME") && before[0].contains("RATED"), "{before:?}");
+        assert!(before[1].contains('—') && before[1].contains(':'), "not rated, time kept: {before:?}");
+        app.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('U'),
+            crossterm::event::KeyModifiers::SHIFT,
+        ));
+        assert_eq!(app.queue[app.next_index()].rating, Rating::Up);
+        let after = up_next(&app);
+        assert!(after.iter().any(|r| r.contains("liked")), "{after:?}");
     }
 
     #[test]

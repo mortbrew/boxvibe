@@ -1,6 +1,7 @@
 //! boxvibe: Pandora in the terminal.
 
 mod app;
+mod art;
 mod audio;
 mod backend;
 mod config;
@@ -74,6 +75,8 @@ fn main() -> anyhow::Result<()> {
     // Open the sound device before the screen switches, so ALSA's warnings can't scribble on it.
     let mut app = App::new(config, path, &warnings, demo);
     let mut terminal = ratatui::init();
+    // Once, before any events are read: what pictures this terminal shows.
+    app.art.set_graphics(art::detect());
     let result = run(&mut terminal, &mut app);
     let restart = app.restart && result.is_ok();
     // Stop the sound and the backend before the new version takes over.
@@ -100,7 +103,6 @@ fn restart_into(exe: &std::path::Path) -> std::io::Error {
 }
 
 fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow::Result<()> {
-    let frame_time = Duration::from_millis(100);
     let mut last = Instant::now();
     while !app.quit {
         app.tick();
@@ -108,7 +110,12 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow::Result
             app.edit_config = false;
             edit_config(terminal, app)?;
         }
+        if app.art.needs_clear.take() {
+            terminal.clear()?;
+        }
         terminal.draw(|frame| ui::draw(frame, app))?;
+        // ~18 fps while the visualizer moves, 10 otherwise.
+        let frame_time = Duration::from_millis(if app.animating() { 55 } else { 100 });
         let wait = frame_time.saturating_sub(last.elapsed());
         if event::poll(wait)? {
             match event::read()? {

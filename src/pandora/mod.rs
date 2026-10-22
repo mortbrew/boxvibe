@@ -510,6 +510,15 @@ impl Client {
 
     /// Downloads a song's audio (a few MB) to decode it.
     pub fn fetch_audio(&self, url: &str) -> Result<Vec<u8>, Error> {
+        self.fetch(url, "audio", 64 * 1024 * 1024)
+    }
+
+    /// An album cover (Pandora's art CDN), at most 8 MB.
+    pub fn fetch_art(&self, url: &str) -> Result<Vec<u8>, Error> {
+        self.fetch(url, "art", 8 * 1024 * 1024)
+    }
+
+    fn fetch(&self, url: &str, what: &str, limit: u64) -> Result<Vec<u8>, Error> {
         let mut response = self
             .agent
             .get(url)
@@ -518,9 +527,9 @@ impl Client {
             .call()
             .map_err(|e| Error::Http(e.to_string()))?;
         if !response.status().is_success() {
-            return Err(Error::Http(format!("audio: HTTP {}", response.status())));
+            return Err(Error::Http(format!("{what}: HTTP {}", response.status())));
         }
-        response.body_mut().with_config().limit(64 * 1024 * 1024).read_to_vec().map_err(|e| Error::Http(e.to_string()))
+        response.body_mut().with_config().limit(limit).read_to_vec().map_err(|e| Error::Http(e.to_string()))
     }
 }
 

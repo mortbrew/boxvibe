@@ -16,11 +16,13 @@ use ratatui::widgets::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, Focus, MenuItem, Pane, Prompt, Session, Setting, View};
-use crate::config::BorderStyle;
+use crate::art::Cover;
+use crate::config::{AlbumArt, BorderStyle};
 use crate::icons::{Icons, icons};
 use crate::pandora::{Rating, Song};
 use crate::theme::Palette;
 use crate::update::Progress;
+use ratatui_image::{Resize, StatefulImage};
 
 thread_local! {
     /// `[ui] border_style` of the frame being drawn (set by [`draw`]), like tubevibe.
@@ -524,7 +526,7 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let art_w = (inner.height * 2 + 2).min(inner.width / 2);
     let [art, _, info] =
         Layout::horizontal([Constraint::Length(art_w), Constraint::Length(3), Constraint::Fill(1)]).areas(inner);
-    draw_art(frame, &p, ic, song, art);
+    draw_art(frame, app, song, art);
     let label = |text: &str| Span::styled(format!("{text:<9}"), Style::new().fg(p.muted));
     let state = if app.buffering.is_some() {
         Span::styled(format!("{} buffering…", ic.loading), Style::new().fg(p.yellow))
@@ -564,24 +566,80 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     }
 }
 
-fn draw_art(frame: &mut Frame, p: &Palette, ic: &Icons, song: &Song, area: Rect) {
-    // No cover art in v1 (song.cover_art_url is kept for later): a card in the theme's colours.
+fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) {
+    let p = app.palette;
     let block = Block::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(p.line));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    frame.render_widget(Block::new().bg(p.highlight), inner);
-    if inner.height >= 3 {
-        let mid = inner.y + inner.height / 2;
-        let line = |y: u16| Rect { y, height: 1, ..inner };
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let (mode, pixelation) = (app.config.ui.album_art, app.config.ui.art_pixelation);
+    if let Some(mut cover) = app.art.protocol(&song.cover_art_url, mode, pixelation) {
+        // Centred in the box: the picture keeps its shape.
+        let fit = cover.size_for(Resize::Fit(None), inner.as_size());
+        let x = inner.x + inner.width.saturating_sub(fit.width) / 2;
+        let y = inner.y + inner.height.saturating_sub(fit.height) / 2;
+        let at = Rect::new(x, y, fit.width.min(inner.width), fit.height.min(inner.height));
+        frame.render_stateful_widget(StatefulImage::default(), at, &mut *cover);
+        return;
+    }
+    app.art.hide();
+    let ic = icons(app.config.ui.icons);
+    let caption = match (mode, app.art.status(&song.cover_art_url)) {
+        (AlbumArt::Off, _) => String::new(),
+        (_, Cover::Loading) if !song.cover_art_url.is_empty() => format!("{} loading cover…", ic.title),
+        _ => format!("{} no cover", ic.title),
+    };
+    draw_visualizer(frame, &p, &app.art.bars, &caption, inner);
+}
+
+/// Spectrum bars from the bottom of `area` up, green → yellow → orange, with
+/// a peak cap over each; `caption` dim on the top row.
+fn draw_visualizer(frame: &mut Frame, p: &Palette, bars: &crate::visualizer::Bars, caption: &str, area: Rect) {
+    const EIGHTHS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+    let top = u16::from(!caption.is_empty());
+    let h = area.height.saturating_sub(top);
+    let count = usize::from(area.width.div_ceil(2));
+    if h == 0 || count == 0 {
+        return;
+    }
+    let buf = frame.buffer_mut();
+    let level = |i: usize, of: &[f32]| -> f32 {
+        if of.is_empty() {
+            return 0.0;
+        }
+        // Spread the bands over the bars that fit.
+        of[(i * of.len() / count).min(of.len() - 1)]
+    };
+    for i in 0..count {
+        let x = area.x + (i as u16) * 2;
+        let eighths = (level(i, &bars.levels) * f32::from(h) * 8.0).round() as u16;
+        let peak_row = (level(i, &bars.peaks) * f32::from(h)).ceil() as u16;
+        for row in 0..h {
+            let y = area.y + area.height - 1 - row;
+            let fill = eighths.saturating_sub(row * 8).min(8);
+            let frac = f32::from(row) / f32::from(h);
+            let color = if frac < 0.5 {
+                p.green
+            } else if frac < 0.8 {
+                p.yellow
+            } else {
+                p.orange
+            };
+            if fill > 0 {
+                buf[(x, y)].set_symbol(EIGHTHS[usize::from(fill)]).set_fg(color);
+            } else if peak_row > 0 && row + 1 == peak_row && peak_row * 8 > eighths {
+                buf[(x, y)].set_symbol("▔").set_fg(p.orange);
+            }
+        }
+    }
+    if top == 1 {
+        let line = Rect { height: 1, ..area };
         frame.render_widget(
-            Paragraph::new(Span::styled(ic.title, Style::new().fg(p.orange).bold())).alignment(Alignment::Center),
-            line(mid.saturating_sub(1)),
-        );
-        let initials: String = song.album.split_whitespace().filter_map(|w| w.chars().next()).take(3).collect();
-        frame.render_widget(
-            Paragraph::new(Span::styled(initials.to_uppercase(), Style::new().fg(p.muted).bold()))
+            Paragraph::new(Span::styled(caption, Style::new().fg(p.muted).add_modifier(Modifier::DIM)))
                 .alignment(Alignment::Center),
-            line(mid + 1),
+            line,
         );
     }
 }
@@ -1079,7 +1137,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::raw(""));
     }
     lines.push(Line::from(Span::styled(
-        " Settings and account: the Settings entry in the menu",
+        " Settings and account, album art and pixelation: the Settings entry in the menu",
         Style::new().fg(p.muted),
     )));
     let box_area = centered(area, 64, lines.len() as u16 + 2);
@@ -1108,6 +1166,63 @@ mod tests {
         let mut app = App::new(Config::default(), None, &[], true);
         app.demo_warm_up(3, std::time::Duration::ZERO);
         app
+    }
+
+    /// Rows of the Now Playing art box (between its rounded corners).
+    fn art_box(lines: &[String]) -> (usize, usize, usize, usize) {
+        let top = lines.iter().position(|l| l.contains('╭')).expect("art box");
+        let bottom = lines.iter().position(|l| l.contains('╰')).expect("art box bottom");
+        let left = lines[top].chars().position(|c| c == '╭').unwrap();
+        let right = lines[top].chars().position(|c| c == '╮').unwrap();
+        (top, bottom, left, right)
+    }
+
+    #[test]
+    fn the_cover_draws_in_half_blocks_inside_the_art_box() {
+        let mut app = demo();
+        app.settle(std::time::Duration::from_millis(300));
+        let song = app.now.clone().expect("a song");
+        assert_eq!(app.art.status(&song.cover_art_url), crate::art::Cover::None, "demo cover arrived");
+        assert!(app.art.protocol(&song.cover_art_url, app.config.ui.album_art, app.config.ui.art_pixelation).is_some());
+        let (lines, _) = screen(&app, 120, 36);
+        let (top, bottom, left, right) = art_box(&lines);
+        assert!(bottom > top + 2);
+        let inside: String = lines[top + 1..bottom]
+            .iter()
+            .map(|l| l.chars().skip(left + 1).take(right - left - 1).collect::<String>())
+            .collect();
+        assert!(inside.contains('▀') || inside.contains('▄'), "halfblocks picture:\n{}", lines.join("\n"));
+        assert!(!inside.contains("no cover"));
+        // Nothing spilled over the box's borders.
+        for line in &lines[top + 1..bottom] {
+            let chars: Vec<char> = line.chars().collect();
+            assert_eq!((chars[left], chars[right]), ('│', '│'), "{line}");
+        }
+    }
+
+    #[test]
+    fn with_album_art_off_the_box_shows_the_visualizer() {
+        let mut app = demo();
+        app.config.ui.album_art = crate::config::AlbumArt::Off;
+        app.art.bars.update(&[0.9; 48]);
+        let (lines, _) = screen(&app, 120, 36);
+        let (top, bottom, left, right) = art_box(&lines);
+        let inside: String = lines[top + 1..bottom]
+            .iter()
+            .map(|l| l.chars().skip(left + 1).take(right - left - 1).collect::<String>())
+            .collect();
+        assert!(inside.contains('█'), "bars:\n{}", lines.join("\n"));
+        assert!(!inside.contains('▀'), "no picture when Off");
+    }
+
+    #[test]
+    fn without_a_cover_the_visualizer_says_so() {
+        let mut app = demo();
+        if let Some(song) = app.now.as_mut() {
+            song.cover_art_url.clear();
+        }
+        let (lines, _) = screen(&app, 120, 36);
+        assert!(lines.join("\n").contains("no cover"), "{}", lines.join("\n"));
     }
 
     #[test]

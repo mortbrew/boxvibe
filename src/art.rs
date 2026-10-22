@@ -1,0 +1,288 @@
+//! Album covers for Now Playing. The terminal's graphics protocol (sixel,
+//! kitty or iTerm2) is asked once at startup; anything else, and tmux or
+//! Zellij, draws Unicode half blocks. Covers are downloaded on a backend
+//! thread, kept in memory (and in `~/.cache/boxvibe/art`, capped), and
+//! encoded for the terminal only when shown or resized.
+
+use std::cell::{RefCell, RefMut};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use image::imageops::FilterType;
+use image::{DynamicImage, Rgb, RgbImage};
+use ratatui_image::picker::{Picker, ProtocolType};
+use ratatui_image::protocol::StatefulProtocol;
+
+use crate::config::{AlbumArt, Pixelation};
+use crate::visualizer::Bars;
+
+/// Covers kept in memory.
+const MEMORY: usize = 24;
+/// The disk cache is trimmed (oldest first) to this many bytes.
+pub const DISK_CAP: u64 = 50 * 1024 * 1024;
+/// Covers are shrunk to at most this many pixels across once downloaded.
+const MAX_PIXELS: u32 = 640;
+
+/// Inside tmux or Zellij, graphics are unreliable: half blocks.
+pub fn in_multiplexer() -> bool {
+    ["TMUX", "ZELLIJ"].iter().any(|v| std::env::var_os(v).is_some_and(|s| !s.is_empty()))
+}
+
+/// Asks the terminal what it can draw (call once, on the alternate screen,
+/// before reading keys). `None`: half blocks only.
+pub fn detect() -> Option<Picker> {
+    if in_multiplexer() {
+        return None;
+    }
+    Picker::from_query_stdio().ok().filter(|p| p.protocol_type() != ProtocolType::Halfblocks)
+}
+
+/// What the art box shows when there is no picture.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Cover {
+    /// Still downloading.
+    Loading,
+    /// None for this song, it failed, or art is off.
+    None,
+}
+
+struct Shown {
+    url: String,
+    mode: AlbumArt,
+    pixelation: Pixelation,
+    protocol: StatefulProtocol,
+}
+
+#[derive(Default)]
+pub struct Art {
+    /// The terminal's graphics, when it has any (Picture).
+    graphics: Option<Picker>,
+    images: HashMap<String, Arc<DynamicImage>>,
+    order: VecDeque<String>,
+    requested: HashSet<String>,
+    failed: HashSet<String>,
+    shown: RefCell<Option<Shown>>,
+    /// A picture protocol was drawn and then replaced: clear the screen once.
+    pub needs_clear: std::cell::Cell<bool>,
+    pub bars: Bars,
+}
+
+impl Art {
+    pub fn set_graphics(&mut self, picker: Option<Picker>) {
+        self.graphics = picker;
+        self.forget_shown();
+    }
+
+    /// The protocol Picture uses ("halfblocks" without graphics).
+    pub fn protocol_name(&self) -> &'static str {
+        match self.graphics.as_ref().map(Picker::protocol_type) {
+            Some(ProtocolType::Sixel) => "sixel",
+            Some(ProtocolType::Kitty) => "kitty",
+            Some(ProtocolType::Iterm2) => "iTerm2",
+            _ => "half blocks",
+        }
+    }
+
+    /// Whether `url` should be asked for (marks it asked).
+    pub fn want(&mut self, url: &str) -> bool {
+        !url.is_empty()
+            && !self.images.contains_key(url)
+            && !self.failed.contains(url)
+            && self.requested.insert(url.into())
+    }
+
+    pub fn arrived(&mut self, url: String, image: Option<DynamicImage>) {
+        self.requested.remove(&url);
+        let Some(image) = image else {
+            self.failed.insert(url);
+            return;
+        };
+        if self.order.len() >= MEMORY
+            && let Some(old) = self.order.pop_front()
+        {
+            self.images.remove(&old);
+        }
+        self.order.push_back(url.clone());
+        self.images.insert(url, Arc::new(image));
+    }
+
+    pub fn status(&self, url: &str) -> Cover {
+        if self.requested.contains(url) { Cover::Loading } else { Cover::None }
+    }
+
+    /// Settings changed: build the protocol again on the next frame.
+    pub fn forget_shown(&mut self) {
+        if self.shown.get_mut().take().is_some_and(|s| !is_blocks(&s.protocol)) {
+            self.needs_clear.set(true);
+        }
+    }
+
+    /// The encoded cover for `url`, built when the song or a setting changed.
+    pub fn protocol(&self, url: &str, mode: AlbumArt, pixelation: Pixelation) -> Option<RefMut<'_, StatefulProtocol>> {
+        let mut shown = self.shown.borrow_mut();
+        let current = shown.as_ref().is_some_and(|s| s.url == url && s.mode == mode && s.pixelation == pixelation);
+        if !current {
+            if shown.take().is_some_and(|s| !is_blocks(&s.protocol)) {
+                self.needs_clear.set(true);
+            }
+            let image = match (mode, self.images.get(url)) {
+                (AlbumArt::Off, _) | (_, None) => return None,
+                (_, Some(image)) => image,
+            };
+            let picker = match (mode, &self.graphics) {
+                (AlbumArt::Picture, Some(p)) => p.clone(),
+                _ => Picker::halfblocks(),
+            };
+            let protocol = picker.new_resize_protocol(pixelate(image, pixelation));
+            *shown = Some(Shown { url: url.into(), mode, pixelation, protocol });
+        }
+        Some(RefMut::map(shown, |s| &mut s.as_mut().expect("just set").protocol))
+    }
+
+    /// Nothing to show (no song, no cover): a picture left on screen goes.
+    pub fn hide(&self) {
+        if self.shown.borrow_mut().take().is_some_and(|s| !is_blocks(&s.protocol)) {
+            self.needs_clear.set(true);
+        }
+    }
+}
+
+fn is_blocks(p: &StatefulProtocol) -> bool {
+    matches!(p.protocol_type(), ratatui_image::protocol::StatefulProtocolType::Halfblocks(_))
+}
+
+/// The cover shrunk to `pixelation`'s grid and blown back up, nearest
+/// neighbour both ways, so every protocol shows the same big pixels.
+pub fn pixelate(image: &DynamicImage, pixelation: Pixelation) -> DynamicImage {
+    let Some(grid) = pixelation.grid() else { return image.clone() };
+    let (w, h) = (image.width().max(1), image.height().max(1));
+    let (gw, gh) = if w >= h { (grid, (grid * h / w).max(1)) } else { ((grid * w / h).max(1), grid) };
+    if gw >= w && gh >= h {
+        return image.clone();
+    }
+    image.resize_exact(gw, gh, FilterType::Nearest).resize_exact(w, h, FilterType::Nearest)
+}
+
+/// A downloaded file as a cover, shrunk to [`MAX_PIXELS`].
+pub fn decode(bytes: &[u8]) -> Option<DynamicImage> {
+    let image = image::load_from_memory(bytes).ok()?;
+    Some(if image.width() > MAX_PIXELS || image.height() > MAX_PIXELS {
+        image.resize(MAX_PIXELS, MAX_PIXELS, FilterType::Triangle)
+    } else {
+        image
+    })
+}
+
+/// `--demo` and tests: a made-up cover (a sunset with stripes), the same for the same URL.
+pub fn demo_cover(url: &str) -> DynamicImage {
+    let seed = hash(url);
+    let hue = (seed % 6) as u8;
+    let pick = |t: u32| -> [u8; 3] {
+        let a = [[251, 73, 52], [250, 189, 47], [184, 187, 38], [131, 165, 152], [211, 134, 155], [254, 128, 25]];
+        a[(usize::from(hue) + t as usize) % a.len()]
+    };
+    let size = 256;
+    DynamicImage::ImageRgb8(RgbImage::from_fn(size, size, |x, y| {
+        let band = (y * 4 / size).min(3);
+        let [r, g, b] = pick(band);
+        let stripe = ((x + y + (seed as u32 % 32)) / 16).is_multiple_of(2);
+        let k = if stripe { 1.0 } else { 0.75 } * (1.0 - 0.4 * x as f32 / size as f32);
+        Rgb([(f32::from(r) * k) as u8, (f32::from(g) * k) as u8, (f32::from(b) * k) as u8])
+    }))
+}
+
+/// FNV-1a: a file name for the disk cache that stays the same between versions.
+fn hash(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
+}
+
+/// `~/.cache/boxvibe/art` (XDG).
+pub fn cache_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "boxvibe").map(|d| d.cache_dir().join("art"))
+}
+
+pub fn cache_path(dir: &std::path::Path, url: &str) -> PathBuf {
+    dir.join(format!("{:016x}.img", hash(url)))
+}
+
+/// Deletes the oldest files in `dir` until it holds at most `cap` bytes.
+pub fn trim_cache(dir: &std::path::Path, cap: u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut files: Vec<_> = entries
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            m.is_file().then(|| (m.modified().ok(), m.len(), e.path()))
+        })
+        .collect();
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    files.sort_by_key(|f| f.0);
+    for (_, len, path) in files {
+        if total <= cap {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total -= len;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::GenericImageView;
+
+    #[test]
+    fn pixelation_makes_big_square_pixels_at_the_same_size() {
+        let cover = demo_cover("x");
+        assert_eq!(pixelate(&cover, Pixelation::Off).dimensions(), (256, 256));
+        let blocky = pixelate(&cover, Pixelation::Max);
+        assert_eq!(blocky.dimensions(), (256, 256));
+        // 8 px across: each 32×32 cell is one colour.
+        let c = blocky.get_pixel(33, 70);
+        assert!((32..64).all(|x| (64..96).all(|y| blocky.get_pixel(x, y) == c)));
+        let distinct: HashSet<_> = (0..256).step_by(4).map(|x| blocky.get_pixel(x, 5).0).collect();
+        assert!(distinct.len() <= 8, "{}", distinct.len());
+    }
+
+    #[test]
+    fn covers_are_kept_and_built_once() {
+        let mut art = Art::default();
+        assert!(art.want("u") && !art.want("u"), "asked once");
+        assert!(matches!(art.status("u"), Cover::Loading));
+        assert!(art.protocol("u", AlbumArt::Picture, Pixelation::Off).is_none());
+        art.arrived("u".into(), Some(demo_cover("u")));
+        assert!(!art.want("u"));
+        assert!(art.protocol("u", AlbumArt::Blocks, Pixelation::Off).is_some());
+        assert!(art.protocol("u", AlbumArt::Off, Pixelation::Off).is_none(), "off: the visualizer");
+        art.arrived("bad".into(), None);
+        assert!(!art.want("bad") && matches!(art.status("bad"), Cover::None), "a failure isn't asked again");
+        assert_eq!(art.protocol_name(), "half blocks", "no terminal query in tests");
+    }
+
+    #[test]
+    fn the_disk_cache_is_trimmed_oldest_first() {
+        let dir = std::env::temp_dir().join(format!("boxvibe-art-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (i, name) in ["a", "b", "c"].iter().enumerate() {
+            let p = cache_path(&dir, name);
+            std::fs::write(&p, vec![0u8; 100]).unwrap();
+            let t = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000 * (i as u64 + 1));
+            std::fs::File::options().write(true).open(&p).unwrap().set_modified(t).unwrap();
+        }
+        trim_cache(&dir, 250);
+        assert!(!cache_path(&dir, "a").exists() && cache_path(&dir, "b").exists() && cache_path(&dir, "c").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn real_files_decode_and_shrink() {
+        let mut png = Vec::new();
+        DynamicImage::ImageRgb8(RgbImage::new(1000, 500))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        assert_eq!(decode(&png).unwrap().dimensions(), (640, 320));
+        assert!(decode(b"<html>not an image</html>").is_none());
+    }
+}

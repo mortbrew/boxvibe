@@ -28,7 +28,7 @@ pub struct Icons {
     pub update: &'static str,
     pub ok: &'static str,
     /// One per [`crate::app::Setting::ALL`] row.
-    pub setting: [&'static str; 15],
+    pub setting: [&'static str; 16],
 }
 
 const EMOJI: Icons = Icons {
@@ -55,7 +55,7 @@ const EMOJI: Icons = Icons {
     quit: "🚪",
     update: "⬆",
     ok: "✅",
-    setting: ["👤", "🔑", "🔓", "🚪", "🎧", "🔊", "🎶", "🔔", "🎨", "😀", "🔲", "📐", "📏", "🆕", "📝"],
+    setting: ["👤", "🔑", "🔓", "🚪", "🎧", "🔊", "🎶", "🔔", "🎨", "😀", "🔲", "📐", "💿", "👾", "🆕", "📝"],
 };
 
 const NERD: Icons = Icons {
@@ -83,7 +83,7 @@ const NERD: Icons = Icons {
     ok: "\u{f058}",
     setting: [
         "\u{f007}", "\u{f084}", "\u{f09c}", "\u{f08b}", "\u{f025}", "\u{f028}", "\u{f04b}", "\u{f0f3}", "\u{f1fc}",
-        "\u{f118}", "\u{f0c8}", "\u{f07e}", "\u{f07d}", "\u{f0aa}", "\u{f044}",
+        "\u{f118}", "\u{f0c8}", "\u{f07e}", "\u{f03e}", "\u{f00a}", "\u{f0aa}", "\u{f044}",
     ],
 };
 
@@ -110,7 +110,7 @@ const UNICODE: Icons = Icons {
     quit: "⏻",
     update: "↑",
     ok: "✔",
-    setting: ["@", "*", "→", "⏻", "♫", "◖", "▶", "♪", "◐", "☺", "▢", "↔", "↕", "↑", "✎"],
+    setting: ["@", "*", "→", "⏻", "♫", "◖", "▶", "♪", "◐", "☺", "▢", "↔", "▦", "▩", "↑", "✎"],
 };
 
 pub fn icons(set: IconSet) -> &'static Icons {

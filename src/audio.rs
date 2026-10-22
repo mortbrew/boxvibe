@@ -54,7 +54,16 @@ impl Audio {
                 Err(e) => (None, Some(format!("no sound device ({e}): playing silently"))),
             }
         };
-        Self { device, player: None, clock: Clock::default(), paused: false, active: false, volume, problem, samples: Default::default() }
+        Self {
+            device,
+            player: None,
+            clock: Clock::default(),
+            paused: false,
+            active: false,
+            volume,
+            problem,
+            samples: Default::default(),
+        }
     }
 
     pub fn has_device(&self) -> bool {

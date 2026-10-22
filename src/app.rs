@@ -15,7 +15,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::audio::Audio;
 use crate::backend::{Backend, Reply, Request};
-use crate::config::{self, Config, ConfigWarning};
+use crate::config::{self, AlbumArt, Config, ConfigWarning};
 use crate::pandora::{Quality, Rating, Song, Station};
 use crate::theme::{self, Palette};
 use crate::update::{Progress, Replace, Update};
@@ -79,13 +79,15 @@ pub enum Setting {
     Icons,
     BorderStyle,
     MenuWidth,
+    AlbumArt,
+    Pixelation,
     CheckUpdates,
     EditFile,
 }
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 14] = [
+    pub const ALL: [(&'static str, Self); 16] = [
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
@@ -98,6 +100,8 @@ impl Setting {
         ("LOOK", Self::Icons),
         ("LOOK", Self::BorderStyle),
         ("LOOK", Self::MenuWidth),
+        ("LOOK", Self::AlbumArt),
+        ("LOOK", Self::Pixelation),
         ("BOXVIBE", Self::CheckUpdates),
         ("BOXVIBE", Self::EditFile),
     ];
@@ -116,6 +120,8 @@ impl Setting {
             Self::Icons => "Icons",
             Self::BorderStyle => "Border style",
             Self::MenuWidth => "Menu width",
+            Self::AlbumArt => "Album art",
+            Self::Pixelation => "Pixelation",
             Self::CheckUpdates => "Look for new versions on startup",
             Self::EditFile => "Edit config.toml",
         }
@@ -142,6 +148,10 @@ impl Setting {
             Self::Icons => "Emoji, Nerd Font (needs one installed) or plain Unicode. Also i.",
             Self::BorderStyle => "How every pane's border is drawn: plain, rounded, thick, double or none.",
             Self::MenuWidth => "The menu's width, 20 to 40 columns (never more than half the screen). Also { and }.",
+            Self::AlbumArt => {
+                "Picture: real covers (sixel, kitty, iTerm2); Blocks: coloured half blocks; Off: visualizer."
+            }
+            Self::Pixelation => "Makes the cover blocky on purpose: 64, 32, 16 or 8 pixels across, or Off.",
             Self::CheckUpdates => "Asks GitHub when boxvibe opens; About shows the new version and Update Now.",
             Self::EditFile => "Opens config.toml in $EDITOR; boxvibe reads it again when you close it.",
         }
@@ -191,6 +201,8 @@ pub struct App {
     pub help: bool,
     pub buffering: Option<String>,
     audio_cache: HashMap<String, Vec<u8>>,
+    /// Covers and the visualizer's bars.
+    pub art: crate::art::Art,
     requested: HashSet<String>,
     playlist_pending: bool,
     pub audio: Audio,
@@ -212,6 +224,8 @@ pub struct App {
 }
 
 const HISTORY_LEN: usize = 10;
+/// Visualizer bands (the art box draws as many as fit).
+const BANDS: usize = 48;
 
 impl App {
     pub fn new(config: Config, config_path: Option<PathBuf>, warnings: &[ConfigWarning], demo: bool) -> Self {
@@ -254,6 +268,7 @@ impl App {
             hifi: None,
             restart: false,
             confirm_quit: false,
+            art: crate::art::Art::default(),
             quit: false,
             config,
             config_path,
@@ -459,6 +474,10 @@ impl App {
         if self.now.as_ref().is_some_and(|s| self.audio.finished(s.length)) {
             self.advance();
         }
+        self.want_art();
+        if self.animating() {
+            self.step_bars();
+        }
         if self.follows_omarchy() && self.last_theme_poll.elapsed() > Duration::from_secs(2) {
             self.last_theme_poll = Instant::now();
             if let Some(p) = self.omarchy.poll() {
@@ -467,9 +486,47 @@ impl App {
         }
     }
 
+    /// Asks for the covers of this song and the next one.
+    fn want_art(&mut self) {
+        if self.config.ui.album_art == AlbumArt::Off {
+            return;
+        }
+        let urls = [self.now.as_ref(), self.queue.front()].map(|s| s.map(|s| s.cover_art_url.clone()));
+        for url in urls.into_iter().flatten() {
+            if self.art.want(&url) {
+                self.backend.send(Request::Art { url });
+            }
+        }
+    }
+
+    /// Music is moving: the visualizer animates (and frames come faster).
+    pub fn animating(&self) -> bool {
+        self.now.is_some() && self.audio.is_active() && !self.audio.is_paused() && self.buffering.is_none()
+    }
+
+    /// The visualizer's next frame: the sound's spectrum, or in the demo
+    /// (no sound) a made-up one that moves with the clock.
+    fn step_bars(&mut self) {
+        let target = if self.demo || !self.audio.has_device() {
+            let t = self.audio.position().as_secs_f32();
+            (0..BANDS)
+                .map(|b| {
+                    let x = b as f32 / BANDS as f32;
+                    let wave = ((t * 3.1 + x * 9.0).sin() * 0.5 + 0.5) * ((t * 1.7 - x * 4.0).cos() * 0.25 + 0.75);
+                    (wave * (1.0 - x * 0.5)).clamp(0.0, 1.0)
+                })
+                .collect()
+        } else {
+            let (samples, rate) = self.audio.samples.snapshot();
+            crate::visualizer::bands(&samples, rate, BANDS)
+        };
+        self.art.bars.update(&target);
+    }
+
     pub fn settle(&mut self, timeout: Duration) {
         while let Ok(reply) = self.backend.replies.recv_timeout(timeout) {
             self.on_reply(reply);
+            self.want_art();
         }
     }
 
@@ -575,6 +632,7 @@ impl App {
                     self.audio_cache.insert(track_token, data);
                 }
             }
+            Reply::Art { url, image } => self.art.arrived(url, image),
             Reply::AudioFailed { track_token, message } => {
                 self.requested.remove(&track_token);
                 if self.buffering.as_deref() == Some(&track_token) {
@@ -837,6 +895,11 @@ impl App {
             Setting::Icons => crate::icons::label(self.config.ui.icons).into(),
             Setting::BorderStyle => self.config.ui.border_style.label().into(),
             Setting::MenuWidth => format!("{} columns", self.config.ui.menu_width),
+            Setting::AlbumArt => match self.config.ui.album_art {
+                AlbumArt::Picture => format!("Picture ({})", self.art.protocol_name()),
+                other => other.label().into(),
+            },
+            Setting::Pixelation => self.config.ui.art_pixelation.label().into(),
             Setting::CheckUpdates => on(self.config.ui.check_updates),
             Setting::EditFile => self
                 .config_path
@@ -913,6 +976,20 @@ impl App {
                 self.save(&[("ui", "menu_width", i64::from(next).into())]);
                 self.status = format!("Menu width: {next} columns");
             }
+            Setting::AlbumArt => {
+                let next = self.config.ui.album_art.next();
+                self.config.ui.album_art = next;
+                self.art.forget_shown();
+                self.save(&[("ui", "album_art", next.as_str().into())]);
+                self.status = format!("Album art: {}", next.label());
+            }
+            Setting::Pixelation => {
+                let next = self.config.ui.art_pixelation.next();
+                self.config.ui.art_pixelation = next;
+                self.art.forget_shown();
+                self.save(&[("ui", "art_pixelation", next.as_str().into())]);
+                self.status = format!("Pixelation: {}", next.label());
+            }
             Setting::CheckUpdates => {
                 self.config.ui.check_updates = !self.config.ui.check_updates;
                 self.save(&[("ui", "check_updates", self.config.ui.check_updates.into())]);
@@ -936,6 +1013,7 @@ impl App {
                 let login_changed = config.pandora.username != self.config.pandora.username
                     || config.pandora.password != self.config.pandora.password;
                 self.config = config;
+                self.art.forget_shown();
                 self.apply_theme();
                 self.audio.set_volume(self.config.player.volume);
                 self.backend.send(Request::Quality(Quality::parse(&self.config.pandora.audio_quality)));
@@ -1277,6 +1355,26 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn enter_cycles_album_art_and_pixelation() {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        for (setting, first, second) in
+            [(Setting::AlbumArt, "Blocks", "Off (visualizer)"), (Setting::Pixelation, "Low (64 px)", "Medium (32 px)")]
+        {
+            app.settings_cursor = Setting::ALL.iter().position(|(_, s)| *s == setting).unwrap();
+            assert_eq!(Setting::ALL[app.settings_cursor].0, "LOOK");
+            app.on_key(key(KeyCode::Enter));
+            assert_eq!(app.setting_value(setting), first);
+            app.on_key(key(KeyCode::Enter));
+            assert_eq!(app.setting_value(setting), second);
+        }
+        assert_eq!(app.config.ui.album_art, AlbumArt::Off);
+        assert_eq!(app.config.ui.art_pixelation, crate::config::Pixelation::Medium);
+        assert!(app.setting_value(Setting::AlbumArt).starts_with("Off"));
     }
 
     #[test]

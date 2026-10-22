@@ -4,6 +4,9 @@
 
 ### Layout and key fixes (`ui-refresh`)
 
+- `N` (Shift+n) puts the menu on NOW PLAYING and the keys on the Now Playing pane, which lights up as active; `Tab` now goes menu → Now Playing → Up Next → History
+- `u` / `+` and `d` / `-` always rate the playing song, whichever pane has the keys (before, they rated History's row there)
+- New `U` / `D` (Shift+u / Shift+d) rate the highlighted Up Next or History row (the focused pane, else the last one used), with Pandora's addFeedback on that song's track token; the row's rating updates, a thumbs down drops an Up Next song, and an empty pane or a song without a token says so in the status line. Tests: `shift_n_focuses_the_now_playing_pane`, `lowercase_u_d_always_rate_the_playing_song`, `shift_u_d_rate_the_highlighted_row`, `tab_goes_menu_now_playing_up_next_history_and_back`
 - Up Next and History text can no longer run into the time or rating: that column is its own table in its own space, song text is cut by worst-case width with a cell to spare, and symbols terminals draw at different widths (one-cell pictographs like ❤ ☀, Nerd Font glyphs, joiners, zero-width marks) are dropped from song text. The same applies to the Stations list and Now Playing info
 - Up Next's TIME column and selection bar keep a blank cell before the pane's right border, like History's RATED column
 - Quit is now `Q` (Shift+q) or `Ctrl+c`; lowercase `q` no longer quits. `Q` asks first in a "Quit boxvibe?" box like tubevibe's (`y` quits, any other key cancels); `Ctrl+c` quits at once

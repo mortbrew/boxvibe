@@ -157,11 +157,15 @@ impl Setting {
 /// The two song panes under Now Playing; Tab goes menu → Up Next → History.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
+    /// The Now Playing card itself (`N` puts the keys here).
+    NowPlaying,
     UpNext,
     History,
 }
 
 pub struct App {
+    /// The song pane `U` / `D` rate in when Now Playing or the menu has the keys.
+    pub last_song_pane: Pane,
     pub config: Config,
     pub config_path: Option<PathBuf>,
     pub demo: bool,
@@ -228,6 +232,7 @@ impl App {
             settings_cursor: 0,
             stations_cursor: 0,
             pane: Pane::UpNext,
+            last_song_pane: Pane::UpNext,
             next_cursor: 0,
             history_cursor: 0,
             prompt: None,
@@ -369,8 +374,10 @@ impl App {
             return;
         }
         self.view = View::Player;
-        self.focus = Focus::Menu;
         self.point_menu_at_view();
+        // The keys go to the Now Playing pane, so it shows as active.
+        self.focus = Focus::Content;
+        self.pane = Pane::NowPlaying;
     }
 
     /// Stations (menu entry or `s`): the list, with the keys on it.
@@ -781,6 +788,7 @@ impl App {
         let (cursor, len) = match self.pane {
             Pane::UpNext => (&mut self.next_cursor, self.queue.len()),
             Pane::History => (&mut self.history_cursor, self.history.len()),
+            Pane::NowPlaying => return,
         };
         if len > 0 {
             *cursor = step(*cursor, len, by);
@@ -1029,6 +1037,8 @@ impl App {
             }
             KeyCode::Char('+') | KeyCode::Char('u') | KeyCode::Char('=') => self.rate(true),
             KeyCode::Char('-') | KeyCode::Char('d') => self.rate(false),
+            KeyCode::Char('U') => self.rate_row(true),
+            KeyCode::Char('D') => self.rate_row(false),
             KeyCode::Char('z') => self.tired(),
             KeyCode::Char('N') => self.show_now_playing(),
             KeyCode::Char('s') => {
@@ -1060,17 +1070,24 @@ impl App {
     /// Tab: menu → Up Next → History → menu on the player (Shift+Tab the
     /// other way); menu ⇄ page elsewhere.
     fn next_focus(&mut self, forward: bool) {
-        let order = [(Focus::Menu, Pane::UpNext), (Focus::Content, Pane::UpNext), (Focus::Content, Pane::History)];
+        let order = [
+            (Focus::Menu, Pane::UpNext),
+            (Focus::Content, Pane::NowPlaying),
+            (Focus::Content, Pane::UpNext),
+            (Focus::Content, Pane::History),
+        ];
         if self.view == View::Player {
-            let at = if self.focus == Focus::Menu {
-                0
-            } else if self.pane == Pane::UpNext {
-                1
-            } else {
-                2
+            let at = match (self.focus, self.pane) {
+                (Focus::Menu, _) => 0,
+                (_, Pane::NowPlaying) => 1,
+                (_, Pane::UpNext) => 2,
+                (_, Pane::History) => 3,
             };
-            let to = if forward { (at + 1) % 3 } else { (at + 2) % 3 };
+            let to = if forward { (at + 1) % 4 } else { (at + 3) % 4 };
             (self.focus, self.pane) = order[to];
+            if matches!(self.pane, Pane::UpNext | Pane::History) && self.focus == Focus::Content {
+                self.last_song_pane = self.pane;
+            }
             if to == 0 {
                 self.pane = Pane::UpNext;
             }
@@ -1144,26 +1161,51 @@ impl App {
         self.status = format!("Volume {volume}%");
     }
 
-    /// `+`/`-` act on the selected History row while History has the keys,
-    /// else on the playing song.
+    /// `u`/`+` and `d`/`-`: always the playing song, whatever has the keys.
     fn rate(&mut self, positive: bool) {
-        if self.in_songs() && self.pane == Pane::UpNext {
-            self.status = "Rate it once it plays".into();
+        let Some(song) = self.now.as_mut() else {
+            self.status = "Nothing is playing to rate".into();
             return;
-        }
-        let from_history = self.in_songs() && self.pane == Pane::History;
-        let at = self.history_index();
-        let song = if from_history { self.history.get_mut(at) } else { self.now.as_mut() };
-        let Some(song) = song else { return };
+        };
         if song.station_id.is_empty() || song.track_token.is_empty() {
+            self.status = "Pandora can't rate this song (no track token)".into();
             return;
         }
         song.rating = if positive { Rating::Up } else { Rating::Down };
         let request = Request::Rate { track_token: song.track_token.clone(), positive };
         self.backend.send(request);
         // Like Pandora: a thumbs down on the playing song skips it.
-        if !positive && !from_history {
+        if !positive {
             self.advance();
+        }
+    }
+
+    /// `U` / `D`: the highlighted row of Up Next or History (the focused one,
+    /// else the last one that had the keys). Pandora's addFeedback takes any
+    /// track token from the station's playlist, played or not.
+    fn rate_row(&mut self, positive: bool) {
+        let pane = if self.in_songs() && self.pane != Pane::NowPlaying { self.pane } else { self.last_song_pane };
+        let (at, name) = match pane {
+            Pane::History => (self.history_index(), "History"),
+            _ => (self.next_index(), "Up Next"),
+        };
+        let song = if pane == Pane::History { self.history.get_mut(at) } else { self.queue.get_mut(at) };
+        let Some(song) = song else {
+            self.status = format!("{name} is empty: no song to rate (U / D rate its highlighted row)");
+            return;
+        };
+        if song.station_id.is_empty() || song.track_token.is_empty() {
+            self.status = format!("Pandora can't rate “{}” (no track token)", song.title);
+            return;
+        }
+        song.rating = if positive { Rating::Up } else { Rating::Down };
+        self.backend.send(Request::Rate { track_token: song.track_token.clone(), positive });
+        // A thumbs down on a song still to come drops it, as skipping would.
+        if !positive && pane == Pane::UpNext {
+            let Some(gone) = self.queue.remove(at) else { return };
+            self.requested.remove(&gone.track_token);
+            self.audio_cache.remove(&gone.track_token);
+            self.status = format!("Disliked and dropped from Up Next: {}", gone.title);
         }
     }
 
@@ -1407,9 +1449,11 @@ mod tests {
         app.view = View::About;
         app.focus = Focus::Content;
         app.on_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT));
-        assert_eq!((app.view, app.focus, app.menu_selected()), (View::Player, Focus::Menu, MenuItem::NowPlaying));
+        assert_eq!((app.view, app.focus, app.menu_selected()), (View::Player, Focus::Content, MenuItem::NowPlaying));
+        assert_eq!(app.pane, Pane::NowPlaying);
         let title = app.now.as_ref().map(|s| s.title.clone());
         app.view = View::Settings;
+        app.focus = Focus::Menu;
         app.menu_cursor = 0;
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.view, View::Player);
@@ -1502,9 +1546,11 @@ mod tests {
     }
 
     #[test]
-    fn tab_goes_menu_up_next_history_and_back() {
+    fn tab_goes_menu_now_playing_up_next_history_and_back() {
         let mut app = demo();
         assert_eq!(app.focus, Focus::Menu);
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!((app.focus, app.pane), (Focus::Content, Pane::NowPlaying));
         app.on_key(key(KeyCode::Tab));
         assert_eq!((app.focus, app.pane), (Focus::Content, Pane::UpNext));
         app.on_key(key(KeyCode::Tab));
@@ -1516,20 +1562,62 @@ mod tests {
     }
 
     #[test]
-    fn rating_a_played_song_in_history() {
+    fn lowercase_u_d_always_rate_the_playing_song() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::History;
+        let before = app.history[0].rating;
+        app.on_key(key(KeyCode::Char('u')));
+        assert_eq!(app.now.as_ref().unwrap().rating, Rating::Up);
+        assert_eq!(app.history[0].rating, before, "History row untouched");
+        let playing = app.now.as_ref().unwrap().track_token.clone();
+        app.on_key(key(KeyCode::Char('d')));
+        assert!(app.history.iter().any(|s| s.track_token == playing && s.rating == Rating::Down));
+        assert_ne!(app.now.as_ref().unwrap().track_token, playing, "thumbs down skips");
+    }
+
+    #[test]
+    fn shift_u_d_rate_the_highlighted_row() {
         let mut app = demo();
         app.focus = Focus::Content;
         app.pane = Pane::History;
         app.on_key(key(KeyCode::Char('j')));
-        assert_eq!(app.history_index(), 1);
-        let token = app.history[1].track_token.clone();
-        app.on_key(key(KeyCode::Char('d')));
-        assert_eq!((app.history[1].track_token.as_str(), app.history[1].rating), (token.as_str(), Rating::Down));
-        assert!(app.now.is_some(), "rating History doesn't skip");
-        // Up Next can't be rated yet.
+        let playing = app.now.as_ref().unwrap().track_token.clone();
+        app.on_key(key(KeyCode::Char('D')));
+        assert_eq!(app.history[1].rating, Rating::Down);
+        assert_eq!(app.now.as_ref().unwrap().track_token, playing, "rating a row doesn't skip");
+        // Up Next: U likes the highlighted song in place; D drops it.
         app.pane = Pane::UpNext;
-        app.on_key(key(KeyCode::Char('u')));
-        assert_eq!(app.status, "Rate it once it plays");
+        let token = app.queue[0].track_token.clone();
+        app.on_key(key(KeyCode::Char('U')));
+        assert_eq!((app.queue[0].track_token.as_str(), app.queue[0].rating), (token.as_str(), Rating::Up));
+        let n = app.queue.len();
+        app.on_key(key(KeyCode::Char('D')));
+        assert_eq!(app.queue.len(), n - 1);
+        assert!(app.status.starts_with("Disliked and dropped from Up Next"), "{}", app.status);
+        // From the menu, U uses the last song pane Tab reached.
+        app.focus = Focus::Menu;
+        app.last_song_pane = Pane::History;
+        app.history_cursor = 0;
+        app.on_key(key(KeyCode::Char('U')));
+        assert_eq!(app.history[0].rating, Rating::Up);
+        // An empty pane says so and does nothing.
+        app.history.clear();
+        app.on_key(key(KeyCode::Char('U')));
+        assert!(app.status.starts_with("History is empty"), "{}", app.status);
+    }
+
+    #[test]
+    fn shift_n_focuses_the_now_playing_pane() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::History;
+        app.on_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT));
+        assert_eq!((app.view, app.focus, app.pane), (View::Player, Focus::Content, Pane::NowPlaying));
+        assert_eq!(app.menu_selected(), MenuItem::NowPlaying);
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.pane, Pane::UpNext);
+        assert_eq!(app.last_song_pane, Pane::UpNext);
     }
 
     #[test]

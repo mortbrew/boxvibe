@@ -88,15 +88,16 @@ Try it without an account (made-up stations, no network, no sound):
 |---|---|
 | `space` `p` | play / pause |
 | `n` | skip |
-| `+` `u` | thumbs up |
-| `-` `d` | thumbs down (skips the song) |
+| `+` `u` | thumbs up the playing song (whatever pane has the keys) |
+| `-` `d` | thumbs down the playing song (skips it) |
+| `U` `D` (Shift) | thumbs up / down the highlighted Up Next or History row (the focused pane, else the last one used); a thumbs down drops an Up Next song |
 | `z` | tired of this song (off for a month) |
 | `Shift+←` `Shift+→` | volume down / up |
 | `j` `k` `↑` `↓` | move (wraps around the ends) · `g` `G` first / last |
 | `Enter` | play the station · open Stations / Settings / About · change a setting · Update Now |
-| `Tab` | menu → Up Next → History on the player (`Shift+Tab` back); menu ⇄ Stations / Settings / About |
+| `Tab` | menu → Now Playing → Up Next → History on the player (`Shift+Tab` back); menu ⇄ Stations / Settings / About |
 | `Esc` | back to the menu |
-| `N` (Shift+n) | Now Playing: back to the player from Settings or About (also the menu's top entry) |
+| `N` (Shift+n) | Now Playing: back to the player with the keys on the Now Playing pane and the menu on NOW PLAYING |
 | `s` | Stations: every station on the right, `Enter` plays one |
 | `f` `F` | favorite / unfavorite the station (the menu's FAVORITES section) |
 | `{` `}` | menu narrower / wider |

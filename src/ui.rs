@@ -490,7 +490,8 @@ pub fn stack_songs(width: u16) -> bool {
 fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let p = app.palette;
     let station = app.station_name().unwrap_or("no station");
-    let block = panel(title(format!("Now Playing · {station}"), &p), &p, false);
+    let focused = app.in_songs() && app.pane == Pane::NowPlaying;
+    let block = panel(title(format!("Now Playing · {station}"), &p), &p, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let inner = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
@@ -952,7 +953,10 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         (Focus::Menu, _) if matches!(app.menu_selected(), MenuItem::Favorite(_)) => {
             keys.extend([("Enter", "Play"), ("f", "Unfavorite")])
         }
-        (Focus::Menu, View::Player) => keys.extend([("Enter", "Open"), ("Tab", "Up Next")]),
+        (Focus::Menu, View::Player) => keys.extend([("Enter", "Open"), ("Tab", "Now Playing")]),
+        (Focus::Content, View::Player) if app.pane == Pane::NowPlaying => {
+            keys.extend([("Tab", "Up Next"), ("Esc", "Menu")])
+        }
         (Focus::Menu, _) => keys.extend([("Enter", "Open"), ("Tab", "Page")]),
         (Focus::Content, View::Player) if app.pane == Pane::UpNext => {
             keys.extend([("Tab", "History"), ("Esc", "Menu")])
@@ -975,8 +979,8 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     keys.extend([
         ("space", pause),
         ("n", "Skip"),
-        ("+/u", "Like"),
-        ("-/d", "Dislike"),
+        ("u/d", "Like/Dislike"),
+        ("U/D", "Rate Row"),
         ("⇧←→", "Volume"),
         ("t", "Theme"),
         ("{/}", "Menu Size"),
@@ -1020,8 +1024,9 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
             &[
                 ("space p", "play / pause"),
                 ("n", "skip to the next song"),
-                ("+ u =", "like (thumbs up)"),
-                ("- d", "dislike (thumbs down, skips the song)"),
+                ("+ u =", "like the playing song (thumbs up)"),
+                ("- d", "dislike the playing song (skips it)"),
+                ("U D", "like / dislike the Up Next or History row"),
                 ("z", "tired of this song (a month off)"),
                 ("Shift ← →", "volume down / up"),
             ],
@@ -1031,10 +1036,10 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
             &[
                 ("j k ↑ ↓", "move in the list · g G first / last"),
                 ("Enter", "play the station · open Stations / Settings / About"),
-                ("N", "Now Playing (also the menu's top entry)"),
+                ("N", "Now Playing pane gets the keys (menu on NOW PLAYING)"),
                 ("s", "Stations: every station, Enter plays one"),
                 ("f F", "favorite / unfavorite: the menu's FAVORITES"),
-                ("Tab", "menu → Up Next → History (rate past songs there)"),
+                ("Tab", "menu → Now Playing → Up Next → History"),
                 ("Esc", "back to the menu"),
             ],
         ),

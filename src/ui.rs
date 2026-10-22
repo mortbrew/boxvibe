@@ -547,17 +547,18 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         Line::from(vec![label("rating"), rating_word(song.rating, &p, ic)]),
         Line::from(vec![label("state"), state]),
     ];
-    let buttons_h = if info.height >= 13 { 3 } else { 0 };
-    let [_, text, _, progress, volume, _, buttons] = Layout::vertical([
-        Constraint::Length(1),
+    // One block (info, time, volume, buttons) centred top to bottom.
+    let buttons_h = if info.height >= STACK_WITH_BUTTONS { 4 } else { 0 };
+    let stack = centered(info, info.width, (9 + buttons_h).min(info.height));
+    let [text, _, progress, volume, buttons] = Layout::vertical([
         Constraint::Length(6),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
-        Constraint::Fill(1),
         Constraint::Length(buttons_h),
     ])
-    .areas(info);
+    .areas(stack);
+    let buttons = Rect { y: buttons.y + 1, height: buttons.height.saturating_sub(1), ..buttons };
     frame.render_widget(Paragraph::new(lines), text);
     draw_progress(frame, app, song, progress);
     draw_volume(frame, app, ic, volume);
@@ -565,6 +566,9 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         draw_buttons(frame, app, ic, song, buttons);
     }
 }
+
+/// Rows Now Playing needs before the buttons join the stack.
+pub const STACK_WITH_BUTTONS: u16 = 13;
 
 fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) {
     let p = app.palette;
@@ -1472,11 +1476,15 @@ mod tests {
         assert_eq!((art.y, art.y + art.height), (1, rows as u16 - 1), "art fills the pane's height");
         assert!(!lines[..rows].iter().any(|l| l.contains('╰') && menu(l).chars().nth(2) == Some('╰')), "no frame");
         let title = app.now.as_ref().unwrap().title.clone();
-        assert!(menu(&lines[2]).contains(&title), "song info one line down: {}", lines[2]);
         let time = lines.iter().position(|l| l.contains('●')).expect("time line");
         let volume = lines.iter().position(|l| l.contains('%') && l.contains('▮')).expect("volume");
         assert!(time < rows && volume == time + 1, "both inside Now Playing, beside the art");
         assert!(lines[time].chars().position(|c| c == '●').unwrap() > usize::from(art.x + art.width), "beside the art");
+        // The stack is centred: as many blank rows above it as below.
+        let first = lines.iter().position(|l| menu(l).contains(&title)).unwrap();
+        let last = lines[..rows].iter().rposition(|l| l.contains('╰')).expect("buttons");
+        let (above, below) = (first - 1, rows - 2 - last);
+        assert!(above.abs_diff(below) <= 1, "centred: {above} above, {below} below");
         for key in ["-/d", "+/u", "space"] {
             assert!(!lines[..rows].iter().any(|l| l.contains(key)), "no {key} under the buttons");
         }

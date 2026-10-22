@@ -649,6 +649,9 @@ fn song_table<'a>(
     let p = app.palette;
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    // Keep one blank cell before the right border so the last column and
+    // the highlight bar never touch it (matches History's breathing room).
+    let inner = Rect { width: inner.width.saturating_sub(1), ..inner };
     let (last_w, text_widths) = match widths.split_last() {
         Some((Constraint::Length(w), rest)) => (*w, rest),
         _ => (0, widths),
@@ -1274,6 +1277,33 @@ mod tests {
             let end = row.trim_end().chars().last();
             assert!(matches!(end, Some('│')), "{cols} cols: the pane's border closes the row: {row}");
             assert!(!row.contains('\u{FE0F}') && !row.contains('\t'), "{cols} cols: cleaned: {row:?}");
+        }
+    }
+
+    #[test]
+    fn up_next_keeps_a_blank_cell_before_its_right_border() {
+        let mut app = demo();
+        app.config.ui.icons = crate::config::IconSet::Unicode;
+        app.focus = crate::app::Focus::Content;
+        app.view = View::Player;
+        app.pane = Pane::UpNext;
+        // Side by side (wide) and stacked (narrow).
+        for cols in [80u16, 100, 120, 140, 160, 200] {
+            let (lines, buffer) = screen(&app, cols, 40);
+            let y0 = lines.iter().position(|l| l.contains("Up Next (")).expect("Up Next");
+            let row: Vec<char> = lines[y0].chars().collect();
+            let start = lines[y0].chars().position(|c| c == 'U').unwrap();
+            let right = (start..row.len()).find(|&x| row[x] == '┐').expect("right corner") as u16;
+            let mut y = y0 as u16 + 1;
+            let mut checked = 0;
+            while buffer[(right, y)].symbol() != "┘" {
+                let cell = &buffer[(right - 1, y)];
+                assert_eq!(cell.symbol(), " ", "{cols} cols row {y}: {}", lines[y as usize]);
+                assert_eq!(cell.bg, buffer[(right, y)].bg, "{cols} cols row {y}: highlight touches the border");
+                y += 1;
+                checked += 1;
+            }
+            assert!(checked >= 3, "{cols} cols: rows checked");
         }
     }
 

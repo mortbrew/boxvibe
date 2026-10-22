@@ -36,6 +36,10 @@ pub enum Request {
         url: String,
     },
     Quality(Quality),
+    /// An album cover for Now Playing (its own thread: never waits on audio).
+    Art {
+        url: String,
+    },
 }
 
 pub enum Reply {
@@ -74,6 +78,11 @@ pub enum Reply {
         what: &'static str,
         message: String,
     },
+    /// `None`: no cover (download or decode failed).
+    Art {
+        url: String,
+        image: Option<image::DynamicImage>,
+    },
     UpdateFound(Update),
     UpToDate,
     UpdateProgress(u8),
@@ -83,13 +92,18 @@ pub enum Reply {
 pub struct Backend {
     api: Sender<Request>,
     audio: Sender<Request>,
+    art: Sender<Request>,
     pub replies: Receiver<Reply>,
     tx: Sender<Reply>,
 }
 
 impl Backend {
     pub fn send(&self, request: Request) {
-        let to = if matches!(request, Request::Audio { .. }) { &self.audio } else { &self.api };
+        let to = match request {
+            Request::Audio { .. } => &self.audio,
+            Request::Art { .. } => &self.art,
+            _ => &self.api,
+        };
         let _ = to.send(request);
     }
 
@@ -98,6 +112,10 @@ impl Backend {
         let tx = reply_tx.clone();
         let (api, api_rx) = mpsc::channel();
         let (audio, audio_rx) = mpsc::channel();
+        let (art, art_rx) = mpsc::channel();
+        let art_tx = reply_tx.clone();
+        let art_agent = user_agent.clone();
+        thread::spawn(move || art_worker(art_rx, art_tx, demo, &art_agent));
         if demo {
             let demo_tx = reply_tx.clone();
             thread::spawn(move || demo_worker(api_rx, demo_tx));
@@ -114,7 +132,7 @@ impl Backend {
             thread::spawn(move || api_worker(api_rx, api_tx, quality, &agent));
             thread::spawn(move || audio_worker(audio_rx, reply_tx, &user_agent));
         }
-        Self { api, audio, replies, tx }
+        Self { api, audio, art, replies, tx }
     }
 
     /// Asks GitHub for a newer release, quietly: no network or no news says nothing.
@@ -155,7 +173,7 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
             }
             Request::Rate { track_token, positive } => Reply::Rated { track_token, positive },
             Request::Tired { track_token } => Reply::Tired { track_token },
-            Request::Audio { .. } | Request::Quality(_) | Request::Started { .. } => continue,
+            Request::Audio { .. } | Request::Art { .. } | Request::Quality(_) | Request::Started { .. } => continue,
         };
         if replies.send(reply).is_err() {
             break;
@@ -204,7 +222,7 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                 client.quality = quality;
                 continue;
             }
-            Request::Audio { .. } => continue,
+            Request::Audio { .. } | Request::Art { .. } => continue,
         };
         if took_over && !matches!(reply, Reply::TookOver) && replies.send(Reply::TookOver).is_err() {
             break;
@@ -243,6 +261,36 @@ fn audio_worker(requests: Receiver<Request>, replies: Sender<Reply>, user_agent:
             }
         };
         if replies.send(reply).is_err() {
+            break;
+        }
+    }
+}
+
+/// Covers: the disk cache first, else Pandora's CDN (kept on disk, capped);
+/// `demo` makes one up so nothing touches the network.
+fn art_worker(requests: Receiver<Request>, replies: Sender<Reply>, demo: bool, user_agent: &str) {
+    let client = Client::new(user_agent);
+    let dir = if demo { None } else { crate::art::cache_dir() };
+    for request in requests {
+        let Request::Art { url } = request else { continue };
+        let image = if demo {
+            Some(crate::art::demo_cover(&url))
+        } else {
+            let file = dir.as_ref().map(|d| crate::art::cache_path(d, &url));
+            let cached = file.as_ref().and_then(|f| std::fs::read(f).ok()).and_then(|b| crate::art::decode(&b));
+            cached.or_else(|| {
+                let bytes = client.fetch_art(&url).ok()?;
+                let image = crate::art::decode(&bytes)?;
+                if let (Some(d), Some(f)) = (&dir, &file)
+                    && std::fs::create_dir_all(d).is_ok()
+                    && std::fs::write(f, &bytes).is_ok()
+                {
+                    crate::art::trim_cache(d, crate::art::DISK_CAP);
+                }
+                Some(image)
+            })
+        };
+        if replies.send(Reply::Art { url, image }).is_err() {
             break;
         }
     }

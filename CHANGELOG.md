@@ -2,6 +2,26 @@
 
 ## 0.2.0 (unreleased)
 
+### Album art (`album-art`)
+
+- The Now Playing box shows the cover, drawn with
+  [ratatui-image](https://github.com/benjajaja/ratatui-image): sixel, kitty or
+  iTerm2 pictures where the terminal supports them (asked once at startup),
+  half blocks otherwise and always inside tmux or Zellij. Redrawn to fit when
+  the window is resized.
+- Covers (about 500 px) download on their own thread, never holding up the
+  screen, and are cached in memory and in `~/.cache/boxvibe/art` (50 MB cap).
+- No cover, still loading, or art Off: a spectrum visualizer of the decoded
+  audio in green, yellow and orange with peak caps, ~18 fps while playing,
+  frozen while paused, with a dim "♪ no cover" caption.
+- Settings → LOOK: **Album art** (Picture / Blocks / Off, `[ui] album_art`)
+  and **Pixelation** (Off / Low / Medium / High / Max, `[ui] art_pixelation`).
+  Bad values fall back to the defaults with a warning.
+- Demo mode and `--snapshot` draw made-up covers, so nothing needs the network.
+- Needs Rust 1.90 (the sixel encoder's dependencies).
+- The Settings icons for "Look for new versions" and "Edit config.toml" were one
+  row off; fixed.
+
 ### Layout and key fixes (`ui-refresh`)
 
 - History keeps the last 10 songs (was 30)

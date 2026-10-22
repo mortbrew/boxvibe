@@ -70,7 +70,7 @@ pub struct Song {
     /// Signed CDN link, valid for a limited time.
     pub audio_url: String,
     pub audio_format: AudioFormat,
-    /// The largest album art there is (kept for later; not drawn yet).
+    /// The album cover Now Playing draws (about 500 px: [`art_for_box`]).
     pub cover_art_url: String,
     pub detail_url: String,
     /// `trackLength`, seconds (0 when missing).
@@ -210,6 +210,26 @@ pub fn largest_art(list: Option<&Value>) -> String {
         .unwrap_or_default()
 }
 
+/// The cover for Now Playing's art box: the smallest one at least `ART_SIZE`
+/// pixels across (sharp enough for sixel, a small download), else the largest.
+pub fn art_for_box(list: Option<&Value>) -> String {
+    let items: Vec<(u64, String)> = list
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(|a| (a.get("size").and_then(Value::as_u64).unwrap_or(0), str_of(a, "url")))
+                .filter(|(_, u)| !u.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let big_enough = items.iter().filter(|(s, _)| *s >= ART_SIZE).min_by_key(|(s, _)| *s);
+    big_enough.or_else(|| items.iter().max_by_key(|(s, _)| *s)).map(|(_, u)| u.clone()).unwrap_or_default()
+}
+
+/// Pixels across the cover boxvibe downloads.
+pub const ART_SIZE: u64 = 500;
+
 /// One `getStations` entry.
 pub fn parse_station(v: &Value) -> Option<Station> {
     let id = str_of(v, "stationId");
@@ -257,7 +277,7 @@ pub fn parse_track(v: &Value, station_id: &str) -> Option<Song> {
         } else {
             AudioFormat::Unknown
         },
-        cover_art_url: largest_art(v.get("albumArt")),
+        cover_art_url: art_for_box(v.get("albumArt")),
         detail_url: str_of(v, "songDetailURL"),
         length: v.get("trackLength").and_then(Value::as_u64).unwrap_or(0) as u32,
         gain: v
@@ -490,6 +510,15 @@ impl Client {
 
     /// Downloads a song's audio (a few MB) to decode it.
     pub fn fetch_audio(&self, url: &str) -> Result<Vec<u8>, Error> {
+        self.fetch(url, "audio", 64 * 1024 * 1024)
+    }
+
+    /// An album cover (Pandora's art CDN), at most 8 MB.
+    pub fn fetch_art(&self, url: &str) -> Result<Vec<u8>, Error> {
+        self.fetch(url, "art", 8 * 1024 * 1024)
+    }
+
+    fn fetch(&self, url: &str, what: &str, limit: u64) -> Result<Vec<u8>, Error> {
         let mut response = self
             .agent
             .get(url)
@@ -498,9 +527,9 @@ impl Client {
             .call()
             .map_err(|e| Error::Http(e.to_string()))?;
         if !response.status().is_success() {
-            return Err(Error::Http(format!("audio: HTTP {}", response.status())));
+            return Err(Error::Http(format!("{what}: HTTP {}", response.status())));
         }
-        response.body_mut().with_config().limit(64 * 1024 * 1024).read_to_vec().map_err(|e| Error::Http(e.to_string()))
+        response.body_mut().with_config().limit(limit).read_to_vec().map_err(|e| Error::Http(e.to_string()))
     }
 }
 

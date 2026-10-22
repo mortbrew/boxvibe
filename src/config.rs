@@ -87,6 +87,11 @@ pub struct UiConfig {
     pub border_style: BorderStyle,
     /// Columns of the left menu ([`MENU_WIDTH`]; never more than half the screen).
     pub menu_width: u16,
+    /// How Now Playing shows the cover: a real picture, coloured blocks, or
+    /// (`off`) the spectrum visualizer only.
+    pub album_art: AlbumArt,
+    /// Makes the cover blocky on purpose (for fun): `off` is full resolution.
+    pub art_pixelation: Pixelation,
     /// Stations starred with `f`, in the order starred: the menu's FAVORITES.
     pub favorites: Vec<Favorite>,
 }
@@ -110,6 +115,8 @@ impl Default for UiConfig {
             autoplay_last_station: true,
             border_style: BorderStyle::Plain,
             menu_width: MENU_WIDTH.default,
+            album_art: AlbumArt::Picture,
+            art_pixelation: Pixelation::Off,
             favorites: Vec::new(),
         }
     }
@@ -191,6 +198,97 @@ impl BorderStyle {
             Self::Thick => "Thick",
             Self::Double => "Double",
             Self::None => "None",
+        }
+    }
+}
+
+/// Settings → LOOK → Album art.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AlbumArt {
+    /// The best the terminal can draw: sixel, kitty or iTerm2, else blocks.
+    #[default]
+    Picture,
+    /// Unicode half blocks, in any terminal.
+    Blocks,
+    /// No cover: the visualizer.
+    Off,
+}
+
+impl AlbumArt {
+    pub const ALL: [Self; 3] = [Self::Picture, Self::Blocks, Self::Off];
+
+    pub fn next(self) -> Self {
+        let at = Self::ALL.iter().position(|a| *a == self).unwrap_or(0);
+        Self::ALL[(at + 1) % Self::ALL.len()]
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Picture => "picture",
+            Self::Blocks => "blocks",
+            Self::Off => "off",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Picture => "Picture",
+            Self::Blocks => "Blocks",
+            Self::Off => "Off (visualizer)",
+        }
+    }
+}
+
+/// Settings → LOOK → Pixelation: the cover shrunk to a small grid and blown
+/// up again (nearest neighbour), so it looks like pixel art.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Pixelation {
+    #[default]
+    Off,
+    Low,
+    Medium,
+    High,
+    Max,
+}
+
+impl Pixelation {
+    pub const ALL: [Self; 5] = [Self::Off, Self::Low, Self::Medium, Self::High, Self::Max];
+
+    pub fn next(self) -> Self {
+        let at = Self::ALL.iter().position(|a| *a == self).unwrap_or(0);
+        Self::ALL[(at + 1) % Self::ALL.len()]
+    }
+
+    /// Pixels across the shrunk cover (`None`: full resolution).
+    pub fn grid(self) -> Option<u32> {
+        match self {
+            Self::Off => None,
+            Self::Low => Some(64),
+            Self::Medium => Some(32),
+            Self::High => Some(16),
+            Self::Max => Some(8),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Max => "max",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Low => "Low (64 px)",
+            Self::Medium => "Medium (32 px)",
+            Self::High => "High (16 px)",
+            Self::Max => "Max (8 px)",
         }
     }
 }
@@ -633,6 +731,25 @@ mod tests {
     fn sizes_step_and_stop_at_the_ends() {
         assert_eq!((MENU_WIDTH.step_by(30, 1), MENU_WIDTH.step_by(30, -1)), (32, 28));
         assert_eq!((MENU_WIDTH.step_by(40, 1), MENU_WIDTH.step_by(20, -1)), (40, 20));
+    }
+
+    #[test]
+    fn album_art_and_pixelation() {
+        let (c, w) = Config::parse("").unwrap();
+        assert_eq!((c.ui.album_art, c.ui.art_pixelation, w.len()), (AlbumArt::Picture, Pixelation::Off, 0));
+        let (c, w) = Config::parse("[ui]\nalbum_art = \"blocks\"\nart_pixelation = \"high\"\n").unwrap();
+        assert_eq!((c.ui.album_art, c.ui.art_pixelation, w.len()), (AlbumArt::Blocks, Pixelation::High, 0));
+        let (c, w) = Config::parse("[ui]\nalbum_art = \"hologram\"\nart_pixelation = 7\n").unwrap();
+        assert_eq!((c.ui.album_art, c.ui.art_pixelation, w.len()), (AlbumArt::Picture, Pixelation::Off, 2));
+        assert!(AlbumArt::ALL.iter().all(|a| {
+            Config::parse(&format!("[ui]\nalbum_art = \"{}\"\n", a.as_str())).unwrap().0.ui.album_art == *a
+        }));
+        assert!(Pixelation::ALL.iter().all(|a| {
+            Config::parse(&format!("[ui]\nart_pixelation = \"{}\"\n", a.as_str())).unwrap().0.ui.art_pixelation == *a
+        }));
+        assert_eq!(AlbumArt::Off.next(), AlbumArt::Picture);
+        assert_eq!(Pixelation::Max.next(), Pixelation::Off);
+        assert_eq!(Pixelation::ALL.map(Pixelation::grid), [None, Some(64), Some(32), Some(16), Some(8)]);
     }
 
     #[test]

@@ -65,7 +65,7 @@ work right now drawn as key caps at the bottom.
 ## Build (Arch / Omarchy)
 
 ```sh
-sudo pacman -S --needed rust alsa-lib pkgconf     # or rustup for Rust 1.88+
+sudo pacman -S --needed rust alsa-lib pkgconf     # or rustup for Rust 1.90+
 git clone https://github.com/mortbrew/boxvibe
 cd boxvibe
 cargo build --release
@@ -143,9 +143,32 @@ autoplay_last_station = true   # start the station played last when boxvibe open
 border_style = "plain"         # plain | rounded | thick | double | none
 menu_width = 30                # the menu, in columns: 20–40, step 2 (at most half the screen); also { and }
 favorites = []                 # starred stations, { id = "…", name = "…" }, set with f
+album_art = "picture"          # picture | blocks | off (off: the spectrum visualizer)
+art_pixelation = "off"         # off | low | medium | high | max (64 / 32 / 16 / 8 px, blocky on purpose)
 ```
 
 `--theme NAME` and `--icons SET` change them for one run without saving.
+A bad `album_art` or `art_pixelation` value is ignored with a warning (picture / off).
+
+## Album art
+
+The Now Playing box shows the song's cover. boxvibe asks the terminal once at
+startup what it can draw:
+
+- **sixel** (foot, WezTerm, Konsole, xterm -ti vt340, Windows Terminal 1.22+),
+  **kitty** graphics (kitty, Ghostty) or **iTerm2** images: a real picture.
+- Anything else, and always inside **tmux** or **Zellij**: coloured half blocks (▀).
+
+Settings → LOOK → **Album art** picks Picture, Blocks (half blocks even when
+the terminal could do better) or Off. **Pixelation** makes the cover blocky
+for fun: it is shrunk to 64, 32, 16 or 8 pixels across and blown back up,
+nearest-neighbour.
+
+Covers download in the background and are kept in memory and in
+`~/.cache/boxvibe/art` (`$XDG_CACHE_HOME`), at most 50 MB, oldest dropped
+first. While a cover loads, when a song has none, or with Album art Off, the
+box shows a spectrum visualizer of the music that is playing (frozen while
+paused).
 
 ## Updating
 

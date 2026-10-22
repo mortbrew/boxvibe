@@ -345,11 +345,8 @@ impl App {
                 let Some(fav) = self.config.ui.favorites.get(i).cloned() else { return };
                 match self.stations.iter().position(|s| s.id == fav.id) {
                     Some(at) => {
-                        // Plays it and lands on Now Playing, cursor on NOW PLAYING.
-                        self.view = View::Player;
-                        self.focus = Focus::Menu;
+                        // tune() lands on Now Playing exactly like Shift+N.
                         self.tune(at);
-                        self.point_menu_at_view();
                     }
                     None if self.stations.is_empty() => self.status = "The stations are still loading".into(),
                     None => self.status = format!("{} isn't one of your stations any more (f removes it)", fav.name),
@@ -692,6 +689,8 @@ impl App {
             self.save(&[("pandora", "last_station", station.id.as_str().into())]);
         }
         self.status = format!("Tuning in to {}", station.name);
+        // Every way a station starts lands where Shift+N does: same function, no drift.
+        self.show_now_playing();
     }
 
     fn push_history(&mut self, song: Song) {
@@ -1108,10 +1107,7 @@ impl App {
                 if self.stations.is_empty() {
                     return;
                 }
-                self.view = View::Player;
-                self.focus = Focus::Menu;
                 self.tune(self.stations_index());
-                self.point_menu_at_view();
             }
             (Focus::Content, View::Player) => {}
         }
@@ -1313,7 +1309,10 @@ mod tests {
             app.focus = Focus::Menu;
             app.on_key(key(KeyCode::Enter));
             assert_eq!(app.current_station.as_deref(), Some(fav.id.as_str()));
-            assert_eq!((app.view, app.focus, app.menu_selected()), (View::Player, Focus::Menu, MenuItem::NowPlaying));
+            assert_eq!(
+                (app.view, app.focus, app.pane, app.menu_selected()),
+                (View::Player, Focus::Content, Pane::NowPlaying, MenuItem::NowPlaying)
+            );
         }
     }
 
@@ -1326,7 +1325,10 @@ mod tests {
         let want = app.stations[app.stations_index()].id.clone();
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.current_station.as_deref(), Some(want.as_str()));
-        assert_eq!((app.view, app.menu_selected()), (View::Player, MenuItem::NowPlaying));
+        assert_eq!(
+            (app.view, app.focus, app.pane, app.menu_selected()),
+            (View::Player, Focus::Content, Pane::NowPlaying, MenuItem::NowPlaying)
+        );
     }
 
     #[test]
@@ -1399,6 +1401,7 @@ mod tests {
         assert_eq!((step(0, 5, -1), step(4, 5, 1), step(2, 5, 1)), (4, 0, 3));
         assert_eq!((step(3, 5, -1000), step(1, 5, 1000), step(0, 0, -1)), (0, 4, 0), "g / G stop at the ends");
         let mut app = demo();
+        app.focus = Focus::Menu;
         let last = app.menu_items().len() - 1;
         app.menu_cursor = 0;
         app.on_key(key(KeyCode::Up));
@@ -1429,6 +1432,7 @@ mod tests {
     #[test]
     fn enter_on_settings_and_about_opens_them() {
         let mut app = demo();
+        app.focus = Focus::Menu;
         app.menu_cursor = 2;
         app.on_key(key(KeyCode::Enter));
         assert_eq!((app.view, app.focus), (View::Settings, Focus::Content));
@@ -1480,7 +1484,10 @@ mod tests {
         app.on_key(key(KeyCode::Char('j')));
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.current_station.as_deref(), Some(app.stations[1].id.as_str()));
-        assert_eq!((app.view, app.menu_selected()), (View::Player, MenuItem::NowPlaying));
+        assert_eq!(
+            (app.view, app.focus, app.pane, app.menu_selected()),
+            (View::Player, Focus::Content, Pane::NowPlaying, MenuItem::NowPlaying)
+        );
     }
 
     #[test]
@@ -1548,7 +1555,8 @@ mod tests {
     #[test]
     fn tab_goes_menu_now_playing_up_next_history_and_back() {
         let mut app = demo();
-        assert_eq!(app.focus, Focus::Menu);
+        assert_eq!((app.focus, app.pane), (Focus::Content, Pane::NowPlaying), "autoplay lands like N");
+        app.focus = Focus::Menu;
         app.on_key(key(KeyCode::Tab));
         assert_eq!((app.focus, app.pane), (Focus::Content, Pane::NowPlaying));
         app.on_key(key(KeyCode::Tab));
@@ -1708,6 +1716,17 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("autoplay_last_station = false") && !text.contains("\nautoplay ="), "{text}");
         assert!(!Config::load(&path).0.ui.autoplay_last_station);
+    }
+
+    #[test]
+    fn autoplay_at_startup_lands_like_shift_n() {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.settle(Duration::from_millis(150));
+        assert!(app.current_station.is_some());
+        assert_eq!(
+            (app.view, app.focus, app.pane, app.menu_selected()),
+            (View::Player, Focus::Content, Pane::NowPlaying, MenuItem::NowPlaying)
+        );
     }
 
     #[test]

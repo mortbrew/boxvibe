@@ -217,7 +217,7 @@ pub struct App {
     pub quit: bool,
 }
 
-const HISTORY_LEN: usize = 30;
+const HISTORY_LEN: usize = 10;
 
 impl App {
     pub fn new(config: Config, config_path: Option<PathBuf>, warnings: &[ConfigWarning], demo: bool) -> Self {

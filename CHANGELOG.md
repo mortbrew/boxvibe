@@ -4,6 +4,7 @@
 
 ### Layout and key fixes (`ui-refresh`)
 
+- History keeps the last 10 songs (was 30)
 - `N` (Shift+n) puts the menu on NOW PLAYING and the keys on the Now Playing pane, which lights up as active; `Tab` now goes menu → Now Playing → Up Next → History
 - Starting a station any way (Enter in Stations, Enter on a Favorite, autoplay of the last station at startup) lands exactly where `N` does: menu on NOW PLAYING and the keys on the Now Playing pane, lit up (the same function, so they can't drift). Tests: `enter_on_a_station_plays_it_and_shows_now_playing`, `enter_on_a_favorite_plays_it_and_shows_now_playing`, `autoplay_at_startup_lands_like_shift_n`
 - `u` / `+` and `d` / `-` always rate the playing song, whichever pane has the keys (before, they rated History's row there)

@@ -66,6 +66,8 @@ pub struct Art {
     /// A picture protocol was drawn and then replaced: clear the screen once.
     pub needs_clear: std::cell::Cell<bool>,
     pub bars: Bars,
+    /// Where the art box was last drawn (the cover or visualizer fills it).
+    pub last_area: std::cell::Cell<ratatui::layout::Rect>,
 }
 
 impl Art {

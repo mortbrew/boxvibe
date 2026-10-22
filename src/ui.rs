@@ -568,9 +568,9 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 
 fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) {
     let p = app.palette;
-    let block = Block::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(p.line));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    // No frame: the cover (or the visualizer) fills the box itself.
+    let inner = area;
+    app.art.last_area.set(inner);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
@@ -1168,13 +1168,12 @@ mod tests {
         app
     }
 
-    /// Rows of the Now Playing art box (between its rounded corners).
-    fn art_box(lines: &[String]) -> (usize, usize, usize, usize) {
-        let top = lines.iter().position(|l| l.contains('╭')).expect("art box");
-        let bottom = lines.iter().position(|l| l.contains('╰')).expect("art box bottom");
-        let left = lines[top].chars().position(|c| c == '╭').unwrap();
-        let right = lines[top].chars().position(|c| c == '╮').unwrap();
-        (top, bottom, left, right)
+    /// The Now Playing art box as (top, bottom, left, right), each one
+    /// cell outside the area the art may use (the old frame's position).
+    fn art_box(app: &App) -> (usize, usize, usize, usize) {
+        let a = app.art.last_area.get();
+        assert!(a.width > 0 && a.height > 0, "art box drawn");
+        (a.y as usize - 1, (a.y + a.height) as usize, a.x as usize - 1, (a.x + a.width) as usize)
     }
 
     #[test]
@@ -1185,7 +1184,7 @@ mod tests {
         assert_eq!(app.art.status(&song.cover_art_url), crate::art::Cover::None, "demo cover arrived");
         assert!(app.art.protocol(&song.cover_art_url, app.config.ui.album_art, app.config.ui.art_pixelation).is_some());
         let (lines, _) = screen(&app, 120, 36);
-        let (top, bottom, left, right) = art_box(&lines);
+        let (top, bottom, left, right) = art_box(&app);
         assert!(bottom > top + 2);
         let inside: String = lines[top + 1..bottom]
             .iter()
@@ -1193,10 +1192,11 @@ mod tests {
             .collect();
         assert!(inside.contains('▀') || inside.contains('▄'), "halfblocks picture:\n{}", lines.join("\n"));
         assert!(!inside.contains("no cover"));
-        // Nothing spilled over the box's borders.
+        // No frame around it, and nothing spilled past the box.
+        assert!(!lines[top + 1..bottom].iter().any(|l| l.contains('╭') && l.find('╭') < l.find('▀')));
         for line in &lines[top + 1..bottom] {
             let chars: Vec<char> = line.chars().collect();
-            assert_eq!((chars[left], chars[right]), ('│', '│'), "{line}");
+            assert!(!['▀', '▄'].contains(&chars[left]) && !['▀', '▄'].contains(&chars[right]), "{line}");
         }
     }
 
@@ -1206,7 +1206,7 @@ mod tests {
         app.config.ui.album_art = crate::config::AlbumArt::Off;
         app.art.bars.update(&[0.9; 48]);
         let (lines, _) = screen(&app, 120, 36);
-        let (top, bottom, left, right) = art_box(&lines);
+        let (top, bottom, left, right) = art_box(&app);
         let inside: String = lines[top + 1..bottom]
             .iter()
             .map(|l| l.chars().skip(left + 1).take(right - left - 1).collect::<String>())
@@ -1468,15 +1468,15 @@ mod tests {
         let (lines, _) = screen(&app, 120, 36);
         let rows = usize::from(now_playing_height(34, false));
         let menu = |l: &String| l.chars().skip(30).collect::<String>();
-        let art_col = |l: &String| menu(l).chars().nth(2).unwrap_or(' ');
-        assert_eq!(art_col(&lines[1]), '╭', "art starts on the pane's first row: {}", lines[1]);
-        assert_eq!(art_col(&lines[rows - 2]), '╰', "and ends on its last: {}", lines[rows - 2]);
+        let art = app.art.last_area.get();
+        assert_eq!((art.y, art.y + art.height), (1, rows as u16 - 1), "art fills the pane's height");
+        assert!(!lines[..rows].iter().any(|l| l.contains('╰') && menu(l).chars().nth(2) == Some('╰')), "no frame");
         let title = app.now.as_ref().unwrap().title.clone();
         assert!(menu(&lines[2]).contains(&title), "song info one line down: {}", lines[2]);
         let time = lines.iter().position(|l| l.contains('●')).expect("time line");
         let volume = lines.iter().position(|l| l.contains('%') && l.contains('▮')).expect("volume");
         assert!(time < rows && volume == time + 1, "both inside Now Playing, beside the art");
-        assert!(menu(&lines[time]).chars().nth(2) == Some('│'), "beside the art: {}", lines[time]);
+        assert!(lines[time].chars().position(|c| c == '●').unwrap() > usize::from(art.x + art.width), "beside the art");
         for key in ["-/d", "+/u", "space"] {
             assert!(!lines[..rows].iter().any(|l| l.contains(key)), "no {key} under the buttons");
         }

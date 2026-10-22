@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.0 (unreleased)
+
+### Now Playing polish (`now-playing-polish`)
+
+- The album art has no frame any more: the cover (or the visualizer) fills its box, centred.
+- Song info, the time line, volume and the four buttons sit together as one
+  block, centred top to bottom beside the art.
+- A sixel, kitty or iTerm2 cover no longer draws over Help or the quit box or
+  leaves bits behind: it is held back while a popup is open and sent again
+  on a cleared screen when it closes.
+- Settings → LOOK → **Tint art with theme colors** (Off / Duotone / Palette,
+  `[ui] art_tint`): recolours the cover using the current theme's colour
+  scheme, for pictures and blocks, live on theme change.
+- Up Next has a RATED column like History's, updated as soon as you press `U` or `D`.
+- The status bar shows the logged-in account at its far right, in tubevibe's
+  account colour (the theme's blue, aqua in Gruvbox); both sides cut with "…" when narrow.
+- Confirm boxes (Shift+`Q`'s "Quit boxvibe?") are symmetrical like tubevibe's:
+  a blank line above the question and below the keys; a long question wraps
+  and is cut with "…" so the box still fits small screens.
+
 ## 0.2.0 (2026-10-22)
 
 ### Album art (`album-art`)

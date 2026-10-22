@@ -9,7 +9,7 @@ with the four big buttons (thumbs down, play/pause, skip, thumbs up), **Up
 Next** and **History** side by side under it, a status bar, and the keys that
 work right now drawn as key caps at the bottom.
 
-> Early (0.1.0): it plays your stations, but cover art, search and station
+> Early (0.3.0): it plays your stations, but search and station
 > editing are still to come. Feedback welcome.
 
 ![Now Playing (Gruvbox)](screenshots/gruvbox-main.png)
@@ -145,10 +145,11 @@ menu_width = 30                # the menu, in columns: 20–40, step 2 (at most 
 favorites = []                 # starred stations, { id = "…", name = "…" }, set with f
 album_art = "picture"          # picture | blocks | off (off: the spectrum visualizer)
 art_pixelation = "off"         # off | low | medium | high | max (64 / 32 / 16 / 8 px, blocky on purpose)
+art_tint = "off"               # off | duotone | palette: recolour the cover with the theme's colours
 ```
 
 `--theme NAME` and `--icons SET` change them for one run without saving.
-A bad `album_art` or `art_pixelation` value is ignored with a warning (picture / off).
+A bad `album_art`, `art_pixelation` or `art_tint` value is ignored with a warning (picture / off / off).
 
 ## Album art
 
@@ -162,7 +163,15 @@ startup what it can draw:
 Settings → LOOK → **Album art** picks Picture, Blocks (half blocks even when
 the terminal could do better) or Off. **Pixelation** makes the cover blocky
 for fun: it is shrunk to 64, 32, 16 or 8 pixels across and blown back up,
-nearest-neighbour.
+nearest-neighbour. **Tint art with theme colors** recolours the cover using
+your current theme's colour scheme: Duotone maps its brightness from the
+theme's background to its yellow, Palette snaps every pixel to the nearest
+theme colour. It follows theme changes right away and works with Pixelation.
+
+The cover has no frame around it. While Help or the quit box is open, a
+terminal picture is held back (it would draw over the popup) and sent again,
+cleanly, when the popup closes. The status bar shows the logged-in account at
+its right.
 
 Covers download in the background and are kept in memory and in
 `~/.cache/boxvibe/art` (`$XDG_CACHE_HOME`), at most 50 MB, oldest dropped

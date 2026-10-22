@@ -1210,7 +1210,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::raw(""));
     }
     lines.push(Line::from(Span::styled(
-        " Settings and account, album art and pixelation: the Settings entry in the menu",
+        " Settings and account, album art, pixelation and tint: the Settings entry in the menu",
         Style::new().fg(p.muted),
     )));
     let box_area = centered(area, 64, lines.len() as u16 + 2);

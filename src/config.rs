@@ -92,6 +92,8 @@ pub struct UiConfig {
     pub album_art: AlbumArt,
     /// Makes the cover blocky on purpose (for fun): `off` is full resolution.
     pub art_pixelation: Pixelation,
+    /// Recolours the cover with the current theme's colours (`off`: as is).
+    pub art_tint: ArtTint,
     /// Stations starred with `f`, in the order starred: the menu's FAVORITES.
     pub favorites: Vec<Favorite>,
 }
@@ -117,6 +119,7 @@ impl Default for UiConfig {
             menu_width: MENU_WIDTH.default,
             album_art: AlbumArt::Picture,
             art_pixelation: Pixelation::Off,
+            art_tint: ArtTint::Off,
             favorites: Vec::new(),
         }
     }
@@ -236,6 +239,44 @@ impl AlbumArt {
             Self::Picture => "Picture",
             Self::Blocks => "Blocks",
             Self::Off => "Off (visualizer)",
+        }
+    }
+}
+
+/// Settings → LOOK → Tint art with theme colors: the cover recoloured with
+/// the current theme's colour scheme.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArtTint {
+    #[default]
+    Off,
+    /// Brightness mapped from the theme's background to its yellow.
+    Duotone,
+    /// Every pixel snapped to the nearest theme colour.
+    Palette,
+}
+
+impl ArtTint {
+    pub const ALL: [Self; 3] = [Self::Off, Self::Duotone, Self::Palette];
+
+    pub fn next(self) -> Self {
+        let at = Self::ALL.iter().position(|a| *a == self).unwrap_or(0);
+        Self::ALL[(at + 1) % Self::ALL.len()]
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Duotone => "duotone",
+            Self::Palette => "palette",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Duotone => "Duotone",
+            Self::Palette => "Palette",
         }
     }
 }
@@ -731,6 +772,22 @@ mod tests {
     fn sizes_step_and_stop_at_the_ends() {
         assert_eq!((MENU_WIDTH.step_by(30, 1), MENU_WIDTH.step_by(30, -1)), (32, 28));
         assert_eq!((MENU_WIDTH.step_by(40, 1), MENU_WIDTH.step_by(20, -1)), (40, 20));
+    }
+
+    #[test]
+    fn art_tint_parses_tolerantly() {
+        let (c, w) = Config::parse("").unwrap();
+        assert_eq!((c.ui.art_tint, w.len()), (ArtTint::Off, 0));
+        let (c, w) = Config::parse("[ui]\nart_tint = \"duotone\"\n").unwrap();
+        assert_eq!((c.ui.art_tint, w.len()), (ArtTint::Duotone, 0));
+        let (c, w) = Config::parse("[ui]\nart_tint = \"sepia\"\nalbum_art = \"blocks\"\n").unwrap();
+        assert_eq!((c.ui.art_tint, c.ui.album_art, w.len()), (ArtTint::Off, AlbumArt::Blocks, 1));
+        let (c, _) = Config::parse("[ui]\nart_tint = 3\n").unwrap();
+        assert_eq!(c.ui.art_tint, ArtTint::Off);
+        assert!(ArtTint::ALL.iter().all(|a| {
+            Config::parse(&format!("[ui]\nart_tint = \"{}\"\n", a.as_str())).unwrap().0.ui.art_tint == *a
+        }));
+        assert_eq!(ArtTint::Palette.next(), ArtTint::Off);
     }
 
     #[test]

@@ -607,13 +607,14 @@ fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) {
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let (mode, pixelation) = (app.config.ui.album_art, app.config.ui.art_pixelation);
+    let look = crate::art::Look::of(&app.config.ui, p);
+    let mode = look.mode;
     if app.art.held_back(mode) {
         // A popup is open: a terminal picture would draw over it.
         draw_visualizer(frame, &p, &app.art.bars, "", inner);
         return;
     }
-    if let Some(mut cover) = app.art.protocol(&song.cover_art_url, mode, pixelation) {
+    if let Some(mut cover) = app.art.protocol(&song.cover_art_url, look) {
         // Centred in the box: the picture keeps its shape.
         let fit = cover.size_for(Resize::Fit(None), inner.as_size());
         let x = inner.x + inner.width.saturating_sub(fit.width) / 2;
@@ -1220,7 +1221,7 @@ mod tests {
         app.settle(std::time::Duration::from_millis(300));
         let song = app.now.clone().expect("a song");
         assert_eq!(app.art.status(&song.cover_art_url), crate::art::Cover::None, "demo cover arrived");
-        assert!(app.art.protocol(&song.cover_art_url, app.config.ui.album_art, app.config.ui.art_pixelation).is_some());
+        assert!(app.art.protocol(&song.cover_art_url, crate::art::Look::of(&app.config.ui, app.palette)).is_some());
         let (lines, _) = screen(&app, 120, 36);
         let (top, bottom, left, right) = art_box(&app);
         assert!(bottom > top + 2);

@@ -81,13 +81,14 @@ pub enum Setting {
     MenuWidth,
     AlbumArt,
     Pixelation,
+    ArtTint,
     CheckUpdates,
     EditFile,
 }
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 16] = [
+    pub const ALL: [(&'static str, Self); 17] = [
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
@@ -102,6 +103,7 @@ impl Setting {
         ("LOOK", Self::MenuWidth),
         ("LOOK", Self::AlbumArt),
         ("LOOK", Self::Pixelation),
+        ("LOOK", Self::ArtTint),
         ("BOXVIBE", Self::CheckUpdates),
         ("BOXVIBE", Self::EditFile),
     ];
@@ -122,6 +124,7 @@ impl Setting {
             Self::MenuWidth => "Menu width",
             Self::AlbumArt => "Album art",
             Self::Pixelation => "Pixelation",
+            Self::ArtTint => "Tint art with theme colors",
             Self::CheckUpdates => "Look for new versions on startup",
             Self::EditFile => "Edit config.toml",
         }
@@ -150,6 +153,9 @@ impl Setting {
             Self::MenuWidth => "The menu's width, 20 to 40 columns (never more than half the screen). Also { and }.",
             Self::AlbumArt => {
                 "Picture: real covers (sixel, kitty, iTerm2); Blocks: coloured half blocks; Off: visualizer."
+            }
+            Self::ArtTint => {
+                "Recolors the album art using your current theme's color scheme. Duotone: theme background to yellow; Palette: only theme colors. Saved as [ui] art_tint."
             }
             Self::Pixelation => "Makes the cover blocky on purpose: 64, 32, 16 or 8 pixels across, or Off.",
             Self::CheckUpdates => "Asks GitHub when boxvibe opens; About shows the new version and Update Now.",
@@ -905,6 +911,7 @@ impl App {
                 other => other.label().into(),
             },
             Setting::Pixelation => self.config.ui.art_pixelation.label().into(),
+            Setting::ArtTint => self.config.ui.art_tint.label().into(),
             Setting::CheckUpdates => on(self.config.ui.check_updates),
             Setting::EditFile => self
                 .config_path
@@ -987,6 +994,13 @@ impl App {
                 self.art.forget_shown();
                 self.save(&[("ui", "album_art", next.as_str().into())]);
                 self.status = format!("Album art: {}", next.label());
+            }
+            Setting::ArtTint => {
+                let next = self.config.ui.art_tint.next();
+                self.config.ui.art_tint = next;
+                self.art.forget_shown();
+                self.save(&[("ui", "art_tint", next.as_str().into())]);
+                self.status = format!("Tint art with theme colors: {}", next.label());
             }
             Setting::Pixelation => {
                 let next = self.config.ui.art_pixelation.next();

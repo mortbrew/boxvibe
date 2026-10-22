@@ -14,7 +14,8 @@ use image::{DynamicImage, Rgb, RgbImage};
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 
-use crate::config::{AlbumArt, Pixelation};
+use crate::config::{AlbumArt, ArtTint, Pixelation};
+use crate::theme::Palette;
 use crate::visualizer::Bars;
 
 /// Covers kept in memory.
@@ -47,10 +48,24 @@ pub enum Cover {
     None,
 }
 
+/// How a cover is drawn: the settings and colours it was built for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Look {
+    pub mode: AlbumArt,
+    pub pixelation: Pixelation,
+    pub tint: ArtTint,
+    pub palette: Palette,
+}
+
+impl Look {
+    pub fn of(app_config: &crate::config::UiConfig, palette: Palette) -> Self {
+        Self { mode: app_config.album_art, pixelation: app_config.art_pixelation, tint: app_config.art_tint, palette }
+    }
+}
+
 struct Shown {
     url: String,
-    mode: AlbumArt,
-    pixelation: Pixelation,
+    look: Look,
     protocol: StatefulProtocol,
 }
 
@@ -145,9 +160,11 @@ impl Art {
     }
 
     /// The encoded cover for `url`, built when the song or a setting changed.
-    pub fn protocol(&self, url: &str, mode: AlbumArt, pixelation: Pixelation) -> Option<RefMut<'_, StatefulProtocol>> {
+    /// A new theme rebuilds it too (the tint uses its colours).
+    pub fn protocol(&self, url: &str, look: Look) -> Option<RefMut<'_, StatefulProtocol>> {
+        let mode = look.mode;
         let mut shown = self.shown.borrow_mut();
-        let current = shown.as_ref().is_some_and(|s| s.url == url && s.mode == mode && s.pixelation == pixelation);
+        let current = shown.as_ref().is_some_and(|s| s.url == url && s.look == look);
         if !current {
             if shown.take().is_some_and(|s| !is_blocks(&s.protocol)) {
                 self.needs_clear.set(true);
@@ -160,8 +177,9 @@ impl Art {
                 (AlbumArt::Picture, Some(p)) => p.clone(),
                 _ => Picker::halfblocks(),
             };
-            let protocol = picker.new_resize_protocol(pixelate(image, pixelation));
-            *shown = Some(Shown { url: url.into(), mode, pixelation, protocol });
+            let protocol =
+                picker.new_resize_protocol(tint(&pixelate(image, look.pixelation), look.tint, &look.palette));
+            *shown = Some(Shown { url: url.into(), look, protocol });
         }
         Some(RefMut::map(shown, |s| &mut s.as_mut().expect("just set").protocol))
     }
@@ -188,6 +206,63 @@ pub fn pixelate(image: &DynamicImage, pixelation: Pixelation) -> DynamicImage {
         return image.clone();
     }
     image.resize_exact(gw, gh, FilterType::Nearest).resize_exact(w, h, FilterType::Nearest)
+}
+
+fn rgb_of(c: ratatui::style::Color) -> Option<[u8; 3]> {
+    match c {
+        ratatui::style::Color::Rgb(r, g, b) => Some([r, g, b]),
+        _ => None,
+    }
+}
+
+/// The cover recoloured with the theme's colour scheme. Duotone maps each
+/// pixel's brightness from the theme's background through its muted grey
+/// to its yellow; Palette snaps each pixel to the nearest theme colour.
+/// Themes without RGB colours leave the cover as is.
+pub fn tint(image: &DynamicImage, tint: ArtTint, p: &Palette) -> DynamicImage {
+    let colors: Vec<[u8; 3]> = match tint {
+        ArtTint::Off => return image.clone(),
+        ArtTint::Duotone => [p.background, p.yellow].iter().filter_map(|c| rgb_of(*c)).collect(),
+        ArtTint::Palette => [
+            p.background,
+            p.fg,
+            p.muted,
+            p.highlight,
+            p.line,
+            p.blue,
+            p.cyan,
+            p.magenta,
+            p.green,
+            p.orange,
+            p.yellow,
+            p.red,
+        ]
+        .iter()
+        .filter_map(|c| rgb_of(*c))
+        .collect(),
+    };
+    if colors.len() < 2 {
+        return image.clone();
+    }
+    let mut out = image.to_rgb8();
+    for px in out.pixels_mut() {
+        let [r, g, b] = px.0.map(f32::from);
+        px.0 = match tint {
+            ArtTint::Duotone => {
+                let t = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0;
+                let (lo, hi) = (colors[0], colors[1]);
+                std::array::from_fn(|i| (f32::from(lo[i]) + (f32::from(hi[i]) - f32::from(lo[i])) * t).round() as u8)
+            }
+            _ => *colors
+                .iter()
+                .min_by_key(|c| {
+                    let d = |i: usize| (f32::from(c[i]) - [r, g, b][i]).powi(2);
+                    (2.0 * d(0) + 4.0 * d(1) + 3.0 * d(2)) as u32
+                })
+                .expect("two or more"),
+        };
+    }
+    DynamicImage::ImageRgb8(out)
 }
 
 /// A downloaded file as a cover, shrunk to [`MAX_PIXELS`].
@@ -259,6 +334,10 @@ mod tests {
     use super::*;
     use image::GenericImageView;
 
+    fn look(mode: AlbumArt, pixelation: Pixelation) -> Look {
+        Look { mode, pixelation, tint: ArtTint::Off, palette: crate::theme::BUILT_IN[0].2 }
+    }
+
     #[test]
     fn pixelation_makes_big_square_pixels_at_the_same_size() {
         let cover = demo_cover("x");
@@ -273,6 +352,56 @@ mod tests {
     }
 
     #[test]
+    fn tint_uses_only_the_themes_colours() {
+        let p = crate::theme::BUILT_IN.iter().find(|t| t.0 == "gruvbox").unwrap().2;
+        let cover = demo_cover("x");
+        assert_eq!(tint(&cover, ArtTint::Off, &p), cover);
+        let rgb = |c| rgb_of(c).unwrap();
+        let theme = [
+            p.background,
+            p.fg,
+            p.muted,
+            p.highlight,
+            p.line,
+            p.blue,
+            p.cyan,
+            p.magenta,
+            p.green,
+            p.orange,
+            p.yellow,
+            p.red,
+        ]
+        .map(rgb);
+        let pal = tint(&cover, ArtTint::Palette, &p).to_rgb8();
+        assert!(pal.pixels().all(|px| theme.contains(&px.0)), "only theme colours");
+        // Duotone: black is the background, white the yellow, grey between.
+        let mut bw = RgbImage::new(3, 1);
+        bw.put_pixel(0, 0, Rgb([0, 0, 0]));
+        bw.put_pixel(1, 0, Rgb([255, 255, 255]));
+        bw.put_pixel(2, 0, Rgb([128, 128, 128]));
+        let duo = tint(&DynamicImage::ImageRgb8(bw), ArtTint::Duotone, &p).to_rgb8();
+        assert_eq!((duo.get_pixel(0, 0).0, duo.get_pixel(1, 0).0), (rgb(p.background), rgb(p.yellow)));
+        let mid = duo.get_pixel(2, 0).0;
+        assert!((0..3).all(|i| mid[i] >= rgb(p.background)[i].min(rgb(p.yellow)[i])
+            && mid[i] <= rgb(p.background)[i].max(rgb(p.yellow)[i])));
+    }
+
+    #[test]
+    fn a_new_theme_or_tint_rebuilds_the_cover() {
+        let mut art = Art::default();
+        art.arrived("u".into(), Some(demo_cover("u")));
+        let p = crate::theme::BUILT_IN[0].2;
+        let mut look = Look { mode: AlbumArt::Blocks, pixelation: Pixelation::Off, tint: ArtTint::Duotone, palette: p };
+        let first = art.protocol("u", look).map(|_| ()).is_some();
+        assert!(first);
+        let ptr = |art: &Art| art.shown.borrow().as_ref().map(|s| s.look);
+        assert_eq!(ptr(&art), Some(look));
+        look.palette = crate::theme::BUILT_IN[1].2;
+        assert!(art.protocol("u", look).is_some());
+        assert_eq!(ptr(&art), Some(look), "rebuilt for the new theme");
+    }
+
+    #[test]
     fn a_popup_holds_back_a_terminal_picture_and_clears_around_it() {
         let mut art = Art::default();
         art.arrived("u".into(), Some(demo_cover("u")));
@@ -284,7 +413,7 @@ mod tests {
         sixel.set_protocol_type(ProtocolType::Sixel);
         art.set_graphics(Some(sixel));
         art.needs_clear.take();
-        assert!(art.protocol("u", AlbumArt::Picture, Pixelation::Off).is_some());
+        assert!(art.protocol("u", look(AlbumArt::Picture, Pixelation::Off)).is_some());
         art.set_overlay(true);
         assert!(art.held_back(AlbumArt::Picture), "no sixel over Help");
         assert!(!art.held_back(AlbumArt::Blocks));
@@ -295,7 +424,7 @@ mod tests {
         art.set_overlay(false);
         assert!(!art.held_back(AlbumArt::Picture));
         assert!(art.needs_clear.take(), "a clean screen when it closes");
-        assert!(art.protocol("u", AlbumArt::Picture, Pixelation::Off).is_some(), "built and sent again");
+        assert!(art.protocol("u", look(AlbumArt::Picture, Pixelation::Off)).is_some(), "built and sent again");
     }
 
     #[test]
@@ -303,11 +432,11 @@ mod tests {
         let mut art = Art::default();
         assert!(art.want("u") && !art.want("u"), "asked once");
         assert!(matches!(art.status("u"), Cover::Loading));
-        assert!(art.protocol("u", AlbumArt::Picture, Pixelation::Off).is_none());
+        assert!(art.protocol("u", look(AlbumArt::Picture, Pixelation::Off)).is_none());
         art.arrived("u".into(), Some(demo_cover("u")));
         assert!(!art.want("u"));
-        assert!(art.protocol("u", AlbumArt::Blocks, Pixelation::Off).is_some());
-        assert!(art.protocol("u", AlbumArt::Off, Pixelation::Off).is_none(), "off: the visualizer");
+        assert!(art.protocol("u", look(AlbumArt::Blocks, Pixelation::Off)).is_some());
+        assert!(art.protocol("u", look(AlbumArt::Off, Pixelation::Off)).is_none(), "off: the visualizer");
         art.arrived("bad".into(), None);
         assert!(!art.want("bad") && matches!(art.status("bad"), Cover::None), "a failure isn't asked again");
         assert_eq!(art.protocol_name(), "half blocks", "no terminal query in tests");

@@ -66,6 +66,9 @@ pub struct Art {
     /// A picture protocol was drawn and then replaced: clear the screen once.
     pub needs_clear: std::cell::Cell<bool>,
     pub bars: Bars,
+    /// A popup (Help, the quit box) is open: a terminal picture would draw
+    /// over it, so none is shown until it closes.
+    suspended: std::cell::Cell<bool>,
     /// Where the art box was last drawn (the cover or visualizer fills it).
     pub last_area: std::cell::Cell<ratatui::layout::Rect>,
 }
@@ -74,6 +77,27 @@ impl Art {
     pub fn set_graphics(&mut self, picker: Option<Picker>) {
         self.graphics = picker;
         self.forget_shown();
+    }
+
+    /// Call before each frame with whether a popup covers the screen.
+    /// Opening or closing one drops a terminal picture (sixel, kitty,
+    /// iTerm2) and clears the screen once, so no remnant stays behind the
+    /// popup and the cover is encoded and sent again, whole, after it.
+    pub fn set_overlay(&mut self, open: bool) {
+        if self.suspended.get() == open {
+            return;
+        }
+        self.suspended.set(open);
+        if self.graphics.is_some() {
+            self.forget_shown();
+            self.needs_clear.set(true);
+        }
+    }
+
+    /// While a popup is open, `mode` would put a terminal picture on screen:
+    /// draw no picture.
+    pub fn held_back(&self, mode: AlbumArt) -> bool {
+        self.suspended.get() && mode == AlbumArt::Picture && self.graphics.is_some()
     }
 
     /// The protocol Picture uses ("halfblocks" without graphics).
@@ -246,6 +270,32 @@ mod tests {
         assert!((32..64).all(|x| (64..96).all(|y| blocky.get_pixel(x, y) == c)));
         let distinct: HashSet<_> = (0..256).step_by(4).map(|x| blocky.get_pixel(x, 5).0).collect();
         assert!(distinct.len() <= 8, "{}", distinct.len());
+    }
+
+    #[test]
+    fn a_popup_holds_back_a_terminal_picture_and_clears_around_it() {
+        let mut art = Art::default();
+        art.arrived("u".into(), Some(demo_cover("u")));
+        // Half blocks are plain text: a popup covers them, nothing to do.
+        art.set_overlay(true);
+        assert!(!art.held_back(AlbumArt::Picture) && !art.needs_clear.take());
+        art.set_overlay(false);
+        let mut sixel = Picker::halfblocks();
+        sixel.set_protocol_type(ProtocolType::Sixel);
+        art.set_graphics(Some(sixel));
+        art.needs_clear.take();
+        assert!(art.protocol("u", AlbumArt::Picture, Pixelation::Off).is_some());
+        art.set_overlay(true);
+        assert!(art.held_back(AlbumArt::Picture), "no sixel over Help");
+        assert!(!art.held_back(AlbumArt::Blocks));
+        assert!(art.needs_clear.take(), "the picture is wiped when the popup opens");
+        assert!(art.shown.borrow().is_none());
+        art.set_overlay(true);
+        assert!(!art.needs_clear.take(), "once, not every frame");
+        art.set_overlay(false);
+        assert!(!art.held_back(AlbumArt::Picture));
+        assert!(art.needs_clear.take(), "a clean screen when it closes");
+        assert!(art.protocol("u", AlbumArt::Picture, Pixelation::Off).is_some(), "built and sent again");
     }
 
     #[test]

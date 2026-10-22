@@ -579,6 +579,11 @@ fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) {
         return;
     }
     let (mode, pixelation) = (app.config.ui.album_art, app.config.ui.art_pixelation);
+    if app.art.held_back(mode) {
+        // A popup is open: a terminal picture would draw over it.
+        draw_visualizer(frame, &p, &app.art.bars, "", inner);
+        return;
+    }
     if let Some(mut cover) = app.art.protocol(&song.cover_art_url, mode, pixelation) {
         // Centred in the box: the picture keeps its shape.
         let fit = cover.size_for(Resize::Fit(None), inner.as_size());

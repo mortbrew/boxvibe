@@ -856,6 +856,11 @@ impl App {
     }
 
     /// The player's panes have the keys.
+    /// A popup is drawn over the screen (Help, the quit box).
+    pub fn overlay_open(&self) -> bool {
+        self.help || self.confirm_quit
+    }
+
     pub fn in_songs(&self) -> bool {
         self.focus == Focus::Content && self.view == View::Player
     }

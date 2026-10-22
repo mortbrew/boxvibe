@@ -110,6 +110,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow::Result
             app.edit_config = false;
             edit_config(terminal, app)?;
         }
+        app.art.set_overlay(app.overlay_open());
         if app.art.needs_clear.take() {
             terminal.clear()?;
         }

@@ -7,6 +7,8 @@ pub struct Icons {
     pub station: &'static str,
     pub shuffle: &'static str,
     pub shared: &'static str,
+    /// A favorite station.
+    pub favorite: &'static str,
     pub play: &'static str,
     pub pause: &'static str,
     pub skip: &'static str,
@@ -26,7 +28,7 @@ pub struct Icons {
     pub update: &'static str,
     pub ok: &'static str,
     /// One per [`crate::app::Setting::ALL`] row.
-    pub setting: [&'static str; 12],
+    pub setting: [&'static str; 15],
 }
 
 const EMOJI: Icons = Icons {
@@ -34,6 +36,7 @@ const EMOJI: Icons = Icons {
     station: "📻",
     shuffle: "🔀",
     shared: "👥",
+    favorite: "⭐",
     // One cell each, like tubevibe: emoji play/pause signs differ per terminal.
     play: "▶",
     pause: "‖",
@@ -52,7 +55,7 @@ const EMOJI: Icons = Icons {
     quit: "🚪",
     update: "⬆",
     ok: "✅",
-    setting: ["👤", "🔑", "🔓", "🚪", "🎧", "🔊", "🎶", "🔔", "🎨", "😀", "🆕", "📝"],
+    setting: ["👤", "🔑", "🔓", "🚪", "🎧", "🔊", "🎶", "🔔", "🎨", "😀", "🔲", "📐", "📏", "🆕", "📝"],
 };
 
 const NERD: Icons = Icons {
@@ -60,6 +63,7 @@ const NERD: Icons = Icons {
     station: "\u{f0439}",
     shuffle: "\u{f074}",
     shared: "\u{f0c0}",
+    favorite: "\u{f005}",
     play: "\u{f04b}",
     pause: "\u{f04c}",
     skip: "\u{f051}",
@@ -79,7 +83,7 @@ const NERD: Icons = Icons {
     ok: "\u{f058}",
     setting: [
         "\u{f007}", "\u{f084}", "\u{f09c}", "\u{f08b}", "\u{f025}", "\u{f028}", "\u{f04b}", "\u{f0f3}", "\u{f1fc}",
-        "\u{f118}", "\u{f0aa}", "\u{f044}",
+        "\u{f118}", "\u{f0c8}", "\u{f07e}", "\u{f07d}", "\u{f0aa}", "\u{f044}",
     ],
 };
 
@@ -88,6 +92,7 @@ const UNICODE: Icons = Icons {
     station: "◉",
     shuffle: "⇄",
     shared: "⚇",
+    favorite: "★",
     play: "▶",
     pause: "‖",
     skip: "»",
@@ -105,7 +110,7 @@ const UNICODE: Icons = Icons {
     quit: "⏻",
     update: "↑",
     ok: "✔",
-    setting: ["@", "*", "→", "⏻", "♫", "◖", "▶", "♪", "◐", "☺", "↑", "✎"],
+    setting: ["@", "*", "→", "⏻", "♫", "◖", "▶", "♪", "◐", "☺", "▢", "↔", "↕", "↑", "✎"],
 };
 
 pub fn icons(set: IconSet) -> &'static Icons {

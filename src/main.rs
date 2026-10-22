@@ -50,10 +50,14 @@ struct Args {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Where this binary is now: after Update Now replaces it, Linux names
+    // the running one "… (deleted)", so Restart Now uses this path.
+    let exe = std::env::current_exe().ok();
     let args = Args::parse();
     let path = args.config.clone().or_else(Config::default_path);
     let (mut config, warnings) = match &path {
-        Some(p) => Config::load(p)?,
+        // Never fails: what was wrong is a line in the status bar.
+        Some(p) => Config::load(p),
         None => (Config::default(), Vec::new()),
     };
     if let Some(theme) = &args.theme {
@@ -70,8 +74,28 @@ fn main() -> anyhow::Result<()> {
     let mut app = App::new(config, path, &warnings, demo);
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app);
+    let restart = app.restart && result.is_ok();
+    // Stop the sound and the backend before the new version takes over.
+    drop(app);
     ratatui::restore();
+    if restart && let Some(exe) = exe {
+        // Like Update Now, never for a build from source.
+        if update::is_dev_build(&exe.display().to_string()) {
+            eprintln!("boxvibe: built from source, not restarting");
+        } else {
+            let error = restart_into(&exe);
+            eprintln!("boxvibe: could not restart {}: {error}", exe.display());
+        }
+    }
     result
+}
+
+/// Starts `exe` with the same arguments in place of this process (same
+/// terminal, same pid). Returns only on failure.
+fn restart_into(exe: &std::path::Path) -> std::io::Error {
+    use std::os::unix::process::CommandExt;
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    std::process::Command::new(exe).args(&args).exec()
 }
 
 fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow::Result<()> {

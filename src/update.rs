@@ -64,7 +64,7 @@ pub enum Progress {
     Idle,
     /// Downloading: percent done.
     Downloading(u8),
-    /// The new version is in place: it runs from the next start.
+    /// The new version is in place: Restart Now starts it.
     Done(String),
     Failed(String),
 }
@@ -99,10 +99,15 @@ pub fn check() -> Checked {
             }
             Checked::Newer(update)
         }
-        None => match (version(&tag), version(&current)) {
-            (Some(latest), Some(mine)) if latest <= mine => Checked::Latest,
-            _ => Checked::Unknown,
-        },
+        None => latest_or_unknown(&current, &tag),
+    }
+}
+
+/// No newer release: up to date when the tag really is a version.
+fn latest_or_unknown(current: &str, tag: &str) -> Checked {
+    match (version(tag), version(current)) {
+        (Some(latest), Some(mine)) if latest <= mine => Checked::Latest,
+        _ => Checked::Unknown,
     }
 }
 
@@ -131,7 +136,7 @@ fn agent(timeout: u64) -> ureq::Agent {
 fn fetch_latest() -> Result<Option<(String, Vec<String>)>, String> {
     let reply = match agent(10).get(LATEST).header("Accept", "application/vnd.github+json").call() {
         Ok(reply) => reply,
-        Err(ureq::Error::StatusCode(404 | 403 | 429)) => return Ok(None),
+        Err(ureq::Error::StatusCode(status)) if no_news(status) => return Ok(None),
         Err(e) => return Err(e.to_string()),
     };
     let text = reply.into_body().read_to_string().map_err(|e| e.to_string())?;
@@ -139,6 +144,13 @@ fn fetch_latest() -> Result<Option<(String, Vec<String>)>, String> {
     parse_latest(&json).map(Some).ok_or_else(|| "GitHub's answer has no version".into())
 }
 
+/// GitHub statuses that just mean "nothing to say": no release published
+/// yet, or too many requests from this address for now.
+fn no_news(status: u16) -> bool {
+    matches!(status, 404 | 403 | 429)
+}
+
+/// Tag and asset names of GitHub's "latest release" answer.
 pub fn parse_latest(json: &Value) -> Option<(String, Vec<String>)> {
     let tag = json["tag_name"].as_str()?.to_owned();
     let assets = json["assets"].as_array()?.iter().filter_map(|a| a["name"].as_str().map(str::to_owned)).collect();
@@ -367,6 +379,14 @@ mod tests {
         std::io::Write::write_all(&mut gz, &tar.into_inner().unwrap()).unwrap();
         assert_eq!(from_tarball(&gz.finish().unwrap()).unwrap(), b"\x7fELF");
         assert!(from_tarball(b"junk").is_err());
+    }
+
+    #[test]
+    fn up_to_date_only_on_a_real_version() {
+        assert_eq!(latest_or_unknown("0.2.0", "v0.2.0"), Checked::Latest);
+        assert_eq!(latest_or_unknown("0.2.0", "v0.1.0"), Checked::Latest);
+        assert_eq!(latest_or_unknown("0.2.0", "nightly"), Checked::Unknown);
+        assert!(no_news(404) && no_news(403) && no_news(429) && !no_news(500));
     }
 
     #[test]

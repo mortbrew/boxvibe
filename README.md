@@ -3,20 +3,24 @@
 Pandora in the terminal, written in Rust with [ratatui](https://ratatui.rs).
 A sibling of [tubevibe](https://github.com/mortbrew/tubevibe): the same look,
 Omarchy colour sync, icon sets and a `config.toml` that the app keeps up to
-date. A header line with the version and what just happened, titled panels,
-your stations (then Settings and About) on the left, a large CarPlay-style
-**Now Playing** card with the four big buttons (thumbs down, play/pause, skip,
-thumbs up), a table of the songs played and up next, and the keys that work
-right now drawn as key caps at the bottom.
+date. Titled panels, your stations (then Settings and About) on the left with
+the logo and version on its frame, a large CarPlay-style **Now Playing** card
+with the four big buttons (thumbs down, play/pause, skip, thumbs up), **Up
+Next** and **History** side by side under it, a status bar, and the keys that
+work right now drawn as key caps at the bottom.
 
 > Early (0.1.0): it plays your stations, but cover art, search and station
 > editing are still to come. Feedback welcome.
 
 ![Now Playing (Gruvbox)](screenshots/gruvbox-main.png)
 
-![Settings, typing the Pandora password](screenshots/gruvbox-settings.png)
+![Settings](screenshots/gruvbox-settings.png)
 
 ![About, with a new version out](screenshots/gruvbox-about.png)
+
+![About, after Update Now: Restart Now](screenshots/gruvbox-about-restart.png)
+
+![Rounded borders (border_style = "rounded")](screenshots/gruvbox-rounded.png)
 
 ## What it does
 
@@ -31,10 +35,13 @@ right now drawn as key caps at the bottom.
   time, and the volume
 - **Thumbs up / down** (`+` / `-`). Like in Pandora, a thumbs down skips the
   song. **Tired of this song** (`z`) keeps it off all your stations for a month
-- **Songs**: the ones you heard and the few Pandora sent up next, in one
-  table. `Tab` moves into it, where `+` / `-` rate a song you already heard
-- **Settings** (account, audio quality, volume, autoplay, notifications,
-  theme, icons, update check, edit `config.toml` in `$EDITOR`) and **About**
+- **Up Next** and **History**: the few songs Pandora sent up next on the
+  left, the last 10 you heard on the right (stacked on a narrow window). Each pane is
+  sized for 10 songs and Now Playing gets the rest of the height; on a short window Now Playing keeps
+  9 rows and the song panes shrink and scroll. `Tab` goes stations → Up Next →
+  History; in History `+` / `-` rate a song you already heard
+- **Settings** (account, audio quality, volume, autoplay, song change
+  notifications, theme, icons, border style, menu width, update check, edit `config.toml` in `$EDITOR`) and **About**
   (links, version, and the update button) below the stations
 - **Updates itself** from GitHub releases: see [Updating](#updating)
 - **Gapless-ish playback**: the next song downloads while this one plays.
@@ -83,19 +90,23 @@ Try it without an account (made-up stations, no network, no sound):
 |---|---|
 | `space` `p` | play / pause |
 | `n` | skip |
-| `+` `u` | thumbs up |
-| `-` `d` | thumbs down (skips the song) |
+| `+` `u` | thumbs up the playing song (whatever pane has the keys) |
+| `-` `d` | thumbs down the playing song (skips it) |
+| `U` `D` (Shift) | thumbs up / down the highlighted Up Next or History row (the focused pane, else the last one used); a thumbs down drops an Up Next song |
 | `z` | tired of this song (off for a month) |
-| `←` `→` (`[` `]`) | volume |
-| `j` `k` `↑` `↓` | move · `g` `G` first / last |
-| `Enter` | play the station · open Settings / About · change a setting · Update Now |
-| `Tab` | menu ⇄ the panel on the right (the songs table, Settings, About) |
+| `Shift+←` `Shift+→` | volume down / up |
+| `j` `k` `↑` `↓` | move (wraps around the ends) · `g` `G` first / last |
+| `Enter` | play the station · open Stations / Settings / About · change a setting · Update Now |
+| `Tab` | menu → Now Playing → Up Next → History on the player (`Shift+Tab` back); menu ⇄ Stations / Settings / About |
 | `Esc` | back to the menu |
-| `s` | go to the stations |
+| `N` (Shift+n) | Now Playing: back to the player with the keys on the Now Playing pane and the menu on NOW PLAYING |
+| `s` | Stations: every station on the right, `Enter` plays one |
+| `f` `F` | favorite / unfavorite the station (the menu's FAVORITES section) |
+| `{` `}` | menu narrower / wider |
 | `t` | next theme |
 | `i` | next icon set |
 | `?` | every key |
-| `q` `Ctrl+c` | quit |
+| `Q` (Shift+q) / `Ctrl+c` | quit (asks first: `y` = yes, any other key = no) / quit now |
 
 When a setting asks you to type (email, password): `Enter` saves, `Esc`
 cancels, `Ctrl+u` clears.
@@ -104,9 +115,11 @@ cancels, `Ctrl+u` clears.
 
 `~/.config/boxvibe/config.toml` (`--config FILE` picks another one). Every key
 is optional, and the app writes the ones you change from it. Keys this version
-doesn't know (a typo, or a setting from a newer boxvibe) and values of the
-wrong type are skipped with a warning in the status bar; only a file that is
-not valid TOML stops it.
+doesn't know (a typo, a leftover from testing, an old `[pandora]` key from the
+JSON-API boxvibe, or a setting from a newer boxvibe) and values of the wrong
+type are skipped with a warning in the status bar. Nothing in the file can stop
+boxvibe from starting: one that is not valid TOML is moved to
+`config.toml.bad-<UTC time>` and boxvibe starts with the defaults and says so.
 
 ```toml
 [pandora]
@@ -119,14 +132,17 @@ last_station = ""              # the station to start on, kept by the app
 
 [player]
 volume = 70                    # 0–100
-autoplay = true                # start the last station right after logging in
 
 [ui]
 theme = "omarchy"              # omarchy | tokyo-night | gruvbox | catppuccin | catppuccin-latte
                                # | rose-pine | nord | everforest | kanagawa
 icons = "emoji"                # emoji | nerd | unicode
-notify = true                  # a desktop notification when the song changes
+notifications = true           # a desktop notification when the song changes (Settings toggles it)
 check_updates = true           # look for a new release on GitHub at startup
+autoplay_last_station = true   # start the station played last when boxvibe opens (0.1: [player] autoplay)
+border_style = "plain"         # plain | rounded | thick | double | none
+menu_width = 30                # the menu, in columns: 20–40, step 2 (at most half the screen); also { and }
+favorites = []                 # starred stations, { id = "…", name = "…" }, set with f
 ```
 
 `--theme NAME` and `--icons SET` change them for one run without saving.
@@ -143,8 +159,9 @@ can't be reached (or there are no releases yet), nothing is shown.
 On About, **Update Now** (`Enter`) downloads the release's
 `boxvibe-<arch>-linux.tar.gz`, takes the `boxvibe` binary out of it, checks
 that it runs and reports the new version, and puts it in place of the running
-one ([self-replace](https://crates.io/crates/self-replace)). Restart boxvibe
-to use it. The button is only offered for a release binary in a folder you
+one ([self-replace](https://crates.io/crates/self-replace)). Then the button
+becomes **Restart Now**, which starts the new version in the same terminal with the
+same arguments. The button is only offered for a release binary in a folder you
 can write to (like `~/.local/bin`); for a build from source, `cargo install`,
 a system package, or a platform without a release download, About explains
 why and shows the command to update by hand instead.

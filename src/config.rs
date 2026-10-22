@@ -1,9 +1,12 @@
 //! User configuration, `~/.config/boxvibe/config.toml` (tubevibe's layout).
 //!
-//! Every field has a default, so a missing or partial file is fine. Unknown
-//! keys and sections (a typo, or a setting from a newer boxvibe) and values of
-//! the wrong type are skipped with a [`ConfigWarning`] shown in the status
-//! bar. Only a file that is not valid TOML stops the app.
+//! Nothing in this file can stop the app from starting. Every field has a
+//! default, so a missing or partial file is fine. Unknown keys and sections
+//! (a typo, a leftover from testing, a setting from a newer boxvibe or from
+//! the old JSON-API boxvibe) and values of the wrong type are skipped with a
+//! [`ConfigWarning`] shown in the status bar. A file that is not valid TOML
+//! is moved aside to `config.toml.bad-<UTC time>` and the app starts with the
+//! defaults ([`Config::load`]); one that can't be read is left alone.
 //!
 //! Settings changed from the app are written back with [`set_value`], which
 //! keeps the user's comments and formatting. The file holds the Pandora
@@ -56,13 +59,11 @@ impl Default for PandoraConfig {
 pub struct PlayerConfig {
     /// 0–100.
     pub volume: u8,
-    /// Start playing the last station as soon as the login is done.
-    pub autoplay: bool,
 }
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self { volume: 70, autoplay: true }
+        Self { volume: 70 }
     }
 }
 
@@ -73,15 +74,124 @@ pub struct UiConfig {
     /// or one of the built-in themes (`t` cycles them).
     pub theme: String,
     pub icons: IconSet,
-    /// Song changes as a desktop notification (`notify-send`).
-    pub notify: bool,
+    /// Song changes as a desktop notification (`notify-send`). boxvibe 0.1
+    /// called it `notify`, which still reads.
+    #[serde(alias = "notify")]
+    pub notifications: bool,
     /// Ask GitHub, each time the app opens, whether there is a newer version.
     pub check_updates: bool,
+    /// Start the station played last as soon as boxvibe opens (and has
+    /// logged in). boxvibe 0.1's `[player] autoplay` reads as this.
+    pub autoplay_last_station: bool,
+    /// How every pane's border is drawn.
+    pub border_style: BorderStyle,
+    /// Columns of the left menu ([`MENU_WIDTH`]; never more than half the screen).
+    pub menu_width: u16,
+    /// Stations starred with `f`, in the order starred: the menu's FAVORITES.
+    pub favorites: Vec<Favorite>,
+}
+
+/// A favorite station: its id to play it, its name to show before the
+/// stations load. Written as `{ id = "…", name = "…" }`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Favorite {
+    pub id: String,
+    pub name: String,
 }
 
 impl Default for UiConfig {
     fn default() -> Self {
-        Self { theme: "omarchy".into(), icons: IconSet::Emoji, notify: true, check_updates: true }
+        Self {
+            theme: "omarchy".into(),
+            icons: IconSet::Emoji,
+            notifications: true,
+            check_updates: true,
+            autoplay_last_station: true,
+            border_style: BorderStyle::Plain,
+            menu_width: MENU_WIDTH.default,
+            favorites: Vec::new(),
+        }
+    }
+}
+
+/// A setting in columns, changed in steps from Settings (tubevibe's `Size`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Size {
+    pub key: &'static str,
+    pub min: u16,
+    pub max: u16,
+    pub step: u16,
+    pub default: u16,
+}
+
+impl Size {
+    /// One step up; past the largest, back to the smallest.
+    pub fn next(self, value: u16) -> u16 {
+        let up = value.saturating_add(self.step);
+        if value >= self.max || up > self.max { self.min } else { up.max(self.min) }
+    }
+
+    /// One step narrower (`-1`) or wider (`1`), stopping at the ends.
+    pub fn step_by(self, value: u16, dir: i8) -> u16 {
+        let v = if dir < 0 { value.saturating_sub(self.step) } else { value.saturating_add(self.step) };
+        v.clamp(self.min, self.max)
+    }
+
+    pub fn contains(self, value: u16) -> bool {
+        (self.min..=self.max).contains(&value)
+    }
+}
+
+/// Columns; 30 is what boxvibe 0.1 gave a 120-column terminal.
+pub const MENU_WIDTH: Size = Size { key: "menu_width", min: 20, max: 40, step: 2, default: 30 };
+
+/// Rows; 17 is what Now Playing always had on a tall terminal.
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BorderStyle {
+    /// `┌─┐`, the look boxvibe always had.
+    #[default]
+    Plain,
+    /// `╭─╮`
+    Rounded,
+    /// `┏━┓`
+    Thick,
+    /// `╔═╗`
+    Double,
+    /// No lines; the panes keep their room and titles.
+    None,
+}
+
+impl BorderStyle {
+    pub const ALL: [Self; 5] = [Self::Plain, Self::Rounded, Self::Thick, Self::Double, Self::None];
+
+    pub fn next(self) -> Self {
+        let at = Self::ALL.iter().position(|b| *b == self).unwrap_or(0);
+        Self::ALL[(at + 1) % Self::ALL.len()]
+    }
+
+    /// Value as written in `config.toml`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Rounded => "rounded",
+            Self::Thick => "thick",
+            Self::Double => "double",
+            Self::None => "none",
+        }
+    }
+
+    /// As Settings shows it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Plain => "Plain",
+            Self::Rounded => "Rounded",
+            Self::Thick => "Thick",
+            Self::Double => "Double",
+            Self::None => "None",
+        }
     }
 }
 
@@ -127,10 +237,6 @@ impl IconSet {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("cannot read {path}: {source}")]
-    Read { path: PathBuf, source: std::io::Error },
-    #[error("invalid config {path}: {source}")]
-    Parse { path: PathBuf, source: toml::de::Error },
     #[error("cannot update {path}: {reason}")]
     Write { path: PathBuf, reason: String },
 }
@@ -142,15 +248,55 @@ pub enum ConfigWarning {
     Unknown(String),
     /// `section.key` with a value of the wrong type: its default is used.
     BadValue { key: String, error: String },
+    /// `pandora.key` of the old mobile JSON API (partner keys and such): unused now.
+    Old(String),
+    /// The file is not valid TOML: moved to `backup` (if it could be), defaults used.
+    Broken { error: String, backup: Option<PathBuf> },
+    /// The file exists but can't be read: defaults used, the file left as it is.
+    Unreadable(String),
 }
+
+/// `[pandora]` keys of boxvibe's first, mobile JSON-API (pianobar-style)
+/// version and of testing it; skipped without suggesting a newer boxvibe.
+const OLD_PANDORA_KEYS: &[&str] = &[
+    "partner",
+    "partner_user",
+    "partner_username",
+    "partner_password",
+    "partner_id",
+    "device",
+    "device_model",
+    "decrypt_key",
+    "decrypt_password",
+    "encrypt_key",
+    "encrypt_password",
+    "rpc_host",
+    "rpc_url",
+    "tls",
+    "sync_time",
+    "station_token",
+    "auth_token",
+    "user_id",
+    "proxy",
+    "control_proxy",
+];
 
 impl ConfigWarning {
     /// One line for the status bar: the first warning, and how many more.
     pub fn summary(warnings: &[Self]) -> Option<String> {
         let first = warnings.first()?;
         let text = match first {
-            Self::Unknown(key) => format!("⚠ Ignored unknown setting {key} in config.toml (made by a newer boxvibe?)"),
+            Self::Unknown(key) => format!("⚠ Ignored unknown setting {key} in config.toml"),
             Self::BadValue { key, .. } => format!("⚠ Bad value for {key} in config.toml: using the default"),
+            Self::Old(key) => format!("⚠ Ignored {key} in config.toml: left over from the old Pandora API"),
+            Self::Broken { backup: Some(backup), .. } => format!(
+                "⚠ config.toml wasn't valid TOML: moved to {} and started with the defaults",
+                backup.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+            ),
+            Self::Broken { error, backup: None } => {
+                format!("⚠ config.toml isn't valid TOML ({error}): using the defaults")
+            }
+            Self::Unreadable(error) => format!("⚠ Can't read config.toml ({error}): using the defaults"),
         };
         Some(match warnings.len() - 1 {
             0 => text,
@@ -158,6 +304,11 @@ impl ConfigWarning {
         })
     }
 }
+
+/// Keys an earlier boxvibe wrote that no longer do anything; a config with
+/// them still loads without a warning. `ui.now_playing_size` went when Up Next
+/// and History became fixed at 10 songs (Now Playing takes the rest).
+const RETIRED_KEYS: &[&str] = &["ui.now_playing_size"];
 
 /// One `[section]`: each key is tried on its own, so an unknown or broken
 /// one is skipped (and reported) while the rest still apply.
@@ -177,7 +328,13 @@ fn section<T: serde::de::DeserializeOwned + Default>(
         let mut unknown = false;
         let tried: Result<T, toml::de::Error> = serde_ignored::deserialize(toml::Value::Table(one), |_| unknown = true);
         match tried {
-            Ok(_) if unknown => warnings.push(ConfigWarning::Unknown(path)),
+            Ok(_) if unknown && name == "pandora" && OLD_PANDORA_KEYS.contains(&key.as_str()) => {
+                warnings.push(ConfigWarning::Old(path))
+            }
+            // Settings boxvibe had once and dropped: read and ignored, quietly.
+            Ok(_) if unknown && RETIRED_KEYS.contains(&path.as_str()) => {}
+            // A favorite with a key boxvibe doesn't know still counts.
+            Ok(_) if unknown && path != "ui.favorites" => warnings.push(ConfigWarning::Unknown(path)),
             Ok(_) => {
                 good.insert(key, value);
             }
@@ -186,13 +343,51 @@ fn section<T: serde::de::DeserializeOwned + Default>(
             }
         }
     }
-    T::deserialize(toml::Value::Table(good)).unwrap_or_default()
+    // Each key worked on its own; together they still should, but never fail.
+    T::deserialize(toml::Value::Table(good)).unwrap_or_else(|e| {
+        warnings.push(ConfigWarning::BadValue { key: name.into(), error: e.message().trim().to_owned() });
+        T::default()
+    })
+}
+
+/// `20261021T011500Z` for a moment, in UTC (no time zone database needed).
+fn utc_stamp(at: std::time::SystemTime) -> String {
+    let secs = at.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let (days, rest) = (secs / 86_400, secs % 86_400);
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}{month:02}{day:02}T{:02}{:02}{:02}Z", rest / 3600, rest / 60 % 60, rest % 60)
 }
 
 impl Config {
     /// Reads a config and lists what was skipped; only invalid TOML fails.
     pub fn parse(text: &str) -> Result<(Self, Vec<ConfigWarning>), toml::de::Error> {
-        let table: toml::Table = toml::from_str(text)?;
+        let mut table: toml::Table = toml::from_str(text)?;
+        // 0.1's `[player] autoplay` is now `[ui] autoplay_last_station` (which wins when both are there).
+        let old_autoplay = match table.get_mut("player") {
+            Some(toml::Value::Table(player)) => player.remove("autoplay"),
+            _ => None,
+        };
+        if let Some(value) = old_autoplay {
+            let ui = table.entry("ui").or_insert_with(|| toml::Value::Table(toml::Table::new()));
+            if let toml::Value::Table(ui) = ui {
+                ui.entry("autoplay_last_station").or_insert(value);
+            }
+        }
+        // Both the 0.1 name and the new one: the new one wins.
+        if let Some(toml::Value::Table(ui)) = table.get_mut("ui")
+            && ui.contains_key("notifications")
+        {
+            ui.remove("notify");
+        }
         let mut warnings = Vec::new();
         let mut c = Self::default();
         for (name, value) in table {
@@ -205,17 +400,50 @@ impl Config {
             }
         }
         c.player.volume = c.player.volume.min(100);
+        // Sizes out of range: said, and back to the default.
+        {
+            let (size, value) = (MENU_WIDTH, &mut c.ui.menu_width);
+            if !size.contains(*value) {
+                warnings.push(ConfigWarning::BadValue {
+                    key: format!("ui.{}", size.key),
+                    error: format!("{} is not between {} and {}", value, size.min, size.max),
+                });
+                *value = size.default;
+            }
+        }
+        c.ui.favorites.retain(|f| !f.id.is_empty());
         Ok((c, warnings))
     }
 
-    /// Loads `path` and lists the settings that were skipped; a missing file yields the defaults.
-    pub fn load(path: &Path) -> Result<(Self, Vec<ConfigWarning>), ConfigError> {
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
+    /// Reads `path` without touching it: a missing file is the defaults; a
+    /// broken or unreadable one is `Err` with the warning to show.
+    pub fn read(path: &Path) -> Result<(Self, Vec<ConfigWarning>), ConfigWarning> {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Self::default(), Vec::new())),
-            Err(source) => return Err(ConfigError::Read { path: path.into(), source }),
+            Err(e) => return Err(ConfigWarning::Unreadable(e.kind().to_string())),
         };
-        Self::parse(&text).map_err(|source| ConfigError::Parse { path: path.into(), source })
+        let Ok(text) = String::from_utf8(bytes) else {
+            return Err(ConfigWarning::Broken { error: "not UTF-8 text".into(), backup: None });
+        };
+        Self::parse(&text).map_err(|e| ConfigWarning::Broken { error: e.message().trim().to_owned(), backup: None })
+    }
+
+    /// Loads `path` for the app's start; never fails. A file that isn't valid
+    /// TOML is moved to `config.toml.bad-<UTC time>` (so settings saved from
+    /// now on go to a fresh file) and the defaults are used; either way the
+    /// warnings say what happened.
+    pub fn load(path: &Path) -> (Self, Vec<ConfigWarning>) {
+        match Self::read(path) {
+            Ok(loaded) => loaded,
+            Err(ConfigWarning::Broken { error, .. }) => {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let backup = path.with_file_name(format!("{name}.bad-{}", utc_stamp(std::time::SystemTime::now())));
+                let backup = std::fs::rename(path, &backup).is_ok().then_some(backup);
+                (Self::default(), vec![ConfigWarning::Broken { error, backup }])
+            }
+            Err(other) => (Self::default(), vec![other]),
+        }
     }
 
     /// `~/.config/boxvibe/config.toml` on Linux.
@@ -269,6 +497,16 @@ pub fn set_values(path: &Path, values: &[(&str, &str, toml_edit::Value)]) -> Res
     write_private(path, &doc.to_string()).map_err(|e| error(e.to_string()))
 }
 
+/// Removes `[table] key` from the file at `path`, if it is there (an old
+/// name of a setting that was just saved under its new one).
+pub fn remove_value(path: &Path, table: &str, key: &str) -> Result<(), ConfigError> {
+    let error = |reason: String| ConfigError::Write { path: path.into(), reason };
+    let Ok(text) = std::fs::read_to_string(path) else { return Ok(()) };
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| error(e.to_string()))?;
+    let removed = doc.get_mut(table).and_then(|t| t.as_table_like_mut()).and_then(|t| t.remove(key)).is_some();
+    if removed { write_private(path, &doc.to_string()).map_err(|e| error(e.to_string())) } else { Ok(()) }
+}
+
 #[cfg(test)]
 pub(crate) fn temp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("boxvibe-test-{}-{name}", std::process::id()));
@@ -313,7 +551,7 @@ mod tests {
     #[test]
     fn wrong_types_fall_back_to_their_default() {
         let (c, w) = Config::parse("[player]\nvolume = \"loud\"\nautoplay = false\n[ui]\nicons = \"fancy\"\n").unwrap();
-        assert_eq!((c.player.volume, c.player.autoplay, c.ui.icons), (70, false, IconSet::Emoji));
+        assert_eq!((c.player.volume, c.ui.autoplay_last_station, c.ui.icons), (70, false, IconSet::Emoji));
         assert_eq!(w.len(), 2);
         let (c, _) = Config::parse("ui = 5\n").unwrap();
         assert_eq!(c, Config::default());
@@ -336,7 +574,7 @@ mod tests {
         set_values(&path, &[("player", "volume", 55_i64.into())]).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("# mine") && text.contains("# cosy") && text.contains("future = 1"), "{text}");
-        let (c, _) = Config::load(&path).unwrap();
+        let (c, _) = Config::load(&path);
         assert!(c.has_login());
         assert_eq!((c.ui.theme.as_str(), c.ui.icons, c.player.volume), ("gruvbox", IconSet::Unicode, 55));
         #[cfg(unix)]
@@ -357,8 +595,160 @@ mod tests {
     }
 
     #[test]
+    fn notifications_on_by_default_and_the_old_name_reads() {
+        assert!(Config::default().ui.notifications);
+        let (c, w) = Config::parse("[ui]\nnotify = false\n").unwrap();
+        assert!(!c.ui.notifications && w.is_empty(), "{w:?}");
+        let (c, w) = Config::parse("[ui]\nnotify = false\nnotifications = true\ntheme = \"gruvbox\"\n").unwrap();
+        assert!(c.ui.notifications && w.is_empty(), "{w:?}");
+        assert_eq!(c.ui.theme, "gruvbox", "the rest still applies");
+        let path = temp_dir("notify").join("config.toml");
+        std::fs::write(&path, "[ui]\nnotify = true # old\n").unwrap();
+        set_values(&path, &[("ui", "notifications", false.into())]).unwrap();
+        remove_value(&path, "ui", "notify").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("notifications = false") && !text.contains("notify ="), "{text}");
+    }
+
+    #[test]
+    fn retired_now_playing_size_is_ignored_quietly() {
+        let (c, w) = Config::parse("[ui]\nnow_playing_size = 11\nmenu_width = 24\n").unwrap();
+        assert_eq!((c.ui.menu_width, w.len()), (24, 0));
+        let (_, w) = Config::parse("[ui]\nnow_playing_size = \"big\"\n").unwrap();
+        assert!(w.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn favorites_read_and_tolerate_junk() {
+        let text =
+            "[ui]\nfavorites = [{ id = \"1\", name = \"Jazz\" }, { id = \"2\", extra = 3 }, { name = \"no id\" }]\n";
+        let (c, _) = Config::parse(text).unwrap();
+        let ids: Vec<&str> = c.ui.favorites.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!((ids, c.ui.favorites[0].name.as_str()), (vec!["1", "2"], "Jazz"));
+        let (c, w) = Config::parse("[ui]\nfavorites = \"jazz\"\nmenu_width = 24\n").unwrap();
+        assert_eq!((c.ui.favorites.len(), c.ui.menu_width, w.len()), (0, 24, 1));
+    }
+
+    #[test]
+    fn sizes_step_and_stop_at_the_ends() {
+        assert_eq!((MENU_WIDTH.step_by(30, 1), MENU_WIDTH.step_by(30, -1)), (32, 28));
+        assert_eq!((MENU_WIDTH.step_by(40, 1), MENU_WIDTH.step_by(20, -1)), (40, 20));
+    }
+
+    #[test]
+    fn border_style_and_menu_width() {
+        let (c, w) = Config::parse("[ui]\nborder_style = \"rounded\"\nmenu_width = 24\n").unwrap();
+        assert_eq!((c.ui.border_style, c.ui.menu_width, w.len()), (BorderStyle::Rounded, 24, 0));
+        let (c, w) = Config::parse("[ui]\nborder_style = \"wavy\"\nmenu_width = 5\n").unwrap();
+        assert_eq!((c.ui.border_style, c.ui.menu_width, w.len()), (BorderStyle::Plain, 30, 2));
+        let (c, w) = Config::parse("[ui]\nmenu_width = 70000\n").unwrap();
+        assert_eq!((c.ui.menu_width, w.len()), (30, 1));
+        assert_eq!((MENU_WIDTH.next(30), MENU_WIDTH.next(40), MENU_WIDTH.next(39)), (32, 20, 20));
+        assert_eq!(BorderStyle::None.next(), BorderStyle::Plain);
+        assert!(
+            BorderStyle::ALL.iter().all(|b| Config::parse(&format!("[ui]\nborder_style = \"{}\"\n", b.as_str()))
+                .unwrap()
+                .0
+                .ui
+                .border_style
+                == *b)
+        );
+    }
+
+    #[test]
+    fn autoplay_last_station_and_its_old_name() {
+        assert!(Config::default().ui.autoplay_last_station, "0.1 started the last station: still on");
+        let (c, w) = Config::parse("[ui]\nautoplay_last_station = false\n").unwrap();
+        assert!(!c.ui.autoplay_last_station && w.is_empty());
+        let (c, w) = Config::parse("[player]\nautoplay = false\nvolume = 40\n").unwrap();
+        assert_eq!((c.ui.autoplay_last_station, c.player.volume, w.len()), (false, 40, 0));
+        let (c, _) = Config::parse("[player]\nautoplay = false\n[ui]\nautoplay_last_station = true\n").unwrap();
+        assert!(c.ui.autoplay_last_station, "the new name wins");
+        let (c, w) = Config::parse("[ui]\nautoplay_last_station = \"yes\"\n[player]\nautoplay = 3\n").unwrap();
+        assert!(c.ui.autoplay_last_station, "a wrong type: the default");
+        assert_eq!(w.len(), 1, "{w:?}");
+    }
+
+    #[test]
     fn missing_file_loads_defaults() {
-        let (c, _) = Config::load(Path::new("/definitely/not/here/config.toml")).unwrap();
+        let (c, w) = Config::load(Path::new("/definitely/not/here/config.toml"));
         assert_eq!(c, Config::default());
+        assert!(w.is_empty());
+    }
+
+    /// Junk that must never stop boxvibe: (file, what must still apply).
+    #[test]
+    fn junk_configs_always_start() {
+        let junk = [
+            // Leftovers from the JSON-API boxvibe and from testing.
+            "[pandora]\npartner_user = \"android\"\npartner_password = \"x\"\ndevice = \"android-generic\"\n\
+             decrypt_password = \"R=U!LH$O2B#\"\nencrypt_password = \"6#26FRL$ZWD\"\nrpc_host = \"tuner.pandora.com\"\n\
+             audio_quality = \"medium\"\nlast_station = \"123:abc\"\nusername = \"me@example.com\"\n",
+            // Wrong types everywhere.
+            "[pandora]\nusername = 42\npassword = true\naudio_quality = [1, 2]\nuser_agent = { a = 1 }\n\
+             [player]\nvolume = 300\nautoplay = \"yes\"\n[ui]\ntheme = 7\nicons = \"fancy\"\nnotifications = \"sure\"\n\
+             check_updates = 1.5\nborder_style = 9\nmenu_width = \"wide\"\n",
+            // Sections that are values, values that are sections, arrays of tables.
+            "pandora = \"me\"\nplayer = [1, 2]\n[[ui]]\ntheme = \"gruvbox\"\n[ui2]\nx = 1\n",
+            // Deeply nested and odd things.
+            "[ui.extra.deep]\nx = 1\n[player.eq]\nbass = 3\n[test]\ndebug = true\nwhen = 2026-10-20T21:00:00Z\n",
+            // Both names of the notifications setting, and an empty one.
+            "[ui]\nnotify = 1\nnotifications = false\n[pandora]\n",
+        ];
+        for text in junk {
+            let (c, warnings) = Config::parse(text).unwrap_or_else(|e| panic!("{text}: {e}"));
+            assert!(!warnings.is_empty() || text.contains("notifications = false"), "{text}");
+            assert!(c.player.volume <= 100);
+            assert!(ConfigWarning::summary(&warnings).is_some() || warnings.is_empty());
+        }
+        let (c, w) = Config::parse(junk[0]).unwrap();
+        assert_eq!(c.pandora.username, "me@example.com");
+        assert!(w.iter().all(|w| matches!(w, ConfigWarning::Old(_))), "{w:?}");
+        assert!(ConfigWarning::summary(&w).unwrap().contains("old Pandora API"));
+        assert_eq!(crate::pandora::Quality::parse(&c.pandora.audio_quality), crate::pandora::Quality::Standard);
+        let (c, _) = Config::parse(junk[1]).unwrap();
+        assert_eq!((c.player.volume, c.ui.icons, c.ui.notifications), (70, IconSet::Emoji, true));
+    }
+
+    #[test]
+    fn a_broken_file_is_moved_aside_and_the_defaults_start() {
+        let dir = temp_dir("broken");
+        let path = dir.join("config.toml");
+        let broken = "[pandora\nusername = \"me@example.com\"\npassword = \"x\n";
+        std::fs::write(&path, broken).unwrap();
+        let (c, w) = Config::load(&path);
+        assert_eq!(c, Config::default());
+        let [ConfigWarning::Broken { backup: Some(backup), .. }] = w.as_slice() else { panic!("{w:?}") };
+        assert!(!path.exists(), "moved, so saving makes a fresh file");
+        assert_eq!(std::fs::read_to_string(backup).unwrap(), broken, "kept as it was");
+        let name = backup.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("config.toml.bad-20") && name.ends_with('Z'), "{name}");
+        assert!(ConfigWarning::summary(&w).unwrap().contains("moved to config.toml.bad-"));
+        // Not text at all, too.
+        std::fs::write(&path, [0xff, 0xfe, 0x00, 0x9f]).unwrap();
+        let (c, w) = Config::load(&path);
+        assert_eq!((c, w.len()), (Config::default(), 1));
+        // Saving still works afterwards.
+        set_values(&path, &[("ui", "theme", "gruvbox".into())]).unwrap();
+        assert_eq!(Config::load(&path).0.ui.theme, "gruvbox");
+    }
+
+    #[test]
+    fn an_unreadable_path_starts_with_defaults() {
+        let dir = temp_dir("unreadable");
+        // A folder where the file should be.
+        let path = dir.join("config.toml");
+        std::fs::create_dir_all(&path).unwrap();
+        let (c, w) = Config::load(&path);
+        assert_eq!(c, Config::default());
+        assert!(matches!(w.as_slice(), [ConfigWarning::Unreadable(_)]), "{w:?}");
+        assert!(path.is_dir(), "left alone");
+    }
+
+    #[test]
+    fn utc_stamps() {
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_792_544_100);
+        assert_eq!(utc_stamp(at), "20261021T005500Z");
+        assert_eq!(utc_stamp(std::time::UNIX_EPOCH), "19700101T000000Z");
     }
 }

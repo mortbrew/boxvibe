@@ -91,15 +91,44 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 }
 
-/// tubevibe's confirm box: " Confirm " on a red border, the question, then the keys.
+/// tubevibe's confirm box: " Confirm " on a red border; a blank line, the
+/// question, the keys and a blank line, so it sits evenly in the frame.
 fn draw_confirm_quit(frame: &mut Frame, p: &Palette, screen: Rect) {
-    let lines = vec![
-        Line::from(""),
-        Line::from("Quit boxvibe?"),
-        Line::from(Span::styled("y = yes · any other key = no", Style::new().fg(p.muted))),
-    ];
+    draw_confirm(frame, p, screen, "Quit boxvibe?");
+}
+
+/// The question wrapped to `width` cells, at most `max` lines; a question
+/// longer than that ends in "…" on its last line.
+fn wrap_question(question: &str, width: usize, max: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines: Vec<String> = Vec::new();
+    for word in question.split_whitespace() {
+        match lines.last_mut() {
+            Some(line) if line.width() + 1 + word.width() <= width => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(truncate(word, width)),
+        }
+    }
+    if lines.len() > max {
+        lines.truncate(max.max(1));
+        let last = lines.pop().unwrap_or_default();
+        lines.push(truncate(&format!("{last} …"), width));
+    }
+    lines
+}
+
+fn draw_confirm(frame: &mut Frame, p: &Palette, screen: Rect, question: &str) {
     let width = 40.min(screen.width.saturating_sub(4)).max(screen.width.min(8));
-    let area = centered(screen, width, 5);
+    // Borders and the three fixed lines take 5 rows; the question gets what's left.
+    let room = usize::from(screen.height.saturating_sub(2).saturating_sub(5)).max(1);
+    let question = wrap_question(question, usize::from(width.saturating_sub(4)), room);
+    let mut lines = vec![Line::from("")];
+    lines.extend(question.into_iter().map(Line::from));
+    lines.push(Line::from(Span::styled("y = yes · any other key = no", Style::new().fg(p.muted))));
+    lines.push(Line::from(""));
+    let area = centered(screen, width, lines.len() as u16 + 2);
     frame.render_widget(Clear, area);
     let block = framed().border_style(Style::new().fg(p.red)).title(" Confirm ").style(Style::new().bg(p.background));
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center).block(block), area);
@@ -1232,6 +1261,29 @@ mod tests {
         }
         let (lines, _) = screen(&app, 120, 36);
         assert!(lines.join("\n").contains("no cover"), "{}", lines.join("\n"));
+    }
+
+    #[test]
+    fn confirm_has_a_blank_line_above_and_below() {
+        let mut app = demo();
+        app.confirm_quit = true;
+        let (lines, _) = screen(&app, 120, 36);
+        let top = lines.iter().position(|l| l.contains(" Confirm ")).expect("confirm box");
+        let chars = |y: usize| lines[y].chars().collect::<Vec<char>>();
+        let left = lines[top].chars().position(|c| c == '┌').unwrap();
+        let bottom = (top + 1..lines.len()).find(|&y| chars(y)[left] == '└').expect("bottom");
+        let right = (left + 1..chars(top).len()).find(|&x| chars(top)[x] == '┐').unwrap();
+        let inner: Vec<String> =
+            (top + 1..bottom).map(|y| chars(y)[left + 1..right].iter().collect::<String>().trim().to_owned()).collect();
+        assert_eq!(inner, ["", "Quit boxvibe?", "y = yes · any other key = no", ""], "{inner:?}");
+    }
+
+    #[test]
+    fn a_long_question_wraps_and_cuts_to_fit() {
+        assert_eq!(wrap_question("Quit boxvibe?", 36, 3), ["Quit boxvibe?"]);
+        let w = wrap_question("one two three four five six seven", 9, 2);
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(w[1].ends_with('…') && w.iter().all(|l| l.width() <= 9), "{w:?}");
     }
 
     #[test]

@@ -5,6 +5,11 @@
 ### Layout and key fixes (`ui-refresh`)
 
 - History keeps the last 10 songs (was 30)
+- Up Next and History are each sized to fit exactly 10 songs (border, header, 10 rows), side by side or
+  stacked; Now Playing takes the rest of the height. On a short terminal Now Playing keeps 9 rows and the
+  song panes shrink and scroll to the highlighted row. Settings → LOOK → Now Playing size is gone; an
+  old `[ui] now_playing_size` in config.toml is read and ignored without a warning. Tests:
+  `song_panes_fit_ten_rows_and_now_playing_takes_the_rest`, `retired_now_playing_size_is_ignored_quietly`
 - `N` (Shift+n) puts the menu on NOW PLAYING and the keys on the Now Playing pane, which lights up as active; `Tab` now goes menu → Now Playing → Up Next → History
 - Starting a station any way (Enter in Stations, Enter on a Favorite, autoplay of the last station at startup) lands exactly where `N` does: menu on NOW PLAYING and the keys on the Now Playing pane, lit up (the same function, so they can't drift). Tests: `enter_on_a_station_plays_it_and_shows_now_playing`, `enter_on_a_favorite_plays_it_and_shows_now_playing`, `autoplay_at_startup_lands_like_shift_n`
 - `u` / `+` and `d` / `-` always rate the playing song, whichever pane has the keys (before, they rated History's row there)
@@ -43,7 +48,7 @@
 - Tests: `f_stars_stations_into_a_favorites_section_that_plays_them`, `favorites_read_and_tolerate_junk`,
   `stations_page_and_favorites_section`
 
-### Now Playing size setting (`ui-refresh`)
+### Now Playing size setting (`ui-refresh`, replaced by fixed 10-song panes above)
 
 - Settings → LOOK → **Now Playing size** sets how many rows the Now Playing pane gets (9–25, step 2,
   default 17); Up Next and History get the rest. Saved as `[ui] now_playing_size`; a missing or bad value

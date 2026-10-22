@@ -87,8 +87,6 @@ pub struct UiConfig {
     pub border_style: BorderStyle,
     /// Columns of the left menu ([`MENU_WIDTH`]; never more than half the screen).
     pub menu_width: u16,
-    /// Rows of the Now Playing pane ([`NOW_PLAYING_SIZE`]); Up Next and History get the rest.
-    pub now_playing_size: u16,
     /// Stations starred with `f`, in the order starred: the menu's FAVORITES.
     pub favorites: Vec<Favorite>,
 }
@@ -112,7 +110,6 @@ impl Default for UiConfig {
             autoplay_last_station: true,
             border_style: BorderStyle::Plain,
             menu_width: MENU_WIDTH.default,
-            now_playing_size: NOW_PLAYING_SIZE.default,
             favorites: Vec::new(),
         }
     }
@@ -150,7 +147,6 @@ impl Size {
 pub const MENU_WIDTH: Size = Size { key: "menu_width", min: 20, max: 40, step: 2, default: 30 };
 
 /// Rows; 17 is what Now Playing always had on a tall terminal.
-pub const NOW_PLAYING_SIZE: Size = Size { key: "now_playing_size", min: 9, max: 25, step: 2, default: 17 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -309,6 +305,11 @@ impl ConfigWarning {
     }
 }
 
+/// Keys an earlier boxvibe wrote that no longer do anything; a config with
+/// them still loads without a warning. `ui.now_playing_size` went when Up Next
+/// and History became fixed at 10 songs (Now Playing takes the rest).
+const RETIRED_KEYS: &[&str] = &["ui.now_playing_size"];
+
 /// One `[section]`: each key is tried on its own, so an unknown or broken
 /// one is skipped (and reported) while the rest still apply.
 fn section<T: serde::de::DeserializeOwned + Default>(
@@ -330,6 +331,8 @@ fn section<T: serde::de::DeserializeOwned + Default>(
             Ok(_) if unknown && name == "pandora" && OLD_PANDORA_KEYS.contains(&key.as_str()) => {
                 warnings.push(ConfigWarning::Old(path))
             }
+            // Settings boxvibe had once and dropped: read and ignored, quietly.
+            Ok(_) if unknown && RETIRED_KEYS.contains(&path.as_str()) => {}
             // A favorite with a key boxvibe doesn't know still counts.
             Ok(_) if unknown && path != "ui.favorites" => warnings.push(ConfigWarning::Unknown(path)),
             Ok(_) => {
@@ -398,7 +401,8 @@ impl Config {
         }
         c.player.volume = c.player.volume.min(100);
         // Sizes out of range: said, and back to the default.
-        for (size, value) in [(MENU_WIDTH, &mut c.ui.menu_width), (NOW_PLAYING_SIZE, &mut c.ui.now_playing_size)] {
+        {
+            let (size, value) = (MENU_WIDTH, &mut c.ui.menu_width);
             if !size.contains(*value) {
                 warnings.push(ConfigWarning::BadValue {
                     key: format!("ui.{}", size.key),
@@ -607,14 +611,11 @@ mod tests {
     }
 
     #[test]
-    fn now_playing_size_reads_and_falls_back() {
-        let (c, w) = Config::parse("[ui]\nnow_playing_size = 11\n").unwrap();
-        assert_eq!((c.ui.now_playing_size, w.len()), (11, 0));
-        let (c, w) = Config::parse("[ui]\nnow_playing_size = 99\n").unwrap();
-        assert_eq!((c.ui.now_playing_size, w.len()), (17, 1));
-        let (c, w) = Config::parse("[ui]\nnow_playing_size = \"big\"\n").unwrap();
-        assert_eq!((c.ui.now_playing_size, w.len()), (17, 1));
-        assert_eq!(Config::parse("").unwrap().0.ui.now_playing_size, 17, "missing: the default");
+    fn retired_now_playing_size_is_ignored_quietly() {
+        let (c, w) = Config::parse("[ui]\nnow_playing_size = 11\nmenu_width = 24\n").unwrap();
+        assert_eq!((c.ui.menu_width, w.len()), (24, 0));
+        let (_, w) = Config::parse("[ui]\nnow_playing_size = \"big\"\n").unwrap();
+        assert!(w.is_empty(), "{w:?}");
     }
 
     #[test]

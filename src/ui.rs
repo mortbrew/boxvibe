@@ -460,18 +460,29 @@ fn draw_stations(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 
 // --- Player ---
 
-/// Now Playing's rows: its setting, leaving Up Next and History room on a short screen.
-pub fn now_playing_height(app: &App, height: u16) -> u16 {
-    app.config.ui.now_playing_size.min(height.saturating_sub(9).max(8))
+/// Rows Up Next and History each show at most (History keeps 10 songs).
+pub const SONG_ROWS: u16 = 10;
+/// One song pane: borders, the header and [`SONG_ROWS`] rows.
+pub const SONG_PANE: u16 = SONG_ROWS + 3;
+/// Now Playing never gets fewer rows than this while the song panes have room to give.
+pub const NOW_PLAYING_MIN: u16 = 9;
+
+/// Now Playing's rows: whatever the song panes (one row of them, or two
+/// stacked) leave; on a short screen it keeps [`NOW_PLAYING_MIN`] and the
+/// song panes shrink and scroll instead.
+pub fn now_playing_height(height: u16, stacked: bool) -> u16 {
+    let songs = if stacked { 2 * SONG_PANE } else { SONG_PANE };
+    height.saturating_sub(songs).max(NOW_PLAYING_MIN).min(height)
 }
 
 fn draw_player(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
-    let card_h = now_playing_height(app, area.height);
+    let stacked = stack_songs(area.width);
+    let card_h = now_playing_height(area.height, stacked);
     let [card, songs] = Layout::vertical([Constraint::Length(card_h), Constraint::Fill(1)]).areas(area);
     draw_now_playing(frame, app, ic, card);
     // Up Next bottom-left, History bottom-right, side by side; stacked
     // (Up Next on top) when the page is too narrow for two readable tables.
-    let [next, history] = if stack_songs(songs.width) {
+    let [next, history] = if stacked {
         Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(songs)
     } else {
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).spacing(1).areas(songs)
@@ -1187,15 +1198,30 @@ mod tests {
     }
 
     #[test]
-    fn now_playing_size_sets_the_pane_height() {
+    fn song_panes_fit_ten_rows_and_now_playing_takes_the_rest() {
         let mut app = demo();
-        for (size, rows, want) in [(17, 36, 17), (9, 36, 9), (25, 36, 25), (25, 20, 9)] {
-            app.config.ui.now_playing_size = size;
-            assert_eq!(now_playing_height(&app, rows - 2), want, "{size} on {rows} rows");
+        // Side by side: Up Next and History are SONG_PANE (13) tall, Now Playing the rest.
+        for (rows, want) in [(36, 21), (50, 35), (20, 9)] {
+            assert_eq!(now_playing_height(rows - 2, false), want, "{rows} rows");
             let (lines, _) = screen(&app, 120, rows);
             let up = lines.iter().position(|l| l.contains("Up Next (")).expect("Up Next");
             assert_eq!(up, usize::from(want), "Up Next right under Now Playing");
         }
+        // Stacked: two song panes of 13 each.
+        assert_eq!(now_playing_height(48, true), 22);
+        assert_eq!(now_playing_height(30, true), NOW_PLAYING_MIN, "short: Now Playing keeps its minimum");
+        assert_eq!(now_playing_height(5, true), 5, "never more than the screen");
+        // A full History (10 songs) fits exactly: last row right above the bottom border.
+        for i in 0..12 {
+            let mut s = app.now.clone().unwrap();
+            s.title = format!("Old song {i}");
+            app.history.insert(0, s);
+        }
+        app.history.truncate(10);
+        let (lines, _) = screen(&app, 120, 36);
+        let hist = lines.iter().position(|l| l.contains("History (")).unwrap();
+        assert!(lines[hist + 11].contains("Old song"), "10th row: {}", lines[hist + 11]);
+        assert!(lines[hist + 12].contains('└') || lines[hist + 12].contains('╰'), "{}", lines[hist + 12]);
     }
 
     #[test]
@@ -1325,7 +1351,7 @@ mod tests {
         let mut app = demo();
         app.config.ui.icons = crate::config::IconSet::Unicode;
         let (lines, _) = screen(&app, 120, 36);
-        let rows = usize::from(now_playing_height(&app, 34));
+        let rows = usize::from(now_playing_height(34, false));
         let menu = |l: &String| l.chars().skip(30).collect::<String>();
         let art_col = |l: &String| menu(l).chars().nth(2).unwrap_or(' ');
         assert_eq!(art_col(&lines[1]), '╭', "art starts on the pane's first row: {}", lines[1]);

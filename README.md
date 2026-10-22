@@ -36,7 +36,9 @@ work right now drawn as key caps at the bottom.
 - **Thumbs up / down** (`+` / `-`). Like in Pandora, a thumbs down skips the
   song. **Tired of this song** (`z`) keeps it off all your stations for a month
 - **Up Next** and **History**: the few songs Pandora sent up next on the
-  left, the ones you heard on the right (stacked on a narrow window). `Tab` goes stations → Up Next →
+  left, the last 10 you heard on the right (stacked on a narrow window). Each pane is
+  sized for 10 songs and Now Playing gets the rest of the height; on a short window Now Playing keeps
+  9 rows and the song panes shrink and scroll. `Tab` goes stations → Up Next →
   History; in History `+` / `-` rate a song you already heard
 - **Settings** (account, audio quality, volume, autoplay, song change
   notifications, theme, icons, border style, menu width, update check, edit `config.toml` in `$EDITOR`) and **About**
@@ -140,7 +142,6 @@ check_updates = true           # look for a new release on GitHub at startup
 autoplay_last_station = true   # start the station played last when boxvibe opens (0.1: [player] autoplay)
 border_style = "plain"         # plain | rounded | thick | double | none
 menu_width = 30                # the menu, in columns: 20–40, step 2 (at most half the screen); also { and }
-now_playing_size = 17          # rows for Now Playing: 9–25, step 2
 favorites = []                 # starred stations, { id = "…", name = "…" }, set with f
 ```
 

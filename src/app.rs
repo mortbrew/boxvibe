@@ -79,14 +79,13 @@ pub enum Setting {
     Icons,
     BorderStyle,
     MenuWidth,
-    NowPlayingSize,
     CheckUpdates,
     EditFile,
 }
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 15] = [
+    pub const ALL: [(&'static str, Self); 14] = [
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
@@ -99,7 +98,6 @@ impl Setting {
         ("LOOK", Self::Icons),
         ("LOOK", Self::BorderStyle),
         ("LOOK", Self::MenuWidth),
-        ("LOOK", Self::NowPlayingSize),
         ("BOXVIBE", Self::CheckUpdates),
         ("BOXVIBE", Self::EditFile),
     ];
@@ -118,7 +116,6 @@ impl Setting {
             Self::Icons => "Icons",
             Self::BorderStyle => "Border style",
             Self::MenuWidth => "Menu width",
-            Self::NowPlayingSize => "Now Playing size",
             Self::CheckUpdates => "Look for new versions on startup",
             Self::EditFile => "Edit config.toml",
         }
@@ -145,9 +142,6 @@ impl Setting {
             Self::Icons => "Emoji, Nerd Font (needs one installed) or plain Unicode. Also i.",
             Self::BorderStyle => "How every pane's border is drawn: plain, rounded, thick, double or none.",
             Self::MenuWidth => "The menu's width, 20 to 40 columns (never more than half the screen). Also { and }.",
-            Self::NowPlayingSize => {
-                "Rows for the Now Playing pane, 9 to 25; Up Next and History get the rest. Saved as [ui] now_playing_size."
-            }
             Self::CheckUpdates => "Asks GitHub when boxvibe opens; About shows the new version and Update Now.",
             Self::EditFile => "Opens config.toml in $EDITOR; boxvibe reads it again when you close it.",
         }
@@ -843,7 +837,6 @@ impl App {
             Setting::Icons => crate::icons::label(self.config.ui.icons).into(),
             Setting::BorderStyle => self.config.ui.border_style.label().into(),
             Setting::MenuWidth => format!("{} columns", self.config.ui.menu_width),
-            Setting::NowPlayingSize => format!("{} rows", self.config.ui.now_playing_size),
             Setting::CheckUpdates => on(self.config.ui.check_updates),
             Setting::EditFile => self
                 .config_path
@@ -919,12 +912,6 @@ impl App {
                 self.config.ui.menu_width = next;
                 self.save(&[("ui", "menu_width", i64::from(next).into())]);
                 self.status = format!("Menu width: {next} columns");
-            }
-            Setting::NowPlayingSize => {
-                let next = config::NOW_PLAYING_SIZE.next(self.config.ui.now_playing_size);
-                self.config.ui.now_playing_size = next;
-                self.save(&[("ui", "now_playing_size", i64::from(next).into())]);
-                self.status = format!("Now Playing size: {next} rows");
             }
             Setting::CheckUpdates => {
                 self.config.ui.check_updates = !self.config.ui.check_updates;
@@ -1682,21 +1669,6 @@ mod tests {
         }
         assert_eq!(app.config.ui.menu_width, 20, "stops at the narrowest");
         assert_eq!(Config::load(&path).0.ui.menu_width, 20);
-    }
-
-    #[test]
-    fn now_playing_size_is_saved() {
-        let path = crate::config::temp_dir("np-size").join("config.toml");
-        let mut config = Config::default();
-        config.ui.check_updates = false;
-        let mut app = App::new(config, Some(path.clone()), &[], false);
-        app.prompt = None;
-        app.view = View::Settings;
-        app.focus = Focus::Content;
-        app.settings_cursor = Setting::ALL.iter().position(|(_, s)| *s == Setting::NowPlayingSize).unwrap();
-        app.on_key(key(KeyCode::Enter));
-        assert_eq!(app.setting_value(Setting::NowPlayingSize), "19 rows");
-        assert_eq!(Config::load(&path).0.ui.now_playing_size, 19);
     }
 
     #[test]

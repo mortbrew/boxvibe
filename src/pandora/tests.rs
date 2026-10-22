@@ -54,6 +54,10 @@ fn fragment_tracks_parse_and_non_songs_are_dropped() {
     assert_eq!((s.title.as_str(), s.album.as_str(), s.length), ("Slow Hands", "Slow Hands (Single)", 188));
     assert_eq!((s.track_token.as_str(), s.station_id.as_str()), ("tok-Slow Hands", "st"));
     assert_eq!((s.audio_format, s.cover_art_url.as_str()), (AudioFormat::Mp3, "https://art/640.jpg"));
+    let sizes = json!([{ "url": "u90", "size": 90 }, { "url": "u1080", "size": 1080 }, { "url": "u500", "size": 500 }, { "url": "u640", "size": 640 }]);
+    assert_eq!(art_for_box(Some(&sizes)), "u500", "the smallest at least 500 px");
+    assert_eq!(art_for_box(Some(&json!([{ "url": "u130", "size": 130 }]))), "u130", "else the largest");
+    assert_eq!(art_for_box(None), "");
     assert!((s.gain + 3.75).abs() < 1e-4);
     assert_eq!(s.rating, Rating::None);
 

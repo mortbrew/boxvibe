@@ -65,7 +65,7 @@ work right now drawn as key caps at the bottom.
 ## Build (Arch / Omarchy)
 
 ```sh
-sudo pacman -S --needed rust alsa-lib pkgconf     # or rustup for Rust 1.88+
+sudo pacman -S --needed rust alsa-lib pkgconf     # or rustup for Rust 1.90+
 git clone https://github.com/mortbrew/boxvibe
 cd boxvibe
 cargo build --release

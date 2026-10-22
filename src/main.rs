@@ -11,6 +11,7 @@ mod snapshot;
 mod theme;
 mod ui;
 mod update;
+mod visualizer;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

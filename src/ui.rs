@@ -289,12 +289,33 @@ fn rating_word<'a>(rating: Rating, p: &Palette, ic: &Icons) -> Span<'a> {
 
 // --- Status bar ---
 
-/// What is going on, on a shaded bar above the keys (where tubevibe has it).
+/// What is going on, on a shaded bar above the keys (where tubevibe has it),
+/// and the logged-in account at its far right.
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette;
     let color = if app.status.starts_with('⚠') { p.yellow } else { p.fg };
     frame.render_widget(Block::new().bg(p.highlight), area);
-    frame.render_widget(Paragraph::new(Span::styled(format!(" {}", app.status), Style::new().fg(color))), area);
+    let account = account_label(app);
+    // The account gets at most half the bar, and never less than the status.
+    let want = account.as_ref().map_or(0, |a| safe_width(a) as u16 + 3);
+    let right_w = want.min(area.width / 2);
+    let [left, right] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(right_w)]).areas(area);
+    let status = fit(&format!(" {}", app.status), left.width.saturating_sub(1) as usize);
+    frame.render_widget(Paragraph::new(Span::styled(status, Style::new().fg(color))), left);
+    if let Some(account) = account
+        && right.width > 2
+    {
+        // tubevibe's colour for its account: the palette's `blue` (Gruvbox's aqua).
+        let text = format!("{} ", fit(&account, right.width as usize - 2));
+        frame.render_widget(Paragraph::new(text).fg(p.blue).alignment(Alignment::Right), right);
+    }
+}
+
+/// "👤 me@example.com" while logged in; nothing otherwise.
+fn account_label(app: &App) -> Option<String> {
+    let name = app.config.pandora.username.trim();
+    (app.session == Session::LoggedIn && !name.is_empty())
+        .then(|| format!("{}{}", icon_cell(icons(app.config.ui.icons).setting[0]), clean(name)))
 }
 
 /// The logo on the menu's top border, like tubevibe's: the box icon and
@@ -1499,6 +1520,34 @@ mod tests {
             assert!(matches!(end, Some('│')), "{cols} cols: the pane's border closes the row: {row}");
             assert!(!row.contains('\u{FE0F}') && !row.contains('\t'), "{cols} cols: cleaned: {row:?}");
         }
+    }
+
+    #[test]
+    fn the_account_sits_at_the_right_of_the_status_bar() {
+        let mut app = demo();
+        app.config.ui.icons = crate::config::IconSet::Unicode;
+        app.config.pandora.username = "toby@example.com".into();
+        app.status = "hello status".into();
+        app.session = Session::LoggedIn;
+        let (lines, buffer) = screen(&app, 120, 36);
+        let bar = &lines[34];
+        assert!(bar.starts_with(" hello status"), "{bar}");
+        assert!(bar.trim_end().ends_with("toby@example.com"), "{bar}");
+        assert!(bar.ends_with("toby@example.com "), "one space before the edge: {bar:?}");
+        let x = (bar.chars().count() - "toby@example.com ".len()) as u16;
+        assert_eq!(buffer[(x, 34)].fg, app.palette.blue, "tubevibe's account colour");
+        // Narrow, with a long status: both cut, never overlapping.
+        app.status = "a very long status message that goes on and on and on".into();
+        let (lines, _) = screen(&app, 40, 36);
+        let bar = &lines[34];
+        assert!(bar.contains('…') && bar.contains('@'), "{bar}");
+        assert!(bar.chars().count() == 40);
+        let status_end = bar.find("on").unwrap();
+        assert!(status_end < bar.find('@').unwrap());
+        // Logged out: nothing on the right.
+        app.session = Session::LoggedOut;
+        let (lines, _) = screen(&app, 120, 36);
+        assert!(!lines[34].contains("toby@"), "{}", lines[34]);
     }
 
     #[test]

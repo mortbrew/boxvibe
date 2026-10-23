@@ -33,6 +33,9 @@
   worked out each frame from where the cover is drawn.
 - The key bar no longer shows `t` Theme and `i` Icons; both keys still work and are in Help.
 - The key bar shows `U/D` Rate Row only while Up Next or History has the keys.
+- While Help or the quit box is open, everything behind it, the half-block
+  cover included, is dimmed toward the theme background (about 40%, greyer);
+  the popup stays at full brightness.
 - Settings has no SETTING / VALUE header row any more, and its BOXVIBE section
   (updates, edit config.toml, app menu entry) comes first, before ACCOUNT.
 - Settings → BOXVIBE → **App menu entry** (Installed / Not installed, read

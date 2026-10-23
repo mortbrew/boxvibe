@@ -83,11 +83,53 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     draw_status(frame, app, status);
     draw_keys(frame, &p, &key_caps(app), keys);
+    if app.overlay_open() {
+        dim(frame.buffer_mut(), p.background);
+    }
     if app.help {
         draw_help(frame, app, body);
     }
     if app.confirm_quit {
         draw_confirm_quit(frame, &p, area);
+    }
+}
+
+/// How bright the screen behind a popup stays, and how much colour it keeps.
+const DIM_BRIGHTNESS: f32 = 0.4;
+const DIM_SATURATION: f32 = 0.5;
+
+use ratatui::style::Color;
+
+/// Behind a popup: every cell (the half-block cover too) faded toward the
+/// theme background, to about 40% and greyer, so the popup stands out.
+fn dim(buf: &mut ratatui::buffer::Buffer, background: Color) {
+    for cell in buf.content.iter_mut() {
+        cell.fg = dim_color(cell.fg, background);
+        cell.bg = dim_color(cell.bg, background);
+    }
+}
+
+/// One colour, dimmed. RGB is desaturated then blended toward the
+/// background; named and indexed colours (no RGB to blend) become a dim gray.
+fn dim_color(color: Color, background: Color) -> Color {
+    let (br, bg, bb) = match background {
+        Color::Rgb(r, g, b) => (f32::from(r), f32::from(g), f32::from(b)),
+        _ => (0.0, 0.0, 0.0),
+    };
+    match color {
+        Color::Reset => Color::Reset,
+        c if c == background => c,
+        Color::Rgb(r, g, b) => {
+            let (r, g, b) = (f32::from(r), f32::from(g), f32::from(b));
+            let grey = 0.299 * r + 0.587 * g + 0.114 * b;
+            let fade = |c: f32, base: f32| {
+                let c = grey + (c - grey) * DIM_SATURATION;
+                (base + (c - base) * DIM_BRIGHTNESS).round().clamp(0.0, 255.0) as u8
+            };
+            Color::Rgb(fade(r, br), fade(g, bg), fade(b, bb))
+        }
+        Color::Black => Color::Black,
+        _ => Color::DarkGray,
     }
 }
 
@@ -1352,6 +1394,59 @@ mod tests {
         let top = lines.iter().position(|l| l.contains("Settings")).unwrap();
         let first = Setting::ALL[0].0;
         assert!(lines[top + 1].contains(first), "{first} right under the border\n{all}");
+    }
+
+    #[test]
+    fn colours_behind_a_popup_fade_toward_the_background() {
+        let bg = Color::Rgb(20, 20, 30);
+        let Color::Rgb(r, g, b) = dim_color(Color::Rgb(250, 200, 0), bg) else { panic!() };
+        assert!(r < 130 && g < 110 && b > 20, "darker, toward the background: {r} {g} {b}");
+        assert!(r.abs_diff(b) < 70, "less saturated: {r} vs {b}");
+        assert_eq!(dim_color(bg, bg), bg, "the background stays");
+        assert_eq!(dim_color(Color::Yellow, bg), Color::DarkGray);
+        assert_eq!(dim_color(Color::Indexed(208), bg), Color::DarkGray);
+        assert_eq!(dim_color(Color::Reset, bg), Color::Reset);
+    }
+
+    #[test]
+    fn a_popup_dims_everything_behind_it_but_not_itself() {
+        let mut app = demo();
+        app.settle(std::time::Duration::from_millis(300));
+        app.art.set_overlay(true);
+        let (_, before) = screen(&app, 255, 70);
+        app.help = true;
+        let (lines, after) = screen(&app, 255, 70);
+        let top = lines.iter().position(|l| l.contains("boxvibe Help")).unwrap() as u16;
+        let left = lines[top as usize].chars().position(|c| c == '┌' || c == '╭').unwrap_or(0) as u16;
+        let brightness = |c: Color| match c {
+            Color::Rgb(r, g, b) => u32::from(r) + u32::from(g) + u32::from(b),
+            _ => 0,
+        };
+        // Outside the popup: nothing brighter than before, and lots darker
+        // (the half-block cover included).
+        let mut darker = 0;
+        for y in 0..70 {
+            for x in 0..255 {
+                let (a, b) = (&before[(x, y)], &after[(x, y)]);
+                if y >= top && x >= left && x < left + 10 {
+                    continue;
+                }
+                if a.symbol() == b.symbol() && brightness(b.fg) + brightness(b.bg) < brightness(a.fg) + brightness(a.bg)
+                {
+                    darker += 1;
+                }
+            }
+        }
+        assert!(darker > 500, "only {darker} cells dimmed");
+        let blocks = (0..70).flat_map(|y| (0..255).map(move |x| (x, y))).filter(|&p| after[p].symbol() == "▀");
+        assert!(blocks.clone().count() > 0);
+        assert!(
+            blocks.into_iter().all(|p| !matches!(after[p].fg, Color::Rgb(r, g, b) if r > 140 || g > 140 || b > 140))
+        );
+        // The popup's own text keeps its colour.
+        let title = lines[top as usize].find("boxvibe Help").unwrap();
+        let x = lines[top as usize][..title].chars().count() as u16;
+        assert!(brightness(after[(x, top)].fg) > 400, "the popup stays bright: {:?}", after[(x, top)]);
     }
 
     #[test]

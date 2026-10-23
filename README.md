@@ -182,7 +182,8 @@ theme colour. It follows theme changes right away and works with Retro mode.
 
 The cover has no frame around it. While Help or the quit box is open, a
 terminal picture is held back (it would draw over the popup) and sent again,
-cleanly, when the popup closes. The status bar shows the logged-in account at
+cleanly, when the popup closes. Everything behind a popup, the cover's half
+blocks included, is dimmed so the popup stands out. The status bar shows the logged-in account at
 its right.
 
 Covers download in the background and are kept in memory and in

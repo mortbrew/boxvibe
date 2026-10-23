@@ -1126,16 +1126,12 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.view != View::Player && app.has_now_playing() {
         keys.push(("N", "Now Playing"));
     }
-    keys.extend([
-        ("space", pause),
-        ("n", "Skip"),
-        ("u/d", "Like/Dislike"),
-        ("U/D", "Rate Row"),
-        ("⇧←→", "Volume"),
-        ("{/}", "Menu Size"),
-        ("?", "Help"),
-        ("Q", "Quit"),
-    ]);
+    keys.extend([("space", pause), ("n", "Skip"), ("u/d", "Like/Dislike")]);
+    // U / D rate the highlighted row: shown when Up Next or History has the keys.
+    if app.focus == Focus::Content && app.view == View::Player && matches!(app.pane, Pane::UpNext | Pane::History) {
+        keys.push(("U/D", "Rate Row"));
+    }
+    keys.extend([("⇧←→", "Volume"), ("{/}", "Menu Size"), ("?", "Help"), ("Q", "Quit")]);
     keys
 }
 
@@ -1283,6 +1279,24 @@ mod tests {
         let theme = app.config.ui.theme.clone();
         app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('t')));
         assert_ne!(app.config.ui.theme, theme);
+    }
+
+    #[test]
+    fn rate_row_is_only_hinted_when_up_next_or_history_has_the_keys() {
+        let mut app = demo();
+        app.view = View::Player;
+        let hinted = |app: &App| key_caps(app).iter().any(|(k, _)| *k == "U/D");
+        app.focus = crate::app::Focus::Menu;
+        assert!(!hinted(&app), "menu");
+        app.focus = crate::app::Focus::Content;
+        app.pane = Pane::NowPlaying;
+        assert!(!hinted(&app), "Now Playing");
+        for pane in [Pane::UpNext, Pane::History] {
+            app.pane = pane;
+            assert!(hinted(&app), "{pane:?}");
+        }
+        app.view = View::Settings;
+        assert!(!hinted(&app), "Settings");
     }
 
     #[test]

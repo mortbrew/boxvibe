@@ -27,6 +27,7 @@
   far in from the pane's right border as the cover starts from its left one,
   worked out each frame from where the cover is drawn.
 - The key bar no longer shows `t` Theme and `i` Icons; both keys still work and are in Help.
+- The key bar shows `U/D` Rate Row only while Up Next or History has the keys.
 
 ## 0.2.0 (2026-10-22)
 

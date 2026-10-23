@@ -101,6 +101,8 @@ pub struct Art {
     suspended: std::cell::Cell<bool>,
     /// Where the art box was last drawn (the cover or visualizer fills it).
     pub last_area: std::cell::Cell<ratatui::layout::Rect>,
+    /// Where the cover itself was last drawn inside that box.
+    pub last_cover: std::cell::Cell<ratatui::layout::Rect>,
 }
 
 impl Art {
@@ -193,7 +195,7 @@ impl Art {
                 (AlbumArt::Off, _) | (_, None) => return None,
                 (_, Some(image)) => image,
             };
-            let picker = picture.cloned().unwrap_or_else(Picker::halfblocks);
+            let picker = picture.cloned().unwrap_or_else(|| self.blocks_picker());
             let protocol =
                 picker.new_resize_protocol(tint(&pixelate(image, look.pixelation), look.tint, &look.palette));
             *shown = Some(Shown { url: url.into(), look, protocol });
@@ -220,6 +222,22 @@ impl Art {
     pub fn hide(&self) {
         if self.shown.borrow_mut().take().is_some_and(|s| !is_blocks(&s.protocol)) {
             self.needs_clear.set(true);
+        }
+    }
+}
+
+impl Art {
+    /// Half blocks sized with the terminal's real font when graphics are on,
+    /// so the stand-in under a popup fills exactly the picture's rectangle
+    /// (same cells, same place) and nothing beside it moves.
+    fn blocks_picker(&self) -> Picker {
+        match &self.graphics {
+            Some(g) => {
+                let mut p = g.clone();
+                p.set_protocol_type(ProtocolType::Halfblocks);
+                p
+            }
+            None => Picker::halfblocks(),
         }
     }
 }

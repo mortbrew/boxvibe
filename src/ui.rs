@@ -649,6 +649,7 @@ fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) -> Rect {
         frame.render_stateful_widget(StatefulImage::default(), at, &mut *cover);
         drop(cover);
         app.art.check_encoding(&song.cover_art_url);
+        app.art.last_cover.set(at);
         return at;
     }
     app.art.hide();
@@ -1269,6 +1270,44 @@ mod tests {
             let end = (dot..right).rev().find(|&x| row[x] != ' ').unwrap();
             assert!(row[end].is_ascii_digit(), "{cols}x{rows}: ends with the total time: {}", lines[y]);
             assert_eq!(right - end, cover_x - left, "{cols}x{rows}: symmetrical\n{}", lines.join("\n"));
+        }
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn the_half_block_stand_in_fills_the_pictures_rectangle_and_nothing_moves() {
+        let mut app = demo();
+        app.settle(std::time::Duration::from_millis(300));
+        let mut sixel = ratatui_image::picker::Picker::from_fontsize(ratatui_image::FontSize::new(8, 17));
+        sixel.set_protocol_type(ratatui_image::picker::ProtocolType::Sixel);
+        app.art.set_graphics(Some(sixel));
+        for (cols, rows) in [(255u16, 70u16), (160, 40)] {
+            let mut seen = Vec::new();
+            for help in [false, true, false] {
+                app.help = help;
+                app.art.set_overlay(help);
+                let (lines, _) = screen(&app, cols, rows);
+                let cover = app.art.last_cover.get();
+                // The time line's total, at its right end (the start may be under Help).
+                let time = lines
+                    .iter()
+                    .position(|l| {
+                        l.contains("──")
+                            && l.trim_end_matches([' ', '│']).ends_with(|c: char| c.is_ascii_digit())
+                            && l.contains(":")
+                    })
+                    .map(|y| (y, lines[y].trim_end_matches([' ', '│']).chars().count()));
+                assert!(time.is_some(), "{cols}x{rows}: time line\n{}", lines.join("\n"));
+                seen.push((cover, time));
+                if help {
+                    let inside: String = lines[cover.y as usize..cover.bottom() as usize]
+                        .iter()
+                        .map(|l| l.chars().skip(cover.x as usize).take(4).collect::<String>())
+                        .collect();
+                    assert!(inside.contains('▀') || inside.contains('▄'), "{cols}x{rows}: half blocks under Help");
+                }
+            }
+            assert!(seen.windows(2).all(|w| w[0] == w[1]), "{cols}x{rows}: same cover and info with Help: {seen:?}");
         }
     }
 

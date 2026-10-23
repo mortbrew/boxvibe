@@ -36,6 +36,10 @@
   launchers list boxvibe, running this binary in a terminal. Only a file
   boxvibe wrote (marked `X-Boxvibe-Generated=true`) is ever deleted. Not a
   config key.
+- The half-block cover shown under Help or the quit box now fills exactly the
+  rectangle the sixel/kitty/iTerm2 picture uses (it is sized with the
+  terminal's real font), so it no longer looks smaller or off-centre and the
+  song info beside it never moves when a popup opens.
 
 ## 0.2.0 (2026-10-22)
 

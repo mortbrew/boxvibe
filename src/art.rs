@@ -49,13 +49,26 @@ pub enum Cover {
 }
 
 /// How a cover is drawn: the settings and colours it was built for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct Look {
     pub mode: AlbumArt,
     pub pixelation: Pixelation,
     pub tint: ArtTint,
     pub palette: Palette,
 }
+
+/// Two looks draw the same cover. The theme's colours only matter when the
+/// cover is tinted, so a new theme doesn't rebuild (and resend) an untinted one.
+impl PartialEq for Look {
+    fn eq(&self, other: &Self) -> bool {
+        self.mode == other.mode
+            && self.pixelation == other.pixelation
+            && self.tint == other.tint
+            && (self.tint == ArtTint::Off || self.palette == other.palette)
+    }
+}
+
+impl Eq for Look {}
 
 impl Look {
     pub fn of(app_config: &crate::config::UiConfig, palette: Palette) -> Self {
@@ -77,6 +90,8 @@ pub struct Art {
     order: VecDeque<String>,
     requested: HashSet<String>,
     failed: HashSet<String>,
+    /// Covers the terminal's graphics couldn't encode: drawn in half blocks.
+    unencodable: RefCell<HashSet<String>>,
     shown: RefCell<Option<Shown>>,
     /// A picture protocol was drawn and then replaced: clear the screen once.
     pub needs_clear: std::cell::Cell<bool>,
@@ -174,7 +189,7 @@ impl Art {
                 (_, Some(image)) => image,
             };
             let picker = match (mode, &self.graphics) {
-                (AlbumArt::Picture, Some(p)) => p.clone(),
+                (AlbumArt::Picture, Some(p)) if !self.unencodable.borrow().contains(url) => p.clone(),
                 _ => Picker::halfblocks(),
             };
             let protocol =
@@ -182,6 +197,21 @@ impl Art {
             *shown = Some(Shown { url: url.into(), look, protocol });
         }
         Some(RefMut::map(shown, |s| &mut s.as_mut().expect("just set").protocol))
+    }
+
+    /// Call after drawing the cover: when the terminal's graphics couldn't
+    /// encode it, it is drawn in half blocks from the next frame on rather
+    /// than leaving the box empty.
+    pub fn check_encoding(&self, url: &str) {
+        let mut shown = self.shown.borrow_mut();
+        let failed = shown.as_mut().is_some_and(|s| {
+            s.url == url && !is_blocks(&s.protocol) && matches!(s.protocol.last_encoding_result(), Some(Err(_)))
+        });
+        if failed {
+            self.unencodable.borrow_mut().insert(url.into());
+            shown.take();
+            self.needs_clear.set(true);
+        }
     }
 
     /// Nothing to show (no song, no cover): a picture left on screen goes.
@@ -455,6 +485,59 @@ mod tests {
         trim_cache(&dir, 250);
         assert!(!cache_path(&dir, "a").exists() && cache_path(&dir, "b").exists() && cache_path(&dir, "c").exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[allow(deprecated)] // a fixed font size, no terminal to ask
+    fn sixel() -> Picker {
+        let mut p = Picker::from_fontsize(ratatui_image::FontSize { width: 8, height: 16 });
+        p.set_protocol_type(ratatui_image::picker::ProtocolType::Sixel);
+        p
+    }
+
+    /// Draws the cover into a 20x10 box and returns the sixel sent, if any.
+    fn draw_sixel(art: &Art, look: Look) -> Option<String> {
+        use ratatui::{buffer::Buffer, layout::Rect, widgets::StatefulWidget};
+        let area = Rect::new(0, 0, 20, 10);
+        let mut buf = Buffer::empty(area);
+        let mut cover = art.protocol("u", look)?;
+        ratatui_image::StatefulImage::default().render(area, &mut buf, &mut *cover);
+        assert!(matches!(cover.last_encoding_result(), Some(Ok(()))), "{look:?} encodes");
+        let sym = buf[(0, 0)].symbol().to_owned();
+        sym.contains("\x1bP").then_some(sym)
+    }
+
+    #[test]
+    fn tinted_covers_without_pixelation_are_sent_as_sixels() {
+        let mut art = Art::default();
+        art.set_graphics(Some(sixel()));
+        art.arrived("u".into(), Some(demo_cover("u")));
+        for tint in [ArtTint::Off, ArtTint::Duotone, ArtTint::Palette] {
+            for pixelation in [Pixelation::Off, Pixelation::Max] {
+                let look = Look { tint, ..look(AlbumArt::Picture, pixelation) };
+                assert!(draw_sixel(&art, look).is_some(), "{look:?} shows the picture");
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_theme_only_rebuilds_a_tinted_cover() {
+        let [a, b] = [crate::theme::BUILT_IN[0].2, crate::theme::BUILT_IN[1].2];
+        let off = look(AlbumArt::Picture, Pixelation::Off);
+        assert_eq!(Look { palette: a, ..off }, Look { palette: b, ..off });
+        let duo = Look { tint: ArtTint::Duotone, ..off };
+        assert_ne!(Look { palette: a, ..duo }, Look { palette: b, ..duo });
+    }
+
+    #[test]
+    fn a_cover_the_terminal_cant_encode_falls_back_to_half_blocks() {
+        let mut art = Art::default();
+        art.set_graphics(Some(sixel()));
+        art.arrived("u".into(), Some(demo_cover("u")));
+        let l = look(AlbumArt::Picture, Pixelation::Off);
+        drop(art.protocol("u", l));
+        art.unencodable.borrow_mut().insert("u".into());
+        art.forget_shown();
+        assert!(art.protocol("u", l).is_some_and(|p| is_blocks(&p)));
     }
 
     #[test]

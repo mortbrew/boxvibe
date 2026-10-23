@@ -642,6 +642,8 @@ fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) {
         let y = inner.y + inner.height.saturating_sub(fit.height) / 2;
         let at = Rect::new(x, y, fit.width.min(inner.width), fit.height.min(inner.height));
         frame.render_stateful_widget(StatefulImage::default(), at, &mut *cover);
+        drop(cover);
+        app.art.check_encoding(&song.cover_art_url);
         return;
     }
     app.art.hide();

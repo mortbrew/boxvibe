@@ -84,11 +84,12 @@ pub enum Setting {
     ArtTint,
     CheckUpdates,
     EditFile,
+    MenuEntry,
 }
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 17] = [
+    pub const ALL: [(&'static str, Self); 18] = [
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
@@ -106,6 +107,7 @@ impl Setting {
         ("LOOK", Self::ArtTint),
         ("BOXVIBE", Self::CheckUpdates),
         ("BOXVIBE", Self::EditFile),
+        ("BOXVIBE", Self::MenuEntry),
     ];
 
     pub fn label(self) -> &'static str {
@@ -127,6 +129,7 @@ impl Setting {
             Self::ArtTint => "Tint art with theme colors",
             Self::CheckUpdates => "Look for new versions on startup",
             Self::EditFile => "Edit config.toml",
+            Self::MenuEntry => "App menu entry",
         }
     }
 
@@ -160,6 +163,9 @@ impl Setting {
             Self::Pixelation => "Makes the cover blocky on purpose: 128, 64, 32, 16 or 8 pixels across, or Off.",
             Self::CheckUpdates => "Asks GitHub when boxvibe opens; About shows the new version and Update Now.",
             Self::EditFile => "Opens config.toml in $EDITOR; boxvibe reads it again when you close it.",
+            Self::MenuEntry => {
+                "Enter adds or removes boxvibe.desktop in ~/.local/share/applications, so app launchers (walker on Omarchy) list boxvibe; it runs this boxvibe in a terminal."
+            }
         }
     }
 }
@@ -920,6 +926,11 @@ impl App {
                 .as_ref()
                 .map(|p| p.display().to_string().replace(&std::env::var("HOME").unwrap_or_default(), "~"))
                 .unwrap_or_default(),
+            Setting::MenuEntry => match crate::desktop::applications_dir() {
+                Some(dir) if crate::desktop::installed(&dir) => "Installed".into(),
+                Some(_) => "Not installed".into(),
+                None => "no home folder".into(),
+            },
         }
     }
 
@@ -1023,7 +1034,34 @@ impl App {
                     self.edit_config = true;
                 }
             }
+            Setting::MenuEntry => self.toggle_menu_entry(),
         }
+    }
+
+    /// Adds or removes boxvibe.desktop (a file on disk, not a config key).
+    fn toggle_menu_entry(&mut self) {
+        use crate::desktop;
+        if self.demo {
+            self.status = "The demo doesn't add an app menu entry".into();
+            return;
+        }
+        let Some(dir) = desktop::applications_dir() else {
+            self.status = "No home folder: can't add an app menu entry".into();
+            return;
+        };
+        let home = std::env::var("HOME").unwrap_or_default();
+        let short = |p: &std::path::Path| p.display().to_string().replacen(&home, "~", 1);
+        self.status = if desktop::installed(&dir) {
+            match desktop::remove(&dir) {
+                Ok(p) => format!("Removed {} from the app menu", short(&p)),
+                Err(e) => format!("Left {} alone: {e}", short(&desktop::path_in(&dir))),
+            }
+        } else {
+            match desktop::current_exe().and_then(|exe| desktop::install(&dir, &exe)) {
+                Ok(p) => format!("Added {}: boxvibe is in the app menu", short(&p)),
+                Err(e) => format!("Couldn't add the app menu entry: {e}"),
+            }
+        };
     }
 
     /// After the editor closes: read config.toml again.

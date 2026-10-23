@@ -41,7 +41,7 @@ work right now drawn as key caps at the bottom.
   9 rows and the song panes shrink and scroll. `Tab` goes stations → Up Next →
   History; in History `+` / `-` rate a song you already heard
 - **Settings** (account, audio quality, volume, autoplay, song change
-  notifications, theme, icons, border style, menu width, update check, edit `config.toml` in `$EDITOR`) and **About**
+  notifications, theme, icons, border style, menu width, update check, edit `config.toml` in `$EDITOR`, app menu entry) and **About**
   (links, version, and the update button) below the stations
 - **Updates itself** from GitHub releases: see [Updating](#updating)
 - **Gapless-ish playback**: the next song downloads while this one plays.
@@ -73,6 +73,14 @@ cargo build --release
 ```
 
 To have it in your `PATH`: `install -Dm755 target/release/boxvibe ~/.local/bin/boxvibe`
+
+To have it in your app launcher (walker on Omarchy, GNOME, KDE, ...): Settings →
+BOXVIBE → **App menu entry**, `Enter`. It writes
+`$XDG_DATA_HOME/applications/boxvibe.desktop` (`~/.local/share/applications`
+by default) pointing at the boxvibe you are running, with `Terminal=true` so
+the launcher opens it in your terminal; `Enter` again removes it. boxvibe only
+ever deletes a file it wrote itself (marked `X-Boxvibe-Generated=true`). Run
+it from where it will stay (e.g. `~/.local/bin`), not from `target/`.
 (or `cargo install --locked --path .`).
 
 On Debian / Ubuntu the packages are `libasound2-dev pkg-config`; on Fedora

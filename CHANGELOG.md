@@ -28,6 +28,12 @@
   worked out each frame from where the cover is drawn.
 - The key bar no longer shows `t` Theme and `i` Icons; both keys still work and are in Help.
 - The key bar shows `U/D` Rate Row only while Up Next or History has the keys.
+- Settings → BOXVIBE → **App menu entry** (Installed / Not installed, read
+  from disk): `Enter` adds or removes `boxvibe.desktop` in
+  `$XDG_DATA_HOME/applications` (default `~/.local/share/applications`) so app
+  launchers list boxvibe, running this binary in a terminal. Only a file
+  boxvibe wrote (marked `X-Boxvibe-Generated=true`) is ever deleted. Not a
+  config key.
 
 ## 0.2.0 (2026-10-22)
 

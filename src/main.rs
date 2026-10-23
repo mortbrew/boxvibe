@@ -6,6 +6,7 @@ mod audio;
 mod backend;
 mod config;
 mod demo;
+mod desktop;
 mod icons;
 mod pandora;
 mod snapshot;

@@ -992,6 +992,7 @@ impl App {
                 let next = self.config.ui.album_art.next();
                 self.config.ui.album_art = next;
                 self.art.forget_shown();
+                self.want_art();
                 self.save(&[("ui", "album_art", next.as_str().into())]);
                 self.status = format!("Album art: {}", next.label());
             }

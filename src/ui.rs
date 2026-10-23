@@ -1318,6 +1318,42 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
+    fn a_song_change_under_help_fetches_and_shows_the_new_cover() {
+        let mut app = demo();
+        app.settle(std::time::Duration::from_millis(300));
+        let mut sixel = ratatui_image::picker::Picker::from_fontsize(ratatui_image::FontSize::new(8, 17));
+        sixel.set_protocol_type(ratatui_image::picker::ProtocolType::Sixel);
+        app.art.set_graphics(Some(sixel));
+        let frame = |app: &mut App| {
+            app.tick();
+            app.art.set_overlay(app.overlay_open());
+            screen(app, 255, 70);
+        };
+        for _ in 0..10 {
+            frame(&mut app);
+            app.settle(std::time::Duration::from_millis(50));
+        }
+        let old = app.now.as_ref().unwrap().cover_art_url.clone();
+        assert_eq!(app.art.shown_cover(), Some((old.clone(), false)), "the picture");
+        app.help = true;
+        frame(&mut app);
+        assert_eq!(app.art.shown_cover(), Some((old.clone(), true)), "half blocks under Help");
+        app.demo_warm_up(1, std::time::Duration::ZERO);
+        let new = app.now.as_ref().unwrap().cover_art_url.clone();
+        assert_ne!(new, old);
+        for _ in 0..20 {
+            frame(&mut app);
+            app.settle(std::time::Duration::from_millis(50));
+        }
+        assert!(app.help, "Help still open");
+        assert_eq!(app.art.shown_cover(), Some((new.clone(), true)), "the new cover, in half blocks");
+        app.help = false;
+        frame(&mut app);
+        assert_eq!(app.art.shown_cover(), Some((new, false)), "the new picture once Help closes");
+    }
+
+    #[test]
     fn help_fits_its_longest_line_and_its_keys_line_up() {
         let mut app = demo();
         app.help = true;

@@ -227,6 +227,12 @@ impl Art {
 }
 
 impl Art {
+    /// Tests: the cover being shown, and whether it is in half blocks.
+    #[cfg(test)]
+    pub fn shown_cover(&self) -> Option<(String, bool)> {
+        self.shown.borrow().as_ref().map(|s| (s.url.clone(), is_blocks(&s.protocol)))
+    }
+
     /// Half blocks sized with the terminal's real font when graphics are on,
     /// so the stand-in under a popup fills exactly the picture's rectangle
     /// (same cells, same place) and nothing beside it moves.

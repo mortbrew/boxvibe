@@ -110,9 +110,10 @@ impl Art {
     }
 
     /// Call before each frame with whether a popup covers the screen.
-    /// Opening or closing one drops a terminal picture (sixel, kitty,
-    /// iTerm2) and clears the screen once, so no remnant stays behind the
-    /// popup and the cover is encoded and sent again, whole, after it.
+    /// A terminal picture (sixel, kitty, iTerm2) would draw over a popup, so
+    /// while one is open the same cover is drawn in half blocks instead.
+    /// Opening or closing one clears the screen once, so no remnant stays
+    /// behind, and the picture is encoded and sent again, whole, after it.
     pub fn set_overlay(&mut self, open: bool) {
         if self.suspended.get() == open {
             return;
@@ -122,12 +123,6 @@ impl Art {
             self.forget_shown();
             self.needs_clear.set(true);
         }
-    }
-
-    /// While a popup is open, `mode` would put a terminal picture on screen:
-    /// draw no picture.
-    pub fn held_back(&self, mode: AlbumArt) -> bool {
-        self.suspended.get() && mode == AlbumArt::Picture && self.graphics.is_some()
     }
 
     /// The protocol Picture uses ("halfblocks" without graphics).
@@ -179,7 +174,17 @@ impl Art {
     pub fn protocol(&self, url: &str, look: Look) -> Option<RefMut<'_, StatefulProtocol>> {
         let mode = look.mode;
         let mut shown = self.shown.borrow_mut();
-        let current = shown.as_ref().is_some_and(|s| s.url == url && s.look == look);
+        // Half blocks for Blocks, without graphics, under a popup, or when
+        // the terminal couldn't encode this cover.
+        let picture = match (mode, &self.graphics) {
+            (AlbumArt::Picture, Some(p)) if !self.suspended.get() && !self.unencodable.borrow().contains(url) => {
+                Some(p)
+            }
+            _ => None,
+        };
+        let current = shown
+            .as_ref()
+            .is_some_and(|s| s.url == url && s.look == look && is_blocks(&s.protocol) == picture.is_none());
         if !current {
             if shown.take().is_some_and(|s| !is_blocks(&s.protocol)) {
                 self.needs_clear.set(true);
@@ -188,10 +193,7 @@ impl Art {
                 (AlbumArt::Off, _) | (_, None) => return None,
                 (_, Some(image)) => image,
             };
-            let picker = match (mode, &self.graphics) {
-                (AlbumArt::Picture, Some(p)) if !self.unencodable.borrow().contains(url) => p.clone(),
-                _ => Picker::halfblocks(),
-            };
+            let picker = picture.cloned().unwrap_or_else(Picker::halfblocks);
             let protocol =
                 picker.new_resize_protocol(tint(&pixelate(image, look.pixelation), look.tint, &look.palette));
             *shown = Some(Shown { url: url.into(), look, protocol });
@@ -432,29 +434,29 @@ mod tests {
     }
 
     #[test]
-    fn a_popup_holds_back_a_terminal_picture_and_clears_around_it() {
+    fn a_popup_shows_the_cover_in_half_blocks_and_clears_around_it() {
         let mut art = Art::default();
         art.arrived("u".into(), Some(demo_cover("u")));
+        let pic = look(AlbumArt::Picture, Pixelation::Off);
         // Half blocks are plain text: a popup covers them, nothing to do.
         art.set_overlay(true);
-        assert!(!art.held_back(AlbumArt::Picture) && !art.needs_clear.take());
+        assert!(!art.needs_clear.take());
         art.set_overlay(false);
         let mut sixel = Picker::halfblocks();
         sixel.set_protocol_type(ProtocolType::Sixel);
         art.set_graphics(Some(sixel));
         art.needs_clear.take();
-        assert!(art.protocol("u", look(AlbumArt::Picture, Pixelation::Off)).is_some());
+        assert!(art.protocol("u", pic).is_some_and(|p| !is_blocks(&p)), "a sixel");
         art.set_overlay(true);
-        assert!(art.held_back(AlbumArt::Picture), "no sixel over Help");
-        assert!(!art.held_back(AlbumArt::Blocks));
         assert!(art.needs_clear.take(), "the picture is wiped when the popup opens");
-        assert!(art.shown.borrow().is_none());
+        let tinted = Look { tint: ArtTint::Duotone, ..look(AlbumArt::Picture, Pixelation::Max) };
+        assert!(art.protocol("u", tinted).is_some_and(|p| is_blocks(&p)), "the cover, in half blocks, over Help");
+        assert!(!art.needs_clear.take(), "half blocks need no clearing");
         art.set_overlay(true);
         assert!(!art.needs_clear.take(), "once, not every frame");
         art.set_overlay(false);
-        assert!(!art.held_back(AlbumArt::Picture));
         assert!(art.needs_clear.take(), "a clean screen when it closes");
-        assert!(art.protocol("u", look(AlbumArt::Picture, Pixelation::Off)).is_some(), "built and sent again");
+        assert!(art.protocol("u", tinted).is_some_and(|p| !is_blocks(&p)), "the sixel, sent again");
     }
 
     #[test]

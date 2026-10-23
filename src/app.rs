@@ -367,14 +367,8 @@ impl App {
                     None => self.status = format!("{} isn't one of your stations any more (f removes it)", fav.name),
                 }
             }
-            MenuItem::Settings => {
-                self.view = View::Settings;
-                self.focus = Focus::Content;
-            }
-            MenuItem::About => {
-                self.view = View::About;
-                self.focus = Focus::Content;
-            }
+            MenuItem::Settings => self.show_page(View::Settings),
+            MenuItem::About => self.show_page(View::About),
             MenuItem::Quit => self.quit = true,
         }
     }
@@ -390,6 +384,14 @@ impl App {
         // The keys go to the Now Playing pane, so it shows as active.
         self.focus = Focus::Content;
         self.pane = Pane::NowPlaying;
+    }
+
+    /// Settings or About (menu entry, `S` or `A`): the page, with the keys
+    /// on it and its menu entry selected.
+    fn show_page(&mut self, view: View) {
+        self.view = view;
+        self.point_menu_at_view();
+        self.focus = Focus::Content;
     }
 
     /// Stations (menu entry or `s`): the list, with the keys on it.
@@ -1125,6 +1127,8 @@ impl App {
             KeyCode::Char('D') => self.rate_row(false),
             KeyCode::Char('z') => self.tired(),
             KeyCode::Char('N') => self.show_now_playing(),
+            KeyCode::Char('S') => self.show_page(View::Settings),
+            KeyCode::Char('A') => self.show_page(View::About),
             KeyCode::Char('s') => {
                 self.show_stations();
             }
@@ -1855,5 +1859,16 @@ mod tests {
         assert!(app.update_button_ready() && app.restart_ready());
         app.on_key(key(KeyCode::Enter));
         assert!(app.restart && app.quit, "Enter on Restart Now quits so main starts the new one");
+    }
+
+    #[test]
+    fn shift_s_and_shift_a_open_settings_and_about_from_the_menu() {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.on_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
+        assert_eq!((app.view, app.focus, app.menu_selected()), (View::Settings, Focus::Content, MenuItem::Settings));
+        app.on_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT));
+        assert_eq!((app.view, app.focus, app.menu_selected()), (View::About, Focus::Content, MenuItem::About));
+        app.on_key(key(KeyCode::Char('s')));
+        assert_eq!(app.view, View::Stations, "lowercase s is still Stations");
     }
 }

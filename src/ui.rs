@@ -1177,6 +1177,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
                 ("Enter", "play the station · open Stations / Settings / About"),
                 ("N", "Now Playing pane gets the keys (menu on NOW PLAYING)"),
                 ("s", "Stations: every station, Enter plays one"),
+                ("S A", "Settings / About"),
                 ("f F", "favorite / unfavorite: the menu's FAVORITES"),
                 ("Tab", "menu → Now Playing → Up Next → History"),
                 ("Esc", "back to the menu"),

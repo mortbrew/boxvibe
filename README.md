@@ -101,6 +101,7 @@ Try it without an account (made-up stations, no network, no sound):
 | `Esc` | back to the menu |
 | `N` (Shift+n) | Now Playing: back to the player with the keys on the Now Playing pane and the menu on NOW PLAYING |
 | `s` | Stations: every station on the right, `Enter` plays one |
+| `S` (Shift+s) / `A` (Shift+a) | Settings / About, with the menu on that entry |
 | `f` `F` | favorite / unfavorite the station (the menu's FAVORITES section) |
 | `{` `}` | menu narrower / wider |
 | `t` | next theme |

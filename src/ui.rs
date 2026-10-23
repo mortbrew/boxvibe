@@ -1230,7 +1230,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), box_area);
 }
 
-const HELP_FOOTER: &str = " Settings and account, album art, pixelation and tint: the Settings entry in the menu";
+const HELP_FOOTER: &str = " Settings and account, album art, retro mode and tint: the Settings entry in the menu";
 
 #[cfg(test)]
 mod tests {

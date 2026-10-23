@@ -90,8 +90,10 @@ pub struct UiConfig {
     /// How Now Playing shows the cover: a real picture, coloured blocks, or
     /// (`off`) the spectrum visualizer only.
     pub album_art: AlbumArt,
-    /// Makes the cover blocky on purpose (for fun): `off` is full resolution.
-    pub art_pixelation: Pixelation,
+    /// Makes the cover blocky on purpose (for fun): `hd` is full resolution.
+    /// 0.3 betas called it `art_pixelation` (off … max), still read.
+    #[serde(alias = "art_pixelation")]
+    pub retro_mode: RetroMode,
     /// Recolours the cover with the current theme's colours (`off`: as is).
     pub art_tint: ArtTint,
     /// Stations starred with `f`, in the order starred: the menu's FAVORITES.
@@ -118,7 +120,7 @@ impl Default for UiConfig {
             border_style: BorderStyle::Plain,
             menu_width: MENU_WIDTH.default,
             album_art: AlbumArt::Picture,
-            art_pixelation: Pixelation::Off,
+            retro_mode: RetroMode::Hd,
             art_tint: ArtTint::Off,
             favorites: Vec::new(),
         }
@@ -281,23 +283,28 @@ impl ArtTint {
     }
 }
 
-/// Settings → LOOK → Pixelation: the cover shrunk to a small grid and blown
-/// up again (nearest neighbour), so it looks like pixel art.
+/// Settings → LOOK → Retro mode: the cover shrunk to a small grid and blown
+/// up again (nearest neighbour), so it looks like pixel art. The old
+/// `art_pixelation` values (off, extra_low, low, medium, high, max) still read.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Pixelation {
+pub enum RetroMode {
     #[default]
-    Off,
-    #[serde(rename = "extra_low", alias = "extra-low", alias = "extralow")]
-    ExtraLow,
-    Low,
-    Medium,
-    High,
-    Max,
+    #[serde(rename = "hd", alias = "off")]
+    Hd,
+    #[serde(rename = "32bit", alias = "extra_low", alias = "extra-low", alias = "extralow")]
+    Bit32,
+    #[serde(rename = "16bit", alias = "low")]
+    Bit16,
+    #[serde(rename = "8bit", alias = "medium")]
+    Bit8,
+    #[serde(rename = "4bit", alias = "high")]
+    Bit4,
+    #[serde(rename = "2bit", alias = "max")]
+    Bit2,
 }
 
-impl Pixelation {
-    pub const ALL: [Self; 6] = [Self::Off, Self::ExtraLow, Self::Low, Self::Medium, Self::High, Self::Max];
+impl RetroMode {
+    pub const ALL: [Self; 6] = [Self::Hd, Self::Bit32, Self::Bit16, Self::Bit8, Self::Bit4, Self::Bit2];
 
     pub fn next(self) -> Self {
         let at = Self::ALL.iter().position(|a| *a == self).unwrap_or(0);
@@ -307,34 +314,34 @@ impl Pixelation {
     /// Pixels across the shrunk cover (`None`: full resolution).
     pub fn grid(self) -> Option<u32> {
         match self {
-            Self::Off => None,
-            Self::ExtraLow => Some(128),
-            Self::Low => Some(64),
-            Self::Medium => Some(32),
-            Self::High => Some(16),
-            Self::Max => Some(8),
+            Self::Hd => None,
+            Self::Bit32 => Some(128),
+            Self::Bit16 => Some(64),
+            Self::Bit8 => Some(32),
+            Self::Bit4 => Some(16),
+            Self::Bit2 => Some(8),
         }
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Off => "off",
-            Self::ExtraLow => "extra_low",
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::Max => "max",
+            Self::Hd => "hd",
+            Self::Bit32 => "32bit",
+            Self::Bit16 => "16bit",
+            Self::Bit8 => "8bit",
+            Self::Bit4 => "4bit",
+            Self::Bit2 => "2bit",
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Off => "Off",
-            Self::ExtraLow => "Extra low (128 px)",
-            Self::Low => "Low (64 px)",
-            Self::Medium => "Medium (32 px)",
-            Self::High => "High (16 px)",
-            Self::Max => "Max (8 px)",
+            Self::Hd => "HD",
+            Self::Bit32 => "32-bit",
+            Self::Bit16 => "16-bit",
+            Self::Bit8 => "8-bit",
+            Self::Bit4 => "4-bit",
+            Self::Bit2 => "2-bit",
         }
     }
 }
@@ -527,10 +534,13 @@ impl Config {
             }
         }
         // Both the 0.1 name and the new one: the new one wins.
-        if let Some(toml::Value::Table(ui)) = table.get_mut("ui")
-            && ui.contains_key("notifications")
-        {
-            ui.remove("notify");
+        if let Some(toml::Value::Table(ui)) = table.get_mut("ui") {
+            if ui.contains_key("notifications") {
+                ui.remove("notify");
+            }
+            if ui.contains_key("retro_mode") {
+                ui.remove("art_pixelation");
+            }
         }
         let mut warnings = Vec::new();
         let mut c = Self::default();
@@ -796,27 +806,39 @@ mod tests {
     }
 
     #[test]
-    fn album_art_and_pixelation() {
+    fn album_art_and_retro_mode() {
         let (c, w) = Config::parse("").unwrap();
-        assert_eq!((c.ui.album_art, c.ui.art_pixelation, w.len()), (AlbumArt::Picture, Pixelation::Off, 0));
-        let (c, w) = Config::parse("[ui]\nalbum_art = \"blocks\"\nart_pixelation = \"high\"\n").unwrap();
-        assert_eq!((c.ui.album_art, c.ui.art_pixelation, w.len()), (AlbumArt::Blocks, Pixelation::High, 0));
-        let (c, w) = Config::parse("[ui]\nalbum_art = \"hologram\"\nart_pixelation = 7\n").unwrap();
-        assert_eq!((c.ui.album_art, c.ui.art_pixelation, w.len()), (AlbumArt::Picture, Pixelation::Off, 2));
-        assert!(AlbumArt::ALL.iter().all(|a| {
-            Config::parse(&format!("[ui]\nalbum_art = \"{}\"\n", a.as_str())).unwrap().0.ui.album_art == *a
+        assert_eq!((c.ui.album_art, c.ui.retro_mode, w.len()), (AlbumArt::Picture, RetroMode::Hd, 0));
+        let (c, w) = Config::parse("[ui]\nalbum_art = \"blocks\"\nretro_mode = \"4bit\"\n").unwrap();
+        assert_eq!((c.ui.album_art, c.ui.retro_mode, w.len()), (AlbumArt::Blocks, RetroMode::Bit4, 0));
+        let (c, w) = Config::parse("[ui]\nalbum_art = \"hologram\"\nretro_mode = 7\n").unwrap();
+        assert_eq!((c.ui.album_art, c.ui.retro_mode, w.len()), (AlbumArt::Picture, RetroMode::Hd, 2));
+        assert!(RetroMode::ALL.iter().all(|a| {
+            Config::parse(&format!("[ui]\nretro_mode = \"{}\"\n", a.as_str())).unwrap().0.ui.retro_mode == *a
         }));
-        assert!(Pixelation::ALL.iter().all(|a| {
-            Config::parse(&format!("[ui]\nart_pixelation = \"{}\"\n", a.as_str())).unwrap().0.ui.art_pixelation == *a
-        }));
-        assert_eq!(AlbumArt::Off.next(), AlbumArt::Picture);
-        assert_eq!(Pixelation::Max.next(), Pixelation::Off);
-        assert_eq!(Pixelation::Off.next(), Pixelation::ExtraLow, "the mildest step first");
-        for spelling in ["extra_low", "extra-low", "extralow"] {
-            let (c, w) = Config::parse(&format!("[ui]\nart_pixelation = \"{spelling}\"\n")).unwrap();
-            assert_eq!((c.ui.art_pixelation, w.len()), (Pixelation::ExtraLow, 0), "{spelling}");
+        assert_eq!(RetroMode::Bit2.next(), RetroMode::Hd);
+        assert_eq!(RetroMode::Hd.next(), RetroMode::Bit32, "the mildest step first");
+        assert_eq!(RetroMode::ALL.map(RetroMode::grid), [None, Some(128), Some(64), Some(32), Some(16), Some(8)]);
+        assert_eq!(RetroMode::ALL.map(RetroMode::label), ["HD", "32-bit", "16-bit", "8-bit", "4-bit", "2-bit"]);
+    }
+
+    #[test]
+    fn the_old_art_pixelation_key_and_values_still_read() {
+        for (old, new) in [
+            ("off", RetroMode::Hd),
+            ("extra_low", RetroMode::Bit32),
+            ("extra-low", RetroMode::Bit32),
+            ("low", RetroMode::Bit16),
+            ("medium", RetroMode::Bit8),
+            ("high", RetroMode::Bit4),
+            ("max", RetroMode::Bit2),
+        ] {
+            let (c, w) = Config::parse(&format!("[ui]\nart_pixelation = \"{old}\"\n")).unwrap();
+            assert_eq!((c.ui.retro_mode, w.len()), (new, 0), "{old}");
         }
-        assert_eq!(Pixelation::ALL.map(Pixelation::grid), [None, Some(128), Some(64), Some(32), Some(16), Some(8)]);
+        let both = "[ui]\nart_pixelation = \"max\"\nretro_mode = \"16bit\"\n";
+        let (c, w) = Config::parse(both).unwrap();
+        assert_eq!((c.ui.retro_mode, w.len()), (RetroMode::Bit16, 0), "the new key wins");
     }
 
     #[test]

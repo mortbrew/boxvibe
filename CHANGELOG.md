@@ -23,8 +23,11 @@
   menu as Shift+`N` does for Now Playing; Shift+`S` opens Stations like `s`.
 - Shift+`F` jumps to the menu's FAVORITES (the first one), or says there are
   none; `f` still stars / unstars. (`F` used to do the same as `f`.)
-- Pixelation has a mildest step, **Extra low (128 px)** (`[ui] art_pixelation =
-  "extra_low"`), right after Off.
+- Pixelation is now **Retro mode**: HD (off), 32-bit, 16-bit, 8-bit, 4-bit and
+  2-bit (128 / 64 / 32 / 16 / 8 px), saved as `[ui] retro_mode = "hd"` …
+  `"2bit"`; the status bar says e.g. "Retro mode: 16-bit 🎮". The old
+  `art_pixelation` key and its values (off, extra_low, low, medium, high, max)
+  still read; when both are there `retro_mode` wins.
 - Now Playing is symmetrical: the time line (and the block with it) ends as
   far in from the pane's right border as the cover starts from its left one,
   worked out each frame from where the cover is drawn.
@@ -59,7 +62,7 @@
   audio in green, yellow and orange with peak caps, ~18 fps while playing,
   frozen while paused, with a dim "♪ no cover" caption.
 - Settings → LOOK: **Album art** (Picture / Blocks / Off, `[ui] album_art`)
-  and **Pixelation** (Off / Low / Medium / High / Max, `[ui] art_pixelation`).
+  and **Retro mode** (HD / 32-bit / 16-bit / 8-bit / 4-bit / 2-bit, `[ui] retro_mode`).
   Bad values fall back to the defaults with a warning.
 - Demo mode and `--snapshot` draw made-up covers, so nothing needs the network.
 - Needs Rust 1.90 (the sixel encoder's dependencies).

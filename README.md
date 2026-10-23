@@ -154,12 +154,13 @@ border_style = "plain"         # plain | rounded | thick | double | none
 menu_width = 30                # the menu, in columns: 20–40, step 2 (at most half the screen); also { and }
 favorites = []                 # starred stations, { id = "…", name = "…" }, set with f
 album_art = "picture"          # picture | blocks | off (off: the spectrum visualizer)
-art_pixelation = "off"         # off | extra_low | low | medium | high | max (128 / 64 / 32 / 16 / 8 px, blocky on purpose)
+retro_mode = "hd"             # hd | 32bit | 16bit | 8bit | 4bit | 2bit (full / 128 / 64 / 32 / 16 / 8 px, blocky on purpose)
 art_tint = "off"               # off | duotone | palette: recolour the cover with the theme's colours
 ```
 
 `--theme NAME` and `--icons SET` change them for one run without saving.
-A bad `album_art`, `art_pixelation` or `art_tint` value is ignored with a warning (picture / off / off).
+A bad `album_art`, `retro_mode` or `art_tint` value is ignored with a warning (picture / hd / off).
+The 0.3 betas' `art_pixelation` key (off / extra_low / low / medium / high / max) still reads as `retro_mode`.
 
 ## Album art
 
@@ -171,12 +172,13 @@ startup what it can draw:
 - Anything else, and always inside **tmux** or **Zellij**: coloured half blocks (▀).
 
 Settings → LOOK → **Album art** picks Picture, Blocks (half blocks even when
-the terminal could do better) or Off. **Pixelation** makes the cover blocky
-for fun: it is shrunk to 128, 64, 32, 16 or 8 pixels across and blown back up,
-nearest-neighbour. **Tint art with theme colors** recolours the cover using
+the terminal could do better) or Off. **Retro mode** makes the cover blocky
+for fun, like an old console: 32-bit, 16-bit, 8-bit, 4-bit and 2-bit shrink it
+to 128, 64, 32, 16 or 8 pixels across and blow it back up, nearest-neighbour;
+HD leaves it alone. **Tint art with theme colors** recolours the cover using
 your current theme's colour scheme: Duotone maps its brightness from the
 theme's background to its yellow, Palette snaps every pixel to the nearest
-theme colour. It follows theme changes right away and works with Pixelation.
+theme colour. It follows theme changes right away and works with Retro mode.
 
 The cover has no frame around it. While Help or the quit box is open, a
 terminal picture is held back (it would draw over the popup) and sent again,

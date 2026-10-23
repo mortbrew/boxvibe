@@ -14,7 +14,7 @@ use image::{DynamicImage, Rgb, RgbImage};
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 
-use crate::config::{AlbumArt, ArtTint, Pixelation};
+use crate::config::{AlbumArt, ArtTint, RetroMode};
 use crate::theme::Palette;
 use crate::visualizer::Bars;
 
@@ -52,7 +52,7 @@ pub enum Cover {
 #[derive(Debug, Clone, Copy)]
 pub struct Look {
     pub mode: AlbumArt,
-    pub pixelation: Pixelation,
+    pub pixelation: RetroMode,
     pub tint: ArtTint,
     pub palette: Palette,
 }
@@ -72,7 +72,7 @@ impl Eq for Look {}
 
 impl Look {
     pub fn of(app_config: &crate::config::UiConfig, palette: Palette) -> Self {
-        Self { mode: app_config.album_art, pixelation: app_config.art_pixelation, tint: app_config.art_tint, palette }
+        Self { mode: app_config.album_art, pixelation: app_config.retro_mode, tint: app_config.art_tint, palette }
     }
 }
 
@@ -254,7 +254,7 @@ fn is_blocks(p: &StatefulProtocol) -> bool {
 
 /// The cover shrunk to `pixelation`'s grid and blown back up, nearest
 /// neighbour both ways, so every protocol shows the same big pixels.
-pub fn pixelate(image: &DynamicImage, pixelation: Pixelation) -> DynamicImage {
+pub fn pixelate(image: &DynamicImage, pixelation: RetroMode) -> DynamicImage {
     let Some(grid) = pixelation.grid() else { return image.clone() };
     let (w, h) = (image.width().max(1), image.height().max(1));
     let (gw, gh) = if w >= h { (grid, (grid * h / w).max(1)) } else { ((grid * w / h).max(1), grid) };
@@ -390,15 +390,15 @@ mod tests {
     use super::*;
     use image::GenericImageView;
 
-    fn look(mode: AlbumArt, pixelation: Pixelation) -> Look {
+    fn look(mode: AlbumArt, pixelation: RetroMode) -> Look {
         Look { mode, pixelation, tint: ArtTint::Off, palette: crate::theme::BUILT_IN[0].2 }
     }
 
     #[test]
     fn pixelation_makes_big_square_pixels_at_the_same_size() {
         let cover = demo_cover("x");
-        assert_eq!(pixelate(&cover, Pixelation::Off).dimensions(), (256, 256));
-        let blocky = pixelate(&cover, Pixelation::Max);
+        assert_eq!(pixelate(&cover, RetroMode::Hd).dimensions(), (256, 256));
+        let blocky = pixelate(&cover, RetroMode::Bit2);
         assert_eq!(blocky.dimensions(), (256, 256));
         // 8 px across: each 32×32 cell is one colour.
         let c = blocky.get_pixel(33, 70);
@@ -447,7 +447,7 @@ mod tests {
         let mut art = Art::default();
         art.arrived("u".into(), Some(demo_cover("u")));
         let p = crate::theme::BUILT_IN[0].2;
-        let mut look = Look { mode: AlbumArt::Blocks, pixelation: Pixelation::Off, tint: ArtTint::Duotone, palette: p };
+        let mut look = Look { mode: AlbumArt::Blocks, pixelation: RetroMode::Hd, tint: ArtTint::Duotone, palette: p };
         let first = art.protocol("u", look).map(|_| ()).is_some();
         assert!(first);
         let ptr = |art: &Art| art.shown.borrow().as_ref().map(|s| s.look);
@@ -461,7 +461,7 @@ mod tests {
     fn a_popup_shows_the_cover_in_half_blocks_and_clears_around_it() {
         let mut art = Art::default();
         art.arrived("u".into(), Some(demo_cover("u")));
-        let pic = look(AlbumArt::Picture, Pixelation::Off);
+        let pic = look(AlbumArt::Picture, RetroMode::Hd);
         // Half blocks are plain text: a popup covers them, nothing to do.
         art.set_overlay(true);
         assert!(!art.needs_clear.take());
@@ -473,7 +473,7 @@ mod tests {
         assert!(art.protocol("u", pic).is_some_and(|p| !is_blocks(&p)), "a sixel");
         art.set_overlay(true);
         assert!(art.needs_clear.take(), "the picture is wiped when the popup opens");
-        let tinted = Look { tint: ArtTint::Duotone, ..look(AlbumArt::Picture, Pixelation::Max) };
+        let tinted = Look { tint: ArtTint::Duotone, ..look(AlbumArt::Picture, RetroMode::Bit2) };
         assert!(art.protocol("u", tinted).is_some_and(|p| is_blocks(&p)), "the cover, in half blocks, over Help");
         assert!(!art.needs_clear.take(), "half blocks need no clearing");
         art.set_overlay(true);
@@ -488,11 +488,11 @@ mod tests {
         let mut art = Art::default();
         assert!(art.want("u") && !art.want("u"), "asked once");
         assert!(matches!(art.status("u"), Cover::Loading));
-        assert!(art.protocol("u", look(AlbumArt::Picture, Pixelation::Off)).is_none());
+        assert!(art.protocol("u", look(AlbumArt::Picture, RetroMode::Hd)).is_none());
         art.arrived("u".into(), Some(demo_cover("u")));
         assert!(!art.want("u"));
-        assert!(art.protocol("u", look(AlbumArt::Blocks, Pixelation::Off)).is_some());
-        assert!(art.protocol("u", look(AlbumArt::Off, Pixelation::Off)).is_none(), "off: the visualizer");
+        assert!(art.protocol("u", look(AlbumArt::Blocks, RetroMode::Hd)).is_some());
+        assert!(art.protocol("u", look(AlbumArt::Off, RetroMode::Hd)).is_none(), "off: the visualizer");
         art.arrived("bad".into(), None);
         assert!(!art.want("bad") && matches!(art.status("bad"), Cover::None), "a failure isn't asked again");
         assert_eq!(art.protocol_name(), "half blocks", "no terminal query in tests");
@@ -538,7 +538,7 @@ mod tests {
         art.set_graphics(Some(sixel()));
         art.arrived("u".into(), Some(demo_cover("u")));
         for tint in [ArtTint::Off, ArtTint::Duotone, ArtTint::Palette] {
-            for pixelation in [Pixelation::Off, Pixelation::Max] {
+            for pixelation in [RetroMode::Hd, RetroMode::Bit2] {
                 let look = Look { tint, ..look(AlbumArt::Picture, pixelation) };
                 assert!(draw_sixel(&art, look).is_some(), "{look:?} shows the picture");
             }
@@ -548,7 +548,7 @@ mod tests {
     #[test]
     fn a_new_theme_only_rebuilds_a_tinted_cover() {
         let [a, b] = [crate::theme::BUILT_IN[0].2, crate::theme::BUILT_IN[1].2];
-        let off = look(AlbumArt::Picture, Pixelation::Off);
+        let off = look(AlbumArt::Picture, RetroMode::Hd);
         assert_eq!(Look { palette: a, ..off }, Look { palette: b, ..off });
         let duo = Look { tint: ArtTint::Duotone, ..off };
         assert_ne!(Look { palette: a, ..duo }, Look { palette: b, ..duo });
@@ -559,7 +559,7 @@ mod tests {
         let mut art = Art::default();
         art.set_graphics(Some(sixel()));
         art.arrived("u".into(), Some(demo_cover("u")));
-        let l = look(AlbumArt::Picture, Pixelation::Off);
+        let l = look(AlbumArt::Picture, RetroMode::Hd);
         drop(art.protocol("u", l));
         art.unencodable.borrow_mut().insert("u".into());
         art.forget_shown();

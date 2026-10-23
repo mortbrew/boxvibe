@@ -80,7 +80,7 @@ pub enum Setting {
     BorderStyle,
     MenuWidth,
     AlbumArt,
-    Pixelation,
+    RetroMode,
     ArtTint,
     CheckUpdates,
     EditFile,
@@ -103,7 +103,7 @@ impl Setting {
         ("LOOK", Self::BorderStyle),
         ("LOOK", Self::MenuWidth),
         ("LOOK", Self::AlbumArt),
-        ("LOOK", Self::Pixelation),
+        ("LOOK", Self::RetroMode),
         ("LOOK", Self::ArtTint),
         ("BOXVIBE", Self::CheckUpdates),
         ("BOXVIBE", Self::EditFile),
@@ -125,7 +125,7 @@ impl Setting {
             Self::BorderStyle => "Border style",
             Self::MenuWidth => "Menu width",
             Self::AlbumArt => "Album art",
-            Self::Pixelation => "Pixelation",
+            Self::RetroMode => "Retro mode",
             Self::ArtTint => "Tint art with theme colors",
             Self::CheckUpdates => "Look for new versions on startup",
             Self::EditFile => "Edit config.toml",
@@ -160,7 +160,9 @@ impl Setting {
             Self::ArtTint => {
                 "Recolors the album art using your current theme's color scheme. Duotone: theme background to yellow; Palette: only theme colors. Saved as [ui] art_tint."
             }
-            Self::Pixelation => "Makes the cover blocky on purpose: 128, 64, 32, 16 or 8 pixels across, or Off.",
+            Self::RetroMode => {
+                "Makes the cover blocky on purpose, like an old console: 32-bit (128 pixels across), 16-bit (64), 8-bit (32), 4-bit (16), 2-bit (8), or HD for the full picture."
+            }
             Self::CheckUpdates => "Asks GitHub when boxvibe opens; About shows the new version and Update Now.",
             Self::EditFile => "Opens config.toml in $EDITOR; boxvibe reads it again when you close it.",
             Self::MenuEntry => {
@@ -929,7 +931,7 @@ impl App {
                 AlbumArt::Picture => format!("Picture ({})", self.art.protocol_name()),
                 other => other.label().into(),
             },
-            Setting::Pixelation => self.config.ui.art_pixelation.label().into(),
+            Setting::RetroMode => self.config.ui.retro_mode.label().into(),
             Setting::ArtTint => self.config.ui.art_tint.label().into(),
             Setting::CheckUpdates => on(self.config.ui.check_updates),
             Setting::EditFile => self
@@ -1027,12 +1029,12 @@ impl App {
                 self.save(&[("ui", "art_tint", next.as_str().into())]);
                 self.status = format!("Tint art with theme colors: {}", next.label());
             }
-            Setting::Pixelation => {
-                let next = self.config.ui.art_pixelation.next();
-                self.config.ui.art_pixelation = next;
+            Setting::RetroMode => {
+                let next = self.config.ui.retro_mode.next();
+                self.config.ui.retro_mode = next;
                 self.art.forget_shown();
-                self.save(&[("ui", "art_pixelation", next.as_str().into())]);
-                self.status = format!("Pixelation: {}", next.label());
+                self.save(&[("ui", "retro_mode", next.as_str().into())]);
+                self.status = format!("Retro mode: {} 🎮", next.label());
             }
             Setting::CheckUpdates => {
                 self.config.ui.check_updates = !self.config.ui.check_updates;
@@ -1433,14 +1435,13 @@ mod tests {
     }
 
     #[test]
-    fn enter_cycles_album_art_and_pixelation() {
+    fn enter_cycles_album_art_and_retro_mode() {
         let mut app = App::new(Config::default(), None, &[], true);
         app.view = View::Settings;
         app.focus = Focus::Content;
-        for (setting, first, second) in [
-            (Setting::AlbumArt, "Blocks", "Off (visualizer)"),
-            (Setting::Pixelation, "Extra low (128 px)", "Low (64 px)"),
-        ] {
+        for (setting, first, second) in
+            [(Setting::AlbumArt, "Blocks", "Off (visualizer)"), (Setting::RetroMode, "32-bit", "16-bit")]
+        {
             app.settings_cursor = Setting::ALL.iter().position(|(_, s)| *s == setting).unwrap();
             assert_eq!(Setting::ALL[app.settings_cursor].0, "LOOK");
             app.on_key(key(KeyCode::Enter));
@@ -1449,7 +1450,8 @@ mod tests {
             assert_eq!(app.setting_value(setting), second);
         }
         assert_eq!(app.config.ui.album_art, AlbumArt::Off);
-        assert_eq!(app.config.ui.art_pixelation, crate::config::Pixelation::Low);
+        assert_eq!(app.config.ui.retro_mode, crate::config::RetroMode::Bit16);
+        assert_eq!(app.status, "Retro mode: 16-bit 🎮");
         assert!(app.setting_value(Setting::AlbumArt).starts_with("Off"));
     }
 

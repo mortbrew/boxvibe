@@ -907,24 +907,12 @@ fn draw_settings(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     frame.render_widget(block, area);
     let inner = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
     let prompt_h = if app.prompt.is_some() { 4 } else { 0 };
-    let [prompt_area, head, list_area, about] = Layout::vertical([
-        Constraint::Length(prompt_h),
-        Constraint::Length(1),
-        Constraint::Fill(1),
-        Constraint::Length(3),
-    ])
-    .areas(inner);
+    let [prompt_area, list_area, about] =
+        Layout::vertical([Constraint::Length(prompt_h), Constraint::Fill(1), Constraint::Length(3)]).areas(inner);
     if let Some(prompt) = app.prompt {
         draw_prompt(frame, app, prompt, Rect { height: 3, ..prompt_area });
     }
     let label_w = Setting::ALL.iter().map(|(_, s)| s.label().width()).max().unwrap_or(0) + 3;
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            format!("      {}VALUE", pad("SETTING", label_w)),
-            Style::new().fg(p.muted).add_modifier(Modifier::BOLD),
-        )),
-        head,
-    );
     let mut items = Vec::new();
     let mut selected_item = 0;
     let mut group = "";
@@ -1351,6 +1339,18 @@ mod tests {
         app.help = false;
         frame(&mut app);
         assert_eq!(app.art.shown_cover(), Some((new, false)), "the new picture once Help closes");
+    }
+
+    #[test]
+    fn settings_has_no_column_headers_and_starts_with_its_first_section() {
+        let mut app = demo();
+        app.view = View::Settings;
+        let (lines, _) = screen(&app, 160, 40);
+        let all = lines.join("\n");
+        assert!(!all.contains("SETTING") && !all.contains("VALUE"), "{all}");
+        let top = lines.iter().position(|l| l.contains("Settings")).unwrap();
+        let first = Setting::ALL[0].0;
+        assert!(lines[top + 1].contains(first), "{first} right under the border\n{all}");
     }
 
     #[test]

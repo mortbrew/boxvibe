@@ -36,18 +36,18 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
             app.focus = Focus::Content;
             // What About shows once GitHub has a newer release (made up here).
             app.update = Some(crate::update::Update {
-                version: "0.2.0".into(),
+                version: "0.4.0".into(),
                 how: String::new(),
                 replace: crate::update::Replace::Ready(String::new()),
             });
             if screen == "about-restart" {
                 // Update Now finished: the button is Restart Now.
-                app.self_update = crate::update::Progress::Done("0.2.0".into());
-                app.status = "✔ boxvibe 0.2.0 installed · Restart Now in About opens it".into();
+                app.self_update = crate::update::Progress::Done("0.4.0".into());
+                app.status = "✔ boxvibe 0.4.0 installed · Restart Now in About opens it".into();
             }
             if screen == "about" {
                 app.status =
-                    format!("{} boxvibe 0.2.0 available · see About", crate::icons::icons(app.config.ui.icons).update);
+                    format!("{} boxvibe 0.4.0 available · see About", crate::icons::icons(app.config.ui.icons).update);
             }
         }
         _ => {}

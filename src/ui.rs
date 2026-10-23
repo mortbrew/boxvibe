@@ -83,6 +83,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     draw_status(frame, app, status);
     draw_keys(frame, &p, &key_caps(app), keys);
+    if app.overlay_open() {
+        dim(frame.buffer_mut(), p.background);
+    }
     if app.help {
         draw_help(frame, app, body);
     }
@@ -91,15 +94,83 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 }
 
-/// tubevibe's confirm box: " Confirm " on a red border, the question, then the keys.
+/// How bright the screen behind a popup stays, and how much colour it keeps.
+const DIM_BRIGHTNESS: f32 = 0.4;
+const DIM_SATURATION: f32 = 0.5;
+
+use ratatui::style::Color;
+
+/// Behind a popup: every cell (the half-block cover too) faded toward the
+/// theme background, to about 40% and greyer, so the popup stands out.
+fn dim(buf: &mut ratatui::buffer::Buffer, background: Color) {
+    for cell in buf.content.iter_mut() {
+        cell.fg = dim_color(cell.fg, background);
+        cell.bg = dim_color(cell.bg, background);
+    }
+}
+
+/// One colour, dimmed. RGB is desaturated then blended toward the
+/// background; named and indexed colours (no RGB to blend) become a dim gray.
+fn dim_color(color: Color, background: Color) -> Color {
+    let (br, bg, bb) = match background {
+        Color::Rgb(r, g, b) => (f32::from(r), f32::from(g), f32::from(b)),
+        _ => (0.0, 0.0, 0.0),
+    };
+    match color {
+        Color::Reset => Color::Reset,
+        c if c == background => c,
+        Color::Rgb(r, g, b) => {
+            let (r, g, b) = (f32::from(r), f32::from(g), f32::from(b));
+            let grey = 0.299 * r + 0.587 * g + 0.114 * b;
+            let fade = |c: f32, base: f32| {
+                let c = grey + (c - grey) * DIM_SATURATION;
+                (base + (c - base) * DIM_BRIGHTNESS).round().clamp(0.0, 255.0) as u8
+            };
+            Color::Rgb(fade(r, br), fade(g, bg), fade(b, bb))
+        }
+        Color::Black => Color::Black,
+        _ => Color::DarkGray,
+    }
+}
+
+/// tubevibe's confirm box: " Confirm " on a red border; a blank line, the
+/// question, the keys and a blank line, so it sits evenly in the frame.
 fn draw_confirm_quit(frame: &mut Frame, p: &Palette, screen: Rect) {
-    let lines = vec![
-        Line::from(""),
-        Line::from("Quit boxvibe?"),
-        Line::from(Span::styled("y = yes · any other key = no", Style::new().fg(p.muted))),
-    ];
+    draw_confirm(frame, p, screen, "Quit boxvibe?");
+}
+
+/// The question wrapped to `width` cells, at most `max` lines; a question
+/// longer than that ends in "…" on its last line.
+fn wrap_question(question: &str, width: usize, max: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines: Vec<String> = Vec::new();
+    for word in question.split_whitespace() {
+        match lines.last_mut() {
+            Some(line) if line.width() + 1 + word.width() <= width => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(truncate(word, width)),
+        }
+    }
+    if lines.len() > max {
+        lines.truncate(max.max(1));
+        let last = lines.pop().unwrap_or_default();
+        lines.push(truncate(&format!("{last} …"), width));
+    }
+    lines
+}
+
+fn draw_confirm(frame: &mut Frame, p: &Palette, screen: Rect, question: &str) {
     let width = 40.min(screen.width.saturating_sub(4)).max(screen.width.min(8));
-    let area = centered(screen, width, 5);
+    // Borders and the three fixed lines take 5 rows; the question gets what's left.
+    let room = usize::from(screen.height.saturating_sub(2).saturating_sub(5)).max(1);
+    let question = wrap_question(question, usize::from(width.saturating_sub(4)), room);
+    let mut lines = vec![Line::from("")];
+    lines.extend(question.into_iter().map(Line::from));
+    lines.push(Line::from(Span::styled("y = yes · any other key = no", Style::new().fg(p.muted))));
+    lines.push(Line::from(""));
+    let area = centered(screen, width, lines.len() as u16 + 2);
     frame.render_widget(Clear, area);
     let block = framed().border_style(Style::new().fg(p.red)).title(" Confirm ").style(Style::new().bg(p.background));
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center).block(block), area);
@@ -260,12 +331,34 @@ fn rating_word<'a>(rating: Rating, p: &Palette, ic: &Icons) -> Span<'a> {
 
 // --- Status bar ---
 
-/// What is going on, on a shaded bar above the keys (where tubevibe has it).
+/// What is going on, on a shaded bar above the keys (where tubevibe has it),
+/// and the logged-in account at its far right.
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette;
     let color = if app.status.starts_with('⚠') { p.yellow } else { p.fg };
     frame.render_widget(Block::new().bg(p.highlight), area);
-    frame.render_widget(Paragraph::new(Span::styled(format!(" {}", app.status), Style::new().fg(color))), area);
+    let account = account_label(app);
+    // The account gets at most half the bar, and never less than the status.
+    let want = account.as_ref().map_or(0, |a| safe_width(a) as u16 + 3);
+    let right_w = want.min(area.width / 2);
+    let [left, right] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(right_w)]).areas(area);
+    let status = fit(&format!(" {}", app.status), left.width.saturating_sub(1) as usize);
+    frame.render_widget(Paragraph::new(Span::styled(status, Style::new().fg(color))), left);
+    if let Some(account) = account
+        && right.width > 2
+    {
+        // tubevibe's colour for its account: the palette's `blue` (Gruvbox's aqua).
+        let text = format!("{} ", fit(&account, right.width as usize - 2));
+        frame.render_widget(Paragraph::new(text).fg(p.blue).alignment(Alignment::Right), right);
+    }
+}
+
+/// "👤 me@example.com" while logged in; nothing otherwise.
+fn account_label(app: &App) -> Option<String> {
+    let name = app.config.pandora.username.trim();
+    (app.session == Session::LoggedIn && !name.is_empty()).then(|| {
+        format!("{}{}", icon_cell(icons(app.config.ui.icons).setting[Setting::at(Setting::Email)]), clean(name))
+    })
 }
 
 /// The logo on the menu's top border, like tubevibe's: the box icon and
@@ -489,7 +582,7 @@ fn draw_player(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     } else {
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).spacing(1).areas(songs)
     };
-    draw_up_next(frame, app, next);
+    draw_up_next(frame, app, ic, next);
     draw_history(frame, app, ic, history);
 }
 
@@ -526,7 +619,13 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let art_w = (inner.height * 2 + 2).min(inner.width / 2);
     let [art, _, info] =
         Layout::horizontal([Constraint::Length(art_w), Constraint::Length(3), Constraint::Fill(1)]).areas(inner);
-    draw_art(frame, app, song, art);
+    // The time line ends as far in from the right border as the cover
+    // starts from the left one, so the pane is symmetrical; the whole stack
+    // (title, time, volume, buttons) keeps to that width.
+    let drawn = draw_art(frame, app, song, art);
+    let gap = drawn.x.saturating_sub(area.x);
+    let width = (area.right().saturating_sub(gap)).saturating_sub(info.x);
+    let info = if width >= MIN_INFO_WIDTH { Rect { width: width.min(info.width), ..info } } else { info };
     let label = |text: &str| Span::styled(format!("{text:<9}"), Style::new().fg(p.muted));
     let state = if app.buffering.is_some() {
         Span::styled(format!("{} buffering…", ic.loading), Style::new().fg(p.yellow))
@@ -547,17 +646,18 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         Line::from(vec![label("rating"), rating_word(song.rating, &p, ic)]),
         Line::from(vec![label("state"), state]),
     ];
-    let buttons_h = if info.height >= 13 { 3 } else { 0 };
-    let [_, text, _, progress, volume, _, buttons] = Layout::vertical([
-        Constraint::Length(1),
+    // One block (info, time, volume, buttons) centred top to bottom.
+    let buttons_h = if info.height >= STACK_WITH_BUTTONS { 4 } else { 0 };
+    let stack = centered(info, info.width, (9 + buttons_h).min(info.height));
+    let [text, _, progress, volume, buttons] = Layout::vertical([
         Constraint::Length(6),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
-        Constraint::Fill(1),
         Constraint::Length(buttons_h),
     ])
-    .areas(info);
+    .areas(stack);
+    let buttons = Rect { y: buttons.y + 1, height: buttons.height.saturating_sub(1), ..buttons };
     frame.render_widget(Paragraph::new(lines), text);
     draw_progress(frame, app, song, progress);
     draw_volume(frame, app, ic, volume);
@@ -566,23 +666,34 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     }
 }
 
-fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) {
+/// Rows Now Playing needs before the buttons join the stack.
+pub const STACK_WITH_BUTTONS: u16 = 13;
+
+/// The info stack is not narrowed below this to mirror the cover's gap.
+const MIN_INFO_WIDTH: u16 = 30;
+
+/// Draws the cover (or the visualizer) and returns where it went.
+fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) -> Rect {
     let p = app.palette;
-    let block = Block::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(p.line));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    // No frame: the cover (or the visualizer) fills the box itself.
+    let inner = area;
+    app.art.last_area.set(inner);
     if inner.width == 0 || inner.height == 0 {
-        return;
+        return inner;
     }
-    let (mode, pixelation) = (app.config.ui.album_art, app.config.ui.art_pixelation);
-    if let Some(mut cover) = app.art.protocol(&song.cover_art_url, mode, pixelation) {
+    let look = crate::art::Look::of(&app.config.ui, p);
+    let mode = look.mode;
+    if let Some(mut cover) = app.art.protocol(&song.cover_art_url, look) {
         // Centred in the box: the picture keeps its shape.
         let fit = cover.size_for(Resize::Fit(None), inner.as_size());
         let x = inner.x + inner.width.saturating_sub(fit.width) / 2;
         let y = inner.y + inner.height.saturating_sub(fit.height) / 2;
         let at = Rect::new(x, y, fit.width.min(inner.width), fit.height.min(inner.height));
         frame.render_stateful_widget(StatefulImage::default(), at, &mut *cover);
-        return;
+        drop(cover);
+        app.art.check_encoding(&song.cover_art_url);
+        app.art.last_cover.set(at);
+        return at;
     }
     app.art.hide();
     let ic = icons(app.config.ui.icons);
@@ -592,6 +703,7 @@ fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) {
         _ => format!("{} no cover", ic.title),
     };
     draw_visualizer(frame, &p, &app.art.bars, &caption, inner);
+    inner
 }
 
 /// Spectrum bars from the bottom of `area` up, green → yellow → orange, with
@@ -764,7 +876,16 @@ fn song_table<'a>(
     }
 }
 
-fn draw_up_next(frame: &mut Frame, app: &App, area: Rect) {
+/// History's RATED cell: liked, disliked, or a dash.
+fn rated_cell(rating: Rating, p: &Palette, ic: &Icons) -> (String, Style) {
+    match rating {
+        Rating::Up => (format!("{}liked", icon_cell(ic.up)), Style::new().fg(p.green)),
+        Rating::Down => (format!("{}disliked", icon_cell(ic.down)), Style::new().fg(p.red)),
+        Rating::None => ("—".to_owned(), Style::new().fg(p.muted)),
+    }
+}
+
+fn draw_up_next(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let p = app.palette;
     let focused = app.in_songs() && app.pane == Pane::UpNext;
     let block = panel(title(format!("Up Next ({})", app.queue.len()), &p), &p, focused);
@@ -784,11 +905,19 @@ fn draw_up_next(frame: &mut Frame, app: &App, area: Rect) {
                 (song.title.clone(), Style::new().fg(p.fg)),
                 (song.artist.clone(), Style::new().fg(p.cyan)),
                 (format!("{time:>5}"), Style::new().fg(p.muted)),
+                rated_cell(song.rating, &p, ic),
             ]
         })
         .collect();
-    let widths = [Constraint::Length(2), Constraint::Fill(3), Constraint::Fill(2), Constraint::Length(5)];
-    song_table(frame, app, block, &["#", "TITLE", "ARTIST", " TIME"], &widths, rows, app.next_index(), focused, area);
+    let widths = [
+        Constraint::Length(2),
+        Constraint::Fill(3),
+        Constraint::Fill(2),
+        Constraint::Length(6),
+        Constraint::Length(12),
+    ];
+    let header = ["#", "TITLE", "ARTIST", " TIME", "RATED"];
+    song_table(frame, app, block, &header, &widths, rows, app.next_index(), focused, area);
 }
 
 fn draw_history(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
@@ -803,11 +932,7 @@ fn draw_history(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         .history
         .iter()
         .map(|song| {
-            let rated = match song.rating {
-                Rating::Up => (format!("{}liked", icon_cell(ic.up)), Style::new().fg(p.green)),
-                Rating::Down => (format!("{}disliked", icon_cell(ic.down)), Style::new().fg(p.red)),
-                Rating::None => ("—".to_owned(), Style::new().fg(p.muted)),
-            };
+            let rated = rated_cell(song.rating, &p, ic);
             vec![(song.title.clone(), Style::new().fg(p.fg)), (song.artist.clone(), Style::new().fg(p.cyan)), rated]
         })
         .collect();
@@ -825,24 +950,12 @@ fn draw_settings(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     frame.render_widget(block, area);
     let inner = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
     let prompt_h = if app.prompt.is_some() { 4 } else { 0 };
-    let [prompt_area, head, list_area, about] = Layout::vertical([
-        Constraint::Length(prompt_h),
-        Constraint::Length(1),
-        Constraint::Fill(1),
-        Constraint::Length(3),
-    ])
-    .areas(inner);
+    let [prompt_area, list_area, about] =
+        Layout::vertical([Constraint::Length(prompt_h), Constraint::Fill(1), Constraint::Length(3)]).areas(inner);
     if let Some(prompt) = app.prompt {
         draw_prompt(frame, app, prompt, Rect { height: 3, ..prompt_area });
     }
     let label_w = Setting::ALL.iter().map(|(_, s)| s.label().width()).max().unwrap_or(0) + 3;
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            format!("      {}VALUE", pad("SETTING", label_w)),
-            Style::new().fg(p.muted).add_modifier(Modifier::BOLD),
-        )),
-        head,
-    );
     let mut items = Vec::new();
     let mut selected_item = 0;
     let mut group = "";
@@ -1045,18 +1158,12 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.view != View::Player && app.has_now_playing() {
         keys.push(("N", "Now Playing"));
     }
-    keys.extend([
-        ("space", pause),
-        ("n", "Skip"),
-        ("u/d", "Like/Dislike"),
-        ("U/D", "Rate Row"),
-        ("⇧←→", "Volume"),
-        ("t", "Theme"),
-        ("{/}", "Menu Size"),
-        ("i", "Icons"),
-        ("?", "Help"),
-        ("Q", "Quit"),
-    ]);
+    keys.extend([("space", pause), ("n", "Skip"), ("u/d", "Like/Dislike")]);
+    // U / D rate the highlighted row: shown when Up Next or History has the keys.
+    if app.focus == Focus::Content && app.view == View::Player && matches!(app.pane, Pane::UpNext | Pane::History) {
+        keys.push(("U/D", "Rate Row"));
+    }
+    keys.extend([("⇧←→", "Volume"), ("{/}", "Menu Size"), ("?", "Help"), ("Q", "Quit")]);
     keys
 }
 
@@ -1106,8 +1213,10 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
                 ("j k ↑ ↓", "move in the list · g G first / last"),
                 ("Enter", "play the station · open Stations / Settings / About"),
                 ("N", "Now Playing pane gets the keys (menu on NOW PLAYING)"),
-                ("s", "Stations: every station, Enter plays one"),
-                ("f F", "favorite / unfavorite: the menu's FAVORITES"),
+                ("s S", "Stations: every station, Enter plays one"),
+                ("T A", "Settings / About"),
+                ("f", "favorite / unfavorite: the menu's FAVORITES"),
+                ("F", "to FAVORITES in the menu"),
                 ("Tab", "menu → Now Playing → Up Next → History"),
                 ("Esc", "back to the menu"),
             ],
@@ -1123,6 +1232,8 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
             ],
         ),
     ];
+    // Every key pill is padded to the widest one, so the descriptions line up.
+    let key_w = sections.iter().flat_map(|(_, keys)| keys.iter()).map(|(k, _)| k.width()).max().unwrap_or(0);
     let mut lines = Vec::new();
     for (name, keys) in sections {
         lines.push(Line::from(Span::styled(format!(" {name}"), Style::new().fg(p.orange).bold())));
@@ -1130,21 +1241,27 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(format!(" {key} "), Style::new().fg(p.background).bg(p.fg).bold()),
-                Span::raw(" ".repeat(10usize.saturating_sub(key.width() + 2) + 1)),
+                Span::raw(" ".repeat(key_w - key.width() + 2)),
                 Span::styled((*what).to_owned(), Style::new().fg(p.fg)),
             ]));
         }
         lines.push(Line::raw(""));
     }
-    lines.push(Line::from(Span::styled(
-        " Settings and account, album art and pixelation: the Settings entry in the menu",
-        Style::new().fg(p.muted),
-    )));
-    let box_area = centered(area, 64, lines.len() as u16 + 2);
+    lines.push(Line::from(Span::styled(HELP_FOOTER, Style::new().fg(p.muted))));
+    // As wide as the longest line (and the title), plus the borders and one
+    // blank cell; only a terminal too narrow for that wraps the lines.
+    let title_w = help_title(&p).width() + 2;
+    let text_w = lines.iter().map(Line::width).max().unwrap_or(0).max(title_w) as u16;
+    let width = (text_w + 3).min(area.width);
+    let inner_w = width.saturating_sub(2).max(1) as usize;
+    let rows: usize = lines.iter().map(|l| l.width().max(1).div_ceil(inner_w)).sum();
+    let box_area = centered(area, width, (rows as u16 + 2).min(area.height));
     frame.render_widget(Clear, box_area);
     let block = panel(help_title(&p), &p, true).style(Style::new().bg(p.background));
-    frame.render_widget(Paragraph::new(lines).block(block), box_area);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), box_area);
 }
+
+const HELP_FOOTER: &str = " Settings and account, album art, retro mode and tint: the Settings entry in the menu";
 
 #[cfg(test)]
 mod tests {
@@ -1168,13 +1285,223 @@ mod tests {
         app
     }
 
-    /// Rows of the Now Playing art box (between its rounded corners).
-    fn art_box(lines: &[String]) -> (usize, usize, usize, usize) {
-        let top = lines.iter().position(|l| l.contains('╭')).expect("art box");
-        let bottom = lines.iter().position(|l| l.contains('╰')).expect("art box bottom");
-        let left = lines[top].chars().position(|c| c == '╭').unwrap();
-        let right = lines[top].chars().position(|c| c == '╮').unwrap();
-        (top, bottom, left, right)
+    /// The Now Playing art box as (top, bottom, left, right), each one
+    /// cell outside the area the art may use (the old frame's position).
+    fn art_box(app: &App) -> (usize, usize, usize, usize) {
+        let a = app.art.last_area.get();
+        assert!(a.width > 0 && a.height > 0, "art box drawn");
+        (a.y as usize - 1, (a.y + a.height) as usize, a.x as usize - 1, (a.x + a.width) as usize)
+    }
+
+    #[test]
+    fn the_time_line_ends_as_far_from_the_right_border_as_the_cover_starts_from_the_left() {
+        let mut app = demo();
+        app.settle(std::time::Duration::from_millis(300));
+        for (cols, rows) in [(200u16, 50u16), (160, 40), (120, 36)] {
+            let (lines, _) = screen(&app, cols, rows);
+            let grid: Vec<Vec<char>> = lines.iter().map(|l| l.chars().collect()).collect();
+            let y = grid.iter().position(|r| r.contains(&'●')).expect("time line");
+            let row = &grid[y];
+            let cover_x = grid.iter().filter_map(|r| r.iter().position(|c| matches!(c, '▀' | '▄'))).min().unwrap();
+            let left = (0..cover_x).rev().find(|&x| "│┃║".contains(row[x])).expect("left border");
+            let dot = row.iter().position(|&c| c == '●').unwrap();
+            let right = (dot..row.len()).find(|&x| "│┃║".contains(row[x])).expect("right border");
+            let end = (dot..right).rev().find(|&x| row[x] != ' ').unwrap();
+            assert!(row[end].is_ascii_digit(), "{cols}x{rows}: ends with the total time: {}", lines[y]);
+            assert_eq!(right - end, cover_x - left, "{cols}x{rows}: symmetrical\n{}", lines.join("\n"));
+        }
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn the_half_block_stand_in_fills_the_pictures_rectangle_and_nothing_moves() {
+        let mut app = demo();
+        app.settle(std::time::Duration::from_millis(300));
+        let mut sixel = ratatui_image::picker::Picker::from_fontsize(ratatui_image::FontSize::new(8, 17));
+        sixel.set_protocol_type(ratatui_image::picker::ProtocolType::Sixel);
+        app.art.set_graphics(Some(sixel));
+        for (cols, rows) in [(255u16, 70u16), (160, 40)] {
+            let mut seen = Vec::new();
+            for help in [false, true, false] {
+                app.help = help;
+                app.art.set_overlay(help);
+                let (lines, buf) = screen(&app, cols, rows);
+                let cover = app.art.last_cover.get();
+                // The time line's total, at its right end (the start may be under Help).
+                let time = lines
+                    .iter()
+                    .position(|l| {
+                        l.contains("──")
+                            && l.trim_end_matches([' ', '│']).ends_with(|c: char| c.is_ascii_digit())
+                            && l.contains(":")
+                    })
+                    .map(|y| (y, lines[y].trim_end_matches([' ', '│']).chars().count()));
+                assert!(time.is_some(), "{cols}x{rows}: time line\n{}", lines.join("\n"));
+                seen.push((cover, time));
+                // At 160 columns Help covers the whole cover; at 255 it shows beside it.
+                if help && cols > 200 {
+                    let inside: String = cover.positions().map(|at| buf[at].symbol().to_owned()).collect();
+                    assert!(inside.contains('▀') || inside.contains('▄'), "{cols}x{rows}: half blocks under Help");
+                }
+            }
+            assert!(seen.windows(2).all(|w| w[0] == w[1]), "{cols}x{rows}: same cover and info with Help: {seen:?}");
+        }
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn a_song_change_under_help_fetches_and_shows_the_new_cover() {
+        let mut app = demo();
+        app.settle(std::time::Duration::from_millis(300));
+        let mut sixel = ratatui_image::picker::Picker::from_fontsize(ratatui_image::FontSize::new(8, 17));
+        sixel.set_protocol_type(ratatui_image::picker::ProtocolType::Sixel);
+        app.art.set_graphics(Some(sixel));
+        let frame = |app: &mut App| {
+            app.tick();
+            app.art.set_overlay(app.overlay_open());
+            screen(app, 255, 70);
+        };
+        for _ in 0..10 {
+            frame(&mut app);
+            app.settle(std::time::Duration::from_millis(50));
+        }
+        let old = app.now.as_ref().unwrap().cover_art_url.clone();
+        assert_eq!(app.art.shown_cover(), Some((old.clone(), false)), "the picture");
+        app.help = true;
+        frame(&mut app);
+        assert_eq!(app.art.shown_cover(), Some((old.clone(), true)), "half blocks under Help");
+        app.demo_warm_up(1, std::time::Duration::ZERO);
+        let new = app.now.as_ref().unwrap().cover_art_url.clone();
+        assert_ne!(new, old);
+        for _ in 0..20 {
+            frame(&mut app);
+            app.settle(std::time::Duration::from_millis(50));
+        }
+        assert!(app.help, "Help still open");
+        assert_eq!(app.art.shown_cover(), Some((new.clone(), true)), "the new cover, in half blocks");
+        app.help = false;
+        frame(&mut app);
+        assert_eq!(app.art.shown_cover(), Some((new, false)), "the new picture once Help closes");
+    }
+
+    #[test]
+    fn settings_has_no_column_headers_and_starts_with_its_first_section() {
+        let mut app = demo();
+        app.view = View::Settings;
+        let (lines, _) = screen(&app, 160, 40);
+        let all = lines.join("\n");
+        assert!(!all.contains("SETTING") && !all.contains("VALUE"), "{all}");
+        let top = lines.iter().position(|l| l.contains("Settings")).unwrap();
+        let first = Setting::ALL[0].0;
+        assert!(lines[top + 1].contains(first), "{first} right under the border\n{all}");
+    }
+
+    #[test]
+    fn colours_behind_a_popup_fade_toward_the_background() {
+        let bg = Color::Rgb(20, 20, 30);
+        let Color::Rgb(r, g, b) = dim_color(Color::Rgb(250, 200, 0), bg) else { panic!() };
+        assert!(r < 130 && g < 110 && b > 20, "darker, toward the background: {r} {g} {b}");
+        assert!(r.abs_diff(b) < 70, "less saturated: {r} vs {b}");
+        assert_eq!(dim_color(bg, bg), bg, "the background stays");
+        assert_eq!(dim_color(Color::Yellow, bg), Color::DarkGray);
+        assert_eq!(dim_color(Color::Indexed(208), bg), Color::DarkGray);
+        assert_eq!(dim_color(Color::Reset, bg), Color::Reset);
+    }
+
+    #[test]
+    fn a_popup_dims_everything_behind_it_but_not_itself() {
+        let mut app = demo();
+        app.settle(std::time::Duration::from_millis(300));
+        app.art.set_overlay(true);
+        let (_, before) = screen(&app, 255, 70);
+        app.help = true;
+        let (lines, after) = screen(&app, 255, 70);
+        let top = lines.iter().position(|l| l.contains("boxvibe Help")).unwrap() as u16;
+        let left = lines[top as usize].chars().position(|c| c == '┌' || c == '╭').unwrap_or(0) as u16;
+        let brightness = |c: Color| match c {
+            Color::Rgb(r, g, b) => u32::from(r) + u32::from(g) + u32::from(b),
+            _ => 0,
+        };
+        // Outside the popup: nothing brighter than before, and lots darker
+        // (the half-block cover included).
+        let mut darker = 0;
+        for y in 0..70 {
+            for x in 0..255 {
+                let (a, b) = (&before[(x, y)], &after[(x, y)]);
+                if y >= top && x >= left && x < left + 10 {
+                    continue;
+                }
+                if a.symbol() == b.symbol() && brightness(b.fg) + brightness(b.bg) < brightness(a.fg) + brightness(a.bg)
+                {
+                    darker += 1;
+                }
+            }
+        }
+        assert!(darker > 500, "only {darker} cells dimmed");
+        let blocks = (0..70).flat_map(|y| (0..255).map(move |x| (x, y))).filter(|&p| after[p].symbol() == "▀");
+        assert!(blocks.clone().count() > 0);
+        assert!(
+            blocks.into_iter().all(|p| !matches!(after[p].fg, Color::Rgb(r, g, b) if r > 140 || g > 140 || b > 140))
+        );
+        // The popup's own text keeps its colour.
+        let title = lines[top as usize].find("boxvibe Help").unwrap();
+        let x = lines[top as usize][..title].chars().count() as u16;
+        assert!(brightness(after[(x, top)].fg) > 400, "the popup stays bright: {:?}", after[(x, top)]);
+    }
+
+    #[test]
+    fn help_fits_its_longest_line_and_its_keys_line_up() {
+        let mut app = demo();
+        app.help = true;
+        for (cols, rows) in [(255u16, 70u16), (160, 40)] {
+            let (lines, _) = screen(&app, cols, rows);
+            let all = lines.join("\n");
+            for whole in [
+                "play the station · open Stations / Settings / About",
+                "Now Playing pane gets the keys (menu on NOW PLAYING)",
+                HELP_FOOTER.trim(),
+                "⌨  boxvibe Help · Any Key Closes",
+            ] {
+                assert!(all.contains(whole), "{cols}x{rows}: {whole:?} is cut off\n{all}");
+            }
+            // Every description starts the same distance in from Help's left border.
+            let start = |what: &str| {
+                let l = lines.iter().find(|l| l.contains(what)).unwrap();
+                let at = l.find(what).unwrap();
+                l[l[..at].rfind('│').unwrap()..at].chars().count()
+            };
+            let a = start("volume down / up");
+            assert_eq!(a, start("like the playing song"), "{cols}x{rows}\n{all}");
+            assert_eq!(a, start("skip to the next song"), "{cols}x{rows}\n{all}");
+        }
+    }
+
+    #[test]
+    fn the_key_bar_leaves_out_theme_and_icons_but_the_keys_still_work() {
+        let mut app = demo();
+        let caps = key_caps(&app);
+        assert!(!caps.iter().any(|(k, _)| *k == "t" || *k == "i"), "{caps:?}");
+        let theme = app.config.ui.theme.clone();
+        app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('t')));
+        assert_ne!(app.config.ui.theme, theme);
+    }
+
+    #[test]
+    fn rate_row_is_only_hinted_when_up_next_or_history_has_the_keys() {
+        let mut app = demo();
+        app.view = View::Player;
+        let hinted = |app: &App| key_caps(app).iter().any(|(k, _)| *k == "U/D");
+        app.focus = crate::app::Focus::Menu;
+        assert!(!hinted(&app), "menu");
+        app.focus = crate::app::Focus::Content;
+        app.pane = Pane::NowPlaying;
+        assert!(!hinted(&app), "Now Playing");
+        for pane in [Pane::UpNext, Pane::History] {
+            app.pane = pane;
+            assert!(hinted(&app), "{pane:?}");
+        }
+        app.view = View::Settings;
+        assert!(!hinted(&app), "Settings");
     }
 
     #[test]
@@ -1183,9 +1510,9 @@ mod tests {
         app.settle(std::time::Duration::from_millis(300));
         let song = app.now.clone().expect("a song");
         assert_eq!(app.art.status(&song.cover_art_url), crate::art::Cover::None, "demo cover arrived");
-        assert!(app.art.protocol(&song.cover_art_url, app.config.ui.album_art, app.config.ui.art_pixelation).is_some());
+        assert!(app.art.protocol(&song.cover_art_url, crate::art::Look::of(&app.config.ui, app.palette)).is_some());
         let (lines, _) = screen(&app, 120, 36);
-        let (top, bottom, left, right) = art_box(&lines);
+        let (top, bottom, left, right) = art_box(&app);
         assert!(bottom > top + 2);
         let inside: String = lines[top + 1..bottom]
             .iter()
@@ -1193,10 +1520,11 @@ mod tests {
             .collect();
         assert!(inside.contains('▀') || inside.contains('▄'), "halfblocks picture:\n{}", lines.join("\n"));
         assert!(!inside.contains("no cover"));
-        // Nothing spilled over the box's borders.
+        // No frame around it, and nothing spilled past the box.
+        assert!(!lines[top + 1..bottom].iter().any(|l| l.contains('╭') && l.find('╭') < l.find('▀')));
         for line in &lines[top + 1..bottom] {
             let chars: Vec<char> = line.chars().collect();
-            assert_eq!((chars[left], chars[right]), ('│', '│'), "{line}");
+            assert!(!['▀', '▄'].contains(&chars[left]) && !['▀', '▄'].contains(&chars[right]), "{line}");
         }
     }
 
@@ -1206,7 +1534,7 @@ mod tests {
         app.config.ui.album_art = crate::config::AlbumArt::Off;
         app.art.bars.update(&[0.9; 48]);
         let (lines, _) = screen(&app, 120, 36);
-        let (top, bottom, left, right) = art_box(&lines);
+        let (top, bottom, left, right) = art_box(&app);
         let inside: String = lines[top + 1..bottom]
             .iter()
             .map(|l| l.chars().skip(left + 1).take(right - left - 1).collect::<String>())
@@ -1223,6 +1551,29 @@ mod tests {
         }
         let (lines, _) = screen(&app, 120, 36);
         assert!(lines.join("\n").contains("no cover"), "{}", lines.join("\n"));
+    }
+
+    #[test]
+    fn confirm_has_a_blank_line_above_and_below() {
+        let mut app = demo();
+        app.confirm_quit = true;
+        let (lines, _) = screen(&app, 120, 36);
+        let top = lines.iter().position(|l| l.contains(" Confirm ")).expect("confirm box");
+        let chars = |y: usize| lines[y].chars().collect::<Vec<char>>();
+        let left = lines[top].chars().position(|c| c == '┌').unwrap();
+        let bottom = (top + 1..lines.len()).find(|&y| chars(y)[left] == '└').expect("bottom");
+        let right = (left + 1..chars(top).len()).find(|&x| chars(top)[x] == '┐').unwrap();
+        let inner: Vec<String> =
+            (top + 1..bottom).map(|y| chars(y)[left + 1..right].iter().collect::<String>().trim().to_owned()).collect();
+        assert_eq!(inner, ["", "Quit boxvibe?", "y = yes · any other key = no", ""], "{inner:?}");
+    }
+
+    #[test]
+    fn a_long_question_wraps_and_cuts_to_fit() {
+        assert_eq!(wrap_question("Quit boxvibe?", 36, 3), ["Quit boxvibe?"]);
+        let w = wrap_question("one two three four five six seven", 9, 2);
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(w[1].ends_with('…') && w.iter().all(|l| l.width() <= 9), "{w:?}");
     }
 
     #[test]
@@ -1427,6 +1778,61 @@ mod tests {
     }
 
     #[test]
+    fn the_account_sits_at_the_right_of_the_status_bar() {
+        let mut app = demo();
+        app.config.ui.icons = crate::config::IconSet::Unicode;
+        app.config.pandora.username = "toby@example.com".into();
+        app.status = "hello status".into();
+        app.session = Session::LoggedIn;
+        let (lines, buffer) = screen(&app, 120, 36);
+        let bar = &lines[34];
+        assert!(bar.starts_with(" hello status"), "{bar}");
+        assert!(bar.trim_end().ends_with("toby@example.com"), "{bar}");
+        assert!(bar.ends_with("toby@example.com "), "one space before the edge: {bar:?}");
+        let x = (bar.chars().count() - "toby@example.com ".len()) as u16;
+        assert_eq!(buffer[(x, 34)].fg, app.palette.blue, "tubevibe's account colour");
+        // Narrow, with a long status: both cut, never overlapping.
+        app.status = "a very long status message that goes on and on and on".into();
+        let (lines, _) = screen(&app, 40, 36);
+        let bar = &lines[34];
+        assert!(bar.contains('…') && bar.contains('@'), "{bar}");
+        assert!(bar.chars().count() == 40);
+        let status_end = bar.find("on").unwrap();
+        assert!(status_end < bar.find('@').unwrap());
+        // Logged out: nothing on the right.
+        app.session = Session::LoggedOut;
+        let (lines, _) = screen(&app, 120, 36);
+        assert!(!lines[34].contains("toby@"), "{}", lines[34]);
+    }
+
+    #[test]
+    fn up_next_shows_each_songs_thumbs_and_updates_after_shift_u() {
+        let mut app = demo();
+        app.config.ui.icons = crate::config::IconSet::Unicode;
+        app.focus = crate::app::Focus::Content;
+        app.view = View::Player;
+        app.pane = Pane::UpNext;
+        let up_next = |app: &App| {
+            let (lines, _) = screen(app, 160, 40);
+            let y0 = lines.iter().position(|l| l.contains("Up Next (")).expect("Up Next");
+            let x0 = lines[y0].chars().position(|c| c == 'U').unwrap();
+            let rows: Vec<String> =
+                lines[y0 + 1..y0 + 4].iter().map(|l| l.chars().skip(x0).take(70).collect()).collect();
+            rows
+        };
+        let before = up_next(&app);
+        assert!(before[0].contains("TIME") && before[0].contains("RATED"), "{before:?}");
+        assert!(before[1].contains('—') && before[1].contains(':'), "not rated, time kept: {before:?}");
+        app.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('U'),
+            crossterm::event::KeyModifiers::SHIFT,
+        ));
+        assert_eq!(app.queue[app.next_index()].rating, Rating::Up);
+        let after = up_next(&app);
+        assert!(after.iter().any(|r| r.contains("liked")), "{after:?}");
+    }
+
+    #[test]
     fn up_next_keeps_a_blank_cell_before_its_right_border() {
         let mut app = demo();
         app.config.ui.icons = crate::config::IconSet::Unicode;
@@ -1468,15 +1874,19 @@ mod tests {
         let (lines, _) = screen(&app, 120, 36);
         let rows = usize::from(now_playing_height(34, false));
         let menu = |l: &String| l.chars().skip(30).collect::<String>();
-        let art_col = |l: &String| menu(l).chars().nth(2).unwrap_or(' ');
-        assert_eq!(art_col(&lines[1]), '╭', "art starts on the pane's first row: {}", lines[1]);
-        assert_eq!(art_col(&lines[rows - 2]), '╰', "and ends on its last: {}", lines[rows - 2]);
+        let art = app.art.last_area.get();
+        assert_eq!((art.y, art.y + art.height), (1, rows as u16 - 1), "art fills the pane's height");
+        assert!(!lines[..rows].iter().any(|l| l.contains('╰') && menu(l).chars().nth(2) == Some('╰')), "no frame");
         let title = app.now.as_ref().unwrap().title.clone();
-        assert!(menu(&lines[2]).contains(&title), "song info one line down: {}", lines[2]);
         let time = lines.iter().position(|l| l.contains('●')).expect("time line");
         let volume = lines.iter().position(|l| l.contains('%') && l.contains('▮')).expect("volume");
         assert!(time < rows && volume == time + 1, "both inside Now Playing, beside the art");
-        assert!(menu(&lines[time]).chars().nth(2) == Some('│'), "beside the art: {}", lines[time]);
+        assert!(lines[time].chars().position(|c| c == '●').unwrap() > usize::from(art.x + art.width), "beside the art");
+        // The stack is centred: as many blank rows above it as below.
+        let first = lines.iter().position(|l| menu(l).contains(&title)).unwrap();
+        let last = lines[..rows].iter().rposition(|l| l.contains('╰')).expect("buttons");
+        let (above, below) = (first - 1, rows - 2 - last);
+        assert!(above.abs_diff(below) <= 1, "centred: {above} above, {below} below");
         for key in ["-/d", "+/u", "space"] {
             assert!(!lines[..rows].iter().any(|l| l.contains(key)), "no {key} under the buttons");
         }
@@ -1551,5 +1961,28 @@ mod tests {
         assert_eq!(safe_char_width('a'), 1);
         assert_eq!(icon_cell("\u{f164}").width(), 3);
         assert_eq!(icon_cell("👍").width(), 2);
+    }
+}
+#[cfg(test)]
+mod scratch {
+    use super::*;
+    use crate::config::Config;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    #[test]
+    fn dump() {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.demo_warm_up(3, std::time::Duration::ZERO);
+        app.help = true;
+        for (c, r) in [(255u16, 70u16), (160, 40), (80, 30)] {
+            let mut t = Terminal::new(TestBackend::new(c, r)).unwrap();
+            t.draw(|f| draw(f, &app)).unwrap();
+            let b = t.backend().buffer().clone();
+            println!("=== {c}x{r}");
+            for y in 0..r {
+                let s: String = (0..c).map(|x| b[(x, y)].symbol().to_string()).collect();
+                println!("{s}");
+            }
+        }
     }
 }

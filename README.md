@@ -9,7 +9,7 @@ with the four big buttons (thumbs down, play/pause, skip, thumbs up), **Up
 Next** and **History** side by side under it, a status bar, and the keys that
 work right now drawn as key caps at the bottom.
 
-> Early (0.1.0): it plays your stations, but cover art, search and station
+> Early (0.3.0): it plays your stations, but search and station
 > editing are still to come. Feedback welcome.
 
 ![Now Playing (Gruvbox)](screenshots/gruvbox-main.png)
@@ -41,7 +41,7 @@ work right now drawn as key caps at the bottom.
   9 rows and the song panes shrink and scroll. `Tab` goes stations → Up Next →
   History; in History `+` / `-` rate a song you already heard
 - **Settings** (account, audio quality, volume, autoplay, song change
-  notifications, theme, icons, border style, menu width, update check, edit `config.toml` in `$EDITOR`) and **About**
+  notifications, theme, icons, border style, menu width, update check, edit `config.toml` in `$EDITOR`, app menu entry) and **About**
   (links, version, and the update button) below the stations
 - **Updates itself** from GitHub releases: see [Updating](#updating)
 - **Gapless-ish playback**: the next song downloads while this one plays.
@@ -73,6 +73,14 @@ cargo build --release
 ```
 
 To have it in your `PATH`: `install -Dm755 target/release/boxvibe ~/.local/bin/boxvibe`
+
+To have it in your app launcher (walker on Omarchy, GNOME, KDE, ...): Settings →
+BOXVIBE → **App menu entry**, `Enter`. It writes
+`$XDG_DATA_HOME/applications/boxvibe.desktop` (`~/.local/share/applications`
+by default) pointing at the boxvibe you are running, with `Terminal=true` so
+the launcher opens it in your terminal; `Enter` again removes it. boxvibe only
+ever deletes a file it wrote itself (marked `X-Boxvibe-Generated=true`). Run
+it from where it will stay (e.g. `~/.local/bin`), not from `target/`.
 (or `cargo install --locked --path .`).
 
 On Debian / Ubuntu the packages are `libasound2-dev pkg-config`; on Fedora
@@ -100,8 +108,10 @@ Try it without an account (made-up stations, no network, no sound):
 | `Tab` | menu → Now Playing → Up Next → History on the player (`Shift+Tab` back); menu ⇄ Stations / Settings / About |
 | `Esc` | back to the menu |
 | `N` (Shift+n) | Now Playing: back to the player with the keys on the Now Playing pane and the menu on NOW PLAYING |
-| `s` | Stations: every station on the right, `Enter` plays one |
-| `f` `F` | favorite / unfavorite the station (the menu's FAVORITES section) |
+| `s` `S` | Stations: every station on the right, `Enter` plays one |
+| `T` (Shift+t) / `A` (Shift+a) | Settings / About, with the menu on that entry |
+| `F` (Shift+f) | the menu, on the first of FAVORITES |
+| `f` | favorite / unfavorite the station (the menu's FAVORITES section) |
 | `{` `}` | menu narrower / wider |
 | `t` | next theme |
 | `i` | next icon set |
@@ -144,11 +154,13 @@ border_style = "plain"         # plain | rounded | thick | double | none
 menu_width = 30                # the menu, in columns: 20–40, step 2 (at most half the screen); also { and }
 favorites = []                 # starred stations, { id = "…", name = "…" }, set with f
 album_art = "picture"          # picture | blocks | off (off: the spectrum visualizer)
-art_pixelation = "off"         # off | low | medium | high | max (64 / 32 / 16 / 8 px, blocky on purpose)
+retro_mode = "hd"             # hd | 32bit | 16bit | 8bit | 4bit | 2bit (full / 128 / 64 / 32 / 16 / 8 px, blocky on purpose)
+art_tint = "off"               # off | duotone | palette: recolour the cover with the theme's colours
 ```
 
 `--theme NAME` and `--icons SET` change them for one run without saving.
-A bad `album_art` or `art_pixelation` value is ignored with a warning (picture / off).
+A bad `album_art`, `retro_mode` or `art_tint` value is ignored with a warning (picture / hd / off).
+The 0.3 betas' `art_pixelation` key (off / extra_low / low / medium / high / max) still reads as `retro_mode`.
 
 ## Album art
 
@@ -160,9 +172,19 @@ startup what it can draw:
 - Anything else, and always inside **tmux** or **Zellij**: coloured half blocks (▀).
 
 Settings → LOOK → **Album art** picks Picture, Blocks (half blocks even when
-the terminal could do better) or Off. **Pixelation** makes the cover blocky
-for fun: it is shrunk to 64, 32, 16 or 8 pixels across and blown back up,
-nearest-neighbour.
+the terminal could do better) or Off. **Retro mode** makes the cover blocky
+for fun, like an old console: 32-bit, 16-bit, 8-bit, 4-bit and 2-bit shrink it
+to 128, 64, 32, 16 or 8 pixels across and blow it back up, nearest-neighbour;
+HD leaves it alone. **Tint art with theme colors** recolours the cover using
+your current theme's colour scheme: Duotone maps its brightness from the
+theme's background to its yellow, Palette snaps every pixel to the nearest
+theme colour. It follows theme changes right away and works with Retro mode.
+
+The cover has no frame around it. While Help or the quit box is open, a
+terminal picture is held back (it would draw over the popup) and sent again,
+cleanly, when the popup closes. Everything behind a popup, the cover's half
+blocks included, is dimmed so the popup stands out. The status bar shows the logged-in account at
+its right.
 
 Covers download in the background and are kept in memory and in
 `~/.cache/boxvibe/art` (`$XDG_CACHE_HOME`), at most 50 MB, oldest dropped

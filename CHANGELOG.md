@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.3.0 (2026-10-23)
+
+### Now Playing polish (`now-playing-polish`)
+
+- The album art has no frame any more: the cover (or the visualizer) fills its box, centred.
+- Song info, the time line, volume and the four buttons sit together as one
+  block, centred top to bottom beside the art.
+- A sixel, kitty or iTerm2 cover no longer draws over Help or the quit box or
+  leaves bits behind: it is held back while a popup is open and sent again
+  on a cleared screen when it closes.
+- Settings → LOOK → **Tint art with theme colors** (Off / Duotone / Palette,
+  `[ui] art_tint`): recolours the cover using the current theme's colour
+  scheme, for pictures and blocks, live on theme change.
+- Up Next has a RATED column like History's, updated as soon as you press `U` or `D`.
+- The status bar shows the logged-in account at its far right, in tubevibe's
+  account colour (the theme's blue, aqua in Gruvbox); both sides cut with "…" when narrow.
+- Confirm boxes (Shift+`Q`'s "Quit boxvibe?") are symmetrical like tubevibe's:
+  a blank line above the question and below the keys; a long question wraps
+  and is cut with "…" so the box still fits small screens.
+- Shift+`T` opens Settings and Shift+`A` opens About, selecting them in the
+  menu as Shift+`N` does for Now Playing; Shift+`S` opens Stations like `s`.
+- Shift+`F` jumps to the menu's FAVORITES (the first one), or says there are
+  none; `f` still stars / unstars. (`F` used to do the same as `f`.)
+- Pixelation is now **Retro mode**: HD (off), 32-bit, 16-bit, 8-bit, 4-bit and
+  2-bit (128 / 64 / 32 / 16 / 8 px), saved as `[ui] retro_mode = "hd"` …
+  `"2bit"`; the status bar says e.g. "Retro mode: 16-bit 🎮". The old
+  `art_pixelation` key and its values (off, extra_low, low, medium, high, max)
+  still read; when both are there `retro_mode` wins.
+- Now Playing is symmetrical: the time line (and the block with it) ends as
+  far in from the pane's right border as the cover starts from its left one,
+  worked out each frame from where the cover is drawn.
+- The key bar no longer shows `t` Theme and `i` Icons; both keys still work and are in Help.
+- The key bar shows `U/D` Rate Row only while Up Next or History has the keys.
+- While Help or the quit box is open, everything behind it, the half-block
+  cover included, is dimmed toward the theme background (about 40%, greyer);
+  the popup stays at full brightness.
+- Settings has no SETTING / VALUE header row any more, and its BOXVIBE section
+  (updates, edit config.toml, app menu entry) comes first, before ACCOUNT.
+- Settings → BOXVIBE → **App menu entry** (Installed / Not installed, read
+  from disk): `Enter` adds or removes `boxvibe.desktop` in
+  `$XDG_DATA_HOME/applications` (default `~/.local/share/applications`) so app
+  launchers list boxvibe, running this binary in a terminal. Only a file
+  boxvibe wrote (marked `X-Boxvibe-Generated=true`) is ever deleted. Not a
+  config key.
+- The half-block cover shown under Help or the quit box now fills exactly the
+  rectangle the sixel/kitty/iTerm2 picture uses (it is sized with the
+  terminal's real font), so it no longer looks smaller or off-centre and the
+  song info beside it never moves when a popup opens.
+- Help is as wide as its longest line (wrapping only when the terminal is
+  narrower), so no line is cut off, and every description lines up after the
+  widest key (`Shift ← →` no longer crowds its text).
+
 ## 0.2.0 (2026-10-22)
 
 ### Album art (`album-art`)
@@ -15,7 +67,7 @@
   audio in green, yellow and orange with peak caps, ~18 fps while playing,
   frozen while paused, with a dim "♪ no cover" caption.
 - Settings → LOOK: **Album art** (Picture / Blocks / Off, `[ui] album_art`)
-  and **Pixelation** (Off / Low / Medium / High / Max, `[ui] art_pixelation`).
+  and **Retro mode** (HD / 32-bit / 16-bit / 8-bit / 4-bit / 2-bit, `[ui] retro_mode`).
   Bad values fall back to the defaults with a warning.
 - Demo mode and `--snapshot` draw made-up covers, so nothing needs the network.
 - Needs Rust 1.90 (the sixel encoder's dependencies).

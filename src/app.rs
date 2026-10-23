@@ -80,14 +80,19 @@ pub enum Setting {
     BorderStyle,
     MenuWidth,
     AlbumArt,
-    Pixelation,
+    RetroMode,
+    ArtTint,
     CheckUpdates,
     EditFile,
+    MenuEntry,
 }
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 16] = [
+    pub const ALL: [(&'static str, Self); 18] = [
+        ("BOXVIBE", Self::CheckUpdates),
+        ("BOXVIBE", Self::EditFile),
+        ("BOXVIBE", Self::MenuEntry),
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
@@ -101,10 +106,14 @@ impl Setting {
         ("LOOK", Self::BorderStyle),
         ("LOOK", Self::MenuWidth),
         ("LOOK", Self::AlbumArt),
-        ("LOOK", Self::Pixelation),
-        ("BOXVIBE", Self::CheckUpdates),
-        ("BOXVIBE", Self::EditFile),
+        ("LOOK", Self::RetroMode),
+        ("LOOK", Self::ArtTint),
     ];
+
+    /// Where `setting` is in [`Setting::ALL`] (the Settings cursor).
+    pub fn at(setting: Self) -> usize {
+        Self::ALL.iter().position(|(_, s)| *s == setting).unwrap_or(0)
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -121,9 +130,11 @@ impl Setting {
             Self::BorderStyle => "Border style",
             Self::MenuWidth => "Menu width",
             Self::AlbumArt => "Album art",
-            Self::Pixelation => "Pixelation",
+            Self::RetroMode => "Retro mode",
+            Self::ArtTint => "Tint art with theme colors",
             Self::CheckUpdates => "Look for new versions on startup",
             Self::EditFile => "Edit config.toml",
+            Self::MenuEntry => "App menu entry",
         }
     }
 
@@ -151,9 +162,17 @@ impl Setting {
             Self::AlbumArt => {
                 "Picture: real covers (sixel, kitty, iTerm2); Blocks: coloured half blocks; Off: visualizer."
             }
-            Self::Pixelation => "Makes the cover blocky on purpose: 64, 32, 16 or 8 pixels across, or Off.",
+            Self::ArtTint => {
+                "Recolors the album art using your current theme's color scheme. Duotone: theme background to yellow; Palette: only theme colors. Saved as [ui] art_tint."
+            }
+            Self::RetroMode => {
+                "Makes the cover blocky on purpose, like an old console: 32-bit (128 pixels across), 16-bit (64), 8-bit (32), 4-bit (16), 2-bit (8), or HD for the full picture."
+            }
             Self::CheckUpdates => "Asks GitHub when boxvibe opens; About shows the new version and Update Now.",
             Self::EditFile => "Opens config.toml in $EDITOR; boxvibe reads it again when you close it.",
+            Self::MenuEntry => {
+                "Enter adds or removes boxvibe.desktop in ~/.local/share/applications, so app launchers (walker on Omarchy) list boxvibe; it runs this boxvibe in a terminal."
+            }
         }
     }
 }
@@ -290,7 +309,7 @@ impl App {
                 // First run: Settings, on the account, typing the email.
                 app.view = View::Settings;
                 app.focus = Focus::Content;
-                app.settings_cursor = 0;
+                app.settings_cursor = Setting::at(Setting::Email);
                 app.open_prompt(if app.config.pandora.username.is_empty() { Prompt::Email } else { Prompt::Password });
                 app.status = "Welcome to boxvibe: log in with your Pandora account".into();
             }
@@ -361,14 +380,8 @@ impl App {
                     None => self.status = format!("{} isn't one of your stations any more (f removes it)", fav.name),
                 }
             }
-            MenuItem::Settings => {
-                self.view = View::Settings;
-                self.focus = Focus::Content;
-            }
-            MenuItem::About => {
-                self.view = View::About;
-                self.focus = Focus::Content;
-            }
+            MenuItem::Settings => self.show_page(View::Settings),
+            MenuItem::About => self.show_page(View::About),
             MenuItem::Quit => self.quit = true,
         }
     }
@@ -384,6 +397,25 @@ impl App {
         // The keys go to the Now Playing pane, so it shows as active.
         self.focus = Focus::Content;
         self.pane = Pane::NowPlaying;
+    }
+
+    /// `F`: the menu, on the first of FAVORITES.
+    fn show_favorites(&mut self) {
+        match self.menu_items().iter().position(|m| *m == MenuItem::Favorite(0)) {
+            Some(at) => {
+                self.menu_cursor = at;
+                self.focus = Focus::Menu;
+            }
+            None => self.status = "No favorites yet: f on a station stars it".into(),
+        }
+    }
+
+    /// Settings or About (menu entry, `T` or `A`): the page, with the keys
+    /// on it and its menu entry selected.
+    fn show_page(&mut self, view: View) {
+        self.view = view;
+        self.point_menu_at_view();
+        self.focus = Focus::Content;
     }
 
     /// Stations (menu entry or `s`): the list, with the keys on it.
@@ -562,7 +594,7 @@ impl App {
                 self.status = format!("⚠ Login failed: {message}");
                 self.view = View::Settings;
                 self.focus = Focus::Content;
-                self.settings_cursor = 1;
+                self.settings_cursor = Setting::at(Setting::Password);
             }
             Reply::Stations(stations) => {
                 self.stations = stations;
@@ -692,7 +724,7 @@ impl App {
         };
         if !self.demo && (username.is_empty() || password.is_empty()) {
             self.status = "⚠ Type your Pandora email and password first".into();
-            self.settings_cursor = if username.is_empty() { 0 } else { 1 };
+            self.settings_cursor = Setting::at(if username.is_empty() { Setting::Email } else { Setting::Password });
             return;
         }
         self.session = Session::SigningIn;
@@ -856,6 +888,11 @@ impl App {
     }
 
     /// The player's panes have the keys.
+    /// A popup is drawn over the screen (Help, the quit box).
+    pub fn overlay_open(&self) -> bool {
+        self.help || self.confirm_quit
+    }
+
     pub fn in_songs(&self) -> bool {
         self.focus == Focus::Content && self.view == View::Player
     }
@@ -899,13 +936,19 @@ impl App {
                 AlbumArt::Picture => format!("Picture ({})", self.art.protocol_name()),
                 other => other.label().into(),
             },
-            Setting::Pixelation => self.config.ui.art_pixelation.label().into(),
+            Setting::RetroMode => self.config.ui.retro_mode.label().into(),
+            Setting::ArtTint => self.config.ui.art_tint.label().into(),
             Setting::CheckUpdates => on(self.config.ui.check_updates),
             Setting::EditFile => self
                 .config_path
                 .as_ref()
                 .map(|p| p.display().to_string().replace(&std::env::var("HOME").unwrap_or_default(), "~"))
                 .unwrap_or_default(),
+            Setting::MenuEntry => match crate::desktop::applications_dir() {
+                Some(dir) if crate::desktop::installed(&dir) => "Installed".into(),
+                Some(_) => "Not installed".into(),
+                None => "no home folder".into(),
+            },
         }
     }
 
@@ -914,7 +957,7 @@ impl App {
             Prompt::Email => self.config.pandora.username.clone(),
             Prompt::Password => String::new(),
         };
-        self.settings_cursor = if prompt == Prompt::Email { 0 } else { 1 };
+        self.settings_cursor = Setting::at(if prompt == Prompt::Email { Setting::Email } else { Setting::Password });
         self.prompt = Some(prompt);
     }
 
@@ -980,15 +1023,23 @@ impl App {
                 let next = self.config.ui.album_art.next();
                 self.config.ui.album_art = next;
                 self.art.forget_shown();
+                self.want_art();
                 self.save(&[("ui", "album_art", next.as_str().into())]);
                 self.status = format!("Album art: {}", next.label());
             }
-            Setting::Pixelation => {
-                let next = self.config.ui.art_pixelation.next();
-                self.config.ui.art_pixelation = next;
+            Setting::ArtTint => {
+                let next = self.config.ui.art_tint.next();
+                self.config.ui.art_tint = next;
                 self.art.forget_shown();
-                self.save(&[("ui", "art_pixelation", next.as_str().into())]);
-                self.status = format!("Pixelation: {}", next.label());
+                self.save(&[("ui", "art_tint", next.as_str().into())]);
+                self.status = format!("Tint art with theme colors: {}", next.label());
+            }
+            Setting::RetroMode => {
+                let next = self.config.ui.retro_mode.next();
+                self.config.ui.retro_mode = next;
+                self.art.forget_shown();
+                self.save(&[("ui", "retro_mode", next.as_str().into())]);
+                self.status = format!("Retro mode: {} 🎮", next.label());
             }
             Setting::CheckUpdates => {
                 self.config.ui.check_updates = !self.config.ui.check_updates;
@@ -1001,7 +1052,34 @@ impl App {
                     self.edit_config = true;
                 }
             }
+            Setting::MenuEntry => self.toggle_menu_entry(),
         }
+    }
+
+    /// Adds or removes boxvibe.desktop (a file on disk, not a config key).
+    fn toggle_menu_entry(&mut self) {
+        use crate::desktop;
+        if self.demo {
+            self.status = "The demo doesn't add an app menu entry".into();
+            return;
+        }
+        let Some(dir) = desktop::applications_dir() else {
+            self.status = "No home folder: can't add an app menu entry".into();
+            return;
+        };
+        let home = std::env::var("HOME").unwrap_or_default();
+        let short = |p: &std::path::Path| p.display().to_string().replacen(&home, "~", 1);
+        self.status = if desktop::installed(&dir) {
+            match desktop::remove(&dir) {
+                Ok(p) => format!("Removed {} from the app menu", short(&p)),
+                Err(e) => format!("Left {} alone: {e}", short(&desktop::path_in(&dir))),
+            }
+        } else {
+            match desktop::current_exe().and_then(|exe| desktop::install(&dir, &exe)) {
+                Ok(p) => format!("Added {}: boxvibe is in the app menu", short(&p)),
+                Err(e) => format!("Couldn't add the app menu entry: {e}"),
+            }
+        };
     }
 
     /// After the editor closes: read config.toml again.
@@ -1058,7 +1136,7 @@ impl App {
                     Prompt::Password => {
                         // Saved once Pandora takes it (see LoggedIn).
                         self.config.pandora.password = text;
-                        self.settings_cursor = 2;
+                        self.settings_cursor = Setting::at(Setting::LogIn);
                         self.log_in();
                     }
                 }
@@ -1105,10 +1183,14 @@ impl App {
             KeyCode::Char('D') => self.rate_row(false),
             KeyCode::Char('z') => self.tired(),
             KeyCode::Char('N') => self.show_now_playing(),
+            KeyCode::Char('S') => self.show_stations(),
+            KeyCode::Char('T') => self.show_page(View::Settings),
+            KeyCode::Char('A') => self.show_page(View::About),
+            KeyCode::Char('F') => self.show_favorites(),
             KeyCode::Char('s') => {
                 self.show_stations();
             }
-            KeyCode::Char('f') | KeyCode::Char('F') => self.toggle_favorite(),
+            KeyCode::Char('f') => self.toggle_favorite(),
             KeyCode::Tab => self.next_focus(true),
             KeyCode::BackTab => self.next_focus(false),
             KeyCode::Esc => {
@@ -1358,12 +1440,25 @@ mod tests {
     }
 
     #[test]
-    fn enter_cycles_album_art_and_pixelation() {
+    fn settings_start_with_boxvibe_then_account_playback_look() {
+        let mut groups: Vec<&str> = Setting::ALL.iter().map(|(g, _)| *g).collect();
+        groups.dedup();
+        assert_eq!(groups, ["BOXVIBE", "ACCOUNT", "PLAYBACK", "LOOK"]);
+        let emoji = crate::icons::icons(crate::config::IconSet::Emoji);
+        assert_eq!(emoji.setting[Setting::at(Setting::CheckUpdates)], "🆕", "icons move with their settings");
+        assert_eq!(emoji.setting[Setting::at(Setting::Email)], "👤");
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.open_prompt(Prompt::Password);
+        assert_eq!(app.setting(), Setting::Password, "the cursor follows a setting, not a row number");
+    }
+
+    #[test]
+    fn enter_cycles_album_art_and_retro_mode() {
         let mut app = App::new(Config::default(), None, &[], true);
         app.view = View::Settings;
         app.focus = Focus::Content;
         for (setting, first, second) in
-            [(Setting::AlbumArt, "Blocks", "Off (visualizer)"), (Setting::Pixelation, "Low (64 px)", "Medium (32 px)")]
+            [(Setting::AlbumArt, "Blocks", "Off (visualizer)"), (Setting::RetroMode, "32-bit", "16-bit")]
         {
             app.settings_cursor = Setting::ALL.iter().position(|(_, s)| *s == setting).unwrap();
             assert_eq!(Setting::ALL[app.settings_cursor].0, "LOOK");
@@ -1373,7 +1468,8 @@ mod tests {
             assert_eq!(app.setting_value(setting), second);
         }
         assert_eq!(app.config.ui.album_art, AlbumArt::Off);
-        assert_eq!(app.config.ui.art_pixelation, crate::config::Pixelation::Medium);
+        assert_eq!(app.config.ui.retro_mode, crate::config::RetroMode::Bit16);
+        assert_eq!(app.status, "Retro mode: 16-bit 🎮");
         assert!(app.setting_value(Setting::AlbumArt).starts_with("Off"));
     }
 
@@ -1608,8 +1704,8 @@ mod tests {
         assert_eq!(app.current_station.as_deref(), Some(third.id.as_str()));
         assert_eq!((app.view, app.menu_selected()), (View::Player, MenuItem::NowPlaying), "on to Now Playing");
         app.menu_cursor = app.menu_items().iter().position(|m| *m == MenuItem::Favorite(0)).unwrap();
-        // F on it in the menu unstars it: the section goes.
-        app.on_key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT));
+        // f on it in the menu unstars it: the section goes.
+        app.on_key(key(KeyCode::Char('f')));
         assert!(
             app.config.ui.favorites.is_empty() && !app.menu_items().iter().any(|m| matches!(m, MenuItem::Favorite(_)))
         );
@@ -1835,5 +1931,27 @@ mod tests {
         assert!(app.update_button_ready() && app.restart_ready());
         app.on_key(key(KeyCode::Enter));
         assert!(app.restart && app.quit, "Enter on Restart Now quits so main starts the new one");
+    }
+
+    #[test]
+    fn shift_keys_open_stations_settings_about_and_favorites() {
+        let shift = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.on_key(shift('S'));
+        assert_eq!((app.view, app.focus), (View::Stations, Focus::Content), "S is Stations, like s");
+        app.on_key(shift('T'));
+        assert_eq!((app.view, app.focus, app.menu_selected()), (View::Settings, Focus::Content, MenuItem::Settings));
+        app.on_key(shift('A'));
+        assert_eq!((app.view, app.focus, app.menu_selected()), (View::About, Focus::Content, MenuItem::About));
+        app.config.ui.favorites.clear();
+        app.on_key(shift('F'));
+        assert!(app.status.contains("No favorites"), "{}", app.status);
+        assert_eq!(app.focus, Focus::Content);
+        app.config.ui.favorites.push(crate::config::Favorite { id: "1".into(), name: "One".into() });
+        app.on_key(shift('F'));
+        assert_eq!((app.focus, app.menu_selected()), (Focus::Menu, MenuItem::Favorite(0)));
+        let theme = app.config.ui.theme.clone();
+        app.on_key(key(KeyCode::Char('t')));
+        assert_ne!(app.config.ui.theme, theme, "t is still the theme");
     }
 }

@@ -21,6 +21,8 @@
   and is cut with "…" so the box still fits small screens.
 - Shift+`S` opens Settings and Shift+`A` opens About, selecting them in the
   menu as Shift+`N` does for Now Playing (`s` is still Stations).
+- Pixelation has a mildest step, **Extra low (128 px)** (`[ui] art_pixelation =
+  "extra_low"`), right after Off.
 
 ## 0.2.0 (2026-10-22)
 

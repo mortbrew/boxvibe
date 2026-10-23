@@ -145,7 +145,7 @@ border_style = "plain"         # plain | rounded | thick | double | none
 menu_width = 30                # the menu, in columns: 20–40, step 2 (at most half the screen); also { and }
 favorites = []                 # starred stations, { id = "…", name = "…" }, set with f
 album_art = "picture"          # picture | blocks | off (off: the spectrum visualizer)
-art_pixelation = "off"         # off | low | medium | high | max (64 / 32 / 16 / 8 px, blocky on purpose)
+art_pixelation = "off"         # off | extra_low | low | medium | high | max (128 / 64 / 32 / 16 / 8 px, blocky on purpose)
 art_tint = "off"               # off | duotone | palette: recolour the cover with the theme's colours
 ```
 
@@ -163,7 +163,7 @@ startup what it can draw:
 
 Settings → LOOK → **Album art** picks Picture, Blocks (half blocks even when
 the terminal could do better) or Off. **Pixelation** makes the cover blocky
-for fun: it is shrunk to 64, 32, 16 or 8 pixels across and blown back up,
+for fun: it is shrunk to 128, 64, 32, 16 or 8 pixels across and blown back up,
 nearest-neighbour. **Tint art with theme colors** recolours the cover using
 your current theme's colour scheme: Duotone maps its brightness from the
 theme's background to its yellow, Palette snaps every pixel to the nearest

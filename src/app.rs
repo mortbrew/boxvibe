@@ -157,7 +157,7 @@ impl Setting {
             Self::ArtTint => {
                 "Recolors the album art using your current theme's color scheme. Duotone: theme background to yellow; Palette: only theme colors. Saved as [ui] art_tint."
             }
-            Self::Pixelation => "Makes the cover blocky on purpose: 64, 32, 16 or 8 pixels across, or Off.",
+            Self::Pixelation => "Makes the cover blocky on purpose: 128, 64, 32, 16 or 8 pixels across, or Off.",
             Self::CheckUpdates => "Asks GitHub when boxvibe opens; About shows the new version and Update Now.",
             Self::EditFile => "Opens config.toml in $EDITOR; boxvibe reads it again when you close it.",
         }
@@ -1386,9 +1386,10 @@ mod tests {
         let mut app = App::new(Config::default(), None, &[], true);
         app.view = View::Settings;
         app.focus = Focus::Content;
-        for (setting, first, second) in
-            [(Setting::AlbumArt, "Blocks", "Off (visualizer)"), (Setting::Pixelation, "Low (64 px)", "Medium (32 px)")]
-        {
+        for (setting, first, second) in [
+            (Setting::AlbumArt, "Blocks", "Off (visualizer)"),
+            (Setting::Pixelation, "Extra low (128 px)", "Low (64 px)"),
+        ] {
             app.settings_cursor = Setting::ALL.iter().position(|(_, s)| *s == setting).unwrap();
             assert_eq!(Setting::ALL[app.settings_cursor].0, "LOOK");
             app.on_key(key(KeyCode::Enter));
@@ -1397,7 +1398,7 @@ mod tests {
             assert_eq!(app.setting_value(setting), second);
         }
         assert_eq!(app.config.ui.album_art, AlbumArt::Off);
-        assert_eq!(app.config.ui.art_pixelation, crate::config::Pixelation::Medium);
+        assert_eq!(app.config.ui.art_pixelation, crate::config::Pixelation::Low);
         assert!(app.setting_value(Setting::AlbumArt).starts_with("Off"));
     }
 

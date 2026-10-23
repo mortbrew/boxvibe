@@ -288,6 +288,8 @@ impl ArtTint {
 pub enum Pixelation {
     #[default]
     Off,
+    #[serde(rename = "extra_low", alias = "extra-low", alias = "extralow")]
+    ExtraLow,
     Low,
     Medium,
     High,
@@ -295,7 +297,7 @@ pub enum Pixelation {
 }
 
 impl Pixelation {
-    pub const ALL: [Self; 5] = [Self::Off, Self::Low, Self::Medium, Self::High, Self::Max];
+    pub const ALL: [Self; 6] = [Self::Off, Self::ExtraLow, Self::Low, Self::Medium, Self::High, Self::Max];
 
     pub fn next(self) -> Self {
         let at = Self::ALL.iter().position(|a| *a == self).unwrap_or(0);
@@ -306,6 +308,7 @@ impl Pixelation {
     pub fn grid(self) -> Option<u32> {
         match self {
             Self::Off => None,
+            Self::ExtraLow => Some(128),
             Self::Low => Some(64),
             Self::Medium => Some(32),
             Self::High => Some(16),
@@ -316,6 +319,7 @@ impl Pixelation {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Off => "off",
+            Self::ExtraLow => "extra_low",
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
@@ -326,6 +330,7 @@ impl Pixelation {
     pub fn label(self) -> &'static str {
         match self {
             Self::Off => "Off",
+            Self::ExtraLow => "Extra low (128 px)",
             Self::Low => "Low (64 px)",
             Self::Medium => "Medium (32 px)",
             Self::High => "High (16 px)",
@@ -806,7 +811,12 @@ mod tests {
         }));
         assert_eq!(AlbumArt::Off.next(), AlbumArt::Picture);
         assert_eq!(Pixelation::Max.next(), Pixelation::Off);
-        assert_eq!(Pixelation::ALL.map(Pixelation::grid), [None, Some(64), Some(32), Some(16), Some(8)]);
+        assert_eq!(Pixelation::Off.next(), Pixelation::ExtraLow, "the mildest step first");
+        for spelling in ["extra_low", "extra-low", "extralow"] {
+            let (c, w) = Config::parse(&format!("[ui]\nart_pixelation = \"{spelling}\"\n")).unwrap();
+            assert_eq!((c.ui.art_pixelation, w.len()), (Pixelation::ExtraLow, 0), "{spelling}");
+        }
+        assert_eq!(Pixelation::ALL.map(Pixelation::grid), [None, Some(128), Some(64), Some(32), Some(16), Some(8)]);
     }
 
     #[test]

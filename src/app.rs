@@ -392,7 +392,18 @@ impl App {
         self.pane = Pane::NowPlaying;
     }
 
-    /// Settings or About (menu entry, `S` or `A`): the page, with the keys
+    /// `F`: the menu, on the first of FAVORITES.
+    fn show_favorites(&mut self) {
+        match self.menu_items().iter().position(|m| *m == MenuItem::Favorite(0)) {
+            Some(at) => {
+                self.menu_cursor = at;
+                self.focus = Focus::Menu;
+            }
+            None => self.status = "No favorites yet: f on a station stars it".into(),
+        }
+    }
+
+    /// Settings or About (menu entry, `T` or `A`): the page, with the keys
     /// on it and its menu entry selected.
     fn show_page(&mut self, view: View) {
         self.view = view;
@@ -1165,12 +1176,14 @@ impl App {
             KeyCode::Char('D') => self.rate_row(false),
             KeyCode::Char('z') => self.tired(),
             KeyCode::Char('N') => self.show_now_playing(),
-            KeyCode::Char('S') => self.show_page(View::Settings),
+            KeyCode::Char('S') => self.show_stations(),
+            KeyCode::Char('T') => self.show_page(View::Settings),
             KeyCode::Char('A') => self.show_page(View::About),
+            KeyCode::Char('F') => self.show_favorites(),
             KeyCode::Char('s') => {
                 self.show_stations();
             }
-            KeyCode::Char('f') | KeyCode::Char('F') => self.toggle_favorite(),
+            KeyCode::Char('f') => self.toggle_favorite(),
             KeyCode::Tab => self.next_focus(true),
             KeyCode::BackTab => self.next_focus(false),
             KeyCode::Esc => {
@@ -1671,8 +1684,8 @@ mod tests {
         assert_eq!(app.current_station.as_deref(), Some(third.id.as_str()));
         assert_eq!((app.view, app.menu_selected()), (View::Player, MenuItem::NowPlaying), "on to Now Playing");
         app.menu_cursor = app.menu_items().iter().position(|m| *m == MenuItem::Favorite(0)).unwrap();
-        // F on it in the menu unstars it: the section goes.
-        app.on_key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT));
+        // f on it in the menu unstars it: the section goes.
+        app.on_key(key(KeyCode::Char('f')));
         assert!(
             app.config.ui.favorites.is_empty() && !app.menu_items().iter().any(|m| matches!(m, MenuItem::Favorite(_)))
         );
@@ -1901,13 +1914,24 @@ mod tests {
     }
 
     #[test]
-    fn shift_s_and_shift_a_open_settings_and_about_from_the_menu() {
+    fn shift_keys_open_stations_settings_about_and_favorites() {
+        let shift = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
         let mut app = App::new(Config::default(), None, &[], true);
-        app.on_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
+        app.on_key(shift('S'));
+        assert_eq!((app.view, app.focus), (View::Stations, Focus::Content), "S is Stations, like s");
+        app.on_key(shift('T'));
         assert_eq!((app.view, app.focus, app.menu_selected()), (View::Settings, Focus::Content, MenuItem::Settings));
-        app.on_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT));
+        app.on_key(shift('A'));
         assert_eq!((app.view, app.focus, app.menu_selected()), (View::About, Focus::Content, MenuItem::About));
-        app.on_key(key(KeyCode::Char('s')));
-        assert_eq!(app.view, View::Stations, "lowercase s is still Stations");
+        app.config.ui.favorites.clear();
+        app.on_key(shift('F'));
+        assert!(app.status.contains("No favorites"), "{}", app.status);
+        assert_eq!(app.focus, Focus::Content);
+        app.config.ui.favorites.push(crate::config::Favorite { id: "1".into(), name: "One".into() });
+        app.on_key(shift('F'));
+        assert_eq!((app.focus, app.menu_selected()), (Focus::Menu, MenuItem::Favorite(0)));
+        let theme = app.config.ui.theme.clone();
+        app.on_key(key(KeyCode::Char('t')));
+        assert_ne!(app.config.ui.theme, theme, "t is still the theme");
     }
 }

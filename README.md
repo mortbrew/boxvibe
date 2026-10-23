@@ -108,9 +108,10 @@ Try it without an account (made-up stations, no network, no sound):
 | `Tab` | menu → Now Playing → Up Next → History on the player (`Shift+Tab` back); menu ⇄ Stations / Settings / About |
 | `Esc` | back to the menu |
 | `N` (Shift+n) | Now Playing: back to the player with the keys on the Now Playing pane and the menu on NOW PLAYING |
-| `s` | Stations: every station on the right, `Enter` plays one |
-| `S` (Shift+s) / `A` (Shift+a) | Settings / About, with the menu on that entry |
-| `f` `F` | favorite / unfavorite the station (the menu's FAVORITES section) |
+| `s` `S` | Stations: every station on the right, `Enter` plays one |
+| `T` (Shift+t) / `A` (Shift+a) | Settings / About, with the menu on that entry |
+| `F` (Shift+f) | the menu, on the first of FAVORITES |
+| `f` | favorite / unfavorite the station (the menu's FAVORITES section) |
 | `{` `}` | menu narrower / wider |
 | `t` | next theme |
 | `i` | next icon set |

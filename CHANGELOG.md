@@ -19,8 +19,10 @@
 - Confirm boxes (Shift+`Q`'s "Quit boxvibe?") are symmetrical like tubevibe's:
   a blank line above the question and below the keys; a long question wraps
   and is cut with "…" so the box still fits small screens.
-- Shift+`S` opens Settings and Shift+`A` opens About, selecting them in the
-  menu as Shift+`N` does for Now Playing (`s` is still Stations).
+- Shift+`T` opens Settings and Shift+`A` opens About, selecting them in the
+  menu as Shift+`N` does for Now Playing; Shift+`S` opens Stations like `s`.
+- Shift+`F` jumps to the menu's FAVORITES (the first one), or says there are
+  none; `f` still stars / unstars. (`F` used to do the same as `f`.)
 - Pixelation has a mildest step, **Extra low (128 px)** (`[ui] art_pixelation =
   "extra_low"`), right after Off.
 - Now Playing is symmetrical: the time line (and the block with it) ends as

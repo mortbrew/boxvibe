@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)
 

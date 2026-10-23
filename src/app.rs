@@ -90,6 +90,9 @@ pub enum Setting {
 impl Setting {
     /// In screen order, each with its group.
     pub const ALL: [(&'static str, Self); 18] = [
+        ("BOXVIBE", Self::CheckUpdates),
+        ("BOXVIBE", Self::EditFile),
+        ("BOXVIBE", Self::MenuEntry),
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
@@ -105,10 +108,12 @@ impl Setting {
         ("LOOK", Self::AlbumArt),
         ("LOOK", Self::RetroMode),
         ("LOOK", Self::ArtTint),
-        ("BOXVIBE", Self::CheckUpdates),
-        ("BOXVIBE", Self::EditFile),
-        ("BOXVIBE", Self::MenuEntry),
     ];
+
+    /// Where `setting` is in [`Setting::ALL`] (the Settings cursor).
+    pub fn at(setting: Self) -> usize {
+        Self::ALL.iter().position(|(_, s)| *s == setting).unwrap_or(0)
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -304,7 +309,7 @@ impl App {
                 // First run: Settings, on the account, typing the email.
                 app.view = View::Settings;
                 app.focus = Focus::Content;
-                app.settings_cursor = 0;
+                app.settings_cursor = Setting::at(Setting::Email);
                 app.open_prompt(if app.config.pandora.username.is_empty() { Prompt::Email } else { Prompt::Password });
                 app.status = "Welcome to boxvibe: log in with your Pandora account".into();
             }
@@ -589,7 +594,7 @@ impl App {
                 self.status = format!("⚠ Login failed: {message}");
                 self.view = View::Settings;
                 self.focus = Focus::Content;
-                self.settings_cursor = 1;
+                self.settings_cursor = Setting::at(Setting::Password);
             }
             Reply::Stations(stations) => {
                 self.stations = stations;
@@ -719,7 +724,7 @@ impl App {
         };
         if !self.demo && (username.is_empty() || password.is_empty()) {
             self.status = "⚠ Type your Pandora email and password first".into();
-            self.settings_cursor = if username.is_empty() { 0 } else { 1 };
+            self.settings_cursor = Setting::at(if username.is_empty() { Setting::Email } else { Setting::Password });
             return;
         }
         self.session = Session::SigningIn;
@@ -952,7 +957,7 @@ impl App {
             Prompt::Email => self.config.pandora.username.clone(),
             Prompt::Password => String::new(),
         };
-        self.settings_cursor = if prompt == Prompt::Email { 0 } else { 1 };
+        self.settings_cursor = Setting::at(if prompt == Prompt::Email { Setting::Email } else { Setting::Password });
         self.prompt = Some(prompt);
     }
 
@@ -1131,7 +1136,7 @@ impl App {
                     Prompt::Password => {
                         // Saved once Pandora takes it (see LoggedIn).
                         self.config.pandora.password = text;
-                        self.settings_cursor = 2;
+                        self.settings_cursor = Setting::at(Setting::LogIn);
                         self.log_in();
                     }
                 }
@@ -1432,6 +1437,19 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn settings_start_with_boxvibe_then_account_playback_look() {
+        let mut groups: Vec<&str> = Setting::ALL.iter().map(|(g, _)| *g).collect();
+        groups.dedup();
+        assert_eq!(groups, ["BOXVIBE", "ACCOUNT", "PLAYBACK", "LOOK"]);
+        let emoji = crate::icons::icons(crate::config::IconSet::Emoji);
+        assert_eq!(emoji.setting[Setting::at(Setting::CheckUpdates)], "🆕", "icons move with their settings");
+        assert_eq!(emoji.setting[Setting::at(Setting::Email)], "👤");
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.open_prompt(Prompt::Password);
+        assert_eq!(app.setting(), Setting::Password, "the cursor follows a setting, not a row number");
     }
 
     #[test]

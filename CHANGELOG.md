@@ -33,6 +33,8 @@
   worked out each frame from where the cover is drawn.
 - The key bar no longer shows `t` Theme and `i` Icons; both keys still work and are in Help.
 - The key bar shows `U/D` Rate Row only while Up Next or History has the keys.
+- Settings has no SETTING / VALUE header row any more, and its BOXVIBE section
+  (updates, edit config.toml, app menu entry) comes first, before ACCOUNT.
 - Settings → BOXVIBE → **App menu entry** (Installed / Not installed, read
   from disk): `Enter` adds or removes `boxvibe.desktop` in
   `$XDG_DATA_HOME/applications` (default `~/.local/share/applications`) so app

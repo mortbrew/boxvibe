@@ -314,8 +314,9 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
 /// "👤 me@example.com" while logged in; nothing otherwise.
 fn account_label(app: &App) -> Option<String> {
     let name = app.config.pandora.username.trim();
-    (app.session == Session::LoggedIn && !name.is_empty())
-        .then(|| format!("{}{}", icon_cell(icons(app.config.ui.icons).setting[0]), clean(name)))
+    (app.session == Session::LoggedIn && !name.is_empty()).then(|| {
+        format!("{}{}", icon_cell(icons(app.config.ui.icons).setting[Setting::at(Setting::Email)]), clean(name))
+    })
 }
 
 /// The logo on the menu's top border, like tubevibe's: the box icon and

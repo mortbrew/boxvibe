@@ -40,6 +40,9 @@
   rectangle the sixel/kitty/iTerm2 picture uses (it is sized with the
   terminal's real font), so it no longer looks smaller or off-centre and the
   song info beside it never moves when a popup opens.
+- Help is as wide as its longest line (wrapping only when the terminal is
+  narrower), so no line is cut off, and every description lines up after the
+  widest key (`Shift ← →` no longer crowds its text).
 
 ## 0.2.0 (2026-10-22)
 

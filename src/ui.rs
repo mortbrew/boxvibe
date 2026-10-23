@@ -1201,6 +1201,8 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
             ],
         ),
     ];
+    // Every key pill is padded to the widest one, so the descriptions line up.
+    let key_w = sections.iter().flat_map(|(_, keys)| keys.iter()).map(|(k, _)| k.width()).max().unwrap_or(0);
     let mut lines = Vec::new();
     for (name, keys) in sections {
         lines.push(Line::from(Span::styled(format!(" {name}"), Style::new().fg(p.orange).bold())));
@@ -1208,21 +1210,27 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(format!(" {key} "), Style::new().fg(p.background).bg(p.fg).bold()),
-                Span::raw(" ".repeat(10usize.saturating_sub(key.width() + 2) + 1)),
+                Span::raw(" ".repeat(key_w - key.width() + 2)),
                 Span::styled((*what).to_owned(), Style::new().fg(p.fg)),
             ]));
         }
         lines.push(Line::raw(""));
     }
-    lines.push(Line::from(Span::styled(
-        " Settings and account, album art, pixelation and tint: the Settings entry in the menu",
-        Style::new().fg(p.muted),
-    )));
-    let box_area = centered(area, 64, lines.len() as u16 + 2);
+    lines.push(Line::from(Span::styled(HELP_FOOTER, Style::new().fg(p.muted))));
+    // As wide as the longest line (and the title), plus the borders and one
+    // blank cell; only a terminal too narrow for that wraps the lines.
+    let title_w = help_title(&p).width() + 2;
+    let text_w = lines.iter().map(Line::width).max().unwrap_or(0).max(title_w) as u16;
+    let width = (text_w + 3).min(area.width);
+    let inner_w = width.saturating_sub(2).max(1) as usize;
+    let rows: usize = lines.iter().map(|l| l.width().max(1).div_ceil(inner_w)).sum();
+    let box_area = centered(area, width, (rows as u16 + 2).min(area.height));
     frame.render_widget(Clear, box_area);
     let block = panel(help_title(&p), &p, true).style(Style::new().bg(p.background));
-    frame.render_widget(Paragraph::new(lines).block(block), box_area);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), box_area);
 }
+
+const HELP_FOOTER: &str = " Settings and account, album art, pixelation and tint: the Settings entry in the menu";
 
 #[cfg(test)]
 mod tests {
@@ -1286,7 +1294,7 @@ mod tests {
             for help in [false, true, false] {
                 app.help = help;
                 app.art.set_overlay(help);
-                let (lines, _) = screen(&app, cols, rows);
+                let (lines, buf) = screen(&app, cols, rows);
                 let cover = app.art.last_cover.get();
                 // The time line's total, at its right end (the start may be under Help).
                 let time = lines
@@ -1299,15 +1307,40 @@ mod tests {
                     .map(|y| (y, lines[y].trim_end_matches([' ', '│']).chars().count()));
                 assert!(time.is_some(), "{cols}x{rows}: time line\n{}", lines.join("\n"));
                 seen.push((cover, time));
-                if help {
-                    let inside: String = lines[cover.y as usize..cover.bottom() as usize]
-                        .iter()
-                        .map(|l| l.chars().skip(cover.x as usize).take(4).collect::<String>())
-                        .collect();
+                // At 160 columns Help covers the whole cover; at 255 it shows beside it.
+                if help && cols > 200 {
+                    let inside: String = cover.positions().map(|at| buf[at].symbol().to_owned()).collect();
                     assert!(inside.contains('▀') || inside.contains('▄'), "{cols}x{rows}: half blocks under Help");
                 }
             }
             assert!(seen.windows(2).all(|w| w[0] == w[1]), "{cols}x{rows}: same cover and info with Help: {seen:?}");
+        }
+    }
+
+    #[test]
+    fn help_fits_its_longest_line_and_its_keys_line_up() {
+        let mut app = demo();
+        app.help = true;
+        for (cols, rows) in [(255u16, 70u16), (160, 40)] {
+            let (lines, _) = screen(&app, cols, rows);
+            let all = lines.join("\n");
+            for whole in [
+                "play the station · open Stations / Settings / About",
+                "Now Playing pane gets the keys (menu on NOW PLAYING)",
+                HELP_FOOTER.trim(),
+                "⌨  boxvibe Help · Any Key Closes",
+            ] {
+                assert!(all.contains(whole), "{cols}x{rows}: {whole:?} is cut off\n{all}");
+            }
+            // Every description starts the same distance in from Help's left border.
+            let start = |what: &str| {
+                let l = lines.iter().find(|l| l.contains(what)).unwrap();
+                let at = l.find(what).unwrap();
+                l[l[..at].rfind('│').unwrap()..at].chars().count()
+            };
+            let a = start("volume down / up");
+            assert_eq!(a, start("like the playing song"), "{cols}x{rows}\n{all}");
+            assert_eq!(a, start("skip to the next song"), "{cols}x{rows}\n{all}");
         }
     }
 
@@ -1796,5 +1829,28 @@ mod tests {
         assert_eq!(safe_char_width('a'), 1);
         assert_eq!(icon_cell("\u{f164}").width(), 3);
         assert_eq!(icon_cell("👍").width(), 2);
+    }
+}
+#[cfg(test)]
+mod scratch {
+    use super::*;
+    use crate::config::Config;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    #[test]
+    fn dump() {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.demo_warm_up(3, std::time::Duration::ZERO);
+        app.help = true;
+        for (c, r) in [(255u16, 70u16), (160, 40), (80, 30)] {
+            let mut t = Terminal::new(TestBackend::new(c, r)).unwrap();
+            t.draw(|f| draw(f, &app)).unwrap();
+            let b = t.backend().buffer().clone();
+            println!("=== {c}x{r}");
+            for y in 0..r {
+                let s: String = (0..c).map(|x| b[(x, y)].symbol().to_string()).collect();
+                println!("{s}");
+            }
+        }
     }
 }

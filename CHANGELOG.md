@@ -26,6 +26,7 @@
 - Now Playing is symmetrical: the time line (and the block with it) ends as
   far in from the pane's right border as the cover starts from its left one,
   worked out each frame from where the cover is drawn.
+- The key bar no longer shows `t` Theme and `i` Icons; both keys still work and are in Help.
 
 ## 0.2.0 (2026-10-22)
 

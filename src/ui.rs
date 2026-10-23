@@ -1132,9 +1132,7 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         ("u/d", "Like/Dislike"),
         ("U/D", "Rate Row"),
         ("⇧←→", "Volume"),
-        ("t", "Theme"),
         ("{/}", "Menu Size"),
-        ("i", "Icons"),
         ("?", "Help"),
         ("Q", "Quit"),
     ]);
@@ -1275,6 +1273,16 @@ mod tests {
             assert!(row[end].is_ascii_digit(), "{cols}x{rows}: ends with the total time: {}", lines[y]);
             assert_eq!(right - end, cover_x - left, "{cols}x{rows}: symmetrical\n{}", lines.join("\n"));
         }
+    }
+
+    #[test]
+    fn the_key_bar_leaves_out_theme_and_icons_but_the_keys_still_work() {
+        let mut app = demo();
+        let caps = key_caps(&app);
+        assert!(!caps.iter().any(|(k, _)| *k == "t" || *k == "i"), "{caps:?}");
+        let theme = app.config.ui.theme.clone();
+        app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('t')));
+        assert_ne!(app.config.ui.theme, theme);
     }
 
     #[test]

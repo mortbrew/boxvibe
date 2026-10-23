@@ -23,6 +23,9 @@
   menu as Shift+`N` does for Now Playing (`s` is still Stations).
 - Pixelation has a mildest step, **Extra low (128 px)** (`[ui] art_pixelation =
   "extra_low"`), right after Off.
+- Now Playing is symmetrical: the time line (and the block with it) ends as
+  far in from the pane's right border as the cover starts from its left one,
+  worked out each frame from where the cover is drawn.
 
 ## 0.2.0 (2026-10-22)
 

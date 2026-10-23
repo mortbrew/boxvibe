@@ -576,7 +576,13 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let art_w = (inner.height * 2 + 2).min(inner.width / 2);
     let [art, _, info] =
         Layout::horizontal([Constraint::Length(art_w), Constraint::Length(3), Constraint::Fill(1)]).areas(inner);
-    draw_art(frame, app, song, art);
+    // The time line ends as far in from the right border as the cover
+    // starts from the left one, so the pane is symmetrical; the whole stack
+    // (title, time, volume, buttons) keeps to that width.
+    let drawn = draw_art(frame, app, song, art);
+    let gap = drawn.x.saturating_sub(area.x);
+    let width = (area.right().saturating_sub(gap)).saturating_sub(info.x);
+    let info = if width >= MIN_INFO_WIDTH { Rect { width: width.min(info.width), ..info } } else { info };
     let label = |text: &str| Span::styled(format!("{text:<9}"), Style::new().fg(p.muted));
     let state = if app.buffering.is_some() {
         Span::styled(format!("{} buffering…", ic.loading), Style::new().fg(p.yellow))
@@ -620,13 +626,17 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 /// Rows Now Playing needs before the buttons join the stack.
 pub const STACK_WITH_BUTTONS: u16 = 13;
 
-fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) {
+/// The info stack is not narrowed below this to mirror the cover's gap.
+const MIN_INFO_WIDTH: u16 = 30;
+
+/// Draws the cover (or the visualizer) and returns where it went.
+fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) -> Rect {
     let p = app.palette;
     // No frame: the cover (or the visualizer) fills the box itself.
     let inner = area;
     app.art.last_area.set(inner);
     if inner.width == 0 || inner.height == 0 {
-        return;
+        return inner;
     }
     let look = crate::art::Look::of(&app.config.ui, p);
     let mode = look.mode;
@@ -639,7 +649,7 @@ fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) {
         frame.render_stateful_widget(StatefulImage::default(), at, &mut *cover);
         drop(cover);
         app.art.check_encoding(&song.cover_art_url);
-        return;
+        return at;
     }
     app.art.hide();
     let ic = icons(app.config.ui.icons);
@@ -649,6 +659,7 @@ fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) {
         _ => format!("{} no cover", ic.title),
     };
     draw_visualizer(frame, &p, &app.art.bars, &caption, inner);
+    inner
 }
 
 /// Spectrum bars from the bottom of `area` up, green → yellow → orange, with
@@ -1245,6 +1256,25 @@ mod tests {
         let a = app.art.last_area.get();
         assert!(a.width > 0 && a.height > 0, "art box drawn");
         (a.y as usize - 1, (a.y + a.height) as usize, a.x as usize - 1, (a.x + a.width) as usize)
+    }
+
+    #[test]
+    fn the_time_line_ends_as_far_from_the_right_border_as_the_cover_starts_from_the_left() {
+        let mut app = demo();
+        app.settle(std::time::Duration::from_millis(300));
+        for (cols, rows) in [(200u16, 50u16), (160, 40), (120, 36)] {
+            let (lines, _) = screen(&app, cols, rows);
+            let grid: Vec<Vec<char>> = lines.iter().map(|l| l.chars().collect()).collect();
+            let y = grid.iter().position(|r| r.contains(&'●')).expect("time line");
+            let row = &grid[y];
+            let cover_x = grid.iter().filter_map(|r| r.iter().position(|c| matches!(c, '▀' | '▄'))).min().unwrap();
+            let left = (0..cover_x).rev().find(|&x| "│┃║".contains(row[x])).expect("left border");
+            let dot = row.iter().position(|&c| c == '●').unwrap();
+            let right = (dot..row.len()).find(|&x| "│┃║".contains(row[x])).expect("right border");
+            let end = (dot..right).rev().find(|&x| row[x] != ' ').unwrap();
+            assert!(row[end].is_ascii_digit(), "{cols}x{rows}: ends with the total time: {}", lines[y]);
+            assert_eq!(right - end, cover_x - left, "{cols}x{rows}: symmetrical\n{}", lines.join("\n"));
+        }
     }
 
     #[test]

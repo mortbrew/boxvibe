@@ -24,6 +24,8 @@ pub fn stations() -> Vec<Station> {
             is_shuffle: *shuffle,
             is_shared: *shared,
             art_url: format!("https://example.invalid/station/{i}.jpg"),
+            allow_rename: !*shuffle,
+            allow_delete: !*shuffle,
         })
         .collect()
 }

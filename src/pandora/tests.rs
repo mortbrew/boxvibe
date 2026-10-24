@@ -301,6 +301,67 @@ fn a_blocked_login_says_so() {
     assert!(err.to_string().contains("bot check"));
 }
 
+#[test]
+fn stations_say_whether_they_can_be_renamed_or_removed() {
+    let made = parse_station(&json!({ "stationId": "1", "name": "Mine", "allowRename": true, "allowDelete": true })).unwrap();
+    assert!(made.allow_rename && made.allow_delete);
+    let genre = parse_station(&json!({ "stationId": "2", "name": "Chill", "allowRename": false, "allowDelete": true })).unwrap();
+    assert!(!genre.allow_rename && genre.allow_delete);
+    // Nothing said: allowed, except for Shuffle, which Pandora never lets go.
+    let plain = parse_station(&json!({ "stationId": "3", "name": "Jazz" })).unwrap();
+    assert!(plain.allow_rename && plain.allow_delete);
+    let shuffle = parse_station(&json!({ "stationId": "4", "name": "Shuffle", "isShuffle": true })).unwrap();
+    assert!(!shuffle.allow_rename && !shuffle.allow_delete);
+}
+
+#[test]
+fn station_details_read_seeds_thumbs_and_dates() {
+    let v = json!({
+        "seeds": [
+            { "musicId": "R1", "artist": { "artistName": "Tee Grizzley" } },
+            { "musicId": "S1", "song": { "songName": "Midnight City", "artistSummary": "M83" } },
+            { "musicId": "G1", "genre": { "stationName": "Chill Out" } },
+            { "musicId": "?", "mystery": {} }
+        ],
+        "positiveFeedbackCount": 12, "negativeFeedbackCount": 3,
+        "genre": ["Rap / Hip-Hop", ""], "dateCreated": "2017-12-04T16:26:05.041-08:00",
+        "lastPlayed": "2017-12-05T10:00:00.000-08:00", "creatorWebname": "toby"
+    });
+    let d = parse_station_details(&v);
+    let seeds: Vec<(&str, &str)> = d.seeds.iter().map(|s| (s.kind, s.name.as_str())).collect();
+    assert_eq!(seeds, [("Artist", "Tee Grizzley"), ("Song", "Midnight City by M83"), ("Genre", "Chill Out")]);
+    assert_eq!((d.thumbs_up, d.thumbs_down), (Some(12), Some(3)));
+    assert_eq!(d.genres, ["Rap / Hip-Hop"]);
+    assert_eq!((d.created.as_str(), d.creator.as_str()), ("2017-12-04T16:26:05.041-08:00", "toby"));
+    // An answer with nothing in it shows nothing, rather than made-up zeros.
+    assert_eq!(parse_station_details(&json!({})), StationDetails::default());
+}
+
+#[test]
+fn renaming_removing_and_details_send_what_the_site_expects() {
+    let (base, seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        "/api/v1/station/updateStation" => (200, json!({ "stationId": "9", "name": "Jazz Radio" }).to_string()),
+        // The site may say nothing at all when a station is gone.
+        "/api/v1/station/removeStation" => (200, String::new()),
+        "/api/v1/station/getStationDetails" => {
+            (200, json!({ "seeds": [], "positiveFeedbackCount": 4, "negativeFeedbackCount": 1 }).to_string())
+        }
+        _ => (200, "{}".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    assert_eq!(c.rename_station("9", "Jazz").unwrap(), "Jazz Radio", "the name the site now has");
+    c.remove_station("9").unwrap();
+    let d = c.station_details("9", true).unwrap();
+    assert_eq!((d.thumbs_up, d.thumbs_down), (Some(4), Some(1)));
+    let seen = seen.lock().unwrap();
+    let body = |end: &str| seen.iter().find(|s| s.path.ends_with(end)).unwrap().body.clone();
+    assert_eq!(body("updateStation"), json!({ "stationId": "9", "name": "Jazz" }));
+    assert_eq!(body("removeStation"), json!({ "stationId": "9" }));
+    assert_eq!(body("getStationDetails"), json!({ "stationId": "9", "isCurrentStation": true }));
+}
+
 /// `cargo test live_site -- --ignored`: the real www.pandora.com hands out a
 /// csrftoken to boxvibe's HEAD (no login, nothing else sent).
 #[test]

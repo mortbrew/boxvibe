@@ -12,6 +12,13 @@
 //! login and request headers, the `csrftoken` fetch, the playlist fragment
 //! request and its audio format choice by account flag, the stream-takeover
 //! call, and skipping curator messages. See THIRD_PARTY.md.
+//!
+//! Renaming, removing and station details (`v1/station/updateStation` with
+//! `{stationId, name}`, `v1/station/removeStation` with `{stationId}`,
+//! `v1/station/getStationDetails` with `{stationId, isCurrentStation}`) are
+//! written from the community docs (which list the endpoints and show the
+//! details answer) and from what other web-API clients send (alexpreiss/
+//! pandora-app, libepimetheusKotlin, Panedora): no code was copied from them.
 
 use std::collections::HashSet;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -38,6 +45,36 @@ pub struct Station {
     pub is_shared: bool,
     /// The largest station art there is (not drawn yet).
     pub art_url: String,
+    /// Pandora lets this station be renamed (`allowRename`; not Shuffle).
+    pub allow_rename: bool,
+    /// Pandora lets this station be removed (`allowDelete`; not Shuffle).
+    pub allow_delete: bool,
+}
+
+/// One of the seeds a station is built from (an artist, a song or a genre).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Seed {
+    /// `Artist`, `Song` or `Genre`.
+    pub kind: &'static str,
+    pub name: String,
+}
+
+/// What `v1/station/getStationDetails` tells about a station. Everything
+/// the site did not send stays empty (or `None`) and is not shown.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StationDetails {
+    pub seeds: Vec<Seed>,
+    /// `positiveFeedbackCount`: thumbs up given on this station.
+    pub thumbs_up: Option<u32>,
+    /// `negativeFeedbackCount`: thumbs down given on this station.
+    pub thumbs_down: Option<u32>,
+    pub genres: Vec<String>,
+    /// `dateCreated`, as the site writes it.
+    pub created: String,
+    /// `lastPlayed`, as the site writes it.
+    pub last_played: String,
+    /// `creatorWebname`: whose station it is.
+    pub creator: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -236,13 +273,75 @@ pub fn parse_station(v: &Value) -> Option<Station> {
     if id.is_empty() {
         return None;
     }
+    let is_shuffle = v.get("isShuffle").and_then(Value::as_bool).unwrap_or(false);
     Some(Station {
         id,
         name: str_of(v, "name"),
-        is_shuffle: v.get("isShuffle").and_then(Value::as_bool).unwrap_or(false),
+        is_shuffle,
         is_shared: v.get("isShared").and_then(Value::as_bool).unwrap_or(false),
         art_url: largest_art(v.get("art")),
+        // The site says what it allows; Shuffle never allows either.
+        allow_rename: flag(v, "allowRename").unwrap_or(!is_shuffle),
+        allow_delete: flag(v, "allowDelete").unwrap_or(!is_shuffle),
     })
+}
+
+fn flag(v: &Value, key: &str) -> Option<bool> {
+    v.get(key).and_then(Value::as_bool)
+}
+
+/// `v1/station/getStationDetails`: the seeds, thumbs counts and dates. Seeds
+/// are read by their kind (`artist`, `song` or `genre` object); a seed of any
+/// other shape is skipped rather than guessed at.
+pub fn parse_station_details(v: &Value) -> StationDetails {
+    let text = |item: &Value, path: &[&str]| -> String {
+        let mut at = item;
+        for key in path {
+            match at.get(key) {
+                Some(next) => at = next,
+                None => return String::new(),
+            }
+        }
+        at.as_str().unwrap_or_default().trim().to_owned()
+    };
+    let seeds = v
+        .get("seeds")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|seed| {
+            let artist = text(seed, &["artist", "artistName"]);
+            let song = text(seed, &["song", "songName"]);
+            let by = text(seed, &["song", "artistSummary"]);
+            let genre = text(seed, &["genre", "stationName"]);
+            if !artist.is_empty() {
+                Some(Seed { kind: "Artist", name: artist })
+            } else if !song.is_empty() {
+                Some(Seed { kind: "Song", name: if by.is_empty() { song } else { format!("{song} by {by}") } })
+            } else if !genre.is_empty() {
+                Some(Seed { kind: "Genre", name: genre })
+            } else {
+                None
+            }
+        })
+        .collect();
+    let count = |key: &str| v.get(key).and_then(Value::as_u64).map(|n| n.min(u64::from(u32::MAX)) as u32);
+    StationDetails {
+        seeds,
+        thumbs_up: count("positiveFeedbackCount"),
+        thumbs_down: count("negativeFeedbackCount"),
+        genres: v
+            .get("genre")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|g| g.as_str().map(str::to_owned))
+            .filter(|g| !g.is_empty())
+            .collect(),
+        created: text(v, &["dateCreated"]),
+        last_played: text(v, &["lastPlayed"]),
+        creator: text(v, &["creatorWebname"]),
+    }
 }
 
 /// One fragment track; `None` for ads, artist and curator messages and
@@ -393,6 +492,10 @@ impl Client {
         if status != 200 {
             return Err(classify(status, &text));
         }
+        // Some calls (removing a station) may answer 200 with nothing in the body.
+        if text.trim().is_empty() {
+            return Ok(json!({}));
+        }
         let v: Value = serde_json::from_str(&text).map_err(|_| Error::InvalidResponse)?;
         // Some failures come back as 200 with an error body.
         if v.get("errorCode").is_some() && v.get("errorString").is_some() {
@@ -452,6 +555,28 @@ impl Client {
         // Shuffle first, like the site.
         stations.sort_by_key(|s| !s.is_shuffle);
         Ok(stations)
+    }
+
+    /// `v1/station/updateStation`: renames a station. Returns the name the
+    /// site now has (the reply's `name`, else the one asked for).
+    pub fn rename_station(&mut self, station_id: &str, name: &str) -> Result<String, Error> {
+        let v = self.post("/api/v1/station/updateStation", &json!({ "stationId": station_id, "name": name }))?;
+        let said = str_of(&v, "name");
+        Ok(if said.is_empty() { name.to_owned() } else { said })
+    }
+
+    /// `v1/station/removeStation`: deletes a station from the account.
+    pub fn remove_station(&mut self, station_id: &str) -> Result<(), Error> {
+        self.post("/api/v1/station/removeStation", &json!({ "stationId": station_id })).map(|_| ())
+    }
+
+    /// `v1/station/getStationDetails`: seeds, thumbs counts and dates.
+    pub fn station_details(&mut self, station_id: &str, current: bool) -> Result<StationDetails, Error> {
+        let v = self.post(
+            "/api/v1/station/getStationDetails",
+            &json!({ "stationId": station_id, "isCurrentStation": current }),
+        )?;
+        Ok(parse_station_details(&v))
     }
 
     /// `v1/playlist/getFragment`: the next few songs of `station_id`.

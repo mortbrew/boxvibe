@@ -8,6 +8,7 @@ mod config;
 mod demo;
 mod desktop;
 mod icons;
+mod input;
 mod pandora;
 mod snapshot;
 mod splash;

@@ -19,6 +19,7 @@ use crate::app::{App, Details, Focus, MenuItem, Pane, Prompt, Rename, Session, S
 use crate::art::Cover;
 use crate::config::{AlbumArt, BorderStyle};
 use crate::icons::{Icons, icons};
+use crate::input::TextInput;
 use crate::pandora::{Rating, Song};
 use crate::theme::Palette;
 use crate::update::{Progress, Replace};
@@ -189,8 +190,8 @@ struct BoxText<'a> {
     border: Color,
     width: u16,
     question: String,
-    /// A line being typed (with the cursor at its end).
-    input: Option<String>,
+    /// A line being typed, with its cursor.
+    input: Option<TextInput>,
     hint: &'a str,
 }
 
@@ -230,21 +231,6 @@ fn wrap_question(question: &str, width: usize, max: usize) -> Vec<String> {
     lines
 }
 
-/// The end of `text` that fits `cells` (what you are typing stays in view).
-fn tail(text: &str, cells: usize) -> String {
-    let mut used = 0;
-    let mut kept: Vec<char> = Vec::new();
-    for c in text.chars().rev() {
-        let w = safe_char_width(c);
-        if used + w > cells {
-            break;
-        }
-        used += w;
-        kept.push(c);
-    }
-    kept.into_iter().rev().collect()
-}
-
 fn draw_box(frame: &mut Frame, p: &Palette, screen: Rect, text: &BoxText) {
     let width = text.width.min(screen.width.saturating_sub(4)).max(screen.width.min(8));
     // Borders and the fixed lines (blank, hint, blank, the input) take rows; the question gets what's left.
@@ -256,7 +242,7 @@ fn draw_box(frame: &mut Frame, p: &Palette, screen: Rect, text: &BoxText) {
     let question_rows = question.len() as u16;
     lines.extend(question.into_iter().map(Line::from));
     if let Some(input) = &text.input {
-        let shown = tail(input, usize::from(width.saturating_sub(7)));
+        let (shown, _) = input.window(usize::from(width.saturating_sub(7)), false, safe_char_width);
         lines.push(
             Line::from(vec![
                 Span::styled(" › ", Style::new().fg(border)),
@@ -272,8 +258,8 @@ fn draw_box(frame: &mut Frame, p: &Palette, screen: Rect, text: &BoxText) {
     let block = framed().border_style(Style::new().fg(border)).title(text.title).style(Style::new().bg(p.background));
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center).block(block), area);
     if let Some(input) = &text.input {
-        let shown = tail(input, usize::from(width.saturating_sub(7)));
-        let x = area.x + 1 + 3 + shown.width() as u16;
+        let (_, column) = input.window(usize::from(width.saturating_sub(7)), false, safe_char_width);
+        let x = area.x + 1 + 3 + column as u16;
         let y = area.y + 1 + 1 + question_rows;
         frame.set_cursor_position(Position::new(x.min(area.right().saturating_sub(2)), y));
     }
@@ -1141,15 +1127,16 @@ fn draw_settings(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 
 fn draw_prompt(frame: &mut Frame, app: &App, prompt: Prompt, area: Rect) {
     let p = app.palette;
-    let (label, shown) = match prompt {
-        Prompt::Email => ("Pandora email", app.query.clone()),
-        Prompt::Password => ("Password · Enter logs in", "•".repeat(app.query.chars().count())),
+    let (label, mask) = match prompt {
+        Prompt::Email => ("Pandora email", false),
+        Prompt::Password => ("Password · Enter logs in", true),
     };
+    let (shown, column) = app.query.window(usize::from(area.width.saturating_sub(3)), mask, safe_char_width);
     let block = framed()
         .border_style(Style::new().fg(p.cyan))
         .title(Span::styled(format!(" {label} "), Style::new().fg(p.cyan).bold()));
-    frame.render_widget(Paragraph::new(shown.clone()).fg(p.fg).block(block), area);
-    let x = area.x + 1 + shown.width() as u16;
+    frame.render_widget(Paragraph::new(shown).fg(p.fg).block(block), area);
+    let x = area.x + 1 + column as u16;
     frame.set_cursor_position(Position::new(x.min(area.right().saturating_sub(2)), area.y + 1));
 }
 
@@ -1464,6 +1451,65 @@ mod tests {
         let a = app.art.last_area.get();
         assert!(a.width > 0 && a.height > 0, "art box drawn");
         (a.y as usize - 1, (a.y + a.height) as usize, a.x as usize - 1, (a.x + a.width) as usize)
+    }
+
+    /// Where the terminal's cursor is after drawing `app`, and the screen text.
+    fn cursor_of(app: &App, cols: u16, rows: u16) -> (Position, Vec<String>) {
+        let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let cursor = terminal.get_cursor_position().unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let lines =
+            (0..rows).map(|y| (0..cols).map(|x| buffer[(x, y)].symbol().to_owned()).collect::<String>()).collect();
+        (cursor, lines)
+    }
+
+    #[test]
+    fn the_rename_box_edits_in_the_middle_and_draws_the_cursor_there() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let press = |app: &mut App, code| app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+        let mut app = demo();
+        app.settle(std::time::Duration::from_millis(300));
+        app.on_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
+        press(&mut app, KeyCode::Char('r'));
+        let name = app.rename.as_ref().unwrap().text.text().to_owned();
+        let (end, lines) = cursor_of(&app, 120, 36);
+        let row = lines.iter().position(|l| l.contains(" › ")).expect("the input row");
+        assert_eq!(usize::from(end.y), row);
+        // Home puts the cursor on the first letter; typing goes in before it.
+        press(&mut app, KeyCode::Home);
+        let (home, _) = cursor_of(&app, 120, 36);
+        assert_eq!(end.x - home.x, name.width() as u16, "the cursor moved to the start");
+        press(&mut app, KeyCode::Char('>'));
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Delete);
+        let (moved, lines) = cursor_of(&app, 120, 36);
+        let shown = lines[row].split(" › ").nth(1).unwrap().trim_end_matches(['│', ' ']).to_owned();
+        let mut chars = name.chars();
+        let first = chars.next().unwrap();
+        chars.next();
+        let expected = format!(">{first}{}", chars.collect::<String>());
+        assert!(shown.starts_with(&expected), "{shown:?} vs {expected:?}");
+        assert_eq!(moved.x - home.x, 2, "after the typed > and one step right");
+    }
+
+    #[test]
+    fn the_password_prompt_masks_and_keeps_the_cursor_where_it_is() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = demo();
+        app.view = View::Settings;
+        app.open_prompt(Prompt::Password);
+        for c in "secret".chars() {
+            app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let (end, lines) = cursor_of(&app, 100, 30);
+        assert!(lines.iter().any(|l| l.contains("••••••")), "masked");
+        assert!(!lines.iter().any(|l| l.contains("secret")));
+        app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        let (back, _) = cursor_of(&app, 100, 30);
+        assert_eq!(end.x - back.x, 2);
+        assert_eq!(end.y, back.y);
     }
 
     #[test]

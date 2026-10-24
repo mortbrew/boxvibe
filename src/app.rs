@@ -16,6 +16,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::audio::Audio;
 use crate::backend::{Backend, Reply, Request};
 use crate::config::{self, AlbumArt, Config, ConfigWarning};
+use crate::input::TextInput;
 use crate::pandora::{Quality, Rating, Song, Station, StationDetails};
 use crate::theme::{self, Palette};
 use crate::update::{Progress, Replace, Update};
@@ -317,7 +318,7 @@ pub struct StationRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rename {
     pub station: StationRef,
-    pub text: String,
+    pub text: TextInput,
 }
 
 /// What the details popup (`v`) is about.
@@ -449,7 +450,7 @@ pub struct App {
     /// Selected row of History (0 = the last song played).
     pub history_cursor: usize,
     pub prompt: Option<Prompt>,
-    pub query: String,
+    pub query: TextInput,
     pub palette: Palette,
     omarchy: theme::Watcher,
     last_theme_poll: Instant,
@@ -496,6 +497,8 @@ pub struct App {
 const HISTORY_LEN: usize = 10;
 /// The longest station name the rename box takes.
 const MAX_STATION_NAME: usize = 80;
+/// The longest email or password the prompts take.
+const MAX_PROMPT: usize = 256;
 /// How long the boot screen stays when no key skips it.
 pub const SPLASH: Duration = Duration::from_millis(1600);
 /// Visualizer bands (the art box draws as many as fit).
@@ -517,7 +520,7 @@ impl App {
             next_cursor: 0,
             history_cursor: 0,
             prompt: None,
-            query: String::new(),
+            query: TextInput::default(),
             palette: theme::TOKYO_NIGHT,
             omarchy: theme::Watcher::system(),
             last_theme_poll: Instant::now(),
@@ -1256,10 +1259,10 @@ impl App {
         }
     }
 
-    fn open_prompt(&mut self, prompt: Prompt) {
+    pub(crate) fn open_prompt(&mut self, prompt: Prompt) {
         self.query = match prompt {
-            Prompt::Email => self.config.pandora.username.clone(),
-            Prompt::Password => String::new(),
+            Prompt::Email => TextInput::new(&self.config.pandora.username),
+            Prompt::Password => TextInput::default(),
         };
         self.settings_cursor = Setting::at(if prompt == Prompt::Email { Setting::Email } else { Setting::Password });
         self.prompt = Some(prompt);
@@ -1405,13 +1408,8 @@ impl App {
                 self.prompt = None;
                 self.query.clear();
             }
-            KeyCode::Backspace => {
-                self.query.pop();
-            }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => self.query.clear(),
-            KeyCode::Char(c) => self.query.push(c),
             KeyCode::Enter | KeyCode::Tab => {
-                let text = std::mem::take(&mut self.query);
+                let text = self.query.take();
                 self.prompt = None;
                 match prompt {
                     Prompt::Email => {
@@ -1432,7 +1430,9 @@ impl App {
                     }
                 }
             }
-            _ => {}
+            _ => {
+                self.query.key(key, MAX_PROMPT);
+            }
         }
     }
 
@@ -1575,7 +1575,7 @@ impl App {
             self.status = format!("Pandora doesn't let you rename “{}”", station.name);
             return;
         }
-        let text = station.name.clone();
+        let text = TextInput::new(&station.name);
         self.rename = Some(Rename { station: StationRef { id: station.id, name: station.name, favorite }, text });
     }
 
@@ -1586,13 +1586,8 @@ impl App {
                 self.rename = None;
                 self.status = "Rename cancelled".into();
             }
-            KeyCode::Backspace => {
-                rename.text.pop();
-            }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => rename.text.clear(),
-            KeyCode::Char(c) if rename.text.chars().count() < MAX_STATION_NAME => rename.text.push(c),
             KeyCode::Enter => {
-                let name = rename.text.trim().to_owned();
+                let name = rename.text.text().trim().to_owned();
                 let station = rename.station.clone();
                 self.rename = None;
                 if name.is_empty() || name == station.name {
@@ -1602,7 +1597,9 @@ impl App {
                 self.status = format!("Renaming “{}” to “{name}”…", station.name);
                 self.backend.send(Request::RenameStation { station_id: station.id, name });
             }
-            _ => {}
+            _ => {
+                rename.text.key(key, MAX_STATION_NAME);
+            }
         }
     }
 
@@ -2595,7 +2592,7 @@ mod tests {
         let old = app.stations[app.stations_index()].name.clone();
         app.on_key(key(KeyCode::Char('r')));
         let rename = app.rename.clone().expect("the rename box opens");
-        assert_eq!((rename.station.id.as_str(), rename.text.as_str()), (id.as_str(), old.as_str()));
+        assert_eq!((rename.station.id.as_str(), rename.text.text()), (id.as_str(), old.as_str()));
         for _ in 0..old.chars().count() {
             app.on_key(key(KeyCode::Backspace));
         }

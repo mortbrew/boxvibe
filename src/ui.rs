@@ -1252,13 +1252,13 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         return vec![("Any Key", "Go On")];
     }
     if app.rename.is_some() {
-        return vec![("Enter", "Rename"), ("Esc", "Cancel"), ("Ctrl+u", "Clear"), ("Ctrl+c", "Quit")];
+        return vec![("Enter", "Rename"), ("Esc", "Cancel"), ("← →", "Move"), ("Ctrl+u", "Clear"), ("Ctrl+c", "Quit")];
     }
     if app.confirm_delete.is_some() {
         return vec![("y", "Yes, Delete"), ("Other Key", "No")];
     }
     if app.prompt.is_some() {
-        return vec![("Enter", "Save"), ("Esc", "Cancel"), ("Ctrl+u", "Clear"), ("Ctrl+c", "Quit")];
+        return vec![("Enter", "Save"), ("Esc", "Cancel"), ("← →", "Move"), ("Ctrl+u", "Clear"), ("Ctrl+c", "Quit")];
     }
     if app.confirm_quit {
         return vec![("y", "Yes, Quit"), ("Other Key", "No")];
@@ -1270,34 +1270,66 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         return vec![("Esc", "Close"), ("?", "Close")];
     }
     let pause = if app.audio.is_paused() { "Play" } else { "Pause" };
-    let mut keys = vec![("j/k ↑↓", "Move")];
+    // A key is hinted only where it does something: what each one acts on
+    // (a station row, a song row, the playing song) has to be there.
+    let in_songs = app.in_songs();
+    let row_here = match app.pane {
+        Pane::NowPlaying => false,
+        Pane::UpNext => !app.queue.is_empty(),
+        Pane::History => !app.history.is_empty(),
+    };
+    let mut keys = Vec::new();
+    // Rows to move over: not on Now Playing (one song) or About (text).
+    if !(app.view == View::About || in_songs && app.pane == Pane::NowPlaying) {
+        keys.push(("j/k ↑↓", "Move"));
+    }
+    // r, x, v: on a station (a list row, or a favorite in the menu); Pandora
+    // keeps some stations (Shuffle) from being renamed or deleted.
+    let station_keys = |keys: &mut Vec<(&'static str, &'static str)>, favorite: bool| {
+        let Some((station, _)) = app.station_in_reach() else { return };
+        keys.push(("Enter", "Play"));
+        keys.push(("f", if favorite { "Unfavorite" } else { "Favorite" }));
+        if station.allow_rename {
+            keys.push(("r", "Rename"));
+        }
+        if station.allow_delete {
+            keys.push(("x", "Delete"));
+        }
+        keys.push(("v", "Details"));
+    };
     match (app.focus, app.view) {
         (Focus::Menu, _) if matches!(app.menu_selected(), MenuItem::Favorite(_)) => {
-            keys.extend([("Enter", "Play"), ("f", "Unfavorite"), ("r", "Rename"), ("x", "Delete"), ("v", "Details")])
+            if app.station_in_reach().is_some() {
+                station_keys(&mut keys, true);
+            } else {
+                // The favorite's station is not loaded (yet): only f, to remove it.
+                keys.push(("f", "Unfavorite"));
+            }
         }
         (Focus::Menu, View::Player) => keys.extend([("Enter", "Open"), ("Tab", "Now Playing")]),
         (Focus::Content, View::Player) if app.pane == Pane::NowPlaying => {
-            keys.extend([("Tab", "Up Next"), ("v", "Details"), ("Esc", "Menu")])
+            keys.push(("Tab", "Up Next"));
+            if app.now.is_some() {
+                keys.push(("v", "Details"));
+            }
+            keys.push(("Esc", "Menu"));
         }
         (Focus::Menu, _) => keys.extend([("Enter", "Open"), ("Tab", "Page")]),
-        (Focus::Content, View::Player) if app.pane == Pane::UpNext => {
-            keys.extend([("Tab", "History"), ("v", "Details"), ("Esc", "Menu")])
+        (Focus::Content, View::Player) => {
+            keys.push(("Tab", if app.pane == Pane::UpNext { "History" } else { "Menu" }));
+            if row_here {
+                keys.push(("v", "Details"));
+            }
+            keys.push(("Esc", "Menu"));
         }
-        (Focus::Content, View::Player) => keys.extend([("Tab", "Menu"), ("v", "Details"), ("Esc", "Menu")]),
         (Focus::Content, View::Settings) => keys.extend([("Enter", "Change"), ("Esc", "Menu")]),
-        (Focus::Content, View::Stations) => keys.extend([
-            ("Enter", "Play"),
-            ("f", "Favorite"),
-            ("r", "Rename"),
-            ("x", "Delete"),
-            ("v", "Details"),
-            ("Esc", "Menu"),
-        ]),
+        (Focus::Content, View::Stations) => {
+            station_keys(&mut keys, false);
+            keys.push(("Esc", "Menu"));
+        }
         (Focus::Content, View::About) => {
             if app.update_button_ready() {
-                keys = vec![("Enter", if app.restart_ready() { "Restart Now" } else { "Update Now" })];
-            } else {
-                keys.clear();
+                keys.push(("Enter", if app.restart_ready() { "Restart Now" } else { "Update Now" }));
             }
             keys.push(("Esc", "Menu"));
         }
@@ -1305,9 +1337,12 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.view != View::Player && app.has_now_playing() {
         keys.push(("P", "Now Playing"));
     }
-    keys.extend([("space", pause), ("N", "Skip"), ("U/D", "Thumbs")]);
-    // l and b rate what the pane has: shown only where they work.
-    if app.in_songs() {
+    // Pause, skip and thumbs act on the playing song: only once there is one.
+    if app.now.is_some() {
+        keys.extend([("space", pause), ("N", "Skip"), ("U/D", "Thumbs")]);
+    }
+    // l and b rate the selected row: Up Next and History only (Now Playing has U/D).
+    if in_songs && row_here {
         keys.push(("l/b", "Like/Bad"));
     }
     keys.extend([("⇧←→", "Volume"), ("{/}", "Menu Size"), ("?", "Help"), ("Q", "Quit")]);
@@ -1735,26 +1770,139 @@ mod tests {
         assert_eq!(app.config.ui.theme, theme, "t no longer switches the theme");
     }
 
+    /// Every place the keys can be: (focus, view, pane), plus the menu on a favorite.
+    fn contexts(app: &mut App) -> Vec<(String, crate::app::Focus, View, Pane, bool)> {
+        use crate::app::Focus;
+        let mut all = Vec::new();
+        for view in [View::Player, View::Stations, View::Settings, View::About] {
+            for (focus, favorite) in [(Focus::Menu, false), (Focus::Menu, true), (Focus::Content, false)] {
+                let panes = if view == View::Player && focus == Focus::Content {
+                    vec![Pane::NowPlaying, Pane::UpNext, Pane::History]
+                } else {
+                    vec![Pane::UpNext]
+                };
+                for pane in panes {
+                    all.push((format!("{view:?}/{focus:?}/{pane:?}/favorite={favorite}"), focus, view, pane, favorite));
+                }
+            }
+        }
+        let _ = app;
+        all
+    }
+
+    /// Puts the app in one of [`contexts`] with a favorite in the menu.
+    fn enter(app: &mut App, focus: crate::app::Focus, view: View, pane: Pane, favorite: bool) {
+        app.rename = None;
+        app.confirm_delete = None;
+        app.details = None;
+        app.view = view;
+        app.focus = focus;
+        app.pane = pane;
+        app.menu_cursor = 0;
+        if favorite {
+            let at = app.menu_items().iter().position(|m| matches!(m, MenuItem::Favorite(_))).expect("a favorite");
+            app.menu_cursor = at;
+        }
+    }
+
     #[test]
-    fn l_and_b_are_only_hinted_when_a_song_pane_has_the_keys() {
+    fn a_pane_key_is_hinted_exactly_where_it_does_something() {
+        use crate::app::Focus;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = demo();
-        app.view = View::Player;
-        let hinted = |app: &App| key_caps(app).iter().any(|(k, _)| *k == "l/b");
-        app.focus = crate::app::Focus::Menu;
-        assert!(!hinted(&app), "menu");
-        app.focus = crate::app::Focus::Content;
-        for pane in [Pane::NowPlaying, Pane::UpNext, Pane::History] {
-            app.pane = pane;
-            assert!(hinted(&app), "{pane:?}");
+        app.settle(std::time::Duration::from_millis(400));
+        app.on_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
+        // The favorite is a station that allows renaming and deleting.
+        let station = app.stations.iter().find(|s| s.allow_rename && s.allow_delete).cloned().expect("a station");
+        app.config.ui.favorites = vec![crate::config::Favorite { id: station.id.clone(), name: station.name }];
+        assert!(!app.queue.is_empty() && !app.history.is_empty() && app.now.is_some(), "the demo has songs");
+        let hinted = |app: &App, key: &str| {
+            key_caps(app).iter().any(|(k, _)| k.split('/').any(|part| part == key) && *k != "j/k ↑↓")
+        };
+        for (name, focus, view, pane, favorite) in contexts(&mut app) {
+            if favorite && !matches!(view, View::Player | View::Stations | View::Settings | View::About) {
+                continue;
+            }
+            // r, x and v: what the key does is what the bar says.
+            for key in ['r', 'x', 'v'] {
+                enter(&mut app, focus, view, pane, favorite);
+                let shown = hinted(&app, &key.to_string());
+                app.on_key(KeyEvent::from(KeyCode::Char(key)));
+                let did = match key {
+                    'r' => app.rename.is_some(),
+                    'x' => app.confirm_delete.is_some(),
+                    _ => app.details.is_some(),
+                };
+                assert_eq!(shown, did, "{key} in {name}: hinted {shown}, acts {did}");
+            }
+            // l/b only where they rate a row, never beside Now Playing's U/D.
+            enter(&mut app, focus, view, pane, favorite);
+            let rows = view == View::Player && focus == Focus::Content && pane != Pane::NowPlaying;
+            assert_eq!(hinted(&app, "l"), rows, "l/b in {name}");
+            assert_eq!(hinted(&app, "b"), rows, "l/b in {name}");
+            // f: stars a station row, or unstars the favorite the menu is on.
+            let stars = (view == View::Stations && focus == Focus::Content) || (focus == Focus::Menu && favorite);
+            assert_eq!(hinted(&app, "f"), stars, "f in {name}");
+            // Enter changes a setting only on the Settings page.
+            let change = key_caps(&app).iter().any(|(_, what)| *what == "Change");
+            assert_eq!(change, view == View::Settings && focus == Focus::Content, "Change in {name}");
         }
-        // Thumbs on the playing song work everywhere, so their hint is always there.
-        for focus in [crate::app::Focus::Menu, crate::app::Focus::Content] {
-            app.focus = focus;
-            assert!(key_caps(&app).iter().any(|(k, _)| *k == "U/D"));
+    }
+
+    #[test]
+    fn station_keys_leave_out_what_pandora_does_not_allow_and_what_is_not_loaded() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = demo();
+        app.settle(std::time::Duration::from_millis(400));
+        app.on_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
+        let keys = |app: &App| key_caps(app).iter().map(|(k, _)| *k).collect::<Vec<_>>();
+        app.on_key(KeyEvent::from(KeyCode::Char('g')));
+        for (i, s) in app.stations.clone().iter().enumerate() {
+            while app.stations_index() < i {
+                app.on_key(KeyEvent::from(KeyCode::Char('j')));
+            }
+            let caps = keys(&app);
+            assert_eq!(caps.contains(&"r"), s.allow_rename, "r on {}", s.name);
+            assert_eq!(caps.contains(&"x"), s.allow_delete, "x on {}", s.name);
         }
-        app.focus = crate::app::Focus::Content;
-        app.view = View::Settings;
-        assert!(!hinted(&app), "Settings");
+        // No stations yet: nothing to play, favorite, rename, delete or show.
+        app.stations.clear();
+        let caps = keys(&app);
+        assert!(!caps.iter().any(|k| matches!(*k, "r" | "x" | "v" | "f")), "{caps:?}");
+    }
+
+    #[test]
+    fn thumbs_pause_and_skip_are_hinted_only_with_a_song_to_act_on() {
+        let mut app = App::new(Config::default(), None, &[], true);
+        let has = |app: &App, key: &str| key_caps(app).iter().any(|(k, _)| *k == key);
+        // Nothing playing yet.
+        assert!(app.now.is_none());
+        for key in ["space", "N", "U/D"] {
+            assert!(!has(&app, key), "{key} with nothing playing");
+        }
+        app.settle(std::time::Duration::from_millis(400));
+        app.demo_warm_up(3, std::time::Duration::ZERO);
+        app.settle(std::time::Duration::from_millis(400));
+        assert!(app.now.is_some());
+        for key in ["space", "N", "U/D"] {
+            assert!(has(&app, key), "{key} while playing");
+        }
+    }
+
+    #[test]
+    fn about_and_now_playing_have_no_rows_to_move_over() {
+        use crate::app::Focus;
+        let mut app = demo();
+        app.settle(std::time::Duration::from_millis(400));
+        let moves = |app: &App| key_caps(app).iter().any(|(k, _)| *k == "j/k ↑↓");
+        enter(&mut app, Focus::Content, View::About, Pane::UpNext, false);
+        assert!(!moves(&app), "About");
+        enter(&mut app, Focus::Content, View::Player, Pane::NowPlaying, false);
+        assert!(!moves(&app), "Now Playing");
+        enter(&mut app, Focus::Content, View::Player, Pane::UpNext, false);
+        assert!(moves(&app), "Up Next");
+        enter(&mut app, Focus::Content, View::Settings, Pane::UpNext, false);
+        assert!(moves(&app), "Settings");
     }
 
     #[test]

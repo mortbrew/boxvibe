@@ -1541,7 +1541,7 @@ impl App {
 
     /// The station `r`, `x` and `v` mean: the highlighted one in Stations,
     /// or the station of the favorite the menu is on. `None` anywhere else.
-    fn station_in_reach(&self) -> Option<(Station, bool)> {
+    pub fn station_in_reach(&self) -> Option<(Station, bool)> {
         match (self.focus, self.view, self.menu_selected()) {
             (Focus::Content, View::Stations, _) => {
                 self.stations.get(self.stations_index()).cloned().map(|s| (s, false))
@@ -1658,11 +1658,15 @@ impl App {
             }
         } else if self.focus == Focus::Menu && matches!(self.menu_selected(), MenuItem::Favorite(_)) {
             return self.no_station_here("v shows details of");
+        } else if !self.in_songs() {
+            self.status =
+                "v shows details of a station (Stations, a favorite) or a song (Now Playing, Up Next, History)".into();
+            return;
         } else {
-            let song = match (self.in_songs(), self.pane) {
-                (true, Pane::UpNext) => self.queue.get(self.next_index()),
-                (true, Pane::History) => self.history.get(self.history_index()),
-                _ => self.now.as_ref(),
+            let song = match self.pane {
+                Pane::UpNext => self.queue.get(self.next_index()),
+                Pane::History => self.history.get(self.history_index()),
+                Pane::NowPlaying => self.now.as_ref(),
             };
             let Some(song) = song.cloned() else {
                 self.status =

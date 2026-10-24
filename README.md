@@ -15,8 +15,8 @@ with the four big buttons (thumbs down, play/pause, skip, thumbs up), **Up
 Next** and **History** side by side under it, a status bar, and the keys that
 work right now drawn as key caps at the bottom.
 
-> Early (0.3.0): it plays your stations, but search and station
-> editing are still to come. Feedback welcome.
+> Early (0.4.0): it plays your stations and can rename and delete them, but
+> search and creating stations are still to come. Feedback welcome.
 
 ![Now Playing (Gruvbox)](screenshots/gruvbox-main.png)
 
@@ -39,13 +39,13 @@ work right now drawn as key caps at the bottom.
   last one you played starts again next time
 - **Now Playing**: title, artist, album, your thumb, a progress bar with the
   time, and the volume
-- **Thumbs up / down** (`+` / `-`). Like in Pandora, a thumbs down skips the
+- **Thumbs up / down** (`U` / `D`, from any pane). Like in Pandora, a thumbs down skips the
   song. **Tired of this song** (`z`) keeps it off all your stations for a month
 - **Up Next** and **History**: the few songs Pandora sent up next on the
   left, the last 10 you heard on the right (stacked on a narrow window). Each pane is
   sized for 10 songs and Now Playing gets the rest of the height; on a short window Now Playing keeps
-  9 rows and the song panes shrink and scroll. `Tab` goes stations → Up Next →
-  History; in History `+` / `-` rate a song you already heard
+  9 rows and the song panes shrink and scroll. `Tab` goes menu → Now Playing → Up Next →
+  History; `l` / `b` rate the selected row (or the playing song from Now Playing)
 - **Settings** (account, audio quality, volume, autoplay, song change
   notifications, theme, icons, border style, menu width, update check, edit `config.toml` in `$EDITOR`, app menu entry) and **About**
   (links, version, and the update button) below the stations
@@ -53,10 +53,11 @@ work right now drawn as key caps at the bottom.
 - **Gapless-ish playback**: the next song downloads while this one plays.
   MP3 and AAC (MP4) are decoded in Rust ([symphonia](https://github.com/pdeljanov/Symphonia)
   through [rodio](https://github.com/RustAudio/rodio)), no ffmpeg or mpv needed
-- **Themes** (`t`): *Omarchy* (follows your current Omarchy theme, live, and
+- **Themes** (Settings): *Omarchy* (follows your current Omarchy theme, live, and
   is Tokyo Night elsewhere) plus Tokyo Night, Gruvbox, Catppuccin, Catppuccin
   Latte, Rosé Pine Dawn, Nord, Everforest and Kanagawa
-- **Icon sets** (`i`): colour emoji, Nerd Font or plain Unicode
+- **Icon sets** (`i`): colour emoji, Nerd Font or plain Unicode. The boxvibe logo is always the Nerd Font box
+- **Rename and delete stations** (`r`, `x`) and **details** (`v`): see [Keys](#keys)
 - **Song change notifications** with `notify-send` (mako on Omarchy)
 - Whatever you change in the app (theme, icons, volume, last station) is
   saved to `config.toml` right away, keeping your comments
@@ -103,26 +104,31 @@ Try it without an account (made-up stations, no network, no sound):
 | Key | Action |
 |---|---|
 | `space` `p` | play / pause |
-| `n` | skip |
-| `+` `u` | thumbs up the playing song (whatever pane has the keys) |
-| `-` `d` | thumbs down the playing song (skips it) |
-| `U` `D` (Shift) | thumbs up / down the highlighted Up Next or History row (the focused pane, else the last one used); a thumbs down drops an Up Next song |
+| `N` (Shift+n) | skip to the next song, from any pane |
+| `U` `D` (Shift) | thumbs up / down the playing song, from any pane (down skips it) |
+| `l` `b` | like / bad the selected row in Up Next or History, or the song when Now Playing has the keys |
 | `z` | tired of this song (off for a month) |
 | `Shift+←` `Shift+→` | volume down / up |
-| `j` `k` `↑` `↓` | move (wraps around the ends) · `g` `G` first / last |
-| `Enter` | play the station · open Stations / Settings / About · change a setting · Update Now |
+| `j` `k` `↑` `↓` | move (wraps around the ends) · `g` first · `G` (Shift+g) last |
+| `Enter` | play the station · open Settings / About · change a setting · Update Now |
 | `Tab` | menu → Now Playing → Up Next → History on the player (`Shift+Tab` back); menu ⇄ Stations / Settings / About |
 | `Esc` | back to the menu |
-| `N` (Shift+n) | Now Playing: back to the player with the keys on the Now Playing pane and the menu on NOW PLAYING |
-| `s` `S` | Stations: every station on the right, `Enter` plays one |
+| `P` (Shift+p) | Now Playing: back to the player with the keys on the Now Playing pane and the menu on NOW PLAYING |
+| `S` (Shift+s) | Stations: every station on the right, `Enter` plays one |
 | `T` (Shift+t) / `A` (Shift+a) | Settings / About, with the menu on that entry |
 | `F` (Shift+f) | the menu, on the first of FAVORITES |
 | `f` | favorite / unfavorite the station (the menu's FAVORITES section) |
-| `{` `}` | menu narrower / wider |
-| `t` | next theme |
+| `r` | rename the selected station (Stations, or a favorite's station); asks for the name |
+| `x` | delete the selected station from your Pandora account; asks first (`y` = delete, any other key keeps it) |
+| `v` | details: a song, or a station's seeds, thumbs up / down counts, genres and dates |
+| `C` `R` `H` (Shift) | album art: picture / blocks / off · Retro level · tint; saved |
 | `i` | next icon set |
+| `{` `}` | menu narrower / wider |
 | `?` | every key |
 | `Q` (Shift+q) / `Ctrl+c` | quit (asks first: `y` = yes, any other key = no) / quit now |
+
+The theme is only in Settings. In Favorites, `f` removes the favorite while `r`, `x`
+and `v` act on its station.
 
 When a setting asks you to type (email, password): `Enter` saves, `Esc`
 cancels, `Ctrl+u` clears.
@@ -160,7 +166,8 @@ border_style = "plain"         # plain | rounded | thick | double | none
 menu_width = 30                # the menu, in columns: 20–40, step 2 (at most half the screen); also { and }
 favorites = []                 # starred stations, { id = "…", name = "…" }, set with f
 album_art = "picture"          # picture | blocks | off (off: the spectrum visualizer)
-retro_mode = "hd"             # hd | 32bit | 16bit | 8bit | 4bit | 2bit (full / 128 / 64 / 32 / 16 / 8 px, blocky on purpose)
+retro_mode = "hd"             # hd | 64bit | 32bit | 16bit | 8bit | 4bit | 2bit (full / 256 / 128 / 64 / 32 / 16 / 8 px, blocky on purpose)
+splash = true                  # the short boxvibe boot screen (any key skips it)
 art_tint = "off"               # off | duotone | palette: recolour the cover with the theme's colours
 ```
 
@@ -177,10 +184,11 @@ startup what it can draw:
   **kitty** graphics (kitty, Ghostty) or **iTerm2** images: a real picture.
 - Anything else, and always inside **tmux** or **Zellij**: coloured half blocks (▀).
 
+Shift+`C`, `R` and `H` cycle album art, Retro mode and tint without opening Settings.
 Settings → LOOK → **Album art** picks Picture, Blocks (half blocks even when
 the terminal could do better) or Off. **Retro mode** makes the cover blocky
-for fun, like an old console: 32-bit, 16-bit, 8-bit, 4-bit and 2-bit shrink it
-to 128, 64, 32, 16 or 8 pixels across and blow it back up, nearest-neighbour;
+for fun, like an old console: 64-bit, 32-bit, 16-bit, 8-bit, 4-bit and 2-bit shrink it
+to 256, 128, 64, 32, 16 or 8 pixels across and blow it back up, nearest-neighbour;
 HD leaves it alone. **Tint art with theme colors** recolours the cover using
 your current theme's colour scheme: Duotone maps its brightness from the
 theme's background to its yellow, Palette snaps every pixel to the nearest
@@ -191,6 +199,8 @@ terminal picture is held back (it would draw over the popup) and sent again,
 cleanly, when the popup closes. Everything behind a popup, the cover's half
 blocks included, is dimmed so the popup stands out. The status bar shows the logged-in account at
 its right.
+
+A cover that fails to download is tried again after 2, 6 and 15 seconds, and again when it is needed (a popup closes, the song changes).
 
 Covers download in the background and are kept in memory and in
 `~/.cache/boxvibe/art` (`$XDG_CACHE_HOME`), at most 50 MB, oldest dropped
@@ -214,8 +224,12 @@ one ([self-replace](https://crates.io/crates/self-replace)). Then the button
 becomes **Restart Now**, which starts the new version in the same terminal with the
 same arguments. The button is only offered for a release binary in a folder you
 can write to (like `~/.local/bin`); for a build from source, `cargo install`,
-a system package, or a platform without a release download, About explains
+or a platform without a release download, About explains
 why and shows the command to update by hand instead.
+
+When boxvibe was installed by a package manager (`pacman -Qo` owns the file, or it is
+under `/usr/bin` and the like), About still says a new version is out, but has no download
+button: update it through the package manager. `/usr/local` is treated as a manual install.
 
 `BOXVIBE_FAKE_VERSION=0.0.1 boxvibe` pretends to be an older version, to try it.
 
@@ -239,7 +253,9 @@ provider (Apache-2.0, see [THIRD_PARTY.md](THIRD_PARTY.md)):
 3. `v1/station/getStations`, `v1/playlist/getFragment` (a few songs at a
    time, as `mp3-hifi` or `mp3`), `v1/station/addFeedback` (thumbs),
    `v1/listener/addTiredSong` and `v1/station/trackStarted` (sent when a song
-   starts, like the site does)
+   starts, like the site does); for `r`, `x` and `v`:
+   `v1/station/updateStation`, `v1/station/removeStation` and
+   `v1/station/getStationDetails`
 4. When the login expires (HTTP 401) boxvibe logs in again with the saved
    password and retries once. When another device is playing on the account
    (429 `STREAM_VIOLATION`) it takes over with `v1/station/playbackResumed`

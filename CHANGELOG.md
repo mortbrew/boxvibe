@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.4.0 (2026-10-24)
+
+### Keys (breaking: please read)
+
+Shift+letter goes places and works from anywhere; lowercase acts on the pane
+that has the keys. Help (`?`) lists every key, and a test checks that no key is
+bound twice.
+
+- **`N` skips** to the next song from any pane; **`P`** goes to Now Playing
+  (what `N` did). Lowercase `n` no longer skips. `p` and `space` still pause.
+- **`U` / `D`** are thumbs up / down on the *playing* song from any pane.
+  `+`, `-`, `=`, `u` and `d` (and the old Shift+U/D row rating) are gone.
+- **`l` / `b`** like / mark bad the *selected row* in Up Next or History, or
+  the current song when Now Playing has the keys. The key bar shows `l/b` only
+  where it applies.
+- **`C`** album art type, **`R`** Retro level, **`H`** tint: Shift keys that
+  cycle and save, so the cover can be tried without opening Settings.
+- Lowercase `t` (theme) is gone: the theme is only in Settings. `i` still
+  cycles icons. The key bar no longer hints at theme or icons.
+- Lowercase `s` is gone (it duplicated Shift+S, Stations).
+
+### Stations
+
+- **`r`** renames and **`x`** deletes the selected station, in Stations and in
+  Favorites (there they act on that favorite's station, and the box says so).
+  Both ask first, in the same box style as Quit; the delete box names the
+  station and says it is removed from your Pandora account (`y` deletes, any
+  other key keeps it). `f` still stars / unstars.
+  Uses `v1/station/updateStation` and `v1/station/removeStation`, which are
+  unofficial like the rest of the API; stations Pandora won't let you rename
+  or delete (Shuffle) say so.
+- **`v`** opens a details popup for the selected station or song: seeds, thumbs
+  up / down counts, genres, created / last played, from Pandora's
+  `v1/station/getStationDetails`; fields Pandora doesn't send are left out.
+
+### Look
+
+- **64-bit** Retro step (256 px) between HD and 32-bit; `retro_mode = "64bit"`.
+  Old values and the old `art_pixelation` key still read.
+- The **boxvibe logo** is always the Nerd Font box icon, whatever the icon set
+  (menu frame, About, boot screen).
+- A **boot screen** in boxvibe's own style: a box and wordmark that fade in
+  using the theme's colours, about 1.6 seconds, any key skips it. Settings →
+  BOXVIBE → Boot screen, `[ui] splash`, on by default.
+- Up Next and History keep equal blank space at their left and right.
+- Now Playing has one cell of padding on all four sides.
+
+### Fixes
+
+- A cover that failed to download is tried again (after 2, 6 and 15 seconds),
+  and again whenever it is needed (a popup closes, the song changes). A
+  cover is also fetched when the song changes under Help and shows when it closes.
+- **Package installs**: when boxvibe is installed by a package manager
+  (`pacman -Qo` knows the file, or it lives under `/usr/bin` and the like), About
+  still says a new version is out but hides the GitHub download button and
+  tells you to update through the package manager. Manual installs behave as before.
+
+### Repo
+
+- Dependabot (cargo and GitHub Actions, weekly), a CI workflow (build, test,
+  clippy), CodeQL for Rust and a weekly `cargo audit`, with badges in the README.
+- `rustls-webpki` 0.103.16 and `webpki-roots` 1.0.11 (RUSTSEC-2026-0381 and -0382).
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

@@ -303,9 +303,11 @@ fn a_blocked_login_says_so() {
 
 #[test]
 fn stations_say_whether_they_can_be_renamed_or_removed() {
-    let made = parse_station(&json!({ "stationId": "1", "name": "Mine", "allowRename": true, "allowDelete": true })).unwrap();
+    let made =
+        parse_station(&json!({ "stationId": "1", "name": "Mine", "allowRename": true, "allowDelete": true })).unwrap();
     assert!(made.allow_rename && made.allow_delete);
-    let genre = parse_station(&json!({ "stationId": "2", "name": "Chill", "allowRename": false, "allowDelete": true })).unwrap();
+    let genre = parse_station(&json!({ "stationId": "2", "name": "Chill", "allowRename": false, "allowDelete": true }))
+        .unwrap();
     assert!(!genre.allow_rename && genre.allow_delete);
     // Nothing said: allowed, except for Shuffle, which Pandora never lets go.
     let plain = parse_station(&json!({ "stationId": "3", "name": "Jazz" })).unwrap();

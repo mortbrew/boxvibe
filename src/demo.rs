@@ -1,7 +1,7 @@
 //! `--demo`: made-up stations and songs, no network and no sound, so the
 //! interface can be tried (and screenshotted) without a Pandora account.
 
-use crate::pandora::{AudioFormat, Rating, Song, Station};
+use crate::pandora::{AudioFormat, Rating, Seed, Song, Station, StationDetails};
 
 pub fn stations() -> Vec<Station> {
     let names = [
@@ -67,4 +67,19 @@ pub fn playlist(station_id: &str, round: usize) -> Vec<Song> {
             }
         })
         .collect()
+}
+
+/// Made-up details for a demo station (the real ones come from Pandora).
+pub fn station_details(station_id: &str) -> StationDetails {
+    let n = station_id.strip_prefix("demo-").and_then(|n| n.parse::<usize>().ok()).unwrap_or(0);
+    let seeds = [("Artist", "M83"), ("Song", "Midnight City by M83"), ("Genre", "Synthwave")];
+    StationDetails {
+        seeds: seeds.iter().take(1 + n % 3).map(|(kind, name)| Seed { kind, name: (*name).into() }).collect(),
+        thumbs_up: Some(12 + n as u32),
+        thumbs_down: Some(n as u32 % 4),
+        genres: vec!["Electronic".into(), "Dance".into()],
+        created: "2024-03-14T09:30:00.000-04:00".into(),
+        last_played: "2026-10-23T21:05:00.000-04:00".into(),
+        creator: String::new(),
+    }
 }

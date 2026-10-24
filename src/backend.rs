@@ -8,7 +8,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use crate::demo;
-use crate::pandora::{self, Client, Error, Quality, Song, Station};
+use crate::pandora::{self, Client, Error, Quality, Song, Station, StationDetails};
 use crate::update::{self, Checked, Update};
 
 pub enum Request {
@@ -17,6 +17,20 @@ pub enum Request {
         password: String,
     },
     Stations,
+    /// Rename a station on the Pandora account.
+    RenameStation {
+        station_id: String,
+        name: String,
+    },
+    /// Remove a station from the Pandora account.
+    RemoveStation {
+        station_id: String,
+    },
+    /// Seeds and thumbs counts of a station (`current`: it is the one playing).
+    StationDetails {
+        station_id: String,
+        current: bool,
+    },
     Playlist {
         station_id: String,
     },
@@ -53,6 +67,18 @@ pub enum Reply {
         wrong_password: bool,
     },
     Stations(Vec<Station>),
+    /// `name`: what Pandora now calls the station.
+    StationRenamed {
+        station_id: String,
+        name: String,
+    },
+    StationRemoved {
+        station_id: String,
+    },
+    StationDetails {
+        station_id: String,
+        details: StationDetails,
+    },
     Playlist {
         station_id: String,
         songs: Vec<Song>,
@@ -163,10 +189,33 @@ impl Backend {
 
 fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
     let mut round = 0;
+    // The made-up account: renames and removals change this list only.
+    let mut stations = demo::stations();
     for request in requests {
         let reply = match request {
             Request::Login { .. } => Reply::LoggedIn { hifi: true },
-            Request::Stations => Reply::Stations(demo::stations()),
+            Request::Stations => Reply::Stations(stations.clone()),
+            Request::RenameStation { station_id, name } => {
+                match stations.iter_mut().find(|s| s.id == station_id && s.allow_rename) {
+                    Some(station) => {
+                        station.name = name.clone();
+                        Reply::StationRenamed { station_id, name }
+                    }
+                    None => Reply::Failed { what: "rename", message: "no such station".into() },
+                }
+            }
+            Request::RemoveStation { station_id } => {
+                match stations.iter().position(|s| s.id == station_id && s.allow_delete) {
+                    Some(at) => {
+                        stations.remove(at);
+                        Reply::StationRemoved { station_id }
+                    }
+                    None => Reply::Failed { what: "remove", message: "no such station".into() },
+                }
+            }
+            Request::StationDetails { station_id, .. } => {
+                Reply::StationDetails { details: demo::station_details(&station_id), station_id }
+            }
             Request::Playlist { station_id } => {
                 round += 1;
                 Reply::Playlist { songs: demo::playlist(&station_id, round - 1), station_id }
@@ -197,6 +246,19 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
             },
             Request::Stations => {
                 run(&mut client, &login, &mut took_over, "stations", |c| c.stations().map(Reply::Stations))
+            }
+            Request::RenameStation { station_id, name } => run(&mut client, &login, &mut took_over, "rename", |c| {
+                c.rename_station(&station_id, &name)
+                    .map(|name| Reply::StationRenamed { station_id: station_id.clone(), name })
+            }),
+            Request::RemoveStation { station_id } => run(&mut client, &login, &mut took_over, "remove", |c| {
+                c.remove_station(&station_id).map(|()| Reply::StationRemoved { station_id: station_id.clone() })
+            }),
+            Request::StationDetails { station_id, current } => {
+                run(&mut client, &login, &mut took_over, "details", |c| {
+                    c.station_details(&station_id, current)
+                        .map(|details| Reply::StationDetails { station_id: station_id.clone(), details })
+                })
             }
             Request::Playlist { station_id } => run(&mut client, &login, &mut took_over, "playlist", |c| {
                 c.fragment(&station_id).map(|songs| Reply::Playlist { station_id: station_id.clone(), songs })

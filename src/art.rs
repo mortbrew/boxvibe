@@ -8,6 +8,7 @@ use std::cell::{RefCell, RefMut};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use image::imageops::FilterType;
 use image::{DynamicImage, Rgb, RgbImage};
@@ -24,6 +25,17 @@ const MEMORY: usize = 24;
 pub const DISK_CAP: u64 = 50 * 1024 * 1024;
 /// Covers are shrunk to at most this many pixels across once downloaded.
 const MAX_PIXELS: u32 = 640;
+
+/// How long to wait before each new try at a cover that failed to download
+/// (so a failed cover is tried [`RETRY_WAITS`]`.len() + 1` times in all).
+pub const RETRY_WAITS: [Duration; 3] = [Duration::from_secs(2), Duration::from_secs(6), Duration::from_secs(15)];
+
+/// A cover that failed: how many times, and when it may be asked for again.
+#[derive(Debug, Clone, Copy)]
+struct Failure {
+    tries: usize,
+    retry_at: Instant,
+}
 
 /// Inside tmux or Zellij, graphics are unreliable: half blocks.
 pub fn in_multiplexer() -> bool {
@@ -89,7 +101,7 @@ pub struct Art {
     images: HashMap<String, Arc<DynamicImage>>,
     order: VecDeque<String>,
     requested: HashSet<String>,
-    failed: HashSet<String>,
+    failed: HashMap<String, Failure>,
     /// Covers the terminal's graphics couldn't encode: drawn in half blocks.
     unencodable: RefCell<HashSet<String>>,
     shown: RefCell<Option<Shown>>,
@@ -121,6 +133,11 @@ impl Art {
             return;
         }
         self.suspended.set(open);
+        // The cover is needed again when a popup closes: any that failed get
+        // a fresh set of tries.
+        if !open {
+            self.retry_failed();
+        }
         if self.graphics.is_some() {
             self.forget_shown();
             self.needs_clear.set(true);
@@ -139,18 +156,42 @@ impl Art {
 
     /// Whether `url` should be asked for (marks it asked).
     pub fn want(&mut self, url: &str) -> bool {
-        !url.is_empty()
-            && !self.images.contains_key(url)
-            && !self.failed.contains(url)
-            && self.requested.insert(url.into())
+        self.want_at(url, Instant::now())
+    }
+
+    /// [`Art::want`] at a given moment: a cover that failed is asked for again
+    /// once its wait is over, until it has used up its tries.
+    pub fn want_at(&mut self, url: &str, now: Instant) -> bool {
+        if url.is_empty() || self.images.contains_key(url) || self.requested.contains(url) {
+            return false;
+        }
+        if let Some(failure) = self.failed.get(url)
+            && (failure.tries > RETRY_WAITS.len() || now < failure.retry_at)
+        {
+            return false;
+        }
+        self.requested.insert(url.into())
+    }
+
+    /// Gives every cover that failed a fresh set of tries, right away (a
+    /// popup closed, or the song changed: the cover is needed again).
+    pub fn retry_failed(&mut self) {
+        self.failed.clear();
     }
 
     pub fn arrived(&mut self, url: String, image: Option<DynamicImage>) {
+        self.arrived_at(url, image, Instant::now());
+    }
+
+    pub fn arrived_at(&mut self, url: String, image: Option<DynamicImage>, now: Instant) {
         self.requested.remove(&url);
         let Some(image) = image else {
-            self.failed.insert(url);
+            let tries = self.failed.get(&url).map_or(0, |f| f.tries) + 1;
+            let wait = RETRY_WAITS.get(tries - 1).copied().unwrap_or_default();
+            self.failed.insert(url, Failure { tries, retry_at: now + wait });
             return;
         };
+        self.failed.remove(&url);
         if self.order.len() >= MEMORY
             && let Some(old) = self.order.pop_front()
         {
@@ -160,8 +201,10 @@ impl Art {
         self.images.insert(url, Arc::new(image));
     }
 
+    /// Loading while it is downloading or waiting for another try.
     pub fn status(&self, url: &str) -> Cover {
-        if self.requested.contains(url) { Cover::Loading } else { Cover::None }
+        let waiting = self.failed.get(url).is_some_and(|f| f.tries <= RETRY_WAITS.len());
+        if self.requested.contains(url) || waiting { Cover::Loading } else { Cover::None }
     }
 
     /// Settings changed: build the protocol again on the next frame.
@@ -494,8 +537,43 @@ mod tests {
         assert!(art.protocol("u", look(AlbumArt::Blocks, RetroMode::Hd)).is_some());
         assert!(art.protocol("u", look(AlbumArt::Off, RetroMode::Hd)).is_none(), "off: the visualizer");
         art.arrived("bad".into(), None);
-        assert!(!art.want("bad") && matches!(art.status("bad"), Cover::None), "a failure isn't asked again");
+        assert!(!art.want("bad"), "a failure waits before it is asked again");
         assert_eq!(art.protocol_name(), "half blocks", "no terminal query in tests");
+    }
+
+    #[test]
+    fn a_failed_cover_is_retried_with_backoff_and_then_given_up_on() {
+        let mut art = Art::default();
+        let t0 = Instant::now();
+        assert!(art.want_at("u", t0));
+        let mut now = t0;
+        for (i, wait) in RETRY_WAITS.iter().enumerate() {
+            art.arrived_at("u".into(), None, now);
+            assert!(matches!(art.status("u"), Cover::Loading), "try {} failed: still hoped for", i + 1);
+            assert!(!art.want_at("u", now + *wait - Duration::from_millis(1)), "too soon after try {}", i + 1);
+            now += *wait;
+            assert!(art.want_at("u", now), "asked again after {wait:?}");
+            assert!(!art.want_at("u", now), "once per try");
+        }
+        art.arrived_at("u".into(), None, now);
+        assert!(matches!(art.status("u"), Cover::None), "four tries, then no cover");
+        assert!(!art.want_at("u", now + Duration::from_secs(3600)), "and no more asking");
+    }
+
+    #[test]
+    fn a_given_up_cover_is_asked_again_when_a_popup_closes() {
+        let mut art = Art::default();
+        let t0 = Instant::now();
+        for _ in 0..=RETRY_WAITS.len() {
+            art.arrived_at("u".into(), None, t0);
+        }
+        assert!(!art.want_at("u", t0 + Duration::from_secs(3600)));
+        art.set_overlay(true);
+        assert!(!art.want_at("u", t0 + Duration::from_secs(3600)), "not while it is open");
+        art.set_overlay(false);
+        assert!(art.want_at("u", t0), "right away, when it closes");
+        art.arrived_at("u".into(), Some(demo_cover("u")), t0);
+        assert!(matches!(art.status("u"), Cover::None) && !art.want_at("u", t0), "and a cover that arrived is kept");
     }
 
     #[test]

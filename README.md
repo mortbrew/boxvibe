@@ -1,5 +1,11 @@
 # boxvibe
 
+[![ci](https://github.com/mortbrew/boxvibe/actions/workflows/ci.yml/badge.svg)](https://github.com/mortbrew/boxvibe/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/mortbrew/boxvibe/actions/workflows/codeql.yml/badge.svg)](https://github.com/mortbrew/boxvibe/actions/workflows/codeql.yml)
+[![audit](https://github.com/mortbrew/boxvibe/actions/workflows/audit.yml/badge.svg)](https://github.com/mortbrew/boxvibe/actions/workflows/audit.yml)
+[![latest release](https://img.shields.io/github/v/release/mortbrew/boxvibe)](https://github.com/mortbrew/boxvibe/releases/latest)
+[![license: MIT or Apache-2.0](https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-blue)](#license)
+
 Pandora in the terminal, written in Rust with [ratatui](https://ratatui.rs).
 A sibling of [tubevibe](https://github.com/mortbrew/tubevibe): the same look,
 Omarchy colour sync, icon sets and a `config.toml` that the app keeps up to

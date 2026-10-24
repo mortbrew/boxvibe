@@ -23,6 +23,8 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
     app.demo_warm_up(3, Duration::from_secs(102));
     match screen {
         "help" => app.help = true,
+        // The boot screen a little over half way (the logo has faded in).
+        "splash" => app.splash = std::time::Instant::now().checked_sub(Duration::from_millis(1000)),
         "settings" => {
             app.view = View::Settings;
             app.focus = Focus::Content;

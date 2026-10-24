@@ -16,7 +16,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::audio::Audio;
 use crate::backend::{Backend, Reply, Request};
 use crate::config::{self, AlbumArt, Config, ConfigWarning};
-use crate::pandora::{Quality, Rating, Song, Station};
+use crate::pandora::{Quality, Rating, Song, Station, StationDetails};
 use crate::theme::{self, Palette};
 use crate::update::{Progress, Replace, Update};
 
@@ -83,14 +83,16 @@ pub enum Setting {
     RetroMode,
     ArtTint,
     CheckUpdates,
+    Splash,
     EditFile,
     MenuEntry,
 }
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 18] = [
+    pub const ALL: [(&'static str, Self); 19] = [
         ("BOXVIBE", Self::CheckUpdates),
+        ("BOXVIBE", Self::Splash),
         ("BOXVIBE", Self::EditFile),
         ("BOXVIBE", Self::MenuEntry),
         ("ACCOUNT", Self::Email),
@@ -133,6 +135,7 @@ impl Setting {
             Self::RetroMode => "Retro mode",
             Self::ArtTint => "Tint art with theme colors",
             Self::CheckUpdates => "Look for new versions on startup",
+            Self::Splash => "Boot screen",
             Self::EditFile => "Edit config.toml",
             Self::MenuEntry => "App menu entry",
         }
@@ -155,20 +158,25 @@ impl Setting {
             Self::Notify => {
                 "A desktop notification (notify-send, mako on Omarchy) for every new song. Saved as [ui] notifications."
             }
-            Self::Theme => "Omarchy follows your current Omarchy theme; or pick a built-in one. Also t.",
-            Self::Icons => "Emoji, Nerd Font (needs one installed) or plain Unicode. Also i.",
+            Self::Theme => {
+                "Omarchy follows your current Omarchy theme; or pick a built-in one. The theme is only changed here."
+            }
+            Self::Icons => {
+                "Emoji, Nerd Font (needs one installed) or plain Unicode. Also i (the boxvibe logo always uses the Nerd Font box)."
+            }
             Self::BorderStyle => "How every pane's border is drawn: plain, rounded, thick, double or none.",
             Self::MenuWidth => "The menu's width, 20 to 40 columns (never more than half the screen). Also { and }.",
             Self::AlbumArt => {
-                "Picture: real covers (sixel, kitty, iTerm2); Blocks: coloured half blocks; Off: visualizer."
+                "Picture: real covers (sixel, kitty, iTerm2); Blocks: coloured half blocks; Off: visualizer. Also Shift+C."
             }
             Self::ArtTint => {
-                "Recolors the album art using your current theme's color scheme. Duotone: theme background to yellow; Palette: only theme colors. Saved as [ui] art_tint."
+                "Recolors the album art using your current theme's color scheme. Duotone: theme background to yellow; Palette: only theme colors. Saved as [ui] art_tint. Also Shift+H."
             }
             Self::RetroMode => {
-                "Makes the cover blocky on purpose, like an old console: 32-bit (128 pixels across), 16-bit (64), 8-bit (32), 4-bit (16), 2-bit (8), or HD for the full picture."
+                "Makes the cover blocky on purpose, like an old console: 64-bit (256 pixels across), 32-bit (128), 16-bit (64), 8-bit (32), 4-bit (16), 2-bit (8), or HD for the full picture. Also Shift+R."
             }
             Self::CheckUpdates => "Asks GitHub when boxvibe opens; About shows the new version and Update Now.",
+            Self::Splash => "A short boxvibe logo screen when it opens; any key skips it. Saved as [ui] splash.",
             Self::EditFile => "Opens config.toml in $EDITOR; boxvibe reads it again when you close it.",
             Self::MenuEntry => {
                 "Enter adds or removes boxvibe.desktop in ~/.local/share/applications, so app launchers (walker on Omarchy) list boxvibe; it runs this boxvibe in a terminal."
@@ -180,15 +188,250 @@ impl Setting {
 /// The two song panes under Now Playing; Tab goes menu → Up Next → History.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
-    /// The Now Playing card itself (`N` puts the keys here).
+    /// The Now Playing card itself (`P` puts the keys here).
     NowPlaying,
     UpNext,
     History,
 }
 
+/// What a key can do. [`KEYMAP`] says which key does which; the context
+/// (which pane has the keys) is each command's own business.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cmd {
+    Quit,
+    Help,
+    Pause,
+    /// Skip to the next song, from anywhere.
+    Skip,
+    NowPlaying,
+    Stations,
+    Settings,
+    About,
+    Favorites,
+    /// Thumbs up / down on the playing song, from anywhere.
+    ThumbUp,
+    ThumbDown,
+    /// Thumbs up / down on the selected row, or on the song when Now Playing has the keys.
+    LikePane,
+    BadPane,
+    Tired,
+    Star,
+    Rename,
+    Delete,
+    Details,
+    NextFocus,
+    PrevFocus,
+    ToMenu,
+    Down,
+    Up,
+    Top,
+    Bottom,
+    Enter,
+    VolumeUp,
+    VolumeDown,
+    MenuNarrower,
+    MenuWider,
+    Icons,
+    ArtType,
+    Retro,
+    Tint,
+}
+
+/// One key and what it does. Shift+letters are the capital letters;
+/// `shift` is for keys like ← that only count with Shift held.
+#[derive(Debug, Clone, Copy)]
+pub struct Binding {
+    pub code: KeyCode,
+    pub shift: bool,
+    pub cmd: Cmd,
+}
+
+const fn bind(code: KeyCode, cmd: Cmd) -> Binding {
+    Binding { code, shift: false, cmd }
+}
+
+/// Every key boxvibe listens to outside of prompts and popups. Shift+letter
+/// is for going places and for things that work from anywhere; lowercase
+/// acts on the pane that has the keys. No key may appear twice (a test
+/// checks), and Help lists them all (another test checks).
+pub const KEYMAP: &[Binding] = &[
+    // Shift+letter: global.
+    bind(KeyCode::Char('Q'), Cmd::Quit),
+    bind(KeyCode::Char('?'), Cmd::Help),
+    bind(KeyCode::Char('N'), Cmd::Skip),
+    bind(KeyCode::Char('P'), Cmd::NowPlaying),
+    bind(KeyCode::Char('S'), Cmd::Stations),
+    bind(KeyCode::Char('T'), Cmd::Settings),
+    bind(KeyCode::Char('A'), Cmd::About),
+    bind(KeyCode::Char('F'), Cmd::Favorites),
+    bind(KeyCode::Char('U'), Cmd::ThumbUp),
+    bind(KeyCode::Char('D'), Cmd::ThumbDown),
+    bind(KeyCode::Char('C'), Cmd::ArtType),
+    bind(KeyCode::Char('R'), Cmd::Retro),
+    bind(KeyCode::Char('H'), Cmd::Tint),
+    bind(KeyCode::Char('G'), Cmd::Bottom),
+    bind(KeyCode::End, Cmd::Bottom),
+    Binding { code: KeyCode::Right, shift: true, cmd: Cmd::VolumeUp },
+    Binding { code: KeyCode::Left, shift: true, cmd: Cmd::VolumeDown },
+    bind(KeyCode::Char('{'), Cmd::MenuNarrower),
+    bind(KeyCode::Char('}'), Cmd::MenuWider),
+    // Lowercase: the pane that has the keys.
+    bind(KeyCode::Char('p'), Cmd::Pause),
+    bind(KeyCode::Char(' '), Cmd::Pause),
+    bind(KeyCode::Char('l'), Cmd::LikePane),
+    bind(KeyCode::Char('b'), Cmd::BadPane),
+    bind(KeyCode::Char('z'), Cmd::Tired),
+    bind(KeyCode::Char('f'), Cmd::Star),
+    bind(KeyCode::Char('r'), Cmd::Rename),
+    bind(KeyCode::Char('x'), Cmd::Delete),
+    bind(KeyCode::Char('v'), Cmd::Details),
+    bind(KeyCode::Char('i'), Cmd::Icons),
+    bind(KeyCode::Char('j'), Cmd::Down),
+    bind(KeyCode::Down, Cmd::Down),
+    bind(KeyCode::Char('k'), Cmd::Up),
+    bind(KeyCode::Up, Cmd::Up),
+    bind(KeyCode::Char('g'), Cmd::Top),
+    bind(KeyCode::Home, Cmd::Top),
+    bind(KeyCode::Tab, Cmd::NextFocus),
+    bind(KeyCode::BackTab, Cmd::PrevFocus),
+    bind(KeyCode::Esc, Cmd::ToMenu),
+    bind(KeyCode::Enter, Cmd::Enter),
+];
+
+/// What a key does, if anything.
+pub fn command_for(key: KeyEvent) -> Option<Cmd> {
+    let shifted = key.modifiers.contains(KeyModifiers::SHIFT);
+    KEYMAP.iter().find(|b| b.code == key.code && (!b.shift || shifted)).map(|b| b.cmd)
+}
+
+/// A station to rename or delete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StationRef {
+    pub id: String,
+    pub name: String,
+    /// It was picked as a favorite in the menu: the box says so.
+    pub favorite: bool,
+}
+
+/// The rename box: the station and what is typed so far.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rename {
+    pub station: StationRef,
+    pub text: String,
+}
+
+/// What the details popup (`v`) is about.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DetailsOf {
+    Song(Box<Song>),
+    Station(Box<Station>),
+}
+
+/// The details popup: what is known now, and what Pandora says about the
+/// station (`None` while it is still on its way).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Details {
+    pub of: DetailsOf,
+    /// The name of the song's station (or the station itself).
+    pub station_name: String,
+    pub station_id: String,
+    pub from_pandora: Option<Result<StationDetails, String>>,
+}
+
+/// "2026-10-23T21:05:00.000-04:00" → "2026-10-23".
+fn date_of(stamp: &str) -> Option<&str> {
+    let day = stamp.get(..10)?;
+    let b = day.as_bytes();
+    (b[4] == b'-' && b[7] == b'-' && day.bytes().filter(u8::is_ascii_digit).count() == 8).then_some(day)
+}
+
+impl Details {
+    pub fn title(&self) -> String {
+        match &self.of {
+            DetailsOf::Song(s) => s.title.clone(),
+            DetailsOf::Station(s) => s.name.clone(),
+        }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self.of {
+            DetailsOf::Song(_) => "Song",
+            DetailsOf::Station(_) => "Station",
+        }
+    }
+
+    /// The popup's rows (label, value): only what Pandora actually sent.
+    pub fn rows(&self) -> Vec<(String, String)> {
+        let mut rows: Vec<(String, String)> = Vec::new();
+        let mut add = |label: &str, value: String| {
+            if !value.trim().is_empty() {
+                rows.push((label.into(), value));
+            }
+        };
+        match &self.of {
+            DetailsOf::Song(s) => {
+                add("Title", s.title.clone());
+                add("Artist", s.artist.clone());
+                add("Album", s.album.clone());
+                if s.length > 0 {
+                    add("Length", format!("{}:{:02}", s.length / 60, s.length % 60));
+                }
+                add("Station", self.station_name.clone());
+                add(
+                    "Your thumb",
+                    match s.rating {
+                        Rating::Up => "up",
+                        Rating::Down => "down",
+                        Rating::None => "none yet",
+                    }
+                    .into(),
+                );
+                add(
+                    "Audio",
+                    match s.audio_format {
+                        crate::pandora::AudioFormat::Mp3 => "MP3",
+                        crate::pandora::AudioFormat::Aac => "AAC",
+                        crate::pandora::AudioFormat::Unknown => "",
+                    }
+                    .into(),
+                );
+                if s.gain != 0.0 {
+                    add("Loudness fix", format!("{:+.1} dB", s.gain));
+                }
+                add("Pandora page", s.detail_url.clone());
+            }
+            DetailsOf::Station(s) => {
+                add("Name", s.name.clone());
+                let kind = if s.is_shuffle { "Shuffle (all your stations)" } else { "Station" };
+                add("Kind", kind.into());
+            }
+        }
+        match &self.from_pandora {
+            None => add("Station facts", "loading from Pandora…".into()),
+            Some(Err(why)) => add("Station facts", format!("not available: {why}")),
+            Some(Ok(d)) => {
+                for (i, seed) in d.seeds.iter().enumerate() {
+                    add(if i == 0 { "Seeds" } else { "" }, format!("{}: {}", seed.kind, seed.name));
+                }
+                if !d.genres.is_empty() {
+                    add("Genres", d.genres.join(", "));
+                }
+                match (d.thumbs_up, d.thumbs_down) {
+                    (Some(up), Some(down)) => add("Station thumbs", format!("{up} up · {down} down")),
+                    (Some(up), None) => add("Station thumbs", format!("{up} up")),
+                    (None, Some(down)) => add("Station thumbs", format!("{down} down")),
+                    (None, None) => {}
+                }
+                add("Created", date_of(&d.created).unwrap_or_default().into());
+                add("Last played", date_of(&d.last_played).unwrap_or_default().into());
+                add("Made by", d.creator.clone());
+            }
+        }
+        rows
+    }
+}
+
 pub struct App {
-    /// The song pane `U` / `D` rate in when Now Playing or the menu has the keys.
-    pub last_song_pane: Pane,
     pub config: Config,
     pub config_path: Option<PathBuf>,
     pub demo: bool,
@@ -218,6 +461,14 @@ pub struct App {
     pub history: Vec<Song>,
     pub status: String,
     pub help: bool,
+    /// The boot screen: when it began (`None` once it is over or switched off).
+    pub splash: Option<Instant>,
+    /// `x` asked "Delete this station?": y does, any other key doesn't.
+    pub confirm_delete: Option<StationRef>,
+    /// `r` is typing a new station name.
+    pub rename: Option<Rename>,
+    /// `v`: the details popup.
+    pub details: Option<Details>,
     pub buffering: Option<String>,
     audio_cache: HashMap<String, Vec<u8>>,
     /// Covers and the visualizer's bars.
@@ -243,6 +494,10 @@ pub struct App {
 }
 
 const HISTORY_LEN: usize = 10;
+/// The longest station name the rename box takes.
+const MAX_STATION_NAME: usize = 80;
+/// How long the boot screen stays when no key skips it.
+pub const SPLASH: Duration = Duration::from_millis(1600);
 /// Visualizer bands (the art box draws as many as fit).
 const BANDS: usize = 48;
 
@@ -259,7 +514,6 @@ impl App {
             settings_cursor: 0,
             stations_cursor: 0,
             pane: Pane::UpNext,
-            last_song_pane: Pane::UpNext,
             next_cursor: 0,
             history_cursor: 0,
             prompt: None,
@@ -274,6 +528,10 @@ impl App {
             history: Vec::new(),
             status: String::new(),
             help: false,
+            splash: None,
+            confirm_delete: None,
+            rename: None,
+            details: None,
             buffering: None,
             audio_cache: HashMap::new(),
             requested: HashSet::new(),
@@ -315,6 +573,16 @@ impl App {
             }
         }
         app
+    }
+
+    /// The boot screen starts (main calls this once, if `[ui] splash` is on).
+    pub fn begin_splash(&mut self) {
+        self.splash = self.config.ui.splash.then(Instant::now);
+    }
+
+    /// How far along the boot screen is, 0.0 to 1.0 (`None`: not showing).
+    pub fn splash_progress(&self) -> Option<f32> {
+        self.splash.map(|t| (t.elapsed().as_secs_f32() / SPLASH.as_secs_f32()).min(1.0))
     }
 
     pub fn follows_omarchy(&self) -> bool {
@@ -373,7 +641,7 @@ impl App {
                 let Some(fav) = self.config.ui.favorites.get(i).cloned() else { return };
                 match self.stations.iter().position(|s| s.id == fav.id) {
                     Some(at) => {
-                        // tune() lands on Now Playing exactly like Shift+N.
+                        // tune() lands on Now Playing exactly like Shift+P.
                         self.tune(at);
                     }
                     None if self.stations.is_empty() => self.status = "The stations are still loading".into(),
@@ -386,7 +654,7 @@ impl App {
         }
     }
 
-    /// NOW PLAYING (menu entry or `N`): the player, with the menu on it.
+    /// NOW PLAYING (menu entry or `P`): the player, with the menu on it.
     fn show_now_playing(&mut self) {
         if !self.has_now_playing() {
             self.status = "Nothing is playing yet: pick a station".into();
@@ -397,6 +665,8 @@ impl App {
         // The keys go to the Now Playing pane, so it shows as active.
         self.focus = Focus::Content;
         self.pane = Pane::NowPlaying;
+        // A cover that failed earlier gets another go now that it is wanted.
+        self.art.retry_failed();
     }
 
     /// `F`: the menu, on the first of FAVORITES.
@@ -418,7 +688,7 @@ impl App {
         self.focus = Focus::Content;
     }
 
-    /// Stations (menu entry or `s`): the list, with the keys on it.
+    /// Stations (menu entry or `S`): the list, with the keys on it.
     fn show_stations(&mut self) {
         self.view = View::Stations;
         self.focus = Focus::Content;
@@ -500,6 +770,9 @@ impl App {
     // --- Every frame ---
 
     pub fn tick(&mut self) {
+        if self.splash.is_some_and(|t| t.elapsed() >= SPLASH) {
+            self.splash = None;
+        }
         while let Ok(reply) = self.backend.replies.try_recv() {
             self.on_reply(reply);
         }
@@ -624,7 +897,27 @@ impl App {
                     self.tune(self.stations_cursor);
                 } else if self.current_station.is_none() && self.status.is_empty() {
                     // Startup always stays on Now Playing (idle); Stations is opened by hand.
-                    self.status = "Nothing playing: open Stations (s) to pick one".into();
+                    self.status = "Nothing playing: open Stations (Shift+S) to pick one".into();
+                }
+            }
+            Reply::StationRenamed { station_id, name } => {
+                if let Some(s) = self.stations.iter_mut().find(|s| s.id == station_id) {
+                    s.name = name.clone();
+                }
+                let mut starred = false;
+                for f in self.config.ui.favorites.iter_mut().filter(|f| f.id == station_id) {
+                    f.name = name.clone();
+                    starred = true;
+                }
+                if starred {
+                    self.save_favorites();
+                }
+                self.status = format!("Station renamed to “{name}” on your Pandora account");
+            }
+            Reply::StationRemoved { station_id } => self.station_removed(&station_id),
+            Reply::StationDetails { station_id, details } => {
+                if let Some(d) = self.details.as_mut().filter(|d| d.station_id == station_id) {
+                    d.from_pandora = Some(Ok(details));
                 }
             }
             Reply::Playlist { station_id, songs } => {
@@ -676,6 +969,12 @@ impl App {
             Reply::Failed { what, message } => {
                 if what == "playlist" {
                     self.playlist_pending = false;
+                }
+                if what == "details"
+                    && let Some(d) = self.details.as_mut().filter(|d| d.from_pandora.is_none())
+                {
+                    d.from_pandora = Some(Err(message.clone()));
+                    return;
                 }
                 self.status = format!("⚠ {what}: {message}");
             }
@@ -773,7 +1072,7 @@ impl App {
             self.save(&[("pandora", "last_station", station.id.as_str().into())]);
         }
         self.status = format!("Tuning in to {}", station.name);
-        // Every way a station starts lands where Shift+N does: same function, no drift.
+        // Every way a station starts lands where Shift+P does: same function, no drift.
         self.show_now_playing();
     }
 
@@ -888,9 +1187,13 @@ impl App {
     }
 
     /// The player's panes have the keys.
-    /// A popup is drawn over the screen (Help, the quit box).
+    /// A popup is drawn over the screen (Help, the quit box, the station boxes, details).
     pub fn overlay_open(&self) -> bool {
-        self.help || self.confirm_quit
+        self.help
+            || self.confirm_quit
+            || self.confirm_delete.is_some()
+            || self.rename.is_some()
+            || self.details.is_some()
     }
 
     pub fn in_songs(&self) -> bool {
@@ -939,6 +1242,7 @@ impl App {
             Setting::RetroMode => self.config.ui.retro_mode.label().into(),
             Setting::ArtTint => self.config.ui.art_tint.label().into(),
             Setting::CheckUpdates => on(self.config.ui.check_updates),
+            Setting::Splash => on(self.config.ui.splash),
             Setting::EditFile => self
                 .config_path
                 .as_ref()
@@ -1019,31 +1323,18 @@ impl App {
                 self.save(&[("ui", "menu_width", i64::from(next).into())]);
                 self.status = format!("Menu width: {next} columns");
             }
-            Setting::AlbumArt => {
-                let next = self.config.ui.album_art.next();
-                self.config.ui.album_art = next;
-                self.art.forget_shown();
-                self.want_art();
-                self.save(&[("ui", "album_art", next.as_str().into())]);
-                self.status = format!("Album art: {}", next.label());
-            }
-            Setting::ArtTint => {
-                let next = self.config.ui.art_tint.next();
-                self.config.ui.art_tint = next;
-                self.art.forget_shown();
-                self.save(&[("ui", "art_tint", next.as_str().into())]);
-                self.status = format!("Tint art with theme colors: {}", next.label());
-            }
-            Setting::RetroMode => {
-                let next = self.config.ui.retro_mode.next();
-                self.config.ui.retro_mode = next;
-                self.art.forget_shown();
-                self.save(&[("ui", "retro_mode", next.as_str().into())]);
-                self.status = format!("Retro mode: {} 🎮", next.label());
-            }
+            Setting::AlbumArt => self.next_album_art(),
+            Setting::ArtTint => self.next_art_tint(),
+            Setting::RetroMode => self.next_retro_mode(),
             Setting::CheckUpdates => {
                 self.config.ui.check_updates = !self.config.ui.check_updates;
                 self.save(&[("ui", "check_updates", self.config.ui.check_updates.into())]);
+            }
+            Setting::Splash => {
+                let on = !self.config.ui.splash;
+                self.config.ui.splash = on;
+                self.save(&[("ui", "splash", on.into())]);
+                self.status = format!("Boot screen: {}", if on { "on" } else { "off" });
             }
             Setting::EditFile => {
                 if self.demo {
@@ -1152,11 +1443,29 @@ impl App {
             self.quit = true;
             return;
         }
+        if self.splash.is_some() {
+            // Any key skips the boot screen (and is used up doing so).
+            self.splash = None;
+            return;
+        }
         if self.confirm_quit {
             // y quits; any other key is no, as in tubevibe.
             self.confirm_quit = false;
             self.quit = matches!(key.code, KeyCode::Char('y' | 'Y'));
             return;
+        }
+        if let Some(station) = self.confirm_delete.take() {
+            // y deletes; any other key is no, like the quit box.
+            if matches!(key.code, KeyCode::Char('y' | 'Y')) {
+                self.status = format!("Deleting “{}” from your Pandora account…", station.name);
+                self.backend.send(Request::RemoveStation { station_id: station.id });
+            } else {
+                self.status = "Kept the station".into();
+            }
+            return;
+        }
+        if self.rename.is_some() {
+            return self.rename_key(key);
         }
         if self.prompt.is_some() {
             return self.prompt_key(key);
@@ -1166,51 +1475,217 @@ impl App {
             self.help = false;
             return;
         }
-        match key.code {
+        if self.details.is_some() {
+            self.details = None;
+            return;
+        }
+        if let Some(cmd) = command_for(key) {
+            self.run(cmd);
+        }
+    }
+
+    fn run(&mut self, cmd: Cmd) {
+        match cmd {
             // Only Shift+Q quits, so a stray lowercase q can't end playback.
-            KeyCode::Char('Q') => self.confirm_quit = true,
-            KeyCode::Char('?') => self.help = true,
-            KeyCode::Char(' ') | KeyCode::Char('p') => self.audio.toggle_pause(),
-            KeyCode::Char('n') => {
-                if self.now.is_some() {
-                    self.status = "Skipped".into();
-                    self.advance();
-                }
-            }
-            KeyCode::Char('+') | KeyCode::Char('u') | KeyCode::Char('=') => self.rate(true),
-            KeyCode::Char('-') | KeyCode::Char('d') => self.rate(false),
-            KeyCode::Char('U') => self.rate_row(true),
-            KeyCode::Char('D') => self.rate_row(false),
-            KeyCode::Char('z') => self.tired(),
-            KeyCode::Char('N') => self.show_now_playing(),
-            KeyCode::Char('S') => self.show_stations(),
-            KeyCode::Char('T') => self.show_page(View::Settings),
-            KeyCode::Char('A') => self.show_page(View::About),
-            KeyCode::Char('F') => self.show_favorites(),
-            KeyCode::Char('s') => {
-                self.show_stations();
-            }
-            KeyCode::Char('f') => self.toggle_favorite(),
-            KeyCode::Tab => self.next_focus(true),
-            KeyCode::BackTab => self.next_focus(false),
-            KeyCode::Esc => {
+            Cmd::Quit => self.confirm_quit = true,
+            Cmd::Help => self.help = true,
+            Cmd::Pause => self.audio.toggle_pause(),
+            Cmd::Skip => self.skip(),
+            Cmd::NowPlaying => self.show_now_playing(),
+            Cmd::Stations => self.show_stations(),
+            Cmd::Settings => self.show_page(View::Settings),
+            Cmd::About => self.show_page(View::About),
+            Cmd::Favorites => self.show_favorites(),
+            Cmd::ThumbUp => self.rate(true),
+            Cmd::ThumbDown => self.rate(false),
+            Cmd::LikePane => self.rate_in_pane(true),
+            Cmd::BadPane => self.rate_in_pane(false),
+            Cmd::Tired => self.tired(),
+            Cmd::Star => self.toggle_favorite(),
+            Cmd::Rename => self.ask_rename(),
+            Cmd::Delete => self.ask_delete(),
+            Cmd::Details => self.show_details(),
+            Cmd::NextFocus => self.next_focus(true),
+            Cmd::PrevFocus => self.next_focus(false),
+            Cmd::ToMenu => {
                 self.focus = Focus::Menu;
                 self.point_menu_at_view();
             }
-            KeyCode::Char('j') | KeyCode::Down => self.move_cursor(1),
-            KeyCode::Char('k') | KeyCode::Up => self.move_cursor(-1),
-            KeyCode::Char('g') | KeyCode::Home => self.move_cursor(-1000),
-            KeyCode::Char('G') | KeyCode::End => self.move_cursor(1000),
-            KeyCode::Enter => self.enter(),
-            // Volume: Shift+← / Shift+→ (plain arrows are left free).
-            KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => self.change_volume(5),
-            KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => self.change_volume(-5),
-            KeyCode::Char('{') => self.resize_menu(-1),
-            KeyCode::Char('}') => self.resize_menu(1),
-            KeyCode::Char('t') => self.next_theme(),
-            KeyCode::Char('i') => self.next_icons(),
+            Cmd::Down => self.move_cursor(1),
+            Cmd::Up => self.move_cursor(-1),
+            Cmd::Top => self.move_cursor(-1000),
+            Cmd::Bottom => self.move_cursor(1000),
+            Cmd::Enter => self.enter(),
+            Cmd::VolumeUp => self.change_volume(5),
+            Cmd::VolumeDown => self.change_volume(-5),
+            Cmd::MenuNarrower => self.resize_menu(-1),
+            Cmd::MenuWider => self.resize_menu(1),
+            Cmd::Icons => self.next_icons(),
+            Cmd::ArtType => self.next_album_art(),
+            Cmd::Retro => self.next_retro_mode(),
+            Cmd::Tint => self.next_art_tint(),
+        }
+    }
+
+    /// `N`: on to the next song, from anywhere.
+    fn skip(&mut self) {
+        if self.now.is_some() {
+            self.status = "Skipped".into();
+            self.advance();
+        } else {
+            self.status = "Nothing is playing to skip".into();
+        }
+    }
+
+    // --- Renaming and deleting stations (r and x) ---
+
+    /// The station `r`, `x` and `v` mean: the highlighted one in Stations,
+    /// or the station of the favorite the menu is on. `None` anywhere else.
+    fn station_in_reach(&self) -> Option<(Station, bool)> {
+        match (self.focus, self.view, self.menu_selected()) {
+            (Focus::Content, View::Stations, _) => {
+                self.stations.get(self.stations_index()).cloned().map(|s| (s, false))
+            }
+            (Focus::Menu, _, MenuItem::Favorite(i)) => {
+                let fav = self.config.ui.favorites.get(i)?;
+                let station = self.stations.iter().find(|s| s.id == fav.id).cloned();
+                station.map(|s| (s, true))
+            }
+            _ => None,
+        }
+    }
+
+    /// The reason `r` / `x` / `v` have nothing to act on here.
+    fn no_station_here(&mut self, what: &str) {
+        self.status = match (self.focus, self.menu_selected()) {
+            (Focus::Menu, MenuItem::Favorite(_)) if self.stations.is_empty() => "The stations are still loading".into(),
+            (Focus::Menu, MenuItem::Favorite(_)) => {
+                "That favorite isn't one of your stations any more (f removes it)".into()
+            }
+            _ => format!("{what} works on a station: open Stations (Shift+S) or select a favorite"),
+        };
+    }
+
+    /// `r`: asks for a new name for the selected station.
+    fn ask_rename(&mut self) {
+        let Some((station, favorite)) = self.station_in_reach() else {
+            return self.no_station_here("r renames");
+        };
+        if !station.allow_rename {
+            self.status = format!("Pandora doesn't let you rename “{}”", station.name);
+            return;
+        }
+        let text = station.name.clone();
+        self.rename = Some(Rename { station: StationRef { id: station.id, name: station.name, favorite }, text });
+    }
+
+    fn rename_key(&mut self, key: KeyEvent) {
+        let Some(rename) = self.rename.as_mut() else { return };
+        match key.code {
+            KeyCode::Esc => {
+                self.rename = None;
+                self.status = "Rename cancelled".into();
+            }
+            KeyCode::Backspace => {
+                rename.text.pop();
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => rename.text.clear(),
+            KeyCode::Char(c) if rename.text.chars().count() < MAX_STATION_NAME => rename.text.push(c),
+            KeyCode::Enter => {
+                let name = rename.text.trim().to_owned();
+                let station = rename.station.clone();
+                self.rename = None;
+                if name.is_empty() || name == station.name {
+                    self.status = "Rename cancelled: the name is empty or the same".into();
+                    return;
+                }
+                self.status = format!("Renaming “{}” to “{name}”…", station.name);
+                self.backend.send(Request::RenameStation { station_id: station.id, name });
+            }
             _ => {}
         }
+    }
+
+    /// `x`: asks before deleting the selected station from the account.
+    fn ask_delete(&mut self) {
+        let Some((station, favorite)) = self.station_in_reach() else {
+            return self.no_station_here("x deletes");
+        };
+        if !station.allow_delete {
+            self.status = format!("Pandora doesn't let you delete “{}”", station.name);
+            return;
+        }
+        self.confirm_delete = Some(StationRef { id: station.id, name: station.name, favorite });
+    }
+
+    /// Pandora removed a station: it goes from the list, Favorites and,
+    /// if it was playing, the player.
+    fn station_removed(&mut self, id: &str) {
+        let name = self.stations.iter().find(|s| s.id == id).map(|s| s.name.clone()).unwrap_or_default();
+        let selected = self.menu_selected();
+        self.stations.retain(|s| s.id != id);
+        if self.config.ui.favorites.iter().any(|f| f.id == id) {
+            self.config.ui.favorites.retain(|f| f.id != id);
+            self.save_favorites();
+        }
+        if self.current_station.as_deref() == Some(id) {
+            self.audio.stop();
+            self.now = None;
+            self.queue.clear();
+            self.audio_cache.clear();
+            self.buffering = None;
+            self.playlist_pending = false;
+            self.current_station = None;
+            if self.view == View::Player {
+                self.view = View::Stations;
+            }
+        }
+        self.stations_cursor = self.stations_cursor.min(self.stations.len().saturating_sub(1));
+        let items = self.menu_items();
+        self.menu_cursor = items.iter().position(|m| *m == selected).unwrap_or(self.menu_cursor).min(items.len() - 1);
+        self.status = format!("Deleted “{name}” from your Pandora account");
+    }
+
+    // --- Details (v) ---
+
+    /// `v`: what Pandora tells about the selected song or station.
+    fn show_details(&mut self) {
+        let station_name =
+            |app: &App, id: &str| app.stations.iter().find(|s| s.id == id).map(|s| s.name.clone()).unwrap_or_default();
+        let details = if let Some((station, _)) = self.station_in_reach() {
+            Details {
+                station_id: station.id.clone(),
+                station_name: station.name.clone(),
+                of: DetailsOf::Station(Box::new(station)),
+                from_pandora: None,
+            }
+        } else if self.focus == Focus::Menu && matches!(self.menu_selected(), MenuItem::Favorite(_)) {
+            return self.no_station_here("v shows details of");
+        } else {
+            let song = match (self.in_songs(), self.pane) {
+                (true, Pane::UpNext) => self.queue.get(self.next_index()),
+                (true, Pane::History) => self.history.get(self.history_index()),
+                _ => self.now.as_ref(),
+            };
+            let Some(song) = song.cloned() else {
+                self.status =
+                    "No song to show details of: pick a station, or open Stations (Shift+S) for a station's".into();
+                return;
+            };
+            Details {
+                station_name: station_name(self, &song.station_id),
+                station_id: song.station_id.clone(),
+                of: DetailsOf::Song(Box::new(song)),
+                from_pandora: None,
+            }
+        };
+        if details.station_id.is_empty() {
+            self.details = Some(Details { from_pandora: Some(Err("no station for this song".into())), ..details });
+            return;
+        }
+        let current = self.current_station.as_deref() == Some(details.station_id.as_str());
+        self.backend.send(Request::StationDetails { station_id: details.station_id.clone(), current });
+        self.details = Some(details);
     }
 
     /// Tab: menu → Up Next → History → menu on the player (Shift+Tab the
@@ -1231,9 +1706,6 @@ impl App {
             };
             let to = if forward { (at + 1) % 4 } else { (at + 3) % 4 };
             (self.focus, self.pane) = order[to];
-            if matches!(self.pane, Pane::UpNext | Pane::History) && self.focus == Focus::Content {
-                self.last_song_pane = self.pane;
-            }
             if to == 0 {
                 self.pane = Pane::UpNext;
             }
@@ -1281,6 +1753,34 @@ impl App {
         self.status = format!("Menu width: {next} columns ({{ and }} change it)");
     }
 
+    /// Settings, and Shift+C: picture, blocks or the visualizer.
+    fn next_album_art(&mut self) {
+        let next = self.config.ui.album_art.next();
+        self.config.ui.album_art = next;
+        self.art.forget_shown();
+        self.want_art();
+        self.save(&[("ui", "album_art", next.as_str().into())]);
+        self.status = format!("Album art: {}", next.label());
+    }
+
+    /// Settings, and Shift+R: the next retro level.
+    fn next_retro_mode(&mut self) {
+        let next = self.config.ui.retro_mode.next();
+        self.config.ui.retro_mode = next;
+        self.art.forget_shown();
+        self.save(&[("ui", "retro_mode", next.as_str().into())]);
+        self.status = format!("Retro mode: {} 🎮", next.label());
+    }
+
+    /// Settings, and Shift+H: off, duotone or palette.
+    fn next_art_tint(&mut self) {
+        let next = self.config.ui.art_tint.next();
+        self.config.ui.art_tint = next;
+        self.art.forget_shown();
+        self.save(&[("ui", "art_tint", next.as_str().into())]);
+        self.status = format!("Tint art with theme colors: {}", next.label());
+    }
+
     fn next_theme(&mut self) {
         let next = theme::next(&self.config.ui.theme);
         self.config.ui.theme = next.into();
@@ -1304,7 +1804,7 @@ impl App {
         self.status = format!("Volume {volume}%");
     }
 
-    /// `u`/`+` and `d`/`-`: always the playing song, whatever has the keys.
+    /// `U` / `D`: thumbs on the playing song, whatever has the keys.
     fn rate(&mut self, positive: bool) {
         let Some(song) = self.now.as_mut() else {
             self.status = "Nothing is playing to rate".into();
@@ -1323,18 +1823,26 @@ impl App {
         }
     }
 
-    /// `U` / `D`: the highlighted row of Up Next or History (the focused one,
-    /// else the last one that had the keys). Pandora's addFeedback takes any
-    /// track token from the station's playlist, played or not.
-    fn rate_row(&mut self, positive: bool) {
-        let pane = if self.in_songs() && self.pane != Pane::NowPlaying { self.pane } else { self.last_song_pane };
+    /// `l` / `b`: thumbs on what the focused pane has selected: a row of Up
+    /// Next or History, or the playing song when Now Playing has the keys.
+    fn rate_in_pane(&mut self, positive: bool) {
+        match (self.in_songs(), self.pane) {
+            (true, Pane::NowPlaying) => self.rate(positive),
+            (true, pane) => self.rate_row(pane, positive),
+            _ => self.status = "l and b rate the selected song: open Up Next, History or Now Playing first".into(),
+        }
+    }
+
+    /// The highlighted row of Up Next or History. Pandora's addFeedback takes
+    /// any track token from the station's playlist, played or not.
+    fn rate_row(&mut self, pane: Pane, positive: bool) {
         let (at, name) = match pane {
             Pane::History => (self.history_index(), "History"),
             _ => (self.next_index(), "Up Next"),
         };
         let song = if pane == Pane::History { self.history.get_mut(at) } else { self.queue.get_mut(at) };
         let Some(song) = song else {
-            self.status = format!("{name} is empty: no song to rate (U / D rate its highlighted row)");
+            self.status = format!("{name} is empty: no song to rate");
             return;
         };
         if song.station_id.is_empty() || song.track_token.is_empty() {
@@ -1458,7 +1966,7 @@ mod tests {
         app.view = View::Settings;
         app.focus = Focus::Content;
         for (setting, first, second) in
-            [(Setting::AlbumArt, "Blocks", "Off (visualizer)"), (Setting::RetroMode, "32-bit", "16-bit")]
+            [(Setting::AlbumArt, "Blocks", "Off (visualizer)"), (Setting::RetroMode, "64-bit", "32-bit")]
         {
             app.settings_cursor = Setting::ALL.iter().position(|(_, s)| *s == setting).unwrap();
             assert_eq!(Setting::ALL[app.settings_cursor].0, "LOOK");
@@ -1468,8 +1976,8 @@ mod tests {
             assert_eq!(app.setting_value(setting), second);
         }
         assert_eq!(app.config.ui.album_art, AlbumArt::Off);
-        assert_eq!(app.config.ui.retro_mode, crate::config::RetroMode::Bit16);
-        assert_eq!(app.status, "Retro mode: 16-bit 🎮");
+        assert_eq!(app.config.ui.retro_mode, crate::config::RetroMode::Bit32);
+        assert_eq!(app.status, "Retro mode: 32-bit 🎮");
         assert!(app.setting_value(Setting::AlbumArt).starts_with("Off"));
     }
 
@@ -1501,7 +2009,7 @@ mod tests {
     fn enter_on_a_station_plays_it_and_shows_now_playing() {
         let mut app = App::new(Config::default(), None, &[], true);
         app.settle(Duration::from_millis(150));
-        app.on_key(key(KeyCode::Char('s')));
+        app.on_key(shift('S'));
         app.on_key(key(KeyCode::Char('j')));
         let want = app.stations[app.stations_index()].id.clone();
         app.on_key(key(KeyCode::Enter));
@@ -1520,8 +2028,8 @@ mod tests {
         app.settle(Duration::from_millis(150));
         assert_eq!(app.view, View::Player);
         assert!(app.now.is_none() && app.current_station.is_none());
-        app.on_key(key(KeyCode::Char('s')));
-        assert_eq!(app.view, View::Stations, "s opens it by hand");
+        app.on_key(shift('S'));
+        assert_eq!(app.view, View::Stations, "Shift+S opens it by hand");
     }
 
     #[test]
@@ -1622,18 +2130,18 @@ mod tests {
         app.on_key(key(KeyCode::Char('j')));
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.view, View::About);
-        app.on_key(key(KeyCode::Char('s')));
+        app.on_key(shift('S'));
         assert_eq!((app.view, app.focus), (View::Stations, Focus::Content));
         app.on_key(key(KeyCode::Esc));
         assert_eq!(app.menu_selected(), MenuItem::Stations);
     }
 
     #[test]
-    fn now_playing_from_the_menu_and_with_shift_n() {
+    fn now_playing_from_the_menu_and_with_shift_p() {
         let mut app = demo();
         app.view = View::About;
         app.focus = Focus::Content;
-        app.on_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT));
+        app.on_key(shift('P'));
         assert_eq!((app.view, app.focus, app.menu_selected()), (View::Player, Focus::Content, MenuItem::NowPlaying));
         assert_eq!(app.pane, Pane::NowPlaying);
         let title = app.now.as_ref().map(|s| s.title.clone());
@@ -1643,8 +2151,8 @@ mod tests {
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.view, View::Player);
         assert_eq!(app.now.as_ref().map(|s| s.title.clone()), title, "only shows it: the song plays on");
-        // Lowercase n still skips.
-        app.on_key(key(KeyCode::Char('n')));
+        // Shift+N skips.
+        app.on_key(shift('N'));
         assert_ne!(app.now.as_ref().map(|s| s.title.clone()), title);
     }
 
@@ -1656,11 +2164,11 @@ mod tests {
         app.settle(Duration::from_millis(150));
         assert_eq!(app.view, View::Player, "startup never opens Stations by itself");
         assert!(!app.menu_items().contains(&MenuItem::NowPlaying));
-        app.on_key(key(KeyCode::Char('N')));
+        app.on_key(shift('P'));
         assert!(app.status.starts_with("Nothing is playing"), "{}", app.status);
-        assert_eq!(app.view, View::Player, "N with nothing playing stays put");
-        app.on_key(key(KeyCode::Char('s')));
-        assert_eq!((app.view, app.focus), (View::Stations, Focus::Content), "s opens the list");
+        assert_eq!(app.view, View::Player, "Shift+P with nothing playing stays put");
+        app.on_key(shift('S'));
+        assert_eq!((app.view, app.focus), (View::Stations, Focus::Content), "Shift+S opens the list");
         // Enter on the second station: it plays and NOW PLAYING appears, selected.
         app.on_key(key(KeyCode::Char('j')));
         app.on_key(key(KeyCode::Enter));
@@ -1681,7 +2189,7 @@ mod tests {
         // The demo never saves: point it at a file to see what would be.
         app.demo = false;
         app.config_path = Some(path.clone());
-        app.on_key(key(KeyCode::Char('s')));
+        app.on_key(shift('S'));
         app.on_key(key(KeyCode::Char('j')));
         app.on_key(key(KeyCode::Char('j')));
         app.on_key(key(KeyCode::Char('f')));
@@ -1750,63 +2258,110 @@ mod tests {
         assert_eq!((app.focus, app.pane), (Focus::Content, Pane::History));
     }
 
+    fn shift(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT)
+    }
+
     #[test]
-    fn lowercase_u_d_always_rate_the_playing_song() {
+    fn shift_u_d_rate_the_playing_song_from_any_pane() {
         let mut app = demo();
-        app.focus = Focus::Content;
-        app.pane = Pane::History;
-        let before = app.history[0].rating;
-        app.on_key(key(KeyCode::Char('u')));
-        assert_eq!(app.now.as_ref().unwrap().rating, Rating::Up);
-        assert_eq!(app.history[0].rating, before, "History row untouched");
+        for pane in [Pane::History, Pane::UpNext] {
+            app.focus = Focus::Content;
+            app.pane = pane;
+            let before = app.history[0].rating;
+            let playing = app.now.as_ref().unwrap().track_token.clone();
+            app.on_key(shift('U'));
+            assert_eq!(app.now.as_ref().unwrap().rating, Rating::Up, "{pane:?}: the playing song");
+            assert_eq!(app.history[0].rating, before, "{pane:?}: the History row is untouched");
+            assert_eq!(app.now.as_ref().unwrap().track_token, playing);
+        }
+        // From the menu too, and from another page.
+        app.focus = Focus::Menu;
+        app.view = View::Settings;
         let playing = app.now.as_ref().unwrap().track_token.clone();
-        app.on_key(key(KeyCode::Char('d')));
+        app.on_key(shift('D'));
         assert!(app.history.iter().any(|s| s.track_token == playing && s.rating == Rating::Down));
         assert_ne!(app.now.as_ref().unwrap().track_token, playing, "thumbs down skips");
     }
 
     #[test]
-    fn shift_u_d_rate_the_highlighted_row() {
+    fn the_old_thumb_keys_do_nothing() {
         let mut app = demo();
         app.focus = Focus::Content;
+        app.pane = Pane::NowPlaying;
+        let playing = app.now.as_ref().unwrap().track_token.clone();
+        for c in ['+', '-', '=', 'u', 'd', 'n', 's', 't'] {
+            let (view, theme) = (app.view, app.config.ui.theme.clone());
+            app.on_key(key(KeyCode::Char(c)));
+            assert_eq!(app.now.as_ref().unwrap().rating, Rating::None, "{c} rates nothing");
+            assert_eq!(app.now.as_ref().unwrap().track_token, playing, "{c} skips nothing");
+            assert_eq!((app.view, &app.config.ui.theme), (view, &theme), "{c} goes nowhere");
+        }
+    }
+
+    #[test]
+    fn l_and_b_rate_what_the_pane_has() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        // History: the highlighted row, never the playing song.
         app.pane = Pane::History;
         app.on_key(key(KeyCode::Char('j')));
         let playing = app.now.as_ref().unwrap().track_token.clone();
-        app.on_key(key(KeyCode::Char('D')));
+        app.on_key(key(KeyCode::Char('b')));
         assert_eq!(app.history[1].rating, Rating::Down);
+        assert_eq!(app.now.as_ref().unwrap().rating, Rating::None);
         assert_eq!(app.now.as_ref().unwrap().track_token, playing, "rating a row doesn't skip");
-        // Up Next: U likes the highlighted song in place; D drops it.
+        // Up Next: l likes the highlighted song in place; b drops it.
         app.pane = Pane::UpNext;
         let token = app.queue[0].track_token.clone();
-        app.on_key(key(KeyCode::Char('U')));
+        app.on_key(key(KeyCode::Char('l')));
         assert_eq!((app.queue[0].track_token.as_str(), app.queue[0].rating), (token.as_str(), Rating::Up));
         let n = app.queue.len();
-        app.on_key(key(KeyCode::Char('D')));
+        app.on_key(key(KeyCode::Char('b')));
         assert_eq!(app.queue.len(), n - 1);
         assert!(app.status.starts_with("Disliked and dropped from Up Next"), "{}", app.status);
-        // From the menu, U uses the last song pane Tab reached.
+        // Now Playing focused: the current song.
+        app.pane = Pane::NowPlaying;
+        app.on_key(key(KeyCode::Char('l')));
+        assert_eq!(app.now.as_ref().unwrap().rating, Rating::Up);
+        // From the menu there is no song pane: it says so and rates nothing.
         app.focus = Focus::Menu;
-        app.last_song_pane = Pane::History;
-        app.history_cursor = 0;
-        app.on_key(key(KeyCode::Char('U')));
-        assert_eq!(app.history[0].rating, Rating::Up);
+        let (up, down) = (app.history[0].rating, app.history[1].rating);
+        app.on_key(key(KeyCode::Char('b')));
+        assert_eq!((app.history[0].rating, app.history[1].rating), (up, down));
+        assert!(app.status.contains("open Up Next, History or Now Playing"), "{}", app.status);
         // An empty pane says so and does nothing.
+        app.focus = Focus::Content;
+        app.pane = Pane::History;
         app.history.clear();
-        app.on_key(key(KeyCode::Char('U')));
+        app.on_key(key(KeyCode::Char('l')));
         assert!(app.status.starts_with("History is empty"), "{}", app.status);
     }
 
     #[test]
-    fn shift_n_focuses_the_now_playing_pane() {
+    fn shift_n_skips_and_shift_p_goes_to_now_playing() {
         let mut app = demo();
         app.focus = Focus::Content;
         app.pane = Pane::History;
-        app.on_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT));
+        app.view = View::Settings;
+        let playing = app.now.as_ref().unwrap().track_token.clone();
+        // Shift+P: where Shift+N used to go.
+        app.on_key(shift('P'));
         assert_eq!((app.view, app.focus, app.pane), (View::Player, Focus::Content, Pane::NowPlaying));
         assert_eq!(app.menu_selected(), MenuItem::NowPlaying);
+        assert_eq!(app.now.as_ref().unwrap().track_token, playing, "going there skips nothing");
         app.on_key(key(KeyCode::Tab));
         assert_eq!(app.pane, Pane::UpNext);
-        assert_eq!(app.last_song_pane, Pane::UpNext);
+        // Shift+N skips, from any pane and any page.
+        app.view = View::About;
+        app.focus = Focus::Menu;
+        app.on_key(shift('N'));
+        assert_ne!(app.now.as_ref().unwrap().track_token, playing);
+        assert_eq!((app.view, app.focus), (View::About, Focus::Menu), "skipping doesn't move you");
+        // Lowercase n no longer skips.
+        let now = app.now.as_ref().unwrap().track_token.clone();
+        app.on_key(key(KeyCode::Char('n')));
+        assert_eq!(app.now.as_ref().unwrap().track_token, now);
     }
 
     #[test]
@@ -1935,10 +2490,9 @@ mod tests {
 
     #[test]
     fn shift_keys_open_stations_settings_about_and_favorites() {
-        let shift = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
         let mut app = App::new(Config::default(), None, &[], true);
         app.on_key(shift('S'));
-        assert_eq!((app.view, app.focus), (View::Stations, Focus::Content), "S is Stations, like s");
+        assert_eq!((app.view, app.focus), (View::Stations, Focus::Content), "S is Stations");
         app.on_key(shift('T'));
         assert_eq!((app.view, app.focus, app.menu_selected()), (View::Settings, Focus::Content, MenuItem::Settings));
         app.on_key(shift('A'));
@@ -1952,6 +2506,189 @@ mod tests {
         assert_eq!((app.focus, app.menu_selected()), (Focus::Menu, MenuItem::Favorite(0)));
         let theme = app.config.ui.theme.clone();
         app.on_key(key(KeyCode::Char('t')));
-        assert_ne!(app.config.ui.theme, theme, "t is still the theme");
+        assert_eq!(app.config.ui.theme, theme, "t no longer switches the theme: only Settings does");
+    }
+
+    fn saving_app(name: &str) -> App {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.demo = false;
+        app.config_path = Some(crate::config::temp_dir(name).join("config.toml"));
+        app
+    }
+
+    fn saved(app: &App) -> String {
+        std::fs::read_to_string(app.config_path.as_ref().unwrap()).unwrap_or_default()
+    }
+
+    #[test]
+    fn no_key_is_bound_twice_and_the_removed_ones_are_gone() {
+        for (i, a) in KEYMAP.iter().enumerate() {
+            for b in &KEYMAP[i + 1..] {
+                assert!(a.code != b.code, "{:?} is bound twice", a.code);
+            }
+        }
+        for gone in ['+', '-', '=', 'u', 'd', 'n', 's', 't'] {
+            let bound = command_for(key(KeyCode::Char(gone)));
+            assert!(bound.is_none(), "{gone} should be unbound, is {bound:?}");
+        }
+        assert_eq!(command_for(shift('U')), Some(Cmd::ThumbUp));
+        assert_eq!(command_for(shift('N')), Some(Cmd::Skip));
+        assert_eq!(command_for(key(KeyCode::Char('l'))), Some(Cmd::LikePane));
+    }
+
+    #[test]
+    fn shift_c_r_and_h_cycle_the_cover_art_and_save_it() {
+        let mut app = saving_app("cover-keys");
+        assert_eq!(app.config.ui.album_art, AlbumArt::Picture);
+        app.on_key(shift('C'));
+        assert_eq!(app.config.ui.album_art, AlbumArt::Blocks);
+        app.config.ui.album_art = AlbumArt::Picture;
+        let retro = app.config.ui.retro_mode;
+        app.on_key(shift('R'));
+        assert_eq!(app.config.ui.retro_mode, retro.next());
+        let tint = app.config.ui.art_tint;
+        app.on_key(shift('H'));
+        assert_eq!(app.config.ui.art_tint, tint.next());
+        let file = saved(&app);
+        assert!(file.contains("album_art") && file.contains("retro_mode") && file.contains("art_tint"), "{file}");
+        // The retro levels go all the way round, 64-bit included.
+        let mut seen = vec![app.config.ui.retro_mode];
+        for _ in 0..crate::config::RetroMode::ALL.len() {
+            app.on_key(shift('R'));
+            seen.push(app.config.ui.retro_mode);
+        }
+        assert!(seen.contains(&crate::config::RetroMode::Bit64));
+        assert_eq!(seen.first(), seen.last());
+    }
+
+    #[test]
+    fn lowercase_i_still_cycles_icons_and_saves() {
+        let mut app = saving_app("icons-key");
+        let icons = app.config.ui.icons;
+        app.on_key(key(KeyCode::Char('i')));
+        assert_eq!(app.config.ui.icons, icons.next());
+        assert!(saved(&app).contains("icons"));
+    }
+
+    #[test]
+    fn any_key_skips_the_splash_and_it_is_used_up() {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.begin_splash();
+        assert!(app.splash.is_some(), "on by default");
+        let view = app.view;
+        app.on_key(key(KeyCode::Char('i')));
+        assert!(app.splash.is_none());
+        assert_eq!(app.view, view);
+        let mut config = Config::default();
+        config.ui.splash = false;
+        let mut off = App::new(config, None, &[], true);
+        off.begin_splash();
+        assert!(off.splash.is_none(), "the toggle turns it off");
+    }
+
+    #[test]
+    fn r_renames_a_station_and_the_name_is_asked_for_first() {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.settle(Duration::from_millis(150));
+        app.on_key(shift('S'));
+        let id = app.stations[app.stations_index()].id.clone();
+        let old = app.stations[app.stations_index()].name.clone();
+        app.on_key(key(KeyCode::Char('r')));
+        let rename = app.rename.clone().expect("the rename box opens");
+        assert_eq!((rename.station.id.as_str(), rename.text.as_str()), (id.as_str(), old.as_str()));
+        for _ in 0..old.chars().count() {
+            app.on_key(key(KeyCode::Backspace));
+        }
+        for c in "Mine".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.rename.is_none());
+        app.settle(Duration::from_millis(150));
+        assert_eq!(app.stations.iter().find(|s| s.id == id).unwrap().name, "Mine");
+        // Esc cancels, and nothing is sent.
+        app.on_key(key(KeyCode::Char('r')));
+        app.on_key(key(KeyCode::Char('X')));
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.rename.is_none());
+        assert_eq!(app.stations.iter().find(|s| s.id == id).unwrap().name, "Mine");
+    }
+
+    #[test]
+    fn x_asks_then_deletes_only_on_y_and_cleans_favorites() {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.settle(Duration::from_millis(150));
+        app.on_key(shift('S'));
+        let station = app.stations[app.stations_index()].clone();
+        app.config.ui.favorites.push(crate::config::Favorite { id: station.id.clone(), name: station.name.clone() });
+        let count = app.stations.len();
+        app.on_key(key(KeyCode::Char('x')));
+        assert_eq!(app.confirm_delete.as_ref().map(|s| s.id.as_str()), Some(station.id.as_str()));
+        app.on_key(key(KeyCode::Char('n')));
+        assert!(app.confirm_delete.is_none());
+        app.settle(Duration::from_millis(100));
+        assert_eq!(app.stations.len(), count, "any key but y keeps it");
+        app.on_key(key(KeyCode::Char('x')));
+        app.on_key(key(KeyCode::Char('y')));
+        app.settle(Duration::from_millis(150));
+        assert_eq!(app.stations.len(), count - 1);
+        assert!(!app.stations.iter().any(|s| s.id == station.id));
+        assert!(!app.is_favorite(&station.id), "its favorite goes too");
+    }
+
+    #[test]
+    fn r_x_and_v_in_favorites_act_on_that_favorites_station_and_f_removes_the_favorite() {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.settle(Duration::from_millis(150));
+        let station = app.stations.iter().find(|s| s.allow_rename && s.allow_delete).unwrap().clone();
+        app.config.ui.favorites.push(crate::config::Favorite { id: station.id.clone(), name: station.name.clone() });
+        app.menu_cursor = app.menu_items().iter().position(|m| *m == MenuItem::Favorite(0)).unwrap();
+        app.focus = Focus::Menu;
+        app.on_key(key(KeyCode::Char('r')));
+        let rename = app.rename.take().expect("rename box");
+        assert!(rename.station.favorite && rename.station.id == station.id);
+        app.on_key(key(KeyCode::Char('x')));
+        let delete = app.confirm_delete.take().expect("delete box");
+        assert!(delete.favorite && delete.id == station.id);
+        app.on_key(key(KeyCode::Char('v')));
+        assert_eq!(app.details.as_ref().map(|d| d.station_id.as_str()), Some(station.id.as_str()));
+        app.on_key(key(KeyCode::Char('q')));
+        assert!(app.details.is_none(), "any key closes details");
+        app.on_key(key(KeyCode::Char('f')));
+        assert!(!app.is_favorite(&station.id), "f still removes the favorite");
+        assert!(app.stations.iter().any(|s| s.id == station.id), "and leaves the station alone");
+    }
+
+    #[test]
+    fn a_station_pandora_will_not_delete_or_rename_is_left_alone() {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.settle(Duration::from_millis(150));
+        app.on_key(shift('S'));
+        let i = app.stations.iter().position(|s| !s.allow_delete).expect("the demo has a shuffle station");
+        app.stations_cursor = i;
+        app.on_key(key(KeyCode::Char('x')));
+        assert!(app.confirm_delete.is_none());
+        assert!(app.status.contains("doesn't let you delete"), "{}", app.status);
+        app.on_key(key(KeyCode::Char('r')));
+        assert!(app.rename.is_none());
+    }
+
+    #[test]
+    fn v_shows_real_station_details_for_a_station_and_for_the_playing_song() {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.settle(Duration::from_millis(150));
+        app.tune(0);
+        app.settle(Duration::from_millis(150));
+        app.on_key(key(KeyCode::Char('v')));
+        app.settle(Duration::from_millis(150));
+        let d = app.details.clone().expect("details open");
+        assert!(matches!(d.of, DetailsOf::Song(_)));
+        assert!(matches!(d.from_pandora, Some(Ok(ref s)) if !s.seeds.is_empty()), "{d:?}");
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.details.is_none());
+        app.on_key(shift('S'));
+        app.on_key(key(KeyCode::Char('v')));
+        app.settle(Duration::from_millis(150));
+        assert!(matches!(app.details.as_ref().unwrap().of, DetailsOf::Station(_)));
     }
 }

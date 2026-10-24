@@ -10,6 +10,7 @@ mod desktop;
 mod icons;
 mod pandora;
 mod snapshot;
+mod splash;
 mod theme;
 mod ui;
 mod update;
@@ -78,6 +79,7 @@ fn main() -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     // Once, before any events are read: what pictures this terminal shows.
     app.art.set_graphics(art::detect());
+    app.begin_splash();
     let result = run(&mut terminal, &mut app);
     let restart = app.restart && result.is_ok();
     // Stop the sound and the backend before the new version takes over.
@@ -117,7 +119,13 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow::Result
         }
         terminal.draw(|frame| ui::draw(frame, app))?;
         // ~18 fps while the visualizer moves, 10 otherwise.
-        let frame_time = Duration::from_millis(if app.animating() { 55 } else { 100 });
+        let frame_time = Duration::from_millis(if app.splash.is_some() {
+            40
+        } else if app.animating() {
+            55
+        } else {
+            100
+        });
         let wait = frame_time.saturating_sub(last.elapsed());
         if event::poll(wait)? {
             match event::read()? {

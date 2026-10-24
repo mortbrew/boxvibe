@@ -15,13 +15,13 @@ use ratatui::widgets::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, Focus, MenuItem, Pane, Prompt, Session, Setting, View};
+use crate::app::{App, Details, Focus, MenuItem, Pane, Prompt, Rename, Session, Setting, StationRef, View};
 use crate::art::Cover;
 use crate::config::{AlbumArt, BorderStyle};
 use crate::icons::{Icons, icons};
 use crate::pandora::{Rating, Song};
 use crate::theme::Palette;
-use crate::update::Progress;
+use crate::update::{Progress, Replace};
 use ratatui_image::{Resize, StatefulImage};
 
 thread_local! {
@@ -69,6 +69,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // Built-in themes paint their background; Omarchy's is the terminal's own.
     let base = if app.follows_omarchy() { Style::new().fg(p.fg) } else { Style::new().fg(p.fg).bg(p.background) };
     frame.render_widget(Block::new().style(base), area);
+    if let Some(progress) = app.splash_progress() {
+        let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+        crate::splash::draw(frame, &p, progress, &version, "Pandora in your terminal", "any key to go on");
+        return;
+    }
     let ic = icons(app.config.ui.icons);
     let [body, status, keys] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1)]).areas(area);
@@ -89,8 +94,17 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if app.help {
         draw_help(frame, app, body);
     }
+    if let Some(d) = &app.details {
+        draw_details(frame, &p, body, d);
+    }
     if app.confirm_quit {
         draw_confirm_quit(frame, &p, area);
+    }
+    if let Some(station) = &app.confirm_delete {
+        draw_confirm_delete(frame, &p, area, station);
+    }
+    if let Some(rename) = &app.rename {
+        draw_rename(frame, &p, area, rename);
     }
 }
 
@@ -136,7 +150,62 @@ fn dim_color(color: Color, background: Color) -> Color {
 /// tubevibe's confirm box: " Confirm " on a red border; a blank line, the
 /// question, the keys and a blank line, so it sits evenly in the frame.
 fn draw_confirm_quit(frame: &mut Frame, p: &Palette, screen: Rect) {
-    draw_confirm(frame, p, screen, "Quit boxvibe?");
+    draw_box(frame, p, screen, &BoxText::confirm("Quit boxvibe?"));
+}
+
+/// `x` on a station: the same box, naming the station and what happens.
+fn draw_confirm_delete(frame: &mut Frame, p: &Palette, screen: Rect, station: &StationRef) {
+    let name = clean(&station.name);
+    let question = if station.favorite {
+        format!("Delete the station “{name}” (the one this favorite plays)? It removes it from your Pandora account.")
+    } else {
+        format!("Delete the station “{name}”? It removes it from your Pandora account.")
+    };
+    draw_box(frame, p, screen, &BoxText::confirm(&question));
+}
+
+/// `r` on a station: a box asking for the new name, in the same style.
+fn draw_rename(frame: &mut Frame, p: &Palette, screen: Rect, rename: &Rename) {
+    let name = clean(&rename.station.name);
+    let question = if rename.station.favorite {
+        format!("New name for the station “{name}” (the one this favorite plays):")
+    } else {
+        format!("New name for “{name}”:")
+    };
+    let text = BoxText {
+        title: " Rename station ",
+        border: p.cyan,
+        width: 50,
+        question,
+        input: Some(rename.text.clone()),
+        hint: "Enter = rename · Esc = cancel",
+    };
+    draw_box(frame, p, screen, &text);
+}
+
+/// What one of the small centred boxes says.
+struct BoxText<'a> {
+    title: &'a str,
+    border: Color,
+    width: u16,
+    question: String,
+    /// A line being typed (with the cursor at its end).
+    input: Option<String>,
+    hint: &'a str,
+}
+
+impl<'a> BoxText<'a> {
+    /// The yes/no box: red border, "y = yes · any other key = no".
+    fn confirm(question: &str) -> Self {
+        Self {
+            title: " Confirm ",
+            border: Color::Reset,
+            width: 40,
+            question: question.to_owned(),
+            input: None,
+            hint: "y = yes · any other key = no",
+        }
+    }
 }
 
 /// The question wrapped to `width` cells, at most `max` lines; a question
@@ -161,19 +230,85 @@ fn wrap_question(question: &str, width: usize, max: usize) -> Vec<String> {
     lines
 }
 
-fn draw_confirm(frame: &mut Frame, p: &Palette, screen: Rect, question: &str) {
-    let width = 40.min(screen.width.saturating_sub(4)).max(screen.width.min(8));
-    // Borders and the three fixed lines take 5 rows; the question gets what's left.
-    let room = usize::from(screen.height.saturating_sub(2).saturating_sub(5)).max(1);
-    let question = wrap_question(question, usize::from(width.saturating_sub(4)), room);
+/// The end of `text` that fits `cells` (what you are typing stays in view).
+fn tail(text: &str, cells: usize) -> String {
+    let mut used = 0;
+    let mut kept: Vec<char> = Vec::new();
+    for c in text.chars().rev() {
+        let w = safe_char_width(c);
+        if used + w > cells {
+            break;
+        }
+        used += w;
+        kept.push(c);
+    }
+    kept.into_iter().rev().collect()
+}
+
+fn draw_box(frame: &mut Frame, p: &Palette, screen: Rect, text: &BoxText) {
+    let width = text.width.min(screen.width.saturating_sub(4)).max(screen.width.min(8));
+    // Borders and the fixed lines (blank, hint, blank, the input) take rows; the question gets what's left.
+    let fixed = 5 + u16::from(text.input.is_some());
+    let room = usize::from(screen.height.saturating_sub(2).saturating_sub(fixed)).max(1);
+    let question = wrap_question(&text.question, usize::from(width.saturating_sub(4)), room);
+    let border = if text.border == Color::Reset { p.red } else { text.border };
     let mut lines = vec![Line::from("")];
+    let question_rows = question.len() as u16;
     lines.extend(question.into_iter().map(Line::from));
-    lines.push(Line::from(Span::styled("y = yes · any other key = no", Style::new().fg(p.muted))));
+    if let Some(input) = &text.input {
+        let shown = tail(input, usize::from(width.saturating_sub(7)));
+        lines.push(
+            Line::from(vec![
+                Span::styled(" › ", Style::new().fg(border)),
+                Span::styled(shown, Style::new().fg(p.fg).bold()),
+            ])
+            .left_aligned(),
+        );
+    }
+    lines.push(Line::from(Span::styled(text.hint, Style::new().fg(p.muted))));
     lines.push(Line::from(""));
     let area = centered(screen, width, lines.len() as u16 + 2);
     frame.render_widget(Clear, area);
-    let block = framed().border_style(Style::new().fg(p.red)).title(" Confirm ").style(Style::new().bg(p.background));
+    let block = framed().border_style(Style::new().fg(border)).title(text.title).style(Style::new().bg(p.background));
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center).block(block), area);
+    if let Some(input) = &text.input {
+        let shown = tail(input, usize::from(width.saturating_sub(7)));
+        let x = area.x + 1 + 3 + shown.width() as u16;
+        let y = area.y + 1 + 1 + question_rows;
+        frame.set_cursor_position(Position::new(x.min(area.right().saturating_sub(2)), y));
+    }
+}
+
+/// `v`: what Pandora tells about a song or station: label and value rows,
+/// the values wrapped, nothing the API did not send.
+fn draw_details(frame: &mut Frame, p: &Palette, area: Rect, d: &Details) {
+    let rows = d.rows();
+    let label_w = rows.iter().map(|(l, _)| l.width()).max().unwrap_or(0) + 2;
+    let width = 72.min(area.width.saturating_sub(2)).max(area.width.min(20));
+    let value_w = usize::from(width).saturating_sub(2 + 1 + label_w + 1).max(1);
+    let mut lines: Vec<Line> = Vec::new();
+    for (label, value) in &rows {
+        for (i, part) in wrap_question(&clean(value), value_w, 4).into_iter().enumerate() {
+            let head = if i == 0 { pad(label, label_w) } else { " ".repeat(label_w) };
+            let value_style = if part.starts_with("loading") || part.starts_with("not available") {
+                Style::new().fg(p.muted)
+            } else {
+                Style::new().fg(p.fg)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {head}"), Style::new().fg(p.muted)),
+                Span::styled(part, value_style),
+            ]));
+        }
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(" Any key closes", Style::new().fg(p.muted))));
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let box_area = centered(area, width, height);
+    frame.render_widget(Clear, box_area);
+    let heading = format!("{} · {}", d.kind(), fit(&d.title(), usize::from(width).saturating_sub(16)));
+    let block = panel(title(heading, p), p, true).style(Style::new().bg(p.background));
+    frame.render_widget(Paragraph::new(lines).block(block), box_area);
 }
 
 // --- Pieces ---
@@ -361,16 +496,11 @@ fn account_label(app: &App) -> Option<String> {
     })
 }
 
-/// The logo on the menu's top border, like tubevibe's: the box icon and
-/// "box" in the theme's blue, "vibe" in the text colour.
-pub fn logo_title<'a>(p: &Palette, ic: &Icons) -> Line<'a> {
-    logo_line(p, ic, "")
-}
-
-/// The one place the logo is drawn: the menu's title and the Help window's
-/// title share it, with `rest` (bold, text colour) after "boxvibe".
-fn logo_line<'a>(p: &Palette, ic: &Icons, rest: &str) -> Line<'a> {
-    logo_line_with(p, Span::styled(format!(" {} ", ic.logo), Style::new().fg(p.blue).bold()), rest)
+/// The logo on the menu's top border, like tubevibe's: the box icon (always
+/// the Nerd Font one, whatever the icon set) and "box" in the theme's blue,
+/// "vibe" in the text colour.
+pub fn logo_title<'a>(p: &Palette) -> Line<'a> {
+    logo_line_with(p, Span::styled(format!(" {} ", crate::icons::LOGO), Style::new().fg(p.blue).bold()), "")
 }
 
 /// tubevibe's Help icon: the little keyboard, the same in every icon set,
@@ -407,7 +537,7 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let focused = app.focus == Focus::Menu;
     let version = Line::from(Span::styled(format!(" {} ", env!("CARGO_PKG_VERSION")), Style::new().fg(p.muted)))
         .alignment(Alignment::Right);
-    let block = panel(logo_title(&p, ic), &p, focused).title(version);
+    let block = panel(logo_title(&p), &p, focused).title(version);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let now_h = if app.has_now_playing() { 2 } else { 0 };
@@ -560,7 +690,7 @@ pub const SONG_ROWS: u16 = 10;
 /// One song pane: borders, the header and [`SONG_ROWS`] rows.
 pub const SONG_PANE: u16 = SONG_ROWS + 3;
 /// Now Playing never gets fewer rows than this while the song panes have room to give.
-pub const NOW_PLAYING_MIN: u16 = 9;
+pub const NOW_PLAYING_MIN: u16 = 11;
 
 /// Now Playing's rows: whatever the song panes (one row of them, or two
 /// stacked) leave; on a short screen it keeps [`NOW_PLAYING_MIN`] and the
@@ -600,7 +730,13 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let block = panel(title(format!("Now Playing · {station}"), &p), &p, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let inner = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
+    // The same blank space on all four sides of the card's content.
+    let inner = Rect {
+        x: inner.x + NOW_PLAYING_PAD,
+        y: inner.y + NOW_PLAYING_PAD,
+        width: inner.width.saturating_sub(2 * NOW_PLAYING_PAD),
+        height: inner.height.saturating_sub(2 * NOW_PLAYING_PAD),
+    };
     let Some(song) = &app.now else {
         let text = match (&app.session, &app.current_station) {
             (Session::LoggedIn, Some(_)) => format!("{} Getting songs from Pandora…", ic.loading),
@@ -614,18 +750,16 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         );
         return;
     };
-    // The art fills the pane's height, two cells wide per row so it looks
-    // square; song info, the time line and the volume sit to its right.
-    let art_w = (inner.height * 2 + 2).min(inner.width / 2);
-    let [art, _, info] =
-        Layout::horizontal([Constraint::Length(art_w), Constraint::Length(3), Constraint::Fill(1)]).areas(inner);
-    // The time line ends as far in from the right border as the cover
-    // starts from the left one, so the pane is symmetrical; the whole stack
-    // (title, time, volume, buttons) keeps to that width.
+    // The art fills the padded height, two cells wide per row so it looks
+    // square; song info, the time line and the volume sit to its right and
+    // end as far from the right border as the art is from the left one.
+    let art_w = (inner.height * 2).min(inner.width / 2);
+    let art = Rect { width: art_w, ..inner };
+    // The picture sits against the left padding; the info starts a few
+    // cells after wherever the picture really ended.
     let drawn = draw_art(frame, app, song, art);
-    let gap = drawn.x.saturating_sub(area.x);
-    let width = (area.right().saturating_sub(gap)).saturating_sub(info.x);
-    let info = if width >= MIN_INFO_WIDTH { Rect { width: width.min(info.width), ..info } } else { info };
+    let info_x = (drawn.right() + 3).min(inner.right());
+    let info = Rect { x: info_x, width: inner.right() - info_x, ..inner };
     let label = |text: &str| Span::styled(format!("{text:<9}"), Style::new().fg(p.muted));
     let state = if app.buffering.is_some() {
         Span::styled(format!("{} buffering…", ic.loading), Style::new().fg(p.yellow))
@@ -667,10 +801,10 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 }
 
 /// Rows Now Playing needs before the buttons join the stack.
-pub const STACK_WITH_BUTTONS: u16 = 13;
+pub const STACK_WITH_BUTTONS: u16 = 11;
 
-/// The info stack is not narrowed below this to mirror the cover's gap.
-const MIN_INFO_WIDTH: u16 = 30;
+/// Blank cells between Now Playing's border and what it holds, on every side.
+pub const NOW_PLAYING_PAD: u16 = 1;
 
 /// Draws the cover (or the visualizer) and returns where it went.
 fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) -> Rect {
@@ -684,9 +818,10 @@ fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) -> Rect {
     let look = crate::art::Look::of(&app.config.ui, p);
     let mode = look.mode;
     if let Some(mut cover) = app.art.protocol(&song.cover_art_url, look) {
-        // Centred in the box: the picture keeps its shape.
+        // Against the left edge of the box (the pane's padding), centred
+        // top to bottom: the picture keeps its shape.
         let fit = cover.size_for(Resize::Fit(None), inner.as_size());
-        let x = inner.x + inner.width.saturating_sub(fit.width) / 2;
+        let x = inner.x;
         let y = inner.y + inner.height.saturating_sub(fit.height) / 2;
         let at = Rect::new(x, y, fit.width.min(inner.width), fit.height.min(inner.height));
         frame.render_stateful_widget(StatefulImage::default(), at, &mut *cover);
@@ -831,9 +966,9 @@ fn song_table<'a>(
     let p = app.palette;
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    // Keep one blank cell before the right border so the last column and
-    // the highlight bar never touch it (matches History's breathing room).
-    let inner = Rect { width: inner.width.saturating_sub(1), ..inner };
+    // One blank cell on each side, equal left and right: the text and the
+    // highlight bar touch neither border.
+    let inner = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
     let (last_w, text_widths) = match widths.split_last() {
         Some((Constraint::Length(w), rest)) => (*w, rest),
         _ => (0, widths),
@@ -1029,7 +1164,7 @@ fn draw_about(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let mut lines = vec![
         Line::raw(""),
         Line::from(vec![
-            Span::styled(format!("   {} ", ic.logo), Style::new().fg(p.blue).bold()),
+            Span::styled(format!("   {} ", crate::icons::LOGO), Style::new().fg(p.blue).bold()),
             Span::styled("box", Style::new().fg(p.blue).bold()),
             Span::styled("vibe", Style::new().fg(p.fg).bold()),
             Span::styled(format!("  {}", env!("CARGO_PKG_VERSION")), Style::new().fg(p.muted)),
@@ -1058,23 +1193,27 @@ fn draw_about(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             ]));
             lines.push(Line::raw(""));
             // The Update Now button: focused with Tab, pressed with Enter; once
-            // the new version is in, it is Restart Now.
-            let ready = app.update_button_ready();
-            let focused = app.focus == Focus::Content;
-            let style = match (ready, focused) {
-                (true, true) => Style::new().fg(p.background).bg(p.green).bold(),
-                (true, false) => Style::new().fg(p.green).bg(p.highlight).bold(),
-                (false, _) => Style::new().fg(p.muted).bg(p.highlight),
-            };
-            let label = if app.restart_ready() { "Restart Now" } else { "Update Now" };
-            let (left, right) = if ready && focused { (" ▶ ", " ◀") } else { ("   ", "  ") };
-            lines.push(Line::from(vec![
-                Span::styled(left, Style::new().fg(p.green).bold()),
-                Span::styled(format!("  {} {label}  ", ic.update), style),
-                Span::styled(right, Style::new().fg(p.green).bold()),
-            ]));
-            if ready && !focused {
-                lines.push(Line::from(Span::styled("   (Tab to Select, Enter to Press)", Style::new().fg(p.muted))));
+            // the new version is in, it is Restart Now. A package manager owns
+            // this copy, so there is no download button: it says to update there.
+            if update.replace != Replace::Package {
+                let ready = app.update_button_ready();
+                let focused = app.focus == Focus::Content;
+                let style = match (ready, focused) {
+                    (true, true) => Style::new().fg(p.background).bg(p.green).bold(),
+                    (true, false) => Style::new().fg(p.green).bg(p.highlight).bold(),
+                    (false, _) => Style::new().fg(p.muted).bg(p.highlight),
+                };
+                let label = if app.restart_ready() { "Restart Now" } else { "Update Now" };
+                let (left, right) = if ready && focused { (" ▶ ", " ◀") } else { ("   ", "  ") };
+                lines.push(Line::from(vec![
+                    Span::styled(left, Style::new().fg(p.green).bold()),
+                    Span::styled(format!("  {} {label}  ", ic.update), style),
+                    Span::styled(right, Style::new().fg(p.green).bold()),
+                ]));
+                if ready && !focused {
+                    lines
+                        .push(Line::from(Span::styled("   (Tab to Select, Enter to Press)", Style::new().fg(p.muted))));
+                }
             }
             match &app.self_update {
                 Progress::Downloading(percent) => lines.push(Line::from(Span::styled(
@@ -1096,7 +1235,9 @@ fn draw_about(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             }
             if update.replace.why_not().is_some() || matches!(app.self_update, Progress::Failed(_)) {
                 lines.push(Line::raw(""));
-                lines.push(Line::from(Span::styled("   Update with:", Style::new().fg(p.fg))));
+                if update.replace != Replace::Package {
+                    lines.push(Line::from(Span::styled("   Update with:", Style::new().fg(p.fg))));
+                }
                 lines.push(Line::from(Span::styled(format!("   {}", update.how), Style::new().fg(p.cyan))));
             }
         }
@@ -1120,11 +1261,23 @@ fn draw_about(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 
 /// The keys that work right now: (keys, what they do). The last two (help, quit) always fit.
 pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
+    if app.splash.is_some() {
+        return vec![("Any Key", "Go On")];
+    }
+    if app.rename.is_some() {
+        return vec![("Enter", "Rename"), ("Esc", "Cancel"), ("Ctrl+u", "Clear"), ("Ctrl+c", "Quit")];
+    }
+    if app.confirm_delete.is_some() {
+        return vec![("y", "Yes, Delete"), ("Other Key", "No")];
+    }
     if app.prompt.is_some() {
         return vec![("Enter", "Save"), ("Esc", "Cancel"), ("Ctrl+u", "Clear"), ("Ctrl+c", "Quit")];
     }
     if app.confirm_quit {
         return vec![("y", "Yes, Quit"), ("Other Key", "No")];
+    }
+    if app.details.is_some() {
+        return vec![("Any Key", "Close")];
     }
     if app.help {
         return vec![("Esc", "Close"), ("?", "Close")];
@@ -1133,19 +1286,26 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     let mut keys = vec![("j/k ↑↓", "Move")];
     match (app.focus, app.view) {
         (Focus::Menu, _) if matches!(app.menu_selected(), MenuItem::Favorite(_)) => {
-            keys.extend([("Enter", "Play"), ("f", "Unfavorite")])
+            keys.extend([("Enter", "Play"), ("f", "Unfavorite"), ("r", "Rename"), ("x", "Delete"), ("v", "Details")])
         }
         (Focus::Menu, View::Player) => keys.extend([("Enter", "Open"), ("Tab", "Now Playing")]),
         (Focus::Content, View::Player) if app.pane == Pane::NowPlaying => {
-            keys.extend([("Tab", "Up Next"), ("Esc", "Menu")])
+            keys.extend([("Tab", "Up Next"), ("v", "Details"), ("Esc", "Menu")])
         }
         (Focus::Menu, _) => keys.extend([("Enter", "Open"), ("Tab", "Page")]),
         (Focus::Content, View::Player) if app.pane == Pane::UpNext => {
-            keys.extend([("Tab", "History"), ("Esc", "Menu")])
+            keys.extend([("Tab", "History"), ("v", "Details"), ("Esc", "Menu")])
         }
-        (Focus::Content, View::Player) => keys.extend([("Tab", "Menu"), ("Esc", "Menu")]),
+        (Focus::Content, View::Player) => keys.extend([("Tab", "Menu"), ("v", "Details"), ("Esc", "Menu")]),
         (Focus::Content, View::Settings) => keys.extend([("Enter", "Change"), ("Esc", "Menu")]),
-        (Focus::Content, View::Stations) => keys.extend([("Enter", "Play"), ("f", "Favorite"), ("Esc", "Menu")]),
+        (Focus::Content, View::Stations) => keys.extend([
+            ("Enter", "Play"),
+            ("f", "Favorite"),
+            ("r", "Rename"),
+            ("x", "Delete"),
+            ("v", "Details"),
+            ("Esc", "Menu"),
+        ]),
         (Focus::Content, View::About) => {
             if app.update_button_ready() {
                 keys = vec![("Enter", if app.restart_ready() { "Restart Now" } else { "Update Now" })];
@@ -1156,12 +1316,12 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         }
     }
     if app.view != View::Player && app.has_now_playing() {
-        keys.push(("N", "Now Playing"));
+        keys.push(("P", "Now Playing"));
     }
-    keys.extend([("space", pause), ("n", "Skip"), ("u/d", "Like/Dislike")]);
-    // U / D rate the highlighted row: shown when Up Next or History has the keys.
-    if app.focus == Focus::Content && app.view == View::Player && matches!(app.pane, Pane::UpNext | Pane::History) {
-        keys.push(("U/D", "Rate Row"));
+    keys.extend([("space", pause), ("N", "Skip"), ("U/D", "Thumbs")]);
+    // l and b rate what the pane has: shown only where they work.
+    if app.in_songs() {
+        keys.push(("l/b", "Like/Bad"));
     }
     keys.extend([("⇧←→", "Volume"), ("{/}", "Menu Size"), ("?", "Help"), ("Q", "Quit")]);
     keys
@@ -1192,50 +1352,63 @@ fn draw_keys(frame: &mut Frame, p: &Palette, keys: &[(&str, &str)], area: Rect) 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+/// Help's sections: (title, [(keys, what they do)]). A test holds this to
+/// the key table, so every key is listed and nothing listed is unbound.
+pub const HELP: [(&str, &[(&str, &str)]); 4] = [
+    (
+        "PLAYING (any pane)",
+        &[
+            ("space p", "play / pause"),
+            ("N", "skip to the next song"),
+            ("U D", "thumbs up / down the playing song (down skips it)"),
+            ("z", "tired of this song (a month off)"),
+            ("Shift ← →", "volume down / up"),
+        ],
+    ),
+    (
+        "THE PANE YOU ARE IN",
+        &[
+            ("l b", "like / bad the selected row (Now Playing: its song)"),
+            ("f", "star / unstar the selected station"),
+            ("r", "rename the selected station (a favorite: its station)"),
+            ("x", "delete the selected station from Pandora (asks first)"),
+            ("v", "details: a song, or a station's seeds and thumbs"),
+            ("j k ↑ ↓", "move in the list"),
+            ("g G Home End", "first / last (Shift+G is the last)"),
+            ("Enter", "play the station · open Settings / About"),
+        ],
+    ),
+    (
+        "GOING PLACES",
+        &[
+            ("P", "Now Playing: the pane gets the keys"),
+            ("S", "Stations: every station, Enter plays one"),
+            ("T A", "Settings / About"),
+            ("F", "jump to FAVORITES in the menu"),
+            ("Tab", "menu, Now Playing, Up Next, History (Shift+Tab: back)"),
+            ("Esc", "back to the menu"),
+        ],
+    ),
+    (
+        "LOOK AND BOXVIBE",
+        &[
+            ("C", "album art: picture / blocks (saved)"),
+            ("R", "retro level: HD, 64-bit … 2-bit (saved)"),
+            ("H", "tint: off / duotone / palette (saved)"),
+            ("i", "emoji / Nerd Font / Unicode icons (saved)"),
+            ("{ }", "menu narrower / wider (saved)"),
+            ("?", "this help"),
+            ("Q Ctrl+c", "quit (asks first) / quit now"),
+        ],
+    ),
+];
+
 fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette;
-    let sections: [(&str, &[(&str, &str)]); 3] = [
-        (
-            "PLAYING",
-            &[
-                ("space p", "play / pause"),
-                ("n", "skip to the next song"),
-                ("+ u =", "like the playing song (thumbs up)"),
-                ("- d", "dislike the playing song (skips it)"),
-                ("U D", "like / dislike the Up Next or History row"),
-                ("z", "tired of this song (a month off)"),
-                ("Shift ← →", "volume down / up"),
-            ],
-        ),
-        (
-            "MOVING AROUND",
-            &[
-                ("j k ↑ ↓", "move in the list · g G first / last"),
-                ("Enter", "play the station · open Stations / Settings / About"),
-                ("N", "Now Playing pane gets the keys (menu on NOW PLAYING)"),
-                ("s S", "Stations: every station, Enter plays one"),
-                ("T A", "Settings / About"),
-                ("f", "favorite / unfavorite: the menu's FAVORITES"),
-                ("F", "to FAVORITES in the menu"),
-                ("Tab", "menu → Now Playing → Up Next → History"),
-                ("Esc", "back to the menu"),
-            ],
-        ),
-        (
-            "BOXVIBE",
-            &[
-                ("t", "next theme"),
-                ("{ }", "menu narrower / wider (saved)"),
-                ("i", "emoji / Nerd Font / Unicode icons"),
-                ("?", "this help"),
-                ("Q Ctrl+c", "quit (asks first) / quit now"),
-            ],
-        ),
-    ];
     // Every key pill is padded to the widest one, so the descriptions line up.
-    let key_w = sections.iter().flat_map(|(_, keys)| keys.iter()).map(|(k, _)| k.width()).max().unwrap_or(0);
+    let key_w = HELP.iter().flat_map(|(_, keys)| keys.iter()).map(|(k, _)| k.width()).max().unwrap_or(0);
     let mut lines = Vec::new();
-    for (name, keys) in sections {
+    for (name, keys) in HELP {
         lines.push(Line::from(Span::styled(format!(" {name}"), Style::new().fg(p.orange).bold())));
         for (key, what) in keys {
             lines.push(Line::from(vec![
@@ -1261,7 +1434,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), box_area);
 }
 
-const HELP_FOOTER: &str = " Settings and account, album art, retro mode and tint: the Settings entry in the menu";
+const HELP_FOOTER: &str = " Theme, account, boot screen and the rest: Settings (Shift+T)";
 
 #[cfg(test)]
 mod tests {
@@ -1450,6 +1623,36 @@ mod tests {
     }
 
     #[test]
+    fn help_lists_every_bound_key_and_nothing_unbound() {
+        use crate::app::{KEYMAP, command_for};
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let tokens: Vec<&str> =
+            HELP.iter().flat_map(|(_, keys)| keys.iter()).flat_map(|(k, _)| k.split_whitespace()).collect();
+        for b in KEYMAP {
+            let want = match b.code {
+                KeyCode::Char(' ') => "space".to_owned(),
+                KeyCode::Char(c) => c.to_string(),
+                KeyCode::Up => "↑".into(),
+                KeyCode::Down => "↓".into(),
+                KeyCode::Left => "←".into(),
+                KeyCode::Right => "→".into(),
+                KeyCode::BackTab => "Tab".into(),
+                other => format!("{other:?}"),
+            };
+            assert!(tokens.contains(&want.as_str()), "Help does not list {:?} ({want})", b.code);
+        }
+        for t in &tokens {
+            let mut chars = t.chars();
+            let (Some(c), None) = (chars.next(), chars.next()) else { continue };
+            if matches!(c, '↑' | '↓' | '←' | '→') {
+                continue;
+            }
+            let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+            assert!(command_for(key).is_some(), "Help lists {t:?} but nothing is bound to it");
+        }
+    }
+
+    #[test]
     fn help_fits_its_longest_line_and_its_keys_line_up() {
         let mut app = demo();
         app.help = true;
@@ -1457,8 +1660,8 @@ mod tests {
             let (lines, _) = screen(&app, cols, rows);
             let all = lines.join("\n");
             for whole in [
-                "play the station · open Stations / Settings / About",
-                "Now Playing pane gets the keys (menu on NOW PLAYING)",
+                "play the station · open Settings / About",
+                "Now Playing: the pane gets the keys",
                 HELP_FOOTER.trim(),
                 "⌨  boxvibe Help · Any Key Closes",
             ] {
@@ -1471,35 +1674,39 @@ mod tests {
                 l[l[..at].rfind('│').unwrap()..at].chars().count()
             };
             let a = start("volume down / up");
-            assert_eq!(a, start("like the playing song"), "{cols}x{rows}\n{all}");
+            assert_eq!(a, start("like / bad the selected row"), "{cols}x{rows}\n{all}");
             assert_eq!(a, start("skip to the next song"), "{cols}x{rows}\n{all}");
         }
     }
 
     #[test]
-    fn the_key_bar_leaves_out_theme_and_icons_but_the_keys_still_work() {
+    fn the_key_bar_leaves_out_theme_and_icons_and_t_does_nothing() {
         let mut app = demo();
         let caps = key_caps(&app);
-        assert!(!caps.iter().any(|(k, _)| *k == "t" || *k == "i"), "{caps:?}");
+        assert!(!caps.iter().any(|(k, _)| matches!(*k, "t" | "i" | "T" | "I")), "{caps:?}");
         let theme = app.config.ui.theme.clone();
         app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('t')));
-        assert_ne!(app.config.ui.theme, theme);
+        assert_eq!(app.config.ui.theme, theme, "t no longer switches the theme");
     }
 
     #[test]
-    fn rate_row_is_only_hinted_when_up_next_or_history_has_the_keys() {
+    fn l_and_b_are_only_hinted_when_a_song_pane_has_the_keys() {
         let mut app = demo();
         app.view = View::Player;
-        let hinted = |app: &App| key_caps(app).iter().any(|(k, _)| *k == "U/D");
+        let hinted = |app: &App| key_caps(app).iter().any(|(k, _)| *k == "l/b");
         app.focus = crate::app::Focus::Menu;
         assert!(!hinted(&app), "menu");
         app.focus = crate::app::Focus::Content;
-        app.pane = Pane::NowPlaying;
-        assert!(!hinted(&app), "Now Playing");
-        for pane in [Pane::UpNext, Pane::History] {
+        for pane in [Pane::NowPlaying, Pane::UpNext, Pane::History] {
             app.pane = pane;
             assert!(hinted(&app), "{pane:?}");
         }
+        // Thumbs on the playing song work everywhere, so their hint is always there.
+        for focus in [crate::app::Focus::Menu, crate::app::Focus::Content] {
+            app.focus = focus;
+            assert!(key_caps(&app).iter().any(|(k, _)| *k == "U/D"));
+        }
+        app.focus = crate::app::Focus::Content;
         app.view = View::Settings;
         assert!(!hinted(&app), "Settings");
     }
@@ -1595,7 +1802,7 @@ mod tests {
         app.status = "hello status".into();
         let (lines, buffer) = screen(&app, 120, 36);
         let top = &lines[0];
-        assert!(top.starts_with("┌ ▣ boxvibe ─"), "{top}");
+        assert!(top.starts_with(&format!("┌ {} boxvibe ─", crate::icons::LOGO)), "{top}");
         let menu_end = top.find('┐').unwrap();
         let version = format!(" {} ┐", env!("CARGO_PKG_VERSION"));
         assert!(top[..menu_end + '┐'.len_utf8()].ends_with(&version), "{top}");
@@ -1660,14 +1867,14 @@ mod tests {
         let menu: String = lines[2].chars().take(30).collect();
         assert!(menu.starts_with("│  ──") && menu.ends_with("──  │"), "inset rule: {menu:?}");
         assert!(lines[3].contains("Stations ("), "{}", lines[3]);
-        assert!(lines[35].contains(" N  Now Playing"), "key bar: {}", lines[35]);
+        assert!(lines[35].contains(" P  Now Playing"), "key bar: {}", lines[35]);
     }
 
     #[test]
     fn song_panes_fit_ten_rows_and_now_playing_takes_the_rest() {
         let mut app = demo();
         // Side by side: Up Next and History are SONG_PANE (13) tall, Now Playing the rest.
-        for (rows, want) in [(36, 21), (50, 35), (20, 9)] {
+        for (rows, want) in [(36, 21), (50, 35), (20, 11)] {
             assert_eq!(now_playing_height(rows - 2, false), want, "{rows} rows");
             let (lines, _) = screen(&app, 120, rows);
             let up = lines.iter().position(|l| l.contains("Up Next (")).expect("Up Next");
@@ -1806,7 +2013,7 @@ mod tests {
     }
 
     #[test]
-    fn up_next_shows_each_songs_thumbs_and_updates_after_shift_u() {
+    fn up_next_shows_each_songs_thumbs_and_updates_after_l() {
         let mut app = demo();
         app.config.ui.icons = crate::config::IconSet::Unicode;
         app.focus = crate::app::Focus::Content;
@@ -1823,10 +2030,7 @@ mod tests {
         let before = up_next(&app);
         assert!(before[0].contains("TIME") && before[0].contains("RATED"), "{before:?}");
         assert!(before[1].contains('—') && before[1].contains(':'), "not rated, time kept: {before:?}");
-        app.on_key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('U'),
-            crossterm::event::KeyModifiers::SHIFT,
-        ));
+        app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('l')));
         assert_eq!(app.queue[app.next_index()].rating, Rating::Up);
         let after = up_next(&app);
         assert!(after.iter().any(|r| r.contains("liked")), "{after:?}");
@@ -1875,13 +2079,22 @@ mod tests {
         let rows = usize::from(now_playing_height(34, false));
         let menu = |l: &String| l.chars().skip(30).collect::<String>();
         let art = app.art.last_area.get();
-        assert_eq!((art.y, art.y + art.height), (1, rows as u16 - 1), "art fills the pane's height");
+        assert_eq!(
+            (art.y, art.y + art.height),
+            (2, rows as u16 - 2),
+            "art fills the pane's height inside one row of padding"
+        );
         assert!(!lines[..rows].iter().any(|l| l.contains('╰') && menu(l).chars().nth(2) == Some('╰')), "no frame");
         let title = app.now.as_ref().unwrap().title.clone();
         let time = lines.iter().position(|l| l.contains('●')).expect("time line");
         let volume = lines.iter().position(|l| l.contains('%') && l.contains('▮')).expect("volume");
         assert!(time < rows && volume == time + 1, "both inside Now Playing, beside the art");
-        assert!(lines[time].chars().position(|c| c == '●').unwrap() > usize::from(art.x + art.width), "beside the art");
+        let picture_right = lines[..rows]
+            .iter()
+            .filter_map(|l| l.chars().enumerate().filter(|(_, c)| *c == '▀' || *c == '▄').map(|(i, _)| i).last())
+            .max()
+            .expect("picture");
+        assert!(lines[time].chars().position(|c| c == '●').unwrap() > picture_right, "beside the picture");
         // The stack is centred: as many blank rows above it as below.
         let first = lines.iter().position(|l| menu(l).contains(&title)).unwrap();
         let last = lines[..rows].iter().rposition(|l| l.contains('╰')).expect("buttons");
@@ -1961,28 +2174,5 @@ mod tests {
         assert_eq!(safe_char_width('a'), 1);
         assert_eq!(icon_cell("\u{f164}").width(), 3);
         assert_eq!(icon_cell("👍").width(), 2);
-    }
-}
-#[cfg(test)]
-mod scratch {
-    use super::*;
-    use crate::config::Config;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-    #[test]
-    fn dump() {
-        let mut app = App::new(Config::default(), None, &[], true);
-        app.demo_warm_up(3, std::time::Duration::ZERO);
-        app.help = true;
-        for (c, r) in [(255u16, 70u16), (160, 40), (80, 30)] {
-            let mut t = Terminal::new(TestBackend::new(c, r)).unwrap();
-            t.draw(|f| draw(f, &app)).unwrap();
-            let b = t.backend().buffer().clone();
-            println!("=== {c}x{r}");
-            for y in 0..r {
-                let s: String = (0..c).map(|x| b[(x, y)].symbol().to_string()).collect();
-                println!("{s}");
-            }
-        }
     }
 }

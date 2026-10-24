@@ -71,7 +71,7 @@ impl Default for PlayerConfig {
 #[serde(default)]
 pub struct UiConfig {
     /// `omarchy` follows the current Omarchy theme (Tokyo Night elsewhere);
-    /// or one of the built-in themes (`t` cycles them).
+    /// or one of the built-in themes (changed in Settings).
     pub theme: String,
     pub icons: IconSet,
     /// Song changes as a desktop notification (`notify-send`). boxvibe 0.1
@@ -80,6 +80,8 @@ pub struct UiConfig {
     pub notifications: bool,
     /// Ask GitHub, each time the app opens, whether there is a newer version.
     pub check_updates: bool,
+    /// Show the boxvibe boot screen for a moment when the app opens.
+    pub splash: bool,
     /// Start the station played last as soon as boxvibe opens (and has
     /// logged in). boxvibe 0.1's `[player] autoplay` reads as this.
     pub autoplay_last_station: bool,
@@ -116,6 +118,7 @@ impl Default for UiConfig {
             icons: IconSet::Emoji,
             notifications: true,
             check_updates: true,
+            splash: true,
             autoplay_last_station: true,
             border_style: BorderStyle::Plain,
             menu_width: MENU_WIDTH.default,
@@ -291,6 +294,8 @@ pub enum RetroMode {
     #[default]
     #[serde(rename = "hd", alias = "off")]
     Hd,
+    #[serde(rename = "64bit")]
+    Bit64,
     #[serde(rename = "32bit", alias = "extra_low", alias = "extra-low", alias = "extralow")]
     Bit32,
     #[serde(rename = "16bit", alias = "low")]
@@ -304,7 +309,7 @@ pub enum RetroMode {
 }
 
 impl RetroMode {
-    pub const ALL: [Self; 6] = [Self::Hd, Self::Bit32, Self::Bit16, Self::Bit8, Self::Bit4, Self::Bit2];
+    pub const ALL: [Self; 7] = [Self::Hd, Self::Bit64, Self::Bit32, Self::Bit16, Self::Bit8, Self::Bit4, Self::Bit2];
 
     pub fn next(self) -> Self {
         let at = Self::ALL.iter().position(|a| *a == self).unwrap_or(0);
@@ -315,6 +320,7 @@ impl RetroMode {
     pub fn grid(self) -> Option<u32> {
         match self {
             Self::Hd => None,
+            Self::Bit64 => Some(256),
             Self::Bit32 => Some(128),
             Self::Bit16 => Some(64),
             Self::Bit8 => Some(32),
@@ -326,6 +332,7 @@ impl RetroMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Hd => "hd",
+            Self::Bit64 => "64bit",
             Self::Bit32 => "32bit",
             Self::Bit16 => "16bit",
             Self::Bit8 => "8bit",
@@ -337,6 +344,7 @@ impl RetroMode {
     pub fn label(self) -> &'static str {
         match self {
             Self::Hd => "HD",
+            Self::Bit64 => "64-bit",
             Self::Bit32 => "32-bit",
             Self::Bit16 => "16-bit",
             Self::Bit8 => "8-bit",
@@ -817,9 +825,18 @@ mod tests {
             Config::parse(&format!("[ui]\nretro_mode = \"{}\"\n", a.as_str())).unwrap().0.ui.retro_mode == *a
         }));
         assert_eq!(RetroMode::Bit2.next(), RetroMode::Hd);
-        assert_eq!(RetroMode::Hd.next(), RetroMode::Bit32, "the mildest step first");
-        assert_eq!(RetroMode::ALL.map(RetroMode::grid), [None, Some(128), Some(64), Some(32), Some(16), Some(8)]);
-        assert_eq!(RetroMode::ALL.map(RetroMode::label), ["HD", "32-bit", "16-bit", "8-bit", "4-bit", "2-bit"]);
+        assert_eq!(RetroMode::Hd.next(), RetroMode::Bit64, "the mildest step first");
+        assert_eq!(RetroMode::Bit64.next(), RetroMode::Bit32);
+        assert_eq!(
+            RetroMode::ALL.map(RetroMode::grid),
+            [None, Some(256), Some(128), Some(64), Some(32), Some(16), Some(8)]
+        );
+        assert_eq!(
+            RetroMode::ALL.map(RetroMode::label),
+            ["HD", "64-bit", "32-bit", "16-bit", "8-bit", "4-bit", "2-bit"]
+        );
+        let (c, w) = Config::parse("[ui]\nretro_mode = \"64bit\"\n").unwrap();
+        assert_eq!((c.ui.retro_mode, w.len()), (RetroMode::Bit64, 0));
     }
 
     #[test]

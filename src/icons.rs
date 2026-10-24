@@ -1,9 +1,12 @@
-//! The three icon sets (`i` cycles them, `[ui] icons` remembers), like tubevibe's.
+//! The three icon sets (`i` cycles them, `[ui] icons` remembers), like tubevibe's. The boxvibe logo ignores the choice: it is always the Nerd Font box.
 
 use crate::config::IconSet;
 
+/// The boxvibe logo (the Nerd Font box): the same in every icon set, so the
+/// menu's frame, About and the boot screen always look alike.
+pub const LOGO: &str = "\u{f1b2}";
+
 pub struct Icons {
-    pub logo: &'static str,
     pub station: &'static str,
     pub shuffle: &'static str,
     pub shared: &'static str,
@@ -28,11 +31,10 @@ pub struct Icons {
     pub update: &'static str,
     pub ok: &'static str,
     /// One per [`crate::app::Setting::ALL`] row.
-    pub setting: [&'static str; 18],
+    pub setting: [&'static str; 19],
 }
 
 const EMOJI: Icons = Icons {
-    logo: "📦",
     station: "📻",
     shuffle: "🔀",
     shared: "👥",
@@ -56,12 +58,12 @@ const EMOJI: Icons = Icons {
     update: "⬆",
     ok: "✅",
     setting: [
-        "🆕", "📝", "📌", "👤", "🔑", "🔓", "🚪", "🎧", "🔊", "🎶", "🔔", "🎨", "😀", "🔲", "📐", "💿", "👾", "🌈",
+        "🆕", "🚀", "📝", "📌", "👤", "🔑", "🔓", "🚪", "🎧", "🔊", "🎶", "🔔", "🎨", "😀", "🔲", "📐", "💿", "👾",
+        "🌈",
     ],
 };
 
 const NERD: Icons = Icons {
-    logo: "\u{f1b2}",
     station: "\u{f0439}",
     shuffle: "\u{f074}",
     shared: "\u{f0c0}",
@@ -84,13 +86,13 @@ const NERD: Icons = Icons {
     update: "\u{f0aa}",
     ok: "\u{f058}",
     setting: [
-        "\u{f0aa}", "\u{f044}", "\u{f0c9}", "\u{f007}", "\u{f084}", "\u{f09c}", "\u{f08b}", "\u{f025}", "\u{f028}",
-        "\u{f04b}", "\u{f0f3}", "\u{f1fc}", "\u{f118}", "\u{f0c8}", "\u{f07e}", "\u{f03e}", "\u{f00a}", "\u{f53f}",
+        "\u{f0aa}", "\u{f135}", "\u{f044}", "\u{f0c9}", "\u{f007}", "\u{f084}", "\u{f09c}", "\u{f08b}", "\u{f025}",
+        "\u{f028}", "\u{f04b}", "\u{f0f3}", "\u{f1fc}", "\u{f118}", "\u{f0c8}", "\u{f07e}", "\u{f03e}", "\u{f00a}",
+        "\u{f53f}",
     ],
 };
 
 const UNICODE: Icons = Icons {
-    logo: "▣",
     station: "◉",
     shuffle: "⇄",
     shared: "⚇",
@@ -112,7 +114,7 @@ const UNICODE: Icons = Icons {
     quit: "⏻",
     update: "↑",
     ok: "✔",
-    setting: ["↑", "✎", "☰", "@", "*", "→", "⏻", "♫", "◖", "▶", "♪", "◐", "☺", "▢", "↔", "▦", "▩", "◑"],
+    setting: ["↑", "◈", "✎", "☰", "@", "*", "→", "⏻", "♫", "◖", "▶", "♪", "◐", "☺", "▢", "↔", "▦", "▩", "◑"],
 };
 
 pub fn icons(set: IconSet) -> &'static Icons {

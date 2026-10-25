@@ -73,21 +73,14 @@ work right now drawn as key caps at the bottom.
 
 ### What boxvibe needs from the system
 
-When boxvibe opens it checks the first two rows below (only the ones your
-settings use). If something is missing it shows a screen before the app
-(before the boot screen) that says what and why, and asks **Install them
-now? y / n**. `y` opens your terminal (`xdg-terminal-exec`, then `$TERMINAL`,
-then foot, ghostty, kitty, alacritty, wezterm, konsole, gnome-terminal, xterm)
-running **one** command, such as
-`sudo pacman -S --needed ttf-nerd-fonts-symbols libnotify`, for only what is
-missing. You type your password in that terminal; boxvibe never runs `sudo`
-itself and never blocks: `n` (or any other key) goes on, `d` never asks again.
-Only Arch-based systems (Arch, Manjaro, EndeavourOS, CachyOS, Omarchy...) get
-the install offer; elsewhere the screen lists the names for your package
-manager. The check can only see fonts **installed** on the computer (with
-`fc-list`), not the font your terminal is set to; with no `fc-list` it says
-nothing. Turn it off with `[boxvibe] dependency_check = false` or Settings →
-BOXVIBE → **Check dependencies at start**.
+When boxvibe opens it looks, in the background, for the first two rows below.
+If something **required** is missing (the Nerd Font, while the Nerd icon set is
+on) the **System Check** list opens by itself: a mark for each item, what it is
+for, and the package to install under the missing ones. Otherwise it only puts
+one line in the status bar. Open it any time from Settings → BOXVIBE → **System
+Check**; Enter looks again, any other key closes it. boxvibe installs nothing
+and has no setting for this. The check can only see fonts **installed** on the
+computer (with `fc-list`), not the font your terminal is set to.
 
 | Needs | Why | Required? | Arch package | Checked at start |
 |---|---|---|---|---|
@@ -188,7 +181,6 @@ user_agent = ""                # empty: boxvibe's default (a desktop Firefox); s
 
 [boxvibe]
 check_updates = true           # look for a new release on GitHub at startup
-dependency_check = true        # at startup, look for a missing Nerd Font / notify-send and offer to install it
 
 [playback]
 audio_quality = "high"         # high: MP3 192 kbps if your plan has it (Plus, Premium), else 128

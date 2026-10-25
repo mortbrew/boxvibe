@@ -89,9 +89,6 @@ pub struct UiConfig {
     /// Show the boxvibe boot screen for a moment when the app opens
     /// (`[look] splash`; 0.4 betas had it in `[boxvibe]`).
     pub splash: bool,
-    /// At start, look for what boxvibe needs but the system lacks (a Nerd
-    /// Font, `notify-send`) and offer to install it. `[boxvibe] dependency_check`.
-    pub dependency_check: bool,
     /// Motion in the interface (today: the boot screen's fade). Off: none
     /// (the boot screen is skipped). `[look] animations`.
     pub animations: bool,
@@ -132,7 +129,6 @@ impl Default for UiConfig {
             notifications: true,
             check_updates: true,
             splash: true,
-            dependency_check: true,
             animations: true,
             autoplay_last_station: true,
             border_style: BorderStyle::Plain,
@@ -480,7 +476,9 @@ impl ConfigWarning {
 /// Keys an earlier boxvibe wrote that no longer do anything; a config with
 /// them still loads without a warning. `ui.now_playing_size` went when Up Next
 /// and History became fixed at 10 songs (Now Playing takes the rest).
-const RETIRED_KEYS: &[&str] = &["ui.now_playing_size"];
+/// `boxvibe.dependency_check` was a 0.4 beta setting for a startup check that
+/// is now always the same list (Settings → BOXVIBE → System Check).
+const RETIRED_KEYS: &[&str] = &["ui.now_playing_size", "boxvibe.dependency_check"];
 
 /// One `[section]`: each key is tried on its own, so an unknown or broken
 /// one is skipped (and reported) while the rest still apply.
@@ -525,7 +523,6 @@ pub const LAYOUT: &[(&str, &str, &str)] = &[
     ("account", "password", "pandora"),
     ("account", "user_agent", "pandora"),
     ("boxvibe", "check_updates", "ui"),
-    ("boxvibe", "dependency_check", "ui"),
     ("playback", "audio_quality", "pandora"),
     ("playback", "volume", "player"),
     ("playback", "autoplay_last_station", "ui"),
@@ -602,6 +599,7 @@ fn gather(table: toml::Table, warnings: &mut Vec<ConfigWarning>) -> toml::Table 
                             LAYOUT.iter().find(|(t, k, _)| t == new && k == new_key).map_or("ui", |(.., old)| *old);
                         put(&mut internal, old, (*new_key).to_owned(), value, 1);
                     }
+                    (None, None) if RETIRED_KEYS.contains(&path.as_str()) => {}
                     (None, None) => warnings.push(ConfigWarning::Unknown(path)),
                 }
             } else if LAYOUT.iter().any(|(_, k, t)| *t == name && *k == key) {
@@ -1326,12 +1324,13 @@ mod tests {
     }
 
     #[test]
-    fn dependency_check_is_on_by_default_in_boxvibe_and_loads_tolerantly() {
-        let (c, w) = Config::parse("").unwrap();
-        assert!(c.ui.dependency_check && w.is_empty());
-        let (c, _) = Config::parse("[boxvibe]\ndependency_check = false\n").unwrap();
-        assert!(!c.ui.dependency_check);
-        let (c, w) = Config::parse("[boxvibe]\ndependency_check = \"no\"\n").unwrap();
-        assert!(c.ui.dependency_check && w.len() == 1, "{w:?}");
+    fn a_retired_dependency_check_key_loads_without_a_warning() {
+        let (c, w) = Config::parse("[boxvibe]\ndependency_check = false\ncheck_updates = false\n").unwrap();
+        assert!(w.is_empty(), "{w:?}");
+        assert!(!c.ui.check_updates, "the rest of the table still applies");
+        let (_, w) = Config::parse("[boxvibe]\ndependency_check = \"whatever\"\n").unwrap();
+        assert!(w.is_empty(), "{w:?}");
+        let (_, w) = Config::parse("[boxvibe]\nsomething_else = 1\n").unwrap();
+        assert_eq!(w.len(), 1, "other unknown keys still warn: {w:?}");
     }
 }

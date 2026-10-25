@@ -119,23 +119,19 @@ bound twice.
 - **The boot screen setting is under LOOK** (after Animations). Its key moved to
   `[look] splash`. A file with `[boxvibe] splash` still loads; the next save
   writes `[look] splash` and removes the old key, keeping comments and unknown keys.
-- **Startup dependency check.** Before the boot screen boxvibe checks, only for what
-  your settings use, for a Nerd Font (`fc-list`: a family named "Nerd Font" or a
-  font that has the logo and station glyphs) and for `notify-send`. When something
-  is missing a screen says what and why (plain letters, so it reads without the
-  font) and asks **Install them now?** On Arch-based systems `y` opens a terminal
-  (`xdg-terminal-exec`, then `$TERMINAL`, then foot, ghostty, kitty, alacritty,
-  wezterm, konsole, gnome-terminal, xterm) running one
-  `sudo pacman -S --needed <only the missing packages>` and then "Press Enter to close";
-  when it closes (or on a key) boxvibe looks again and goes on. Other systems get
-  the names and nothing is launched. `n` or any other key goes on, `d` saves
-  `[boxvibe] dependency_check = false`. The check never blocks the app, never runs
-  `sudo` itself, and says nothing when `fc-list` is missing or slow (it only sees
-  installed fonts, not the terminal's own font).
-- **Settings → BOXVIBE → Check dependencies at start** (`[boxvibe] dependency_check`,
-  default on).
+- **System Check.** At startup boxvibe looks in the background for a Nerd Font
+  (`fc-list`: a family named "Nerd Font", or a font with the logo and station
+  glyphs) and for `notify-send`. A list shows a mark for each, what it is for, and
+  the package to install under the missing ones, in plain letters so it reads
+  without the font. It opens by itself only when something required is missing
+  (the Nerd Font, while the Nerd icon set is on); otherwise the status bar gets
+  one line. Settings → BOXVIBE → **System Check** opens it any time; Enter looks
+  again, any other key closes it. boxvibe installs nothing, and there is no setting
+  or config key for it (an old `[boxvibe] dependency_check` is ignored without a
+  warning). It never blocks the app, and says nothing when `fc-list` is missing or
+  slow (it sees installed fonts, not the terminal's own font).
 - README lists everything boxvibe needs from the system, and why.
-- `--snapshot FILE --screen deps` draws the new screen.
+- `--snapshot FILE --screen system` draws the list.
 
 ### Fixes
 

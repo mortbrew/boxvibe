@@ -1,5 +1,5 @@
-//! What boxvibe needs from the system besides itself (a Nerd Font, and
-//! `notify-send` for notifications) and whether it is there. This is only
+//! What boxvibe needs from the system besides itself (a Nerd Font, a Secret
+//! Service keychain for the password, and `notify-send` for notifications) and whether it is there. This is only
 //! a list: boxvibe installs nothing and runs no package manager. Like
 //! tubevibe's System Check, it shows every item with a mark, what it is for
 //! and the package name, and says so when something is missing.
@@ -19,6 +19,8 @@ pub enum Dep {
     NerdFont,
     /// `notify-send`, for song-change notifications.
     NotifySend,
+    /// A Secret Service keychain (GNOME Keyring, KeePassXC…), for the Pandora password.
+    Keychain,
 }
 
 impl Dep {
@@ -26,6 +28,7 @@ impl Dep {
         match self {
             Self::NerdFont => "Nerd Font symbols",
             Self::NotifySend => "notify-send",
+            Self::Keychain => "Secret Service keychain",
         }
     }
 
@@ -34,6 +37,7 @@ impl Dep {
         match self {
             Self::NerdFont => "the icons and the logo (without it they show as empty boxes)",
             Self::NotifySend => "a notification for every new song",
+            Self::Keychain => "keeps your Pandora password (without one you type it each start)",
         }
     }
 
@@ -42,6 +46,7 @@ impl Dep {
         match self {
             Self::NerdFont => "ttf-nerd-fonts-symbols (Arch) or any Nerd Font",
             Self::NotifySend => "libnotify (Debian: libnotify-bin)",
+            Self::Keychain => "a Secret Service keychain, e.g. gnome-keyring or KeePassXC",
         }
     }
 }
@@ -54,6 +59,8 @@ pub struct Facts {
     /// `fc-list ':charset=f0439 f1b2' family`: the fonts that have the glyphs.
     pub glyph_fonts: Option<String>,
     pub notify_send: bool,
+    /// A Secret Service keychain answered; `None`: it didn't in time, so boxvibe doesn't say.
+    pub keychain: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,13 +114,20 @@ impl Check {
 }
 
 /// Every item with whether it is there. The Nerd Font is needed while the
-/// Nerd icon set is on; `notify-send` is always optional.
+/// Nerd icon set is on; `notify-send` and the keychain are always optional
+/// (without a keychain the password is asked for at each start).
 pub fn checks(nerd_icons: bool, facts: &Facts) -> Vec<Check> {
     let font = nerd_font(facts.families.as_deref(), facts.glyph_fonts.as_deref());
     let notify = if facts.notify_send { Presence::Present } else { Presence::Missing };
+    let keychain = match facts.keychain {
+        Some(true) => Presence::Present,
+        Some(false) => Presence::Missing,
+        None => Presence::Unknown,
+    };
     vec![
         Check { dep: Dep::NerdFont, presence: font, needed: nerd_icons },
         Check { dep: Dep::NotifySend, presence: notify, needed: false },
+        Check { dep: Dep::Keychain, presence: keychain, needed: false },
     ]
 }
 
@@ -137,7 +151,13 @@ pub fn probe(limit: Duration) -> Facts {
         let _ = send.send((output("fc-list", &[":", "family"]), output("fc-list", &[GLYPH_QUERY, "family"])));
     });
     let (families, glyph_fonts) = receive.recv_timeout(limit).unwrap_or_default();
-    Facts { families, glyph_fonts, notify_send: in_path("notify-send") }
+    // The keychain is asked on its own thread too: a desktop with none can take a moment to say so.
+    let (send, receive) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = send.send(crate::keychain::system().available());
+    });
+    let keychain = receive.recv_timeout(limit).ok();
+    Facts { families, glyph_fonts, notify_send: in_path("notify-send"), keychain }
 }
 
 #[cfg(test)]
@@ -149,7 +169,12 @@ mod tests {
     const PLAIN: &str = "DejaVu Sans\nNoto Sans,Noto Sans Display\nLiberation Mono\nFont Awesome 6 Free\n";
 
     fn plain_facts() -> Facts {
-        Facts { families: Some(PLAIN.into()), glyph_fonts: Some(String::new()), notify_send: false }
+        Facts {
+            families: Some(PLAIN.into()),
+            glyph_fonts: Some(String::new()),
+            notify_send: false,
+            keychain: Some(false),
+        }
     }
 
     #[test]
@@ -188,7 +213,7 @@ mod tests {
         assert_eq!(nerd_font(None, None), Presence::Unknown);
         let facts = Facts { notify_send: true, ..Facts::default() };
         let list = checks(true, &facts);
-        assert_eq!(list[0].presence, Presence::Unknown);
+        assert_eq!((list[0].presence, list[2].presence), (Presence::Unknown, Presence::Unknown));
         assert!(list.iter().all(Check::ok), "can't tell is not missing");
     }
 
@@ -196,20 +221,21 @@ mod tests {
     fn every_item_is_listed_with_whether_it_is_there() {
         let mut facts = plain_facts();
         let list = checks(true, &facts);
-        assert_eq!(list.iter().map(|c| c.dep).collect::<Vec<_>>(), [Dep::NerdFont, Dep::NotifySend]);
-        assert_eq!(list.iter().map(Check::ok).collect::<Vec<_>>(), [false, false]);
+        assert_eq!(list.iter().map(|c| c.dep).collect::<Vec<_>>(), [Dep::NerdFont, Dep::NotifySend, Dep::Keychain]);
+        assert_eq!(list.iter().map(Check::ok).collect::<Vec<_>>(), [false, false, false]);
         facts.families = Some(FONTS.into());
-        assert_eq!(checks(true, &facts).iter().map(Check::ok).collect::<Vec<_>>(), [true, false]);
+        assert_eq!(checks(true, &facts).iter().map(Check::ok).collect::<Vec<_>>(), [true, false, false]);
         facts.notify_send = true;
+        facts.keychain = Some(true);
         assert!(checks(true, &facts).iter().all(Check::ok));
     }
 
     #[test]
-    fn the_font_is_needed_only_with_the_nerd_icon_set_and_notify_send_never() {
+    fn the_font_is_needed_only_with_the_nerd_icon_set_and_notify_send_and_the_keychain_never() {
         let facts = plain_facts();
         let needed = |nerd| checks(nerd, &facts).iter().map(|c| c.needed).collect::<Vec<_>>();
-        assert_eq!(needed(true), [true, false]);
-        assert_eq!(needed(false), [false, false], "emoji icons need no Nerd Font");
+        assert_eq!(needed(true), [true, false, false]);
+        assert_eq!(needed(false), [false, false, false], "emoji icons need no Nerd Font");
     }
 
     #[test]
@@ -222,10 +248,11 @@ mod tests {
 
     #[test]
     fn what_each_dependency_says_for_itself() {
-        for dep in [Dep::NerdFont, Dep::NotifySend] {
+        for dep in [Dep::NerdFont, Dep::NotifySend, Dep::Keychain] {
             assert!(!dep.name().is_empty() && !dep.why().is_empty() && !dep.package().is_empty());
         }
         assert!(Dep::NerdFont.package().starts_with("ttf-nerd-fonts-symbols"));
         assert!(Dep::NotifySend.package().starts_with("libnotify"));
+        assert!(Dep::Keychain.package().contains("gnome-keyring") && Dep::Keychain.package().contains("KeePassXC"));
     }
 }

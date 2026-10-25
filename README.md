@@ -31,10 +31,13 @@ work right now drawn as key caps at the bottom.
 ## What it does
 
 - **Log in inside the app**: the first time, boxvibe opens **Settings** at the
-  account section and asks for your Pandora email (or username), then the password, and
-  saves them to `~/.config/boxvibe/config.toml`, a file only you can read
-  (mode 600). From then on it logs in by itself. Change the account or log
-  out in Settings any time
+  account section and asks for your Pandora email (or username), then the
+  password. The email goes in `~/.config/boxvibe/config.toml` (mode 600); the
+  **password goes in your desktop keychain** (any Secret Service one: GNOME
+  Keyring, KeePassXC…), never in the file. From then on it logs in by itself.
+  No keychain running? It says "No keychain found: you'll be asked for your
+  password each start" and keeps the password in memory for that session only.
+  Change the account, forget the saved password or log out in Settings any time
 - **Your stations** (Shuffle too) on the left; `Enter` plays one, and the
   last one you played starts again next time
 - **Now Playing**: title, artist, album, your thumb, a progress bar with the
@@ -176,7 +179,6 @@ boxvibe from starting: one that is not valid TOML is moved to
 # The tables are the Settings groups: ACCOUNT, BOXVIBE, PLAYBACK and LOOK.
 [account]
 username = "you@example.com"   # saved from Settings → Email or username
-password = "…"                 # saved once a login works (the file is mode 600)
 user_agent = ""                # empty: boxvibe's default (a desktop Firefox); see below
 
 [boxvibe]
@@ -338,7 +340,11 @@ cargo test live_site -- --ignored   # www.pandora.com still hands out a csrftoke
 
 boxvibe is not made by or affiliated with Pandora. It uses an unofficial API,
 which may go against Pandora's Terms of Service; use it at your own risk.
-Your password is stored in plain text in `config.toml` (readable only by you).
+Your password is kept in your desktop's Secret Service keychain, not in
+`config.toml`. An older `config.toml` with a plain `password = "…"` line is
+read once: after a login works the password moves to the keychain and the line
+is removed from the file (if there is no keychain it stays in the file, which
+only you can read, and boxvibe warns you).
 
 ## License
 

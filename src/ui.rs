@@ -1196,8 +1196,9 @@ fn draw_settings(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         let value_style = match (setting, &app.session) {
             (Setting::LogIn, Session::LoggedIn) => Style::new().fg(p.green).bold(),
             (Setting::LogIn, Session::Failed(_)) => Style::new().fg(p.red).bold(),
+            (Setting::Password, _) if value.starts_with("no keychain") => Style::new().fg(p.orange),
             (Setting::LogIn | Setting::Email | Setting::Password, _)
-                if value == "not set" || value == "not logged in" =>
+                if value == "not set" || value == "not logged in" || value == "not saved" =>
             {
                 Style::new().fg(p.muted)
             }
@@ -1620,6 +1621,9 @@ fn draw_system(frame: &mut Frame, app: &App, area: Rect) {
     for check in checks {
         let (mark, color, note) = match (check.presence, check.needed) {
             (Presence::Present, _) => ("✔", p.green, ""),
+            (Presence::Unknown, _) if check.dep == crate::deps::Dep::Keychain => {
+                ("?", p.muted, "can't tell: the keychain didn't answer in time")
+            }
             (Presence::Unknown, _) => ("?", p.muted, "can't tell: fc-list (fontconfig) isn't there"),
             (Presence::Missing, true) => ("✘", p.red, "missing · needed"),
             (Presence::Missing, false) => ("·", p.muted, "not installed · optional"),
@@ -1632,11 +1636,13 @@ fn draw_system(frame: &mut Frame, app: &App, area: Rect) {
         if check.presence == Presence::Present {
             continue;
         }
-        let mut detail = vec![Span::raw(indent.clone()), Span::styled(note, Style::new().fg(color))];
+        lines.push(Line::from(vec![Span::raw(indent.clone()), Span::styled(note, Style::new().fg(color))]));
         if check.presence == Presence::Missing {
-            detail.push(Span::styled(format!(" · package: {}", check.dep.package()), Style::new().fg(p.accent)));
+            lines.push(Line::from(vec![
+                Span::raw(indent.clone()),
+                Span::styled(format!("package: {}", check.dep.package()), Style::new().fg(p.accent)),
+            ]));
         }
-        lines.push(Line::from(detail));
     }
     let font_missing = checks.iter().any(|c| c.dep == crate::deps::Dep::NerdFont && c.presence == Presence::Missing);
     if font_missing {
@@ -2738,7 +2744,12 @@ mod tests {
     fn the_system_check_lists_what_is_missing_and_that_is_all() {
         use crate::deps::{Facts, checks};
         let mut app = App::new(Config::default(), None, &[], true);
-        app.system_checked(&Facts { families: Some("DejaVu Sans\n".into()), glyph_fonts: None, notify_send: false });
+        app.system_checked(&Facts {
+            families: Some("DejaVu Sans\n".into()),
+            glyph_fonts: None,
+            notify_send: false,
+            keychain: Some(false),
+        });
         assert!(app.system_open);
         let all = screen(&app, 110, 30).0.join("\n");
         for want in [
@@ -2749,6 +2760,8 @@ mod tests {
             "notify-send",
             "not installed · optional",
             "package: libnotify (Debian: libnotify-bin)",
+            "Secret Service keychain",
+            "package: a Secret Service keychain, e.g. gnome-keyring or KeePassXC",
             "only sees fonts installed on this computer",
             "Enter checks again · any other key closes",
         ] {
@@ -2762,8 +2775,15 @@ mod tests {
         // The app is behind it, as with Help.
         assert!(all.contains("STATIONS") || all.contains("NOW PLAYING") || all.contains("Stations"), "{all}");
         // What is there gets a tick and no package line.
-        app.system =
-            Some(checks(true, &Facts { families: Some("X Nerd Font\n".into()), glyph_fonts: None, notify_send: true }));
+        app.system = Some(checks(
+            true,
+            &Facts {
+                families: Some("X Nerd Font\n".into()),
+                glyph_fonts: None,
+                notify_send: true,
+                keychain: Some(true),
+            },
+        ));
         let all = screen(&app, 110, 30).0.join("\n");
         assert!(all.contains("✔ Nerd Font symbols") && !all.contains("package:"), "{all}");
         // While it looks again.
@@ -2777,7 +2797,12 @@ mod tests {
         let mut app = App::new(Config::default(), None, &[], true);
         // The app behind it may use the emoji set; the list itself is plain text.
         app.config.ui.icons = crate::config::IconSet::Emoji;
-        app.system_checked(&Facts { families: Some("DejaVu Sans\n".into()), glyph_fonts: None, notify_send: false });
+        app.system_checked(&Facts {
+            families: Some("DejaVu Sans\n".into()),
+            glyph_fonts: None,
+            notify_send: false,
+            keychain: Some(false),
+        });
         // No glyph from the private use area is added by the list: it reads without a Nerd Font.
         let private =
             |all: &str| all.chars().filter(|c| ('\u{e000}'..='\u{f8ff}').contains(c) || *c > '\u{f0000}').count();

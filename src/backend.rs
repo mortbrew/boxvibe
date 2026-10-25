@@ -4,10 +4,12 @@
 //! (log in again on 401, take the stream over on `STREAM_VIOLATION`).
 //! `--demo` answers from [`crate::demo`] instead.
 
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use crate::demo;
+use crate::keychain::Keychain;
 use crate::pandora::{self, Client, Error, GenreCategory, Quality, SearchHit, Song, Station, StationDetails};
 use crate::update::{self, Checked, Update};
 
@@ -127,10 +129,34 @@ pub enum Reply {
         url: String,
         image: Option<image::DynamicImage>,
     },
+    /// An answer from the keychain (see [`Backend::keychain`]).
+    Keychain(KeychainReply),
     UpdateFound(Update),
     UpToDate,
     UpdateProgress(u8),
     SelfUpdated(Result<String, String>),
+}
+
+/// What the keychain said. The errors are only "it didn't work": the app tells
+/// the user [`crate::keychain::NO_KEYCHAIN`], not D-Bus details.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeychainReply {
+    /// The saved password (`None`: nothing saved for this account).
+    Loaded(Result<Option<String>, String>),
+    Saved(Result<(), String>),
+    /// `loud`: the user asked (Settings, Log out), so say how it went.
+    Forgotten {
+        result: Result<(), String>,
+        loud: bool,
+    },
+}
+
+/// One keychain job, run on its own thread (a locked keychain can wait for the
+/// user to unlock it, which must never freeze the interface).
+pub enum KeychainJob {
+    Load,
+    Save(String),
+    Forget { loud: bool },
 }
 
 pub struct Backend {
@@ -177,6 +203,24 @@ impl Backend {
             thread::spawn(move || audio_worker(audio_rx, reply_tx, &user_agent));
         }
         Self { api, audio, art, replies, tx }
+    }
+
+    /// Runs `job` on the Pandora password of `account` in `keychain`; the
+    /// answer arrives as [`Reply::Keychain`].
+    pub fn keychain(&self, keychain: &Arc<dyn Keychain>, account: &str, job: KeychainJob) {
+        let (keychain, account, tx) = (Arc::clone(keychain), account.to_owned(), self.tx.clone());
+        thread::spawn(move || {
+            let reply = match job {
+                KeychainJob::Load => KeychainReply::Loaded(keychain.get(&account).map_err(|e| e.to_string())),
+                KeychainJob::Save(password) => {
+                    KeychainReply::Saved(keychain.set(&account, &password).map_err(|e| e.to_string()))
+                }
+                KeychainJob::Forget { loud } => {
+                    KeychainReply::Forgotten { result: keychain.forget(&account).map_err(|e| e.to_string()), loud }
+                }
+            };
+            let _ = tx.send(Reply::Keychain(reply));
+        });
     }
 
     /// Asks GitHub for a newer release, quietly: no network or no news says nothing.

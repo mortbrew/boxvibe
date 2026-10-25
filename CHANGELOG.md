@@ -168,6 +168,24 @@ bound twice.
   from Pandora), so the two always agree. Help has one line for it.
 - The demo's "Today's Hits" is now a genre station (can be deleted, not renamed).
 
+#### Keychain
+
+- Your Pandora password now lives in your desktop's Secret Service keychain
+  (GNOME Keyring, KeePassXC…), never in `config.toml`. It is saved after the
+  first login that Pandora accepts.
+- An old `config.toml` with a plain `password = "…"` line is moved to the
+  keychain once it works; the line is removed from the file only after the
+  keychain accepted it.
+- No keychain? boxvibe keeps the password in memory for the session, does not
+  write it to disk, asks again next start and says "No keychain found:
+  you'll be asked for your password each start".
+- Settings → "Saved password" shows where it is kept; `Enter` forgets it. Log
+  out and a wrong-password login also remove it.
+- System Check lists the keychain as optional ("a Secret Service keychain,
+  e.g. gnome-keyring or KeePassXC").
+- New dependency `secret-service` (with `zbus`); `cargo audit` shows only three
+  "unmaintained" notices for zbus helper crates, no vulnerabilities.
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

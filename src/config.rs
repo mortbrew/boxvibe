@@ -14,8 +14,11 @@
 //! defaults ([`Config::load`]); one that can't be read is left alone.
 //!
 //! Settings changed from the app are written back with [`set_values`], which
-//! keeps the user's comments and formatting. The file holds the Pandora
-//! password, so it is always written with mode 600.
+//! keeps the user's comments and formatting. The file is always written with
+//! mode 600. It never holds the Pandora password: that lives in the desktop
+//! keychain ([`crate::keychain`]). A password an older boxvibe left in the file
+//! (`[account]` or `[pandora]` `password`) is still read, once, so it can be
+//! moved to the keychain; [`forget_plaintext_password`] then deletes it.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -30,13 +33,47 @@ pub struct Config {
     pub ui: UiConfig,
 }
 
+/// A password. It prints as `<hidden>` in `{:?}` (so it can't end up in a log
+/// or a panic message by accident), and is never written to the config file.
+#[derive(Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self(text.into())
+    }
+
+    /// The text itself; only for sending it to Pandora or the keychain.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_empty() { "<empty>" } else { "<hidden>" })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct PandoraConfig {
     /// The account's email, saved from Settings.
     pub username: String,
-    /// Saved from Settings once a login works, in plain text (the file is mode 600).
-    pub password: String,
+    /// The password in use this session. Not a setting: it is read from the
+    /// keychain (or typed), and only a plaintext one left in the file by
+    /// boxvibe 0.4 betas is read from there, to be moved. Never written.
+    #[serde(skip_serializing)]
+    pub password: Secret,
     /// `high` (192 kbps MP3 where the plan has it, else 128) | `standard`
     /// (128 kbps MP3). Old `low` / `medium` values read as `standard`.
     pub audio_quality: String,
@@ -51,7 +88,7 @@ impl Default for PandoraConfig {
     fn default() -> Self {
         Self {
             username: String::new(),
-            password: String::new(),
+            password: Secret::default(),
             audio_quality: "high".into(),
             user_agent: String::new(),
             last_station: String::new(),
@@ -520,7 +557,6 @@ fn section<T: serde::de::DeserializeOwned + Default>(
 /// The old tables still load, and are cleared out when anything is saved.
 pub const LAYOUT: &[(&str, &str, &str)] = &[
     ("account", "username", "pandora"),
-    ("account", "password", "pandora"),
     ("account", "user_agent", "pandora"),
     ("boxvibe", "check_updates", "ui"),
     ("playback", "audio_quality", "pandora"),
@@ -589,6 +625,11 @@ fn gather(table: toml::Table, warnings: &mut Vec<ConfigWarning>) -> toml::Table 
         };
         for (key, value) in keys {
             let path = format!("{name}.{key}");
+            // A password an older boxvibe saved: read once, to move it to the keychain.
+            if key == "password" && (name == "account" || name == "pandora") {
+                put(&mut internal, "pandora", key, value, if name == "account" { 3 } else { 2 });
+                continue;
+            }
             if is_new {
                 let old_name = OLD_NAMES.iter().find(|(t, k, ..)| *t == name && *k == key);
                 match (LAYOUT.iter().find(|(t, k, _)| *t == name && *k == key), old_name) {
@@ -790,6 +831,31 @@ fn migrate(doc: &mut toml_edit::DocumentMut) {
     }
 }
 
+/// Deletes `password` from `[account]` and `[pandora]` in the file at `path`
+/// (what 0.4 betas saved there), keeping everything else. `Ok(true)` when
+/// there was one. Call it only once the keychain has the password.
+pub fn forget_plaintext_password(path: &Path) -> Result<bool, ConfigError> {
+    let error = |reason: String| ConfigError::Write { path: path.into(), reason };
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(error(e.to_string())),
+    };
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| error(e.to_string()))?;
+    let mut found = false;
+    for table in ["account", "pandora"] {
+        if let Some(t) = doc.get_mut(table).and_then(toml_edit::Item::as_table_mut) {
+            found |= t.remove("password").is_some();
+        }
+    }
+    if !found {
+        return Ok(false);
+    }
+    migrate(&mut doc);
+    write_private(path, &doc.to_string()).map_err(|e| error(e.to_string()))?;
+    Ok(true)
+}
+
 /// Sets `[table] key = value` for each entry in the file at `path` (the
 /// tables of [`LAYOUT`]), creating file and table when missing and leaving
 /// everything else, comments included, untouched. A file still in the old
@@ -804,6 +870,11 @@ pub fn set_values(path: &Path, values: &[(&str, &str, toml_edit::Value)]) -> Res
     let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| error(e.to_string()))?;
     migrate(&mut doc);
     for (table, key, value) in values {
+        // The password is never written to the file.
+        debug_assert!(*key != "password", "the password belongs in the keychain");
+        if *key == "password" {
+            continue;
+        }
         debug_assert!(LAYOUT.iter().any(|(t, k, _)| t == table && k == key), "{table}.{key} is not in LAYOUT");
         let section = doc
             .entry(table)
@@ -876,20 +947,15 @@ mod tests {
         let path = temp_dir("save").join("sub/config.toml");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "# mine\n[ui]\ntheme = \"gruvbox\" # cosy\nfuture = 1\n").unwrap();
-        set_values(
-            &path,
-            &[
-                ("account", "username", "me@example.com".into()),
-                ("account", "password", "hunter2".into()),
-                ("look", "icons", "unicode".into()),
-            ],
-        )
-        .unwrap();
+        set_values(&path, &[("account", "username", "me@example.com".into()), ("look", "icons", "unicode".into())])
+            .unwrap();
         set_values(&path, &[("playback", "volume", 55_i64.into())]).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("# mine") && text.contains("# cosy") && text.contains("future = 1"), "{text}");
         let (c, _) = Config::load(&path);
-        assert!(c.has_login());
+        assert_eq!(c.pandora.username, "me@example.com");
+        assert!(!c.has_login(), "no password in the file");
+        assert!(!text.contains("password"), "{text}");
         assert_eq!((c.ui.theme.as_str(), c.ui.icons, c.player.volume), ("gruvbox", IconSet::Unicode, 55));
         #[cfg(unix)]
         {
@@ -1190,6 +1256,55 @@ mod tests {
     }
 
     #[test]
+    fn an_old_plaintext_password_is_read_once_and_then_deleted_on_request() {
+        for text in [
+            "[pandora]\nusername = \"me@example.com\"\npassword = \"hunter2\"\n",
+            "[account]\nusername = \"me@example.com\"\npassword = \"hunter2\" # old\n",
+        ] {
+            let (c, w) = Config::parse(text).unwrap();
+            assert!(w.is_empty(), "{w:?}");
+            assert_eq!(c.pandora.password.expose(), "hunter2");
+            assert!(c.has_login());
+        }
+        // [account] beats [pandora].
+        let (c, _) = Config::parse("[pandora]\npassword = \"old\"\n[account]\npassword = \"new\"\n").unwrap();
+        assert_eq!(c.pandora.password.expose(), "new");
+        // Saving anything else never writes it; deleting it keeps everything else.
+        let path = temp_dir("plain-password").join("config.toml");
+        std::fs::write(&path, "# mine\n[account]\nusername = \"me@example.com\" # who\npassword = \"hunter2\"\n[look]\ntheme = \"gruvbox\"\n")
+            .unwrap();
+        assert!(forget_plaintext_password(&path).unwrap());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("hunter2") && !text.contains("password"), "{text}");
+        assert!(text.contains("# mine") && text.contains("# who") && text.contains("gruvbox"), "{text}");
+        assert!(!forget_plaintext_password(&path).unwrap(), "nothing left to delete");
+        let (c, _) = Config::load(&path);
+        assert!(!c.has_login() && c.pandora.username == "me@example.com");
+        // A [pandora] table that only held the password goes with it.
+        std::fs::write(&path, "[pandora]\npassword = \"hunter2\"\n").unwrap();
+        assert!(forget_plaintext_password(&path).unwrap());
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("pandora"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn the_password_is_hidden_from_debug_output_and_never_serialized() {
+        let (c, _) = Config::parse("[account]\nusername = \"me@example.com\"\npassword = \"hunter2\"\n").unwrap();
+        let shown = format!("{c:?}");
+        assert!(
+            !shown.contains("hunter2") && shown.contains("<hidden>") && shown.contains("me@example.com"),
+            "{shown}"
+        );
+        assert_eq!(format!("{:?}", Secret::default()), "<empty>");
+        let text = toml::to_string(&c.pandora).unwrap();
+        assert!(!text.contains("hunter2") && !text.contains("password"), "{text}");
+    }
+
+    #[test]
     fn saving_moves_an_old_file_to_the_new_layout_and_keeps_the_rest() {
         let path = temp_dir("migrate").join("config.toml");
         std::fs::write(&path, OLD_FILE).unwrap();
@@ -1198,7 +1313,10 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         let doc: toml_edit::DocumentMut = text.parse().unwrap();
         // The old tables are gone, except for the one key nobody knows.
-        assert!(doc.get("pandora").is_none() && doc.get("player").is_none(), "{text}");
+        assert!(doc.get("player").is_none(), "{text}");
+        // (a saved password stays in [pandora] until the keychain has it: see forget_plaintext_password)
+        assert_eq!(doc["pandora"].as_table().unwrap().len(), 1, "{text}");
+        assert_eq!(doc["pandora"]["password"].as_str(), Some("hunter2"), "not lost by an unrelated save");
         assert_eq!(doc["ui"].as_table().unwrap().len(), 1, "{text}");
         assert_eq!(doc["ui"]["future"].as_integer(), Some(1));
         // Every setting is in its place, with its comment and its value.

@@ -23,6 +23,7 @@ ratatui = "0.30"
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
 rodio = { version = "0.23", default-features = false, features = ["playback", "mp3", "mp4"] }
 rustfft = "6"
+secret-service = { version = "5.2.0", features = ["rt-async-io-crypto-rust"] }
 self-replace = "1.5.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_ignored = "0.1.14"

@@ -49,3 +49,16 @@ The Omarchy theme reader (`src/theme.rs`), the tolerant config loader
 (`src/config.rs`), the hint bar and the self-update (`src/update.rs`) are
 adapted from [tubevibe](https://github.com/mortbrew/tubevibe) (MIT OR
 Apache-2.0).
+
+## secret-service, zbus (Pandora password in the keychain)
+
+`src/keychain.rs` uses the [`secret-service`](https://crates.io/crates/secret-service)
+crate (MIT OR Apache-2.0) to talk to the desktop's Secret Service keychain,
+which pulls in [`zbus`](https://crates.io/crates/zbus) and its helper crates
+(`zvariant`, `zbus_names`, MIT) and about 60 more small crates, all under
+permissive licenses (MIT, Apache-2.0, Unlicense, Zlib, BSD). No code was copied;
+they are ordinary Cargo dependencies listed in `Cargo.lock`. `cargo audit`
+reports no vulnerabilities; it does show three "unmaintained" notices
+(RUSTSEC-2026-0370, -0371 and -0372, for `zvariant`, `zbus_names` and
+`zvariant_derive`, which were merged into `zbus` 6) that no release of
+`secret-service` can fix yet.

@@ -9,17 +9,32 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::audio::Audio;
-use crate::backend::{Backend, Reply, Request};
-use crate::config::{self, AlbumArt, Config, ConfigWarning};
+use crate::backend::{Backend, KeychainJob, KeychainReply, Reply, Request};
+use crate::config::{self, AlbumArt, Config, ConfigWarning, Secret};
 use crate::input::TextInput;
+use crate::keychain::{self, Keychain, NO_KEYCHAIN};
 use crate::pandora::{GenreCategory, Quality, Rating, SearchHit, Song, Station, StationDetails};
 use crate::theme::{self, Palette};
 use crate::update::{Progress, Replace, Update};
+
+/// What boxvibe knows about the Pandora password in the desktop keychain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeychainState {
+    /// Not asked yet, or being asked.
+    Unknown,
+    /// It is in the keychain.
+    Saved,
+    /// The keychain works and has none.
+    NotSaved,
+    /// There is no keychain (or it said no): the password lasts the session.
+    Unavailable,
+}
 
 /// What the right side shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,7 +142,7 @@ impl Setting {
     pub fn label(self) -> &'static str {
         match self {
             Self::Email => "Email or username",
-            Self::Password => "Password",
+            Self::Password => "Saved password",
             Self::LogIn => "Log in",
             Self::LogOut => "Log out",
             Self::Quality => "Audio quality",
@@ -158,7 +173,6 @@ impl Setting {
             Self::CheckUpdates => Some(("boxvibe", "check_updates")),
             Self::Splash => Some(("look", "splash")),
             Self::Email => Some(("account", "username")),
-            Self::Password => Some(("account", "password")),
             Self::Quality => Some(("playback", "audio_quality")),
             Self::Volume => Some(("playback", "volume")),
             Self::Autoplay => Some(("playback", "autoplay_last_station")),
@@ -171,7 +185,7 @@ impl Setting {
             Self::RetroMode => Some(("look", "retro_mode")),
             Self::ArtTint => Some(("look", "art_tint")),
             Self::Animations => Some(("look", "animations")),
-            Self::LogIn | Self::LogOut | Self::EditFile | Self::MenuEntry => None,
+            Self::Password | Self::LogIn | Self::LogOut | Self::EditFile | Self::MenuEntry => None,
         }
     }
 
@@ -181,10 +195,12 @@ impl Setting {
         match self {
             Self::Email => "What you log in to pandora.com with. Enter types it. Saved as [account] username.",
             Self::Password => {
-                "Enter types it. Kept once Pandora accepts it, in a file only you can read (mode 600). Saved as [account] password."
+                "Kept in your desktop keychain (GNOME Keyring, KeePassXC…), never in config.toml. Enter forgets it: you type it again next start."
             }
-            Self::LogIn => "Logs in to Pandora with the email and password above and loads your stations.",
-            Self::LogOut => "Stops the music and removes the saved password from config.toml.",
+            Self::LogIn => {
+                "Logs in to Pandora with the email above, and the password from your keychain or typed here."
+            }
+            Self::LogOut => "Stops the music and removes the saved password from your keychain.",
             Self::Quality => {
                 "high is 192 kbps MP3 where your plan has it (Plus, Premium), else 128 kbps; standard is 128. Saved as [playback] audio_quality."
             }
@@ -596,6 +612,15 @@ pub struct App {
     playlist_pending: bool,
     pub audio: Audio,
     backend: Backend,
+    /// Where the Pandora password is kept (see [`crate::keychain`]).
+    keychain: Arc<dyn Keychain>,
+    /// What is known about the saved password.
+    pub keychain_state: KeychainState,
+    /// The typed password is not in the keychain yet: it is saved once Pandora accepts it.
+    password_unsaved: bool,
+    /// The password came from config.toml (an older boxvibe wrote it there):
+    /// the keychain gets it, and the file loses it once that worked.
+    password_from_file: bool,
     /// A newer release (About shows it).
     pub update: Option<Update>,
     /// GitHub confirmed this is the latest release.
@@ -622,6 +647,16 @@ pub const SPLASH: Duration = Duration::from_millis(2000);
 
 impl App {
     pub fn new(config: Config, config_path: Option<PathBuf>, warnings: &[ConfigWarning], demo: bool) -> Self {
+        Self::with_keychain(config, config_path, warnings, demo, keychain::system())
+    }
+
+    pub fn with_keychain(
+        config: Config,
+        config_path: Option<PathBuf>,
+        warnings: &[ConfigWarning],
+        demo: bool,
+        keychain: Arc<dyn Keychain>,
+    ) -> Self {
         let quality = Quality::parse(&config.pandora.audio_quality);
         let audio = Audio::open(demo, config.player.volume);
         let backend = Backend::spawn(demo, quality, config.pandora.user_agent.clone());
@@ -665,6 +700,10 @@ impl App {
             playlist_pending: false,
             audio,
             backend,
+            keychain,
+            keychain_state: KeychainState::Unknown,
+            password_unsaved: false,
+            password_from_file: false,
             update: None,
             up_to_date: false,
             self_update: Progress::Idle,
@@ -688,18 +727,34 @@ impl App {
             if app.config.ui.check_updates {
                 app.backend.check_update();
             }
-            if app.config.has_login() {
-                app.log_in();
-            } else {
-                // First run: Settings, on the account, typing the email.
-                app.view = View::Settings;
-                app.focus = Focus::Content;
-                app.settings_cursor = Setting::at(Setting::Email);
-                app.open_prompt(if app.config.pandora.username.is_empty() { Prompt::Email } else { Prompt::Password });
-                app.status = "Welcome to boxvibe: log in with your Pandora account".into();
-            }
+            app.start_account();
         }
         app
+    }
+
+    /// First thing after a start: log in with what is saved, or ask.
+    fn start_account(&mut self) {
+        if self.config.has_login() {
+            // A password an older boxvibe left in config.toml moves to the keychain
+            // (once Pandora accepts it; see `Reply::LoggedIn`).
+            self.password_from_file = true;
+            self.password_unsaved = true;
+            self.log_in();
+        } else if !self.config.pandora.username.trim().is_empty() {
+            // The usual start: the password is in the keychain.
+            let user = self.config.pandora.username.trim().to_owned();
+            self.backend.keychain(&self.keychain, &user, KeychainJob::Load);
+            if self.status.is_empty() {
+                self.status = "Getting your password from the keychain…".into();
+            }
+        } else {
+            // First run: Settings, on the account, typing the email.
+            self.view = View::Settings;
+            self.focus = Focus::Content;
+            self.settings_cursor = Setting::at(Setting::Email);
+            self.open_prompt(Prompt::Email);
+            self.status = "Welcome to boxvibe: log in with your Pandora account".into();
+        }
     }
 
     /// Looks at the system in the background (fonts get 1.5 s at most). The
@@ -726,7 +781,7 @@ impl App {
             }
         } else if self.system_open {
             self.status = "System checked".into();
-        } else if extras > 0 && !self.status.starts_with('⚠') {
+        } else if extras > 0 && !self.status.starts_with('⚠') && self.status != NO_KEYCHAIN {
             // (a config warning already showing matters more)
             let names: Vec<&str> = checks.iter().filter(|c| !c.needed && !c.ok()).map(|c| c.dep.name()).collect();
             self.status = format!("Optional, not installed: {}", names.join(", "));
@@ -1131,14 +1186,20 @@ impl App {
                 let first = self.session != Session::LoggedIn;
                 self.session = Session::LoggedIn;
                 if !self.demo {
-                    let (email, password) =
-                        (self.config.pandora.username.clone(), self.config.pandora.password.clone());
-                    self.save(&[
-                        ("account", "username", email.as_str().into()),
-                        ("account", "password", password.as_str().into()),
-                    ]);
+                    let email = self.config.pandora.username.clone();
+                    self.save(&[("account", "username", email.as_str().into())]);
+                    // The password goes to the keychain, now that Pandora has taken it.
+                    if self.password_unsaved {
+                        self.password_unsaved = false;
+                        let password = self.config.pandora.password.expose().to_owned();
+                        self.backend.keychain(&self.keychain, &email, KeychainJob::Save(password));
+                    }
                     // The status bar's right side says who is logged in.
-                    self.status.clear();
+                    self.status = if self.keychain_state == KeychainState::Unavailable {
+                        NO_KEYCHAIN.into()
+                    } else {
+                        String::new()
+                    };
                 }
                 if first && self.view == View::Settings && self.stations.is_empty() {
                     // Straight to the music after logging in from Settings.
@@ -1149,16 +1210,18 @@ impl App {
             }
             Reply::LoginFailed { message, wrong_password } => {
                 if wrong_password {
-                    // A wrong password is not kept, here or in config.toml.
+                    // A wrong password is not kept: not in memory, not in the keychain.
                     self.config.pandora.password.clear();
-                    self.save(&[("account", "password", "".into())]);
+                    self.password_unsaved = false;
+                    self.forget_saved_password(false);
                 }
                 self.session = Session::Failed(message.clone());
                 self.status = format!("⚠ Login failed: {message}");
                 self.view = View::Settings;
                 self.focus = Focus::Content;
-                self.settings_cursor = Setting::at(Setting::Password);
+                self.settings_cursor = Setting::at(Setting::LogIn);
             }
+            Reply::Keychain(reply) => self.on_keychain(reply),
             Reply::Stations(stations) => {
                 self.stations = stations;
                 self.on_add_row = self.stations.is_empty();
@@ -1339,11 +1402,16 @@ impl App {
         let (username, password) = if self.demo {
             ("demo".to_owned(), String::new())
         } else {
-            (self.config.pandora.username.trim().to_owned(), self.config.pandora.password.clone())
+            (self.config.pandora.username.trim().to_owned(), self.config.pandora.password.expose().to_owned())
         };
-        if !self.demo && (username.is_empty() || password.is_empty()) {
-            self.status = "⚠ Type your Pandora email and password first".into();
-            self.settings_cursor = Setting::at(if username.is_empty() { Setting::Email } else { Setting::Password });
+        if !self.demo && username.is_empty() {
+            self.status = "⚠ Type your Pandora email first".into();
+            self.settings_cursor = Setting::at(Setting::Email);
+            return;
+        }
+        if !self.demo && password.is_empty() {
+            // Nothing in the keychain (or no keychain): ask, like a login form.
+            self.ask_password();
             return;
         }
         self.session = Session::SigningIn;
@@ -1351,6 +1419,97 @@ impl App {
             self.status = format!("Signing in as {username}…");
         }
         self.backend.send(Request::Login { username, password });
+    }
+
+    /// Opens the password box (Settings, on Log in).
+    fn ask_password(&mut self) {
+        self.view = View::Settings;
+        self.focus = Focus::Content;
+        self.open_prompt(Prompt::Password);
+        self.settings_cursor = Setting::at(Setting::LogIn);
+        self.status = format!("Type the password for {}", self.config.pandora.username.trim());
+    }
+
+    /// What the keychain answered (it always runs on its own thread).
+    fn on_keychain(&mut self, reply: KeychainReply) {
+        match reply {
+            KeychainReply::Loaded(Ok(Some(password))) => {
+                if self.config.pandora.password.is_empty() {
+                    self.config.pandora.password = Secret::new(password);
+                    self.keychain_state = KeychainState::Saved;
+                    self.log_in();
+                }
+            }
+            KeychainReply::Loaded(Ok(None)) => {
+                self.keychain_state = KeychainState::NotSaved;
+                if self.config.pandora.password.is_empty() {
+                    self.ask_password();
+                }
+            }
+            KeychainReply::Loaded(Err(_)) => {
+                self.keychain_state = KeychainState::Unavailable;
+                if self.config.pandora.password.is_empty() {
+                    self.ask_password();
+                }
+                self.status = NO_KEYCHAIN.into();
+            }
+            KeychainReply::Saved(Ok(())) => {
+                self.keychain_state = KeychainState::Saved;
+                if std::mem::take(&mut self.password_from_file) {
+                    // Only now, with the keychain holding it, does the file let go of it.
+                    self.status =
+                        match self.config_path.as_deref().filter(|_| !self.demo).map(config::forget_plaintext_password)
+                        {
+                            Some(Err(e)) => format!("⚠ {e}"),
+                            Some(Ok(true)) => "Your password moved from config.toml to the keychain".into(),
+                            _ => String::new(),
+                        };
+                }
+            }
+            KeychainReply::Saved(Err(_)) => {
+                // The password stays in memory for this session, and nowhere on disk.
+                // (One an older boxvibe left in config.toml is left there: it isn't lost.)
+                self.keychain_state = KeychainState::Unavailable;
+                self.password_from_file = false;
+                self.status = NO_KEYCHAIN.into();
+            }
+            KeychainReply::Forgotten { result: Ok(()), .. } => {
+                if self.keychain_state == KeychainState::Saved {
+                    self.keychain_state = KeychainState::NotSaved;
+                }
+            }
+            KeychainReply::Forgotten { result: Err(_), loud } => {
+                self.keychain_state = KeychainState::Unavailable;
+                if loud {
+                    self.status = format!("{NO_KEYCHAIN}: nothing saved to forget");
+                }
+            }
+        }
+    }
+
+    /// Deletes the saved password: from the keychain, and from config.toml if an
+    /// older boxvibe left it there. `loud`: the user asked, so say it.
+    fn forget_saved_password(&mut self, loud: bool) {
+        if self.demo {
+            if loud {
+                self.status = "The demo has no password".into();
+            }
+            return;
+        }
+        let user = self.config.pandora.username.trim().to_owned();
+        if !user.is_empty() {
+            self.backend.keychain(&self.keychain, &user, KeychainJob::Forget { loud });
+        }
+        let from_file = self.config_path.as_deref().map(config::forget_plaintext_password);
+        self.password_from_file = false;
+        if let Some(Err(e)) = from_file {
+            self.status = format!("⚠ {e}");
+        } else if loud {
+            self.status = "Forgot the saved password: you'll be asked for it next start".into();
+        }
+        if self.keychain_state == KeychainState::Saved {
+            self.keychain_state = KeychainState::NotSaved;
+        }
     }
 
     fn log_out(&mut self) {
@@ -1363,9 +1522,14 @@ impl App {
         self.menu_cursor = 0;
         self.view = View::Settings;
         self.session = Session::LoggedOut;
+        self.forget_saved_password(false);
         self.config.pandora.password.clear();
-        self.save(&[("account", "password", "".into())]);
-        self.status = "Logged out: the password was removed from config.toml".into();
+        self.password_unsaved = false;
+        self.status = if self.demo || self.keychain_state == KeychainState::Unavailable {
+            "Logged out".into()
+        } else {
+            "Logged out: the saved password was removed from your keychain".into()
+        };
     }
 
     fn tune(&mut self, index: usize) {
@@ -1535,8 +1699,13 @@ impl App {
             Setting::Email if self.demo => "demo@example.com".into(),
             Setting::Email if self.config.pandora.username.is_empty() => "not set".into(),
             Setting::Email => self.config.pandora.username.clone(),
-            Setting::Password if self.demo || !self.config.pandora.password.is_empty() => "•••••••• saved".into(),
-            Setting::Password => "not set".into(),
+            Setting::Password if self.demo => "not used in the demo".into(),
+            Setting::Password => match self.keychain_state {
+                KeychainState::Saved => "•••••••• in your keychain".into(),
+                KeychainState::Unavailable => "no keychain: asked each start".into(),
+                _ if self.password_unsaved => "saving to your keychain…".into(),
+                _ => "not saved".into(),
+            },
             Setting::LogIn => match &self.session {
                 Session::LoggedOut => "not logged in".into(),
                 Session::SigningIn => "signing in…".into(),
@@ -1591,7 +1760,7 @@ impl App {
     fn change_setting(&mut self) {
         match self.setting() {
             Setting::Email => self.open_prompt(Prompt::Email),
-            Setting::Password => self.open_prompt(Prompt::Password),
+            Setting::Password => self.forget_saved_password(true),
             Setting::LogIn => self.log_in(),
             Setting::LogOut => self.log_out(),
             Setting::Quality => {
@@ -1693,8 +1862,23 @@ impl App {
         // A file broken in the editor keeps the settings in use (and the file as it is).
         match Config::read(&path) {
             Ok((config, warnings)) => {
-                let login_changed = config.pandora.username != self.config.pandora.username
-                    || config.pandora.password != self.config.pandora.password;
+                // The file has no password (it is in the keychain): keep the one in use,
+                // unless the account changed or a new one was typed into the file.
+                let mut config = config;
+                let account_changed = config.pandora.username != self.config.pandora.username;
+                let typed_in_file = !config.pandora.password.is_empty();
+                if config.pandora.password.is_empty() && !account_changed {
+                    config.pandora.password = self.config.pandora.password.clone();
+                }
+                let login_changed =
+                    account_changed || (typed_in_file && config.pandora.password != self.config.pandora.password);
+                if typed_in_file && login_changed {
+                    self.password_from_file = true;
+                    self.password_unsaved = true;
+                }
+                if account_changed {
+                    self.keychain_state = KeychainState::Unknown;
+                }
                 self.config = config;
                 self.art.forget_shown();
                 self.apply_theme();
@@ -1703,6 +1887,9 @@ impl App {
                 self.status = ConfigWarning::summary(&warnings).unwrap_or_else(|| "config.toml read again".into());
                 if login_changed && self.config.has_login() {
                     self.log_in();
+                } else if login_changed && !self.config.pandora.username.trim().is_empty() {
+                    let user = self.config.pandora.username.trim().to_owned();
+                    self.backend.keychain(&self.keychain, &user, KeychainJob::Load);
                 }
             }
             Err(warning) => {
@@ -1725,6 +1912,11 @@ impl App {
                 match prompt {
                     Prompt::Email => {
                         let email = text.trim().to_owned();
+                        if email != self.config.pandora.username {
+                            // A saved password belongs to the other account.
+                            self.config.pandora.password.clear();
+                            self.keychain_state = KeychainState::Unknown;
+                        }
                         self.config.pandora.username = email.clone();
                         self.save(&[("account", "username", email.as_str().into())]);
                         // Then the password, like a login form.
@@ -1734,8 +1926,9 @@ impl App {
                     }
                     Prompt::Password if text.is_empty() => {}
                     Prompt::Password => {
-                        // Saved once Pandora takes it (see LoggedIn).
-                        self.config.pandora.password = text;
+                        // Kept in the keychain once Pandora takes it (see LoggedIn).
+                        self.config.pandora.password = Secret::new(text);
+                        self.password_unsaved = true;
                         self.settings_cursor = Setting::at(Setting::LogIn);
                         self.log_in();
                     }
@@ -2867,6 +3060,238 @@ mod tests {
         std::fs::read_to_string(app.config_path.as_ref().unwrap()).unwrap_or_default()
     }
 
+    // --- The Pandora password lives in the keychain ---
+
+    use crate::keychain::MemoryKeychain;
+
+    const MAIL: &str = "me@example.com";
+    const WAIT: Duration = Duration::from_millis(300);
+
+    /// An app as `App::new` makes it for a real account (its backend answers like the
+    /// demo, so no network), started from `config.toml` text and a fake keychain.
+    fn account_app(name: &str, file: &str, keychain: &Arc<MemoryKeychain>) -> App {
+        let path = crate::config::temp_dir(name).join("config.toml");
+        std::fs::write(&path, file).unwrap();
+        let (config, _) = Config::load(&path);
+        let mut app = App::with_keychain(config, Some(path), &[], true, Arc::clone(keychain) as Arc<dyn Keychain>);
+        app.settle(WAIT);
+        app.demo = false;
+        app.session = Session::LoggedOut;
+        app.status.clear();
+        app.start_account();
+        app.settle(WAIT);
+        app
+    }
+
+    fn enter_text(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        app.on_key(key(KeyCode::Enter));
+        app.settle(WAIT);
+    }
+
+    #[test]
+    fn a_password_from_an_older_config_moves_to_the_keychain_and_leaves_the_file() {
+        let k = MemoryKeychain::new();
+        let app = account_app(
+            "kc-legacy",
+            "# mine\n[account]\nusername = \"me@example.com\" # who\npassword = \"hunter2\"\n[look]\nicons = \"emoji\"\n",
+            &k,
+        );
+        assert_eq!(app.session, Session::LoggedIn, "it logged in with the password from the file");
+        assert_eq!(k.saved(MAIL).as_deref(), Some("hunter2"));
+        let text = saved(&app);
+        assert!(!text.contains("hunter2") && !text.contains("password"), "{text}");
+        assert!(text.contains("# mine") && text.contains("# who") && text.contains("emoji"), "{text}");
+        assert!(app.status.contains("moved from config.toml to the keychain"), "{}", app.status);
+        assert_eq!(app.keychain_state, KeychainState::Saved);
+        assert_eq!(app.setting_value(Setting::Password), "•••••••• in your keychain");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(app.config_path.as_ref().unwrap()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn a_wrong_old_password_is_not_moved_and_leaves_the_file_too() {
+        let k = MemoryKeychain::new();
+        let mut app =
+            account_app("kc-legacy-wrong", "[pandora]\nusername = \"me@example.com\"\npassword = \"old\"\n", &k);
+        // (the first login above was the demo's yes; now Pandora says no)
+        k.set(MAIL, "old").unwrap();
+        app.on_reply(Reply::LoginFailed { message: "Wrong password".into(), wrong_password: true });
+        app.settle(WAIT);
+        assert_eq!(k.saved(MAIL), None, "a wrong password is not kept");
+        assert!(app.config.pandora.password.is_empty());
+        assert!(!saved(&app).contains("password"), "{}", saved(&app));
+        assert_eq!(app.setting(), Setting::LogIn, "the cursor waits on Log in, which asks again");
+    }
+
+    #[test]
+    fn with_no_keychain_the_old_password_stays_in_the_file_and_in_memory() {
+        let k = MemoryKeychain::missing();
+        let file = "[account]\nusername = \"me@example.com\"\npassword = \"hunter2\"\n";
+        let app = account_app("kc-legacy-missing", file, &k);
+        assert_eq!(app.session, Session::LoggedIn);
+        assert_eq!(app.status, NO_KEYCHAIN);
+        assert!(saved(&app).contains("hunter2"), "not lost: the keychain never had it");
+        assert_eq!(app.keychain_state, KeychainState::Unavailable);
+    }
+
+    #[test]
+    fn the_usual_start_logs_in_with_the_keychain_and_the_file_never_has_a_password() {
+        let k = MemoryKeychain::new();
+        k.set(MAIL, "hunter2").unwrap();
+        let file = "[account]\nusername = \"me@example.com\"\n";
+        let app = account_app("kc-usual", file, &k);
+        assert_eq!(app.session, Session::LoggedIn);
+        assert_eq!(app.config.pandora.password.expose(), "hunter2");
+        assert_eq!(saved(&app), file, "nothing was written");
+        assert!(app.status.is_empty(), "{}", app.status);
+        assert!(!format!("{:?}", app.config).contains("hunter2"));
+    }
+
+    #[test]
+    fn no_saved_password_asks_for_it_then_keeps_it_in_the_keychain_after_pandora_accepts() {
+        let k = MemoryKeychain::new();
+        let mut app = account_app("kc-ask", "[account]\nusername = \"me@example.com\"\n", &k);
+        assert_eq!(app.prompt, Some(Prompt::Password), "asked, like a login form");
+        assert_eq!(app.keychain_state, KeychainState::NotSaved);
+        assert_eq!(app.session, Session::LoggedOut);
+        enter_text(&mut app, "hunter2");
+        assert_eq!(app.session, Session::LoggedIn);
+        assert_eq!(k.saved(MAIL).as_deref(), Some("hunter2"));
+        assert!(!saved(&app).contains("password") && !saved(&app).contains("hunter2"), "{}", saved(&app));
+        assert!(saved(&app).contains(MAIL));
+        assert_eq!(app.setting_value(Setting::Password), "•••••••• in your keychain");
+    }
+
+    #[test]
+    fn a_password_pandora_never_accepted_is_never_saved() {
+        let k = MemoryKeychain::new();
+        let mut app = account_app("kc-never", "[account]\nusername = \"me@example.com\"\n", &k);
+        app.on_key(key(KeyCode::Char('x')));
+        app.on_key(key(KeyCode::Enter));
+        // Typed, but the answer is a no before the demo worker's yes arrives.
+        assert!(app.password_unsaved);
+        app.on_reply(Reply::LoginFailed { message: "no".into(), wrong_password: true });
+        app.settle(WAIT);
+        assert_eq!(k.saved(MAIL), None);
+        assert!(!app.password_unsaved && app.config.pandora.password.is_empty());
+    }
+
+    #[test]
+    fn no_keychain_means_a_session_password_a_clear_message_and_nothing_on_disk() {
+        let k = MemoryKeychain::missing();
+        let file = "[account]\nusername = \"me@example.com\"\n";
+        let mut app = account_app("kc-missing", file, &k);
+        assert_eq!(app.prompt, Some(Prompt::Password));
+        assert_eq!(app.status, NO_KEYCHAIN, "told at start");
+        assert_eq!(app.keychain_state, KeychainState::Unavailable);
+        enter_text(&mut app, "hunter2");
+        assert_eq!(app.session, Session::LoggedIn, "it works this session");
+        assert_eq!(app.config.pandora.password.expose(), "hunter2", "kept in memory");
+        assert_eq!(app.status, NO_KEYCHAIN);
+        assert_eq!(saved(&app), file, "and never written");
+        assert_eq!(app.setting_value(Setting::Password), "no keychain: asked each start");
+        // Next start: asked again.
+        let again = account_app("kc-missing", file, &k);
+        assert!(again.config.pandora.password.is_empty() && again.prompt == Some(Prompt::Password));
+    }
+
+    #[test]
+    fn forgetting_the_saved_password_empties_the_keychain_and_says_so() {
+        let k = MemoryKeychain::new();
+        k.set(MAIL, "hunter2").unwrap();
+        let mut app = account_app("kc-forget", "[account]\nusername = \"me@example.com\"\n", &k);
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.settings_cursor = Setting::at(Setting::Password);
+        app.on_key(key(KeyCode::Enter));
+        app.settle(WAIT);
+        assert_eq!(k.saved(MAIL), None);
+        assert_eq!(app.status, "Forgot the saved password: you'll be asked for it next start");
+        assert_eq!(app.setting_value(Setting::Password), "not saved");
+        assert!(app.prompt.is_none(), "Enter forgets, it doesn't ask");
+        // The next start asks.
+        let again = account_app("kc-forget", "[account]\nusername = \"me@example.com\"\n", &k);
+        assert_eq!(again.prompt, Some(Prompt::Password));
+    }
+
+    #[test]
+    fn forgetting_also_removes_a_password_still_in_the_file() {
+        let k = MemoryKeychain::missing();
+        let mut app =
+            account_app("kc-forget-file", "[account]\nusername = \"me@example.com\"\npassword = \"hunter2\"\n", &k);
+        app.settings_cursor = Setting::at(Setting::Password);
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.on_key(key(KeyCode::Enter));
+        assert!(!saved(&app).contains("hunter2"), "{}", saved(&app));
+    }
+
+    #[test]
+    fn logging_out_removes_the_password_from_the_keychain() {
+        let k = MemoryKeychain::new();
+        k.set(MAIL, "hunter2").unwrap();
+        let mut app = account_app("kc-logout", "[account]\nusername = \"me@example.com\"\n", &k);
+        assert_eq!(app.session, Session::LoggedIn);
+        app.log_out();
+        app.settle(WAIT);
+        assert_eq!(k.saved(MAIL), None);
+        assert!(app.config.pandora.password.is_empty());
+        assert_eq!(app.status, "Logged out: the saved password was removed from your keychain");
+        // Log in now asks.
+        app.log_in();
+        assert_eq!(app.prompt, Some(Prompt::Password));
+    }
+
+    #[test]
+    fn another_email_does_not_borrow_the_old_password() {
+        let k = MemoryKeychain::new();
+        k.set(MAIL, "hunter2").unwrap();
+        let mut app = account_app("kc-switch", "[account]\nusername = \"me@example.com\"\n", &k);
+        app.view = View::Settings;
+        app.open_prompt(Prompt::Email);
+        enter_text(&mut app, "other@example.com");
+        assert!(app.config.pandora.password.is_empty());
+        assert_eq!(app.prompt, Some(Prompt::Password), "asks for the other account's password");
+    }
+
+    #[test]
+    fn editing_config_toml_keeps_the_password_in_use() {
+        let k = MemoryKeychain::new();
+        k.set(MAIL, "hunter2").unwrap();
+        let mut app = account_app("kc-reload", "[account]\nusername = \"me@example.com\"\n", &k);
+        std::fs::write(
+            app.config_path.as_ref().unwrap(),
+            "[account]\nusername = \"me@example.com\"\n[look]\nicons = \"emoji\"\n",
+        )
+        .unwrap();
+        app.reload_config();
+        app.settle(WAIT);
+        assert_eq!(app.config.pandora.password.expose(), "hunter2");
+        assert_eq!(app.session, Session::LoggedIn, "no new login for an unrelated edit");
+    }
+
+    #[test]
+    fn the_demo_never_touches_the_keychain() {
+        let k = MemoryKeychain::new();
+        let mut app = App::with_keychain(Config::default(), None, &[], true, Arc::clone(&k) as Arc<dyn Keychain>);
+        app.settle(WAIT);
+        app.settings_cursor = Setting::at(Setting::Password);
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.on_key(key(KeyCode::Enter));
+        app.settle(WAIT);
+        assert_eq!(app.setting_value(Setting::Password), "not used in the demo");
+        assert_eq!(app.status, "The demo has no password");
+        assert!(k.saved("demo").is_none());
+    }
+
     #[test]
     fn every_setting_that_is_saved_says_where_and_the_others_do_not() {
         for (_, setting) in Setting::ALL {
@@ -3373,6 +3798,7 @@ mod tests {
             families: Some(if font { "JetBrainsMono Nerd Font\n" } else { "DejaVu Sans\n" }.into()),
             glyph_fonts: Some(String::new()),
             notify_send: notify,
+            keychain: Some(true),
         }
     }
 

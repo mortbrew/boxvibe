@@ -10,6 +10,7 @@ mod deps;
 mod desktop;
 mod icons;
 mod input;
+mod keychain;
 mod pandora;
 mod snapshot;
 mod splash;

@@ -58,6 +58,9 @@ pub struct Station {
     pub allow_rename: bool,
     /// Pandora lets this station be removed (`allowDelete`; not Shuffle).
     pub allow_delete: bool,
+    /// Pandora lets seeds be added and removed (`allowAddSeed`; not Shuffle or
+    /// a genre station).
+    pub allow_edit_seeds: bool,
 }
 
 impl Station {
@@ -75,7 +78,36 @@ pub struct Seed {
     /// `Artist`, `Song` or `Genre`.
     pub kind: &'static str,
     pub name: String,
+    /// `pandoraId` (`AR:…`, `TR:…`): what removing the seed takes. Empty
+    /// when the site did not send one (such a seed can't be removed here).
+    pub id: String,
+    /// `musicId` (`R…`): what the suggestions call takes.
+    pub music_id: String,
 }
+
+/// One thumb you gave (`v1/station/getStationFeedback`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Feedback {
+    /// `feedbackId`: what deleting it takes.
+    pub id: String,
+    pub positive: bool,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    /// `feedbackDateCreated`, as the site writes it.
+    pub date: String,
+}
+
+/// One page of the thumbs history.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FeedbackPage {
+    pub items: Vec<Feedback>,
+    /// `total`: how many thumbs of this kind the station has.
+    pub total: usize,
+}
+
+/// How many thumbs one page asks for.
+pub const FEEDBACK_PAGE: usize = 30;
 
 /// What a search hit is: only artists and songs can seed a station here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,6 +376,8 @@ pub fn parse_station(v: &Value) -> Option<Station> {
         // The site says what it allows; Shuffle never allows either.
         allow_rename: flag(v, "allowRename").unwrap_or(!is_shuffle),
         allow_delete: flag(v, "allowDelete").unwrap_or(!is_shuffle),
+        // Not said: the same as renaming (genre stations allow neither).
+        allow_edit_seeds: flag(v, "allowAddSeed").unwrap_or(!is_shuffle && flag(v, "allowRename").unwrap_or(true)),
     })
 }
 
@@ -351,41 +385,96 @@ fn flag(v: &Value, key: &str) -> Option<bool> {
     v.get(key).and_then(Value::as_bool)
 }
 
-/// `v1/station/getStationDetails`: the seeds, thumbs counts and dates. Seeds
-/// are read by their kind (`artist`, `song` or `genre` object); a seed of any
-/// other shape is skipped rather than guessed at.
-pub fn parse_station_details(v: &Value) -> StationDetails {
-    let text = |item: &Value, path: &[&str]| -> String {
-        let mut at = item;
-        for key in path {
-            match at.get(key) {
-                Some(next) => at = next,
-                None => return String::new(),
-            }
+fn nested_text(item: &Value, path: &[&str]) -> String {
+    let mut at = item;
+    for key in path {
+        match at.get(key) {
+            Some(next) => at = next,
+            None => return String::new(),
         }
-        at.as_str().unwrap_or_default().trim().to_owned()
-    };
-    let seeds = v
-        .get("seeds")
+    }
+    at.as_str().unwrap_or_default().trim().to_owned()
+}
+
+/// The seeds of a `getStationDetails` or `getSeeds` answer (`seeds`). Each is
+/// read by its kind (`artist`, `song` or `genre` object); a seed of any other
+/// shape is skipped rather than guessed at.
+pub fn parse_seeds(v: &Value) -> Vec<Seed> {
+    v.get("seeds")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|seed| {
-            let artist = text(seed, &["artist", "artistName"]);
-            let song = text(seed, &["song", "songName"]);
-            let by = text(seed, &["song", "artistSummary"]);
-            let genre = text(seed, &["genre", "stationName"]);
-            if !artist.is_empty() {
-                Some(Seed { kind: "Artist", name: artist })
+            let artist = nested_text(seed, &["artist", "artistName"]);
+            let song = nested_text(seed, &["song", "songName"]);
+            let by = nested_text(seed, &["song", "artistSummary"]);
+            let genre = nested_text(seed, &["genre", "stationName"]);
+            let (kind, name) = if !artist.is_empty() {
+                ("Artist", artist)
             } else if !song.is_empty() {
-                Some(Seed { kind: "Song", name: if by.is_empty() { song } else { format!("{song} by {by}") } })
+                ("Song", if by.is_empty() { song } else { format!("{song} by {by}") })
             } else if !genre.is_empty() {
-                Some(Seed { kind: "Genre", name: genre })
+                ("Genre", genre)
             } else {
-                None
+                return None;
+            };
+            Some(Seed { kind, name, id: str_of(seed, "pandoraId"), music_id: str_of(seed, "musicId") })
+        })
+        .collect()
+}
+
+/// `getSeedSuggestions`: a bare list of artists (`name`, `pandoraId`). Anything
+/// without both is skipped.
+pub fn parse_seed_suggestions(v: &Value) -> Vec<SearchHit> {
+    v.as_array()
+        .or_else(|| v.get("suggestions").and_then(Value::as_array))
+        .into_iter()
+        .flatten()
+        .filter_map(|s| {
+            let id = str_of(s, "pandoraId");
+            let name = str_of(s, "name").trim().to_owned();
+            (!id.is_empty() && !name.is_empty()).then_some(SearchHit {
+                id,
+                kind: HitKind::Artist,
+                name,
+                by: String::new(),
+            })
+        })
+        .collect()
+}
+
+/// `getStationFeedback`: `total` and the `feedback` list. Entries without an
+/// id are skipped (they could not be deleted).
+pub fn parse_feedback(v: &Value) -> FeedbackPage {
+    let items: Vec<Feedback> = v
+        .get("feedback")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|f| {
+            let id = str_of(f, "feedbackId");
+            if id.is_empty() {
+                return None;
             }
+            Some(Feedback {
+                id,
+                positive: f.get("isPositive").and_then(Value::as_bool).unwrap_or(true),
+                title: str_of(f, "songTitle").trim().to_owned(),
+                artist: str_of(f, "artistName").trim().to_owned(),
+                album: str_of(f, "albumTitle").trim().to_owned(),
+                date: str_of(f, "feedbackDateCreated"),
+            })
         })
         .collect();
+    let total = v.get("total").and_then(Value::as_u64).map_or(items.len(), |t| t as usize);
+    FeedbackPage { items, total }
+}
+
+/// `v1/station/getStationDetails`: the seeds, thumbs counts and dates. Seeds
+/// are read by their kind (`artist`, `song` or `genre` object); a seed of any
+/// other shape is skipped rather than guessed at.
+pub fn parse_station_details(v: &Value) -> StationDetails {
+    let seeds = parse_seeds(v);
     let count = |key: &str| v.get(key).and_then(Value::as_u64).map(|n| n.min(u64::from(u32::MAX)) as u32);
     StationDetails {
         seeds,
@@ -399,9 +488,9 @@ pub fn parse_station_details(v: &Value) -> StationDetails {
             .filter_map(|g| g.as_str().map(str::to_owned))
             .filter(|g| !g.is_empty())
             .collect(),
-        created: text(v, &["dateCreated"]),
-        last_played: text(v, &["lastPlayed"]),
-        creator: text(v, &["creatorWebname"]),
+        created: nested_text(v, &["dateCreated"]),
+        last_played: nested_text(v, &["lastPlayed"]),
+        creator: nested_text(v, &["creatorWebname"]),
     }
 }
 
@@ -700,6 +789,99 @@ impl Client {
             &json!({ "stationId": station_id, "isCurrentStation": current }),
         )?;
         Ok(parse_station_details(&v))
+    }
+
+    /// `v1/station/getSeeds`: the seeds of a station you made (newest first).
+    pub fn seeds(&mut self, station_id: &str) -> Result<Vec<Seed>, Error> {
+        let v = self.post("/api/v1/station/getSeeds", &json!({ "stationId": station_id }))?;
+        Ok(parse_seeds(&v))
+    }
+
+    /// `v1/station/getSeedSuggestions`: artists the site suggests adding,
+    /// near `seed_music_id` (a seed's `musicId`). The path is a best guess
+    /// (not captured), so a failure is only "no suggestions".
+    pub fn seed_suggestions(&mut self, station_id: &str, seed_music_id: &str) -> Result<Vec<SearchHit>, Error> {
+        let v = self.post(
+            "/api/v1/station/getSeedSuggestions",
+            &json!({ "stationId": station_id, "seedMusicId": seed_music_id, "maxResults": 10 }),
+        )?;
+        Ok(parse_seed_suggestions(&v))
+    }
+
+    /// Adds the artist or song `seed_id` (a `pandoraId`) to a station.
+    pub fn add_seed(&mut self, station_id: &str, seed_id: &str) -> Result<(), Error> {
+        self.seed_change(
+            "AddSeedToStationWeb",
+            "mutation AddSeedToStationWeb($stationId: String!, $seedId: String!) { addStationSeed(stationId: $stationId, seedId: $seedId) { status } }",
+            "addStationSeed",
+            station_id,
+            seed_id,
+        )
+    }
+
+    /// Removes the seed `seed_id` (a `pandoraId`) from a station.
+    pub fn remove_seed(&mut self, station_id: &str, seed_id: &str) -> Result<(), Error> {
+        self.seed_change(
+            "DeleteSeedFromStationWeb",
+            "mutation DeleteSeedFromStationWeb($stationId: String!, $seedId: String!) { removeStationSeed(stationId: $stationId, seedId: $seedId) { status } }",
+            "removeStationSeed",
+            station_id,
+            seed_id,
+        )
+    }
+
+    /// One of the site's GraphQL seed mutations. The site sends `variables`
+    /// as a JSON string, and the station as `ST:0:<id>`. Two paths were seen
+    /// for it, so the second is tried when the first is not found.
+    fn seed_change(
+        &mut self,
+        operation: &str,
+        query: &str,
+        field: &str,
+        station_id: &str,
+        seed_id: &str,
+    ) -> Result<(), Error> {
+        let variables = json!({ "stationId": format!("ST:0:{station_id}"), "seedId": seed_id }).to_string();
+        let body = json!({ "operationName": operation, "query": query, "variables": variables });
+        let v = match self.post("/api/v1/graphql", &body) {
+            Err(Error::Api { status: 404 | 405, .. }) => self.post("/api/v1/graphql/graphql", &body)?,
+            other => other?,
+        };
+        if let Some(message) = v.get("errors").and_then(Value::as_array).and_then(|e| e.first()) {
+            let message = str_of(message, "message");
+            return Err(Error::Api {
+                status: 200,
+                code: None,
+                kind: "GRAPHQL".into(),
+                message: if message.is_empty() { "Pandora refused the change".into() } else { message },
+            });
+        }
+        match v.pointer(&format!("/data/{field}/status")).and_then(Value::as_str) {
+            Some(status) if status.eq_ignore_ascii_case("ok") => Ok(()),
+            Some(status) => Err(Error::Api {
+                status: 200,
+                code: None,
+                kind: "GRAPHQL".into(),
+                message: format!("Pandora answered {status}"),
+            }),
+            None => Err(Error::InvalidResponse),
+        }
+    }
+
+    /// `v1/station/getStationFeedback`: a page of the thumbs up (or down)
+    /// you gave on a station, newest first, from `start`.
+    pub fn station_feedback(&mut self, station_id: &str, positive: bool, start: usize) -> Result<FeedbackPage, Error> {
+        let v = self.post(
+            "/api/v1/station/getStationFeedback",
+            &json!({ "pageSize": FEEDBACK_PAGE, "startIndex": start, "stationId": station_id, "positive": positive }),
+        )?;
+        Ok(parse_feedback(&v))
+    }
+
+    /// `v1/station/deleteFeedback`: takes one thumb back.
+    pub fn delete_feedback(&mut self, feedback_id: &str, positive: bool) -> Result<(), Error> {
+        self.post("/api/v1/station/deleteFeedback", &json!({ "feedbackId": feedback_id, "isPositive": positive }))?;
+        Ok(())
     }
 
     /// `v3/sod/search`: artists and songs matching `query`.

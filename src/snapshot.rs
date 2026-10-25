@@ -56,6 +56,9 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
                     format!("{} boxvibe 0.4.0 available · see About", crate::icons::icons(app.config.ui.icons).update);
             }
         }
+        // The station editor (`e` on a station): seeds, the add box, the
+        // remove question, the thumbs history and its take-back question.
+        "seeds" | "seeds-add" | "seeds-remove" | "thumbs" | "thumbs-delete" => editor_screen(&mut app, screen),
         _ => {}
     }
     let mut terminal = Terminal::new(TestBackend::new(cols, rows))?;
@@ -63,6 +66,39 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
     let html = to_html(terminal.backend().buffer(), &app.palette);
     std::fs::write(out, html)?;
     Ok(())
+}
+
+/// Opens the Stations page and the editor on the first station that has one,
+/// then goes on to what `screen` shows.
+fn editor_screen(app: &mut App, screen: &str) {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let press = |app: &mut App, code: KeyCode| {
+        let mods =
+            if matches!(code, KeyCode::Char(c) if c.is_uppercase()) { KeyModifiers::SHIFT } else { KeyModifiers::NONE };
+        app.on_key(KeyEvent::new(code, mods));
+        app.settle(Duration::from_millis(60));
+    };
+    press(app, KeyCode::Char('S'));
+    for _ in 0..8 {
+        press(app, KeyCode::Char('e'));
+        if app.editor.is_some() {
+            break;
+        }
+        press(app, KeyCode::Char('j'));
+    }
+    match screen {
+        "seeds-add" => press(app, KeyCode::Char('a')),
+        "seeds-remove" => press(app, KeyCode::Char('x')),
+        "thumbs" | "thumbs-delete" => {
+            press(app, KeyCode::Tab);
+            press(app, KeyCode::Char('j'));
+            press(app, KeyCode::Char('j'));
+            if screen == "thumbs-delete" {
+                press(app, KeyCode::Char('x'));
+            }
+        }
+        _ => {}
+    }
 }
 
 fn css(color: Color, fallback: Color) -> String {

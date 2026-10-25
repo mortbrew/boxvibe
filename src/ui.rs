@@ -16,8 +16,8 @@ use ratatui::widgets::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
-    App, Details, Focus, GenresState, MenuItem, Pane, Prompt, Rename, SearchMode, Session, Setting, StationRef,
-    StationSearch, View,
+    App, Details, Editor, EditorTab, FeedState, Focus, GenresState, Loaded, MenuItem, Pane, Prompt, Rename, SearchMode,
+    Session, Setting, StationRef, StationSearch, View,
 };
 use crate::art::Cover;
 use crate::config::{AlbumArt, BorderStyle};
@@ -116,6 +116,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     if let Some(search) = &app.add_station {
         draw_add_station(frame, &p, area, search);
+    }
+    if let Some(ed) = &app.editor {
+        draw_editor(frame, &p, ic, area, ed);
     }
 }
 
@@ -760,6 +763,27 @@ fn draw_genres(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 /// `a`: the add-station box: the search text and, once Enter searched, the
 /// artists and songs Pandora found.
 fn draw_add_station(frame: &mut Frame, p: &Palette, screen: Rect, search: &StationSearch) {
+    let look = AddLook {
+        title: " Add station ",
+        prompt: "Type an artist or a song",
+        suggested: false,
+        results_hint: "Enter = make the station · j/k = move · / = edit · Esc = cancel",
+    };
+    draw_search_box(frame, p, screen, search, &look);
+}
+
+/// What differs between the add-station box and the editor's add-a-seed box.
+struct AddLook<'a> {
+    title: &'a str,
+    /// The note under the text before anything was asked.
+    prompt: &'a str,
+    /// The rows are Pandora's suggestions, not search results.
+    suggested: bool,
+    results_hint: &'a str,
+}
+
+/// The search box both of them share: the text, Pandora's answers below.
+fn draw_search_box(frame: &mut Frame, p: &Palette, screen: Rect, search: &StationSearch, look: &AddLook) {
     let width = 64.min(screen.width.saturating_sub(4)).max(screen.width.min(8));
     let inner_w = usize::from(width.saturating_sub(2));
     let rows_room = usize::from(screen.height.saturating_sub(10)).clamp(1, 8);
@@ -780,8 +804,10 @@ fn draw_add_station(frame: &mut Frame, p: &Palette, screen: Rect, search: &Stati
         format!("Search failed: {}", clean(error))
     } else if search.asked.is_some() && search.hits.is_empty() {
         "No artists or songs found".to_owned()
+    } else if search.asked.is_none() && look.suggested {
+        "Suggested for this station (or type to search)".to_owned()
     } else if search.asked.is_none() {
-        "Type an artist or a song".to_owned()
+        look.prompt.to_owned()
     } else {
         String::new()
     };
@@ -800,20 +826,154 @@ fn draw_add_station(frame: &mut Frame, p: &Palette, screen: Rect, search: &Stati
     }
     lines.push(Line::from(""));
     let hint = if typing {
-        if len > 0 { "Enter = search · ↓ = results · Esc = cancel" } else { "Enter = search · Esc = cancel" }
+        match (len > 0, look.suggested && search.text.text().trim().is_empty()) {
+            (true, true) => "Enter = add the suggestion · ↓ = pick another · Esc = cancel",
+            (true, false) => "Enter = search · ↓ = results · Esc = cancel",
+            (false, _) => "Enter = search · Esc = cancel",
+        }
     } else {
-        "Enter = make the station · j/k = move · / = edit · Esc = cancel"
+        look.results_hint
     };
     lines.push(Line::from(Span::styled(hint, Style::new().fg(p.muted))));
     lines.push(Line::from(""));
     let area = centered(screen, width, (lines.len() as u16 + 2).min(screen.height));
     frame.render_widget(Clear, area);
-    let block =
-        framed().border_style(Style::new().fg(border)).title(" Add station ").style(Style::new().bg(p.background));
+    let block = framed().border_style(Style::new().fg(border)).title(look.title).style(Style::new().bg(p.background));
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center).block(block), area);
     if typing {
         let x = area.x + 1 + 3 + column as u16;
         frame.set_cursor_position(Position::new(x.min(area.right().saturating_sub(2)), area.y + 2));
+    }
+}
+
+/// The day of a Pandora timestamp (`2026-10-24T…` → `2026-10-24`); nothing
+/// when it is written some other way.
+fn day_of(stamp: &str) -> &str {
+    let day = stamp.get(..10).unwrap_or_default();
+    let ok = day.bytes().enumerate().all(|(i, b)| if matches!(i, 4 | 7) { b == b'-' } else { b.is_ascii_digit() });
+    if day.len() == 10 && ok { day } else { "" }
+}
+
+/// `e`: the station editor, a popup with the Seeds and Thumbs tabs.
+fn draw_editor(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, ed: &Editor) {
+    let width = 76.min(screen.width.saturating_sub(2)).max(screen.width.min(24));
+    let inner_w = usize::from(width.saturating_sub(2));
+    let rows_room = usize::from(screen.height.saturating_sub(12)).clamp(3, 14);
+    let tab = |label: String, on: bool| {
+        let style = if on { selection(p, true) } else { Style::new().fg(p.muted) };
+        Span::styled(format!(" {label} "), style)
+    };
+    let seeds_label = match &ed.seeds {
+        Loaded::Ready(seeds) => format!("Seeds ({})", seeds.len()),
+        _ => "Seeds".to_owned(),
+    };
+    let count = |positive: bool| ed.count(positive).map_or(String::new(), |n| format!(" {n}"));
+    let thumbs_label = format!("Thumbs {}{} {}{}", ic.up, count(true), ic.down, count(false));
+    let seeds_on = ed.tab == EditorTab::Seeds;
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![Span::raw(" "), tab(seeds_label, seeds_on), Span::raw("  "), tab(thumbs_label, !seeds_on)])
+            .left_aligned(),
+        Line::from(""),
+    ];
+    let row = |text: String, selected: bool| {
+        let style = if selected { selection(p, true) } else { Style::new().fg(p.fg) };
+        Line::from(Span::styled(pad(&fit(&text, inner_w), inner_w), style)).left_aligned()
+    };
+    let note = |text: String| {
+        Line::from(Span::styled(format!(" {}", fit(&text, inner_w - 1)), Style::new().fg(p.muted))).left_aligned()
+    };
+    // The visible window of a list, scrolled to keep the cursor in view.
+    let window = |len: usize, cursor: usize| {
+        let at = cursor.min(len.saturating_sub(1));
+        let start = at.saturating_sub(rows_room - 1).min(len.saturating_sub(rows_room));
+        (start, at)
+    };
+    let mut footer = String::new();
+    let hint;
+    if seeds_on {
+        hint = "a = add · x = remove · Tab = Thumbs · Esc = close";
+        match &ed.seeds {
+            Loaded::Loading => lines.push(note(format!("{} Loading the seeds…", ic.loading))),
+            Loaded::Failed(e) => lines.push(note(format!("Couldn't load the seeds: {}", clean(e)))),
+            Loaded::Ready(seeds) if seeds.is_empty() => lines.push(note("This station has no seeds".to_owned())),
+            Loaded::Ready(seeds) => {
+                let (start, at) = window(seeds.len(), ed.seed_cursor);
+                for (i, seed) in seeds.iter().enumerate().skip(start).take(rows_room) {
+                    lines.push(row(format!(" {}{}", pad(seed.kind, 8), clean(&seed.name)), i == at));
+                }
+                footer = format!("{} of {}", at + 1, seeds.len());
+            }
+        }
+    } else {
+        hint = "x = take back · t = up/down · Tab = Seeds · Esc = close";
+        let list = ed.list(ed.positive);
+        let (arrow, which) = if ed.positive { (ic.up, "Thumbs up") } else { (ic.down, "Thumbs down") };
+        lines.push(note(format!(
+            "{arrow} {which} · t shows the {}",
+            if ed.positive { "thumbs down" } else { "thumbs up" }
+        )));
+        match &list.state {
+            FeedState::Idle | FeedState::Loading if list.items.is_empty() => {
+                lines.push(note(format!("{} Loading…", ic.loading)));
+            }
+            FeedState::Failed(e) if list.items.is_empty() => {
+                lines.push(note(format!("Couldn't load the thumbs: {}", clean(e))));
+            }
+            _ if list.items.is_empty() => lines.push(note("No thumbs here yet".to_owned())),
+            state => {
+                let (start, at) = window(list.items.len(), list.cursor);
+                for (i, f) in list.items.iter().enumerate().skip(start).take(rows_room) {
+                    let by = if f.artist.is_empty() { String::new() } else { format!(" · {}", clean(&f.artist)) };
+                    let date = day_of(&f.date);
+                    let text = format!(" {} {}{by}", if f.positive { ic.up } else { ic.down }, clean(&f.title));
+                    let text = if date.is_empty() {
+                        text
+                    } else {
+                        format!(
+                            "{} {date}",
+                            pad(
+                                &fit(&text, inner_w.saturating_sub(date.width() + 3)),
+                                inner_w.saturating_sub(date.width() + 3)
+                            )
+                        )
+                    };
+                    lines.push(row(text, i == at));
+                }
+                let more = if matches!(state, FeedState::Loading) {
+                    format!(" · {} loading more", ic.loading)
+                } else {
+                    String::new()
+                };
+                footer = format!("{} of {}{more}", at + 1, list.total.max(list.items.len()));
+            }
+        }
+    }
+    // The list area keeps a fixed height, so the popup doesn't jump.
+    let used = lines.len() - 3;
+    for _ in used..rows_room.max(1) {
+        lines.push(Line::from(""));
+    }
+    lines.push(note(footer));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(hint, Style::new().fg(p.muted))));
+    lines.push(Line::from(""));
+    let area = centered(screen, width, (lines.len() as u16 + 2).min(screen.height));
+    frame.render_widget(Clear, area);
+    let heading = format!("Edit station · {}", fit(&clean(&ed.station.name), usize::from(width).saturating_sub(24)));
+    let block = panel(title(heading, p), p, true).style(Style::new().bg(p.background));
+    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center).block(block), area);
+    if let Some(add) = &ed.add {
+        let look = AddLook {
+            title: " Add a seed ",
+            prompt: "Type an artist or a song",
+            suggested: add.suggested || add.suggesting || !add.suggestions.is_empty(),
+            results_hint: "Enter = add it as a seed · j/k = move · / = edit · Esc = cancel",
+        };
+        draw_search_box(frame, p, screen, &add.search, &look);
+    }
+    if let Some(confirm) = &ed.confirm {
+        draw_box(frame, p, screen, &BoxText::confirm(&confirm.question(&clean(&ed.station.name))));
     }
 }
 
@@ -1362,6 +1522,9 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.confirm_delete.is_some() {
         return vec![("y", "Yes, Delete"), ("Other Key", "No")];
     }
+    if let Some(ed) = &app.editor {
+        return editor_key_caps(ed);
+    }
     if let Some(search) = &app.add_station {
         return match search.mode {
             SearchMode::Typing if search.hits.is_empty() => {
@@ -1426,6 +1589,9 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         }
         if station.allow_delete {
             keys.push(("x", "Delete"));
+        }
+        if station.allow_edit_seeds {
+            keys.push(("e", "Edit"));
         }
         keys.push(("v", "Details"));
     };
@@ -1495,6 +1661,34 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     keys
 }
 
+/// The key bar while the station editor is open: its own keys only.
+fn editor_key_caps(ed: &Editor) -> Vec<(&'static str, &'static str)> {
+    if ed.confirm.is_some() {
+        return vec![("y", "Yes"), ("Other Key", "No")];
+    }
+    if let Some(add) = &ed.add {
+        let mut keys = match add.search.mode {
+            SearchMode::Typing if add.search.hits.is_empty() => vec![("Enter", "Search")],
+            SearchMode::Typing if add.suggested && add.search.text.text().trim().is_empty() => {
+                vec![("Enter", "Add Suggestion"), ("↓", "Pick")]
+            }
+            SearchMode::Typing => vec![("Enter", "Search"), ("↓", "Results")],
+            SearchMode::Results => vec![("Enter", "Add Seed"), ("j/k ↑↓", "Move"), ("/", "Edit")],
+        };
+        keys.extend([("Esc", "Cancel"), ("Ctrl+c", "Quit")]);
+        return keys;
+    }
+    let mut keys = vec![("j/k ↑↓", "Move"), ("Tab", if ed.tab == EditorTab::Seeds { "Thumbs" } else { "Seeds" })];
+    match ed.tab {
+        EditorTab::Seeds => keys.extend([("a", "Add Seed"), ("x", "Remove")]),
+        EditorTab::Thumbs => {
+            keys.extend([("t", if ed.positive { "Show Down" } else { "Show Up" }), ("x", "Take Back")])
+        }
+    }
+    keys.push(("Esc", "Close"));
+    keys
+}
+
 /// Each key as a boxed (reverse-video) key cap, then what it does.
 fn draw_keys(frame: &mut Frame, p: &Palette, keys: &[(&str, &str)], area: Rect) {
     let cap = |(key, what): &(&str, &str)| {
@@ -1538,11 +1732,11 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
         &[
             ("l b", "like / bad the selected row (Now Playing: its song)"),
             ("f", "star / unstar the selected station"),
-            ("r", "rename the selected station (a favorite: its station)"),
-            ("locked", "= Pandora genre station, can't be renamed"),
+            ("r", "rename the selected station (a locked one is a genre station: Pandora says no)"),
             ("x", "delete the selected station from Pandora (asks first)"),
             ("a", "add a station: search artists and songs (Stations page)"),
             ("v", "details: a song, or a station's seeds and thumbs"),
+            ("e", "edit seeds / thumbs history: Tab switches, a add, x remove, t up / down (asks first)"),
             ("j k ↑ ↓", "move in the list"),
             ("Enter", "play the station · open Settings / About"),
         ],
@@ -2009,6 +2203,7 @@ mod tests {
         app.confirm_delete = None;
         app.details = None;
         app.add_station = None;
+        app.editor = None;
         app.on_add_row = false;
         app.view = view;
         app.focus = focus;
@@ -2040,7 +2235,7 @@ mod tests {
                 continue;
             }
             // r, x and v: what the key does is what the bar says.
-            for key in ['r', 'x', 'v', 'a'] {
+            for key in ['r', 'x', 'v', 'a', 'e'] {
                 enter(&mut app, focus, view, pane, favorite);
                 let shown = hinted(&app, &key.to_string());
                 app.on_key(KeyEvent::from(KeyCode::Char(key)));
@@ -2048,6 +2243,7 @@ mod tests {
                     'r' => app.rename.is_some(),
                     'x' => app.confirm_delete.is_some(),
                     'a' => app.add_station.is_some(),
+                    'e' => app.editor.is_some(),
                     _ => app.details.is_some(),
                 };
                 assert_eq!(shown, did, "{key} in {name}: hinted {shown}, acts {did}");
@@ -2083,11 +2279,12 @@ mod tests {
             let caps = keys(&app);
             assert_eq!(caps.contains(&"r"), s.allow_rename, "r on {}", s.name);
             assert_eq!(caps.contains(&"x"), s.allow_delete, "x on {}", s.name);
+            assert_eq!(caps.contains(&"e"), s.allow_edit_seeds, "e on {}", s.name);
         }
         // No stations yet: nothing to play, favorite, rename, delete or show.
         app.stations.clear();
         let caps = keys(&app);
-        assert!(!caps.iter().any(|k| matches!(*k, "r" | "x" | "v" | "f")), "{caps:?}");
+        assert!(!caps.iter().any(|k| matches!(*k, "r" | "x" | "v" | "f" | "e")), "{caps:?}");
     }
 
     #[test]

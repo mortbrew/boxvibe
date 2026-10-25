@@ -478,3 +478,123 @@ fn live_site_hands_out_a_csrftoken() {
     let token = Client::new("").site_csrf().expect("no csrftoken cookie from www.pandora.com");
     assert!(token.len() >= 8 && token.chars().all(|ch| ch.is_ascii_alphanumeric()), "{token}");
 }
+
+// --- Seeds and thumbs history ---
+
+#[test]
+fn seeds_keep_their_ids_and_flags_say_whether_they_can_be_edited() {
+    let v = json!({ "seeds": [
+        { "pandoraId": "AR:1", "musicId": "R1", "artist": { "artistName": "M83" } },
+        { "pandoraId": "TR:2", "musicId": "S2", "song": { "songName": "Kids", "artistSummary": "MGMT" } },
+    ] });
+    let seeds = parse_seeds(&v);
+    assert_eq!((seeds[0].id.as_str(), seeds[0].music_id.as_str()), ("AR:1", "R1"));
+    assert_eq!(seeds[1].name, "Kids by MGMT");
+    // allowAddSeed says it; without it, a station you can rename can be edited too.
+    let station = |extra: Value| {
+        let mut v = json!({ "stationId": "1", "name": "X", "allowRename": true, "allowDelete": true });
+        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        parse_station(&v).unwrap().allow_edit_seeds
+    };
+    assert!(station(json!({})));
+    assert!(!station(json!({ "allowAddSeed": false })));
+    assert!(station(json!({ "allowAddSeed": true, "allowRename": false })));
+    assert!(!station(json!({ "allowRename": false })), "genre stations are locked");
+}
+
+#[test]
+fn seed_suggestions_and_feedback_pages_parse_tolerantly() {
+    let hits = parse_seed_suggestions(&json!([{ "name": "MGMT", "pandoraId": "AR:9" }, { "name": "No id" }]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!((hits[0].id.as_str(), hits[0].kind), ("AR:9", HitKind::Artist));
+    let page = parse_feedback(&json!({ "total": 3, "feedback": [
+        { "feedbackId": "f1", "isPositive": true, "songTitle": " Kids ", "artistName": "MGMT",
+          "albumTitle": "Oracular", "feedbackDateCreated": "2026-10-01T10:00:00.000-04:00" },
+        { "songTitle": "No id: can't be deleted" },
+    ] }));
+    assert_eq!(page.total, 3);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!((page.items[0].title.as_str(), page.items[0].id.as_str()), ("Kids", "f1"));
+    assert_eq!(parse_feedback(&json!({})), FeedbackPage::default());
+}
+
+#[test]
+fn seed_and_thumb_calls_send_what_the_site_expects() {
+    let (base, seen) = fake_pandora(Box::new(|r| {
+        match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        "/api/v1/station/getSeeds" => {
+            (200, json!({ "seeds": [{ "pandoraId": "AR:1", "artist": { "artistName": "M83" } }] }).to_string())
+        }
+        "/api/v1/station/getSeedSuggestions" => (200, json!([{ "name": "MGMT", "pandoraId": "AR:9" }]).to_string()),
+        // The first graphql path is unknown to this fake: the second works.
+        "/api/v1/graphql" => (404, json!({ "errorCode": 0, "errorString": "NOT_FOUND" }).to_string()),
+        "/api/v1/graphql/graphql" => {
+            let field = if r.body["operationName"] == "AddSeedToStationWeb" { "addStationSeed" } else { "removeStationSeed" };
+            (200, json!({ "data": { field: { "status": "OK" } } }).to_string())
+        }
+        "/api/v1/station/getStationFeedback" => (
+            200,
+            json!({ "total": 31, "feedback": [{ "feedbackId": "f1", "isPositive": r.body["positive"], "songTitle": "Kids" }] })
+                .to_string(),
+        ),
+        _ => (200, "{}".into()),
+    }
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    assert_eq!(c.seeds("9").unwrap().len(), 1);
+    assert_eq!(c.seed_suggestions("9", "R1").unwrap()[0].name, "MGMT");
+    c.add_seed("9", "AR:9").unwrap();
+    c.remove_seed("9", "AR:1").unwrap();
+    let up = c.station_feedback("9", true, 0).unwrap();
+    let down = c.station_feedback("9", false, 30).unwrap();
+    assert_eq!((up.total, up.items[0].positive, down.items[0].positive), (31, true, false));
+    c.delete_feedback("f1", true).unwrap();
+    let seen = seen.lock().unwrap();
+    let all = |end: &str| seen.iter().filter(|s| s.path.ends_with(end)).map(|s| s.body.clone()).collect::<Vec<_>>();
+    assert_eq!(all("getSeeds")[0], json!({ "stationId": "9" }));
+    assert_eq!(all("getSeedSuggestions")[0]["stationId"], "9");
+    // Each change tried the first graphql path, then the second (the site had two).
+    let graphql: Vec<&str> = seen.iter().filter(|s| s.path.contains("graphql")).map(|s| s.path.as_str()).collect();
+    assert_eq!(graphql, ["/api/v1/graphql", "/api/v1/graphql/graphql", "/api/v1/graphql", "/api/v1/graphql/graphql"]);
+    let add = &all("graphql/graphql")[0];
+    assert_eq!(add["operationName"], "AddSeedToStationWeb");
+    assert!(add["query"].as_str().unwrap().contains("addStationSeed"));
+    // The site wants the variables as a string, and the station as ST:0:<id>.
+    let vars: Value = serde_json::from_str(add["variables"].as_str().unwrap()).unwrap();
+    assert_eq!(vars, json!({ "stationId": "ST:0:9", "seedId": "AR:9" }));
+    let remove = &all("graphql/graphql")[1];
+    assert_eq!(remove["operationName"], "DeleteSeedFromStationWeb");
+    let vars: Value = serde_json::from_str(remove["variables"].as_str().unwrap()).unwrap();
+    assert_eq!(vars, json!({ "stationId": "ST:0:9", "seedId": "AR:1" }));
+    assert_eq!(
+        all("getStationFeedback"),
+        [
+            json!({ "pageSize": 30, "startIndex": 0, "stationId": "9", "positive": true }),
+            json!({ "pageSize": 30, "startIndex": 30, "stationId": "9", "positive": false }),
+        ]
+    );
+    assert_eq!(all("deleteFeedback")[0], json!({ "feedbackId": "f1", "isPositive": true }));
+}
+
+#[test]
+fn a_refused_seed_change_is_an_error_not_a_success() {
+    let answers = Arc::new(Mutex::new(vec![
+        json!({ "errors": [{ "message": "Seed is already in the station" }] }),
+        json!({ "data": { "addStationSeed": { "status": "FAILED" } } }),
+        json!({ "data": null }),
+    ]));
+    let (base, _) = fake_pandora(Box::new(move |r| match r.path.as_str() {
+        "/api/v1/graphql" => (200, answers.lock().unwrap().remove(0).to_string()),
+        "/api/v1/auth/login" => login_ok("tok"),
+        _ => (200, "{}".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    let first = c.add_seed("9", "AR:1").unwrap_err().to_string();
+    assert!(first.contains("already in the station"), "{first}");
+    let second = c.add_seed("9", "AR:1").unwrap_err().to_string();
+    assert!(second.contains("FAILED"), "{second}");
+    assert!(c.add_seed("9", "AR:1").is_err(), "an answer with no status is not OK");
+}

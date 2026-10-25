@@ -10,7 +10,9 @@ use std::thread;
 
 use crate::demo;
 use crate::keychain::Keychain;
-use crate::pandora::{self, Client, Error, GenreCategory, Quality, SearchHit, Song, Station, StationDetails};
+use crate::pandora::{
+    self, Client, Error, FeedbackPage, GenreCategory, Quality, SearchHit, Seed, Song, Station, StationDetails,
+};
 use crate::update::{self, Checked, Update};
 
 pub enum Request {
@@ -32,6 +34,37 @@ pub enum Request {
     StationDetails {
         station_id: String,
         current: bool,
+    },
+    /// The seeds of a station (the seeds editor).
+    Seeds {
+        station_id: String,
+    },
+    /// Artists to suggest as seeds, near `seed_music_id` (a seed's `musicId`).
+    SeedSuggestions {
+        station_id: String,
+        seed_music_id: String,
+    },
+    /// Add the artist or song `seed_id` (`name` is for the message).
+    AddSeed {
+        station_id: String,
+        seed_id: String,
+        name: String,
+    },
+    RemoveSeed {
+        station_id: String,
+        seed_id: String,
+        name: String,
+    },
+    /// A page of the thumbs up (or down) you gave on a station, from `start`.
+    Feedback {
+        station_id: String,
+        positive: bool,
+        start: usize,
+    },
+    DeleteFeedback {
+        station_id: String,
+        feedback_id: String,
+        positive: bool,
     },
     /// Search Pandora for artists and songs to start a station from.
     Search {
@@ -90,6 +123,33 @@ pub enum Reply {
     StationDetails {
         station_id: String,
         details: StationDetails,
+    },
+    Seeds {
+        station_id: String,
+        seeds: Vec<Seed>,
+    },
+    SeedSuggestions {
+        station_id: String,
+        hits: Vec<SearchHit>,
+    },
+    SeedAdded {
+        station_id: String,
+        name: String,
+    },
+    SeedRemoved {
+        station_id: String,
+        name: String,
+    },
+    /// `start`: where the page began (0: the list starts over).
+    Feedback {
+        station_id: String,
+        positive: bool,
+        start: usize,
+        page: FeedbackPage,
+    },
+    FeedbackDeleted {
+        station_id: String,
+        positive: bool,
     },
     /// `query`: what was asked, so a late answer to an older query is ignored.
     SearchResults {
@@ -253,6 +313,7 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
     let mut round = 0;
     // The made-up account: renames and removals change this list only.
     let mut stations = demo::stations();
+    let mut editing = demo::Editing::default();
     for request in requests {
         let reply = match request {
             Request::Login { .. } => Reply::LoggedIn { hifi: true },
@@ -276,7 +337,28 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
                 }
             }
             Request::StationDetails { station_id, .. } => {
-                Reply::StationDetails { details: demo::station_details(&station_id), station_id }
+                Reply::StationDetails { details: editing.details(&station_id), station_id }
+            }
+            Request::Seeds { station_id } => Reply::Seeds { seeds: editing.seeds(&station_id).clone(), station_id },
+            Request::SeedSuggestions { station_id, .. } => {
+                Reply::SeedSuggestions { hits: editing.suggestions(&station_id), station_id }
+            }
+            Request::AddSeed { station_id, seed_id, .. } => match editing.add_seed(&station_id, &seed_id) {
+                Ok(name) => Reply::SeedAdded { station_id, name },
+                Err(message) => Reply::Failed { what: "add seed", message },
+            },
+            Request::RemoveSeed { station_id, seed_id, .. } => match editing.remove_seed(&station_id, &seed_id) {
+                Ok(name) => Reply::SeedRemoved { station_id, name },
+                Err(message) => Reply::Failed { what: "remove seed", message },
+            },
+            Request::Feedback { station_id, positive, start } => {
+                Reply::Feedback { page: editing.feedback(&station_id, positive, start), station_id, positive, start }
+            }
+            Request::DeleteFeedback { station_id, feedback_id, positive } => {
+                match editing.delete_feedback(&station_id, &feedback_id, positive) {
+                    Ok(()) => Reply::FeedbackDeleted { station_id, positive },
+                    Err(message) => Reply::Failed { what: "delete thumb", message },
+                }
             }
             Request::Search { query } => Reply::SearchResults { hits: demo::search(&query), query },
             Request::CreateStation { pandora_id } => match demo::new_station(&pandora_id, stations.len()) {
@@ -336,6 +418,43 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                 run(&mut client, &login, &mut took_over, "details", |c| {
                     c.station_details(&station_id, current)
                         .map(|details| Reply::StationDetails { station_id: station_id.clone(), details })
+                })
+            }
+            Request::Seeds { station_id } => run(&mut client, &login, &mut took_over, "seeds", |c| {
+                c.seeds(&station_id).map(|seeds| Reply::Seeds { station_id: station_id.clone(), seeds })
+            }),
+            Request::SeedSuggestions { station_id, seed_music_id } => {
+                run(&mut client, &login, &mut took_over, "suggestions", |c| {
+                    c.seed_suggestions(&station_id, &seed_music_id)
+                        .map(|hits| Reply::SeedSuggestions { station_id: station_id.clone(), hits })
+                })
+            }
+            Request::AddSeed { station_id, seed_id, name } => {
+                run(&mut client, &login, &mut took_over, "add seed", |c| {
+                    c.add_seed(&station_id, &seed_id)
+                        .map(|()| Reply::SeedAdded { station_id: station_id.clone(), name: name.clone() })
+                })
+            }
+            Request::RemoveSeed { station_id, seed_id, name } => {
+                run(&mut client, &login, &mut took_over, "remove seed", |c| {
+                    c.remove_seed(&station_id, &seed_id)
+                        .map(|()| Reply::SeedRemoved { station_id: station_id.clone(), name: name.clone() })
+                })
+            }
+            Request::Feedback { station_id, positive, start } => {
+                run(&mut client, &login, &mut took_over, "thumbs history", |c| {
+                    c.station_feedback(&station_id, positive, start).map(|page| Reply::Feedback {
+                        station_id: station_id.clone(),
+                        positive,
+                        start,
+                        page,
+                    })
+                })
+            }
+            Request::DeleteFeedback { station_id, feedback_id, positive } => {
+                run(&mut client, &login, &mut took_over, "delete thumb", |c| {
+                    c.delete_feedback(&feedback_id, positive)
+                        .map(|()| Reply::FeedbackDeleted { station_id: station_id.clone(), positive })
                 })
             }
             Request::Search { query } => run(&mut client, &login, &mut took_over, "search", |c| {

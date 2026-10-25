@@ -186,6 +186,36 @@ bound twice.
 - New dependency `secret-service` (with `zbus`); `cargo audit` shows only three
   "unmaintained" notices for zbus helper crates, no vulnerabilities.
 
+#### Seeds editor
+
+- `e` on a station in Stations or Favorites opens an editor with two tabs,
+  **Seeds** and **Thumbs** (`Tab` / `Shift+Tab` or `←` `→` to switch, `Esc` to
+  close). Genre stations and Shuffle, which Pandora won't let you change,
+  answer with a short message like the rename one. `v` is still the read-only
+  details popup.
+- Seeds tab: `a` opens an add box. While it is empty it lists Pandora's
+  suggestions for the station (`getSeedSuggestions`); typing searches
+  artists and songs. `Enter` adds the pick (`AddSeedToStationWeb`). `x` asks
+  what it will do ("Remove … from … ?"), then removes it
+  (`DeleteSeedFromStationWeb`). The last seed can't be removed. A seed the
+  station already has says so. The list reloads from Pandora after each change.
+- Errors from Pandora go to the status line. The demo mode has a working fake
+  of all of this, and `--snapshot FILE --screen seeds|seeds-add|seeds-remove`
+  draws the editor.
+- Help and the shortcut bar list the editor's keys only while it is open.
+
+#### Thumbs history
+
+- The editor's **Thumbs** tab lists the songs you gave a thumbs up on that
+  station (`getStationFeedback`, 30 a page), with the date when Pandora gives
+  one. `t` flips to the thumbs down list; each list loads on first view. More
+  songs load when the cursor reaches the end of the list.
+- The tab shows the thumbs up / down counts from `getStationDetails`.
+- `x` asks, then takes the thumb back (`deleteFeedback`). The lists and counts
+  refresh afterwards. Failures go to the status line.
+- `--screen thumbs|thumbs-delete` draws it. Help and the shortcut bar show
+  `t` and `x` on that tab only.
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

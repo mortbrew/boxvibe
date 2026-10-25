@@ -23,6 +23,9 @@ use crate::pandora::{GenreCategory, Quality, Rating, SearchHit, Song, Station, S
 use crate::theme::{self, Palette};
 use crate::update::{Progress, Replace, Update};
 
+mod editor;
+pub use editor::{Editor, EditorTab, FeedState, Loaded};
+
 /// What boxvibe knows about the Pandora password in the desktop keychain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeychainState {
@@ -285,6 +288,8 @@ pub enum Cmd {
     Rename,
     Delete,
     Details,
+    /// Edit a station's seeds and thumbs history.
+    Edit,
     NextFocus,
     PrevFocus,
     ToMenu,
@@ -348,6 +353,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(KeyCode::Char('r'), Cmd::Rename),
     bind(KeyCode::Char('x'), Cmd::Delete),
     bind(KeyCode::Char('v'), Cmd::Details),
+    bind(KeyCode::Char('e'), Cmd::Edit),
     bind(KeyCode::Char('j'), Cmd::Down),
     bind(KeyCode::Down, Cmd::Down),
     bind(KeyCode::Char('k'), Cmd::Up),
@@ -604,6 +610,8 @@ pub struct App {
     creating: bool,
     /// `v`: the details popup.
     pub details: Option<Details>,
+    /// `e`: the seeds and thumbs editor.
+    pub editor: Option<Editor>,
     pub buffering: Option<String>,
     audio_cache: HashMap<String, Vec<u8>>,
     /// The covers.
@@ -694,6 +702,7 @@ impl App {
             genres_cursor: 0,
             creating: false,
             details: None,
+            editor: None,
             buffering: None,
             audio_cache: HashMap::new(),
             requested: HashSet::new(),
@@ -1180,6 +1189,9 @@ impl App {
     }
 
     fn on_reply(&mut self, reply: Reply) {
+        if self.editor_reply(&reply) {
+            return;
+        }
         match reply {
             Reply::LoggedIn { hifi } => {
                 self.hifi = Some(hifi);
@@ -1275,6 +1287,9 @@ impl App {
                 }
             }
             Reply::SearchResults { query, hits } => {
+                if self.editor_search_results(&query, &hits) {
+                    return;
+                }
                 if let Some(search) = self.add_station.as_mut().filter(|s| s.asked.as_deref() == Some(query.as_str())) {
                     search.waiting = false;
                     search.error = None;
@@ -1336,7 +1351,17 @@ impl App {
                     self.advance();
                 }
             }
+            // The editor took these (or it was closed meanwhile).
+            Reply::Seeds { .. }
+            | Reply::SeedSuggestions { .. }
+            | Reply::SeedAdded { .. }
+            | Reply::SeedRemoved { .. }
+            | Reply::Feedback { .. }
+            | Reply::FeedbackDeleted { .. } => {}
             Reply::Failed { what, message } => {
+                if self.editor_failed(what, &message) {
+                    return;
+                }
                 if what == "playlist" {
                     self.playlist_pending = false;
                 }
@@ -1680,6 +1705,7 @@ impl App {
             || self.rename.is_some()
             || self.add_station.is_some()
             || self.details.is_some()
+            || self.editor.is_some()
     }
 
     pub fn in_songs(&self) -> bool {
@@ -1977,6 +2003,9 @@ impl App {
         if self.add_station.is_some() {
             return self.search_key(key);
         }
+        if self.editor.is_some() {
+            return self.editor_key(key);
+        }
         if self.prompt.is_some() {
             return self.prompt_key(key);
         }
@@ -2017,6 +2046,7 @@ impl App {
             Cmd::Rename => self.ask_rename(),
             Cmd::Delete => self.ask_delete(),
             Cmd::Details => self.show_details(),
+            Cmd::Edit => self.open_editor(),
             Cmd::NextFocus => self.next_focus(true),
             Cmd::PrevFocus => self.next_focus(false),
             Cmd::ToMenu => {

@@ -46,7 +46,7 @@ struct Args {
     /// Draw one demo frame to an HTML file and exit (for screenshots).
     #[arg(long, hide = true, value_name = "FILE")]
     snapshot: Option<PathBuf>,
-    /// Snapshot screen: main, settings, about, help or system.
+    /// Snapshot screen: main, settings, about, help, system, seeds, seeds-add, seeds-remove, thumbs or thumbs-delete.
     #[arg(long, hide = true, default_value = "main")]
     screen: String,
     #[arg(long, hide = true, default_value_t = 120)]

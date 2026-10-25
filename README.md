@@ -62,6 +62,7 @@ work right now drawn as key caps at the bottom.
 - **Icon sets** (Settings → LOOK → Icons): Nerd Font (the default), colour emoji or plain Unicode. The boxvibe logo is always the Nerd Font box
 - **Rename and delete stations** (`r`, `x`) and **details** (`v`): see [Keys](#keys)
 - **Make a station by searching** (`a` on the Stations page, or the "Add station…" row): type an artist or song, `Enter` searches, pick one with `j` / `k`, `Enter` makes the station and plays it
+- **Edit a station's seeds and see its thumbs history** (`e` on a Stations or Favorites row): a popup with two tabs, **Seeds** and **Thumbs**, switched with `Tab` / `Shift+Tab` (or `←` `→`); `Esc` closes. In Seeds, `a` adds an artist or song (suggestions show while the box is empty, typing searches, `Enter` adds) and `x` removes one after asking; the last seed can't be removed. In Thumbs, `t` flips between thumbs up and thumbs down, the list loads more as you reach its end, and `x` takes a thumb back after asking. Pandora's genre stations and Shuffle can't be edited and say so
 - **Genres** (`G`, Shift+g, or Genres in the menu): Pandora's genre stations under their categories; `Enter` adds one to your stations and plays it. The list loads once per session
 - **Song change notifications** with `notify-send` (mako on Omarchy)
 - Whatever you change in the app (theme, icons, volume, last station) is
@@ -152,14 +153,15 @@ Try it without an account (made-up stations, no network, no sound):
 | `r` | rename the selected station (Stations, or a favorite's station); asks for the name |
 | | A lock after a station's name (`🔒`, Nerd Font lock, or `#` in the plain set) means a Pandora genre station: it can't be renamed |
 | `x` | delete the selected station from your Pandora account; asks first (`y` = delete, any other key keeps it) |
+| `e` | edit the station's seeds and look at its thumbs history (Stations, or a favorite's station). In the editor: `Tab` switches Seeds / Thumbs, `a` adds a seed, `x` removes a seed or takes back a thumb (asks first), `t` flips thumbs up / down, `Esc` closes |
 | `v` | details: a song, or a station's seeds, thumbs up / down counts, genres and dates |
 | `C` `R` `H` (Shift) | album art: picture / off · Retro level · tint; saved |
 | `{` `}` | menu narrower / wider |
 | `?` | every key |
 | `Q` (Shift+q) / `Ctrl+c` | quit (asks first: `y` = yes, any other key = no) / quit now |
 
-The theme is only in Settings. In Favorites, `f` removes the favorite while `r`, `x`
-and `v` act on its station.
+The theme is only in Settings. In Favorites, `f` removes the favorite while `r`, `x`,
+`e` and `v` act on its station.
 
 When a setting or a box asks you to type (email, password, a station's new
 name): `←` `→` `Home` `End` move the cursor, `Backspace` and `Delete` remove,

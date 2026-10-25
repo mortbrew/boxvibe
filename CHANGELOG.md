@@ -42,10 +42,43 @@ bound twice.
 - The **boxvibe logo** is always the Nerd Font box icon, whatever the icon set
   (menu frame, About, boot screen).
 - A **boot screen** in boxvibe's own style: a box and wordmark that fade in
-  using the theme's colours, about 1.6 seconds, any key skips it. Settings →
-  BOXVIBE → Boot screen, `[ui] splash`, on by default.
+  using the theme's colours, 2 seconds, any key skips it. Settings →
+  BOXVIBE → Boot screen, `[boxvibe] splash`, on by default.
 - Up Next and History keep equal blank space at their left and right.
 - Now Playing has one cell of padding on all four sides.
+
+### Batch 2
+
+- **Text boxes edit like text boxes**: `←` `→` `Home` `End` move a cursor,
+  `Backspace` / `Delete` remove at it, typing inserts at it (rename, email,
+  password and the rest). `Esc`, `Enter` and `Ctrl+u` as before.
+- **The key bar only hints keys that do something where you are**: `l/b` only
+  in Up Next, History and Now Playing; `r`, `x`, `f` only on a station; `v`
+  only on a station or a song (it used to be bound everywhere, now it does
+  nothing, and is not hinted, on Settings and About).
+- **Every Settings description says where it is saved** ("Saved as [look]
+  icons."), and a test checks that each one is true. Actions (log in, log out,
+  edit the file, menu entry) say nothing, as they save nothing.
+- No 🎮 in the status line when Retro mode changes.
+- **First-run theme**: Omarchy on an Omarchy system (found by its `omarchy`
+  command or its config / state folders), Tokyo Night anywhere else.
+- **The Nerd Font icon set is the default** (`i` still cycles Nerd → emoji → Unicode).
+- **The boot screen is 2 seconds** (was 1.6), any key still skips it.
+- **Album art** is Picture or Off. `blocks` is gone: Retro mode does that job.
+  An old `album_art = "blocks"` reads as Picture and is rewritten on the next save.
+- **No spectrum visualizer.** With no cover (loading, none for the song, a failed
+  download, or Album art Off) the art box says "Loading cover art…" or "No cover
+  art" in its middle. The visualizer could no longer be reached, so its code
+  (and the audio tap that fed it) is removed; it is in the git history.
+- **config.toml uses the Settings names**: `[boxvibe]` (check_updates, splash),
+  `[account]` (username, password, user_agent), `[playback]` (audio_quality,
+  volume, notifications, autoplay_last_station, last_station, favorites) and
+  `[look]` (theme, icons, border_style, menu_width, album_art, retro_mode,
+  art_tint). Before, BOXVIBE's settings sat under `[ui]` and ACCOUNT's under
+  `[pandora]`. Old files load unchanged (a key in a new table wins over the
+  same key in an old one) and are moved to the new layout the next time the app
+  saves; comments, other tables and unknown keys are left alone, and the file
+  stays mode 600. Warnings name the new table (`look.theme`, not `ui.theme`).
 
 ### Fixes
 

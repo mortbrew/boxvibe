@@ -54,9 +54,9 @@ work right now drawn as key caps at the bottom.
   MP3 and AAC (MP4) are decoded in Rust ([symphonia](https://github.com/pdeljanov/Symphonia)
   through [rodio](https://github.com/RustAudio/rodio)), no ffmpeg or mpv needed
 - **Themes** (Settings): *Omarchy* (follows your current Omarchy theme, live, and
-  is Tokyo Night elsewhere) plus Tokyo Night, Gruvbox, Catppuccin, Catppuccin
+  is Tokyo Night elsewhere, and what a first run starts on) plus Tokyo Night, Gruvbox, Catppuccin, Catppuccin
   Latte, Rosé Pine Dawn, Nord, Everforest and Kanagawa
-- **Icon sets** (`i`): colour emoji, Nerd Font or plain Unicode. The boxvibe logo is always the Nerd Font box
+- **Icon sets** (`i`): Nerd Font (the default), colour emoji or plain Unicode. The boxvibe logo is always the Nerd Font box
 - **Rename and delete stations** (`r`, `x`) and **details** (`v`): see [Keys](#keys)
 - **Song change notifications** with `notify-send` (mako on Omarchy)
 - Whatever you change in the app (theme, icons, volume, last station) is
@@ -121,7 +121,7 @@ Try it without an account (made-up stations, no network, no sound):
 | `r` | rename the selected station (Stations, or a favorite's station); asks for the name |
 | `x` | delete the selected station from your Pandora account; asks first (`y` = delete, any other key keeps it) |
 | `v` | details: a song, or a station's seeds, thumbs up / down counts, genres and dates |
-| `C` `R` `H` (Shift) | album art: picture / blocks / off · Retro level · tint; saved |
+| `C` `R` `H` (Shift) | album art: picture / off · Retro level · tint; saved |
 | `i` | next icon set |
 | `{` `}` | menu narrower / wider |
 | `?` | every key |
@@ -130,8 +130,9 @@ Try it without an account (made-up stations, no network, no sound):
 The theme is only in Settings. In Favorites, `f` removes the favorite while `r`, `x`
 and `v` act on its station.
 
-When a setting asks you to type (email, password): `Enter` saves, `Esc`
-cancels, `Ctrl+u` clears.
+When a setting or a box asks you to type (email, password, a station's new
+name): `←` `→` `Home` `End` move the cursor, `Backspace` and `Delete` remove,
+`Enter` saves, `Esc` cancels, `Ctrl+u` clears.
 
 ## Configuration
 
@@ -144,35 +145,45 @@ boxvibe from starting: one that is not valid TOML is moved to
 `config.toml.bad-<UTC time>` and boxvibe starts with the defaults and says so.
 
 ```toml
-[pandora]
+# The tables are the Settings groups: BOXVIBE, ACCOUNT, PLAYBACK and LOOK.
+[boxvibe]
+check_updates = true           # look for a new release on GitHub at startup
+splash = true                  # the 2 second boxvibe boot screen (any key skips it)
+
+[account]
 username = "you@example.com"   # saved from Settings → Email or username
 password = "…"                 # saved once a login works (the file is mode 600)
+user_agent = ""                # empty: boxvibe's default (a desktop Firefox); see below
+
+[playback]
 audio_quality = "high"         # high: MP3 192 kbps if your plan has it (Plus, Premium), else 128
                                # standard: MP3 128 kbps (old low / medium values mean standard)
-user_agent = ""                # empty: boxvibe's default (a desktop Firefox); see below
-last_station = ""              # the station to start on, kept by the app
-
-[player]
 volume = 70                    # 0–100
+notifications = true           # a desktop notification when the song changes (Settings toggles it)
+autoplay_last_station = true   # start the station played last when boxvibe opens
+last_station = ""              # the station to start on, kept by the app
+favorites = []                 # starred stations, { id = "…", name = "…" }, set with f
 
-[ui]
+[look]
 theme = "omarchy"              # omarchy | tokyo-night | gruvbox | catppuccin | catppuccin-latte
                                # | rose-pine | nord | everforest | kanagawa
-icons = "emoji"                # emoji | nerd | unicode
-notifications = true           # a desktop notification when the song changes (Settings toggles it)
-check_updates = true           # look for a new release on GitHub at startup
-autoplay_last_station = true   # start the station played last when boxvibe opens (0.1: [player] autoplay)
+                               # (the first run: omarchy on an Omarchy system, else tokyo-night)
+icons = "nerd"                 # nerd | emoji | unicode
 border_style = "plain"         # plain | rounded | thick | double | none
 menu_width = 30                # the menu, in columns: 20–40, step 2 (at most half the screen); also { and }
-favorites = []                 # starred stations, { id = "…", name = "…" }, set with f
-album_art = "picture"          # picture | blocks | off (off: the spectrum visualizer)
-retro_mode = "hd"             # hd | 64bit | 32bit | 16bit | 8bit | 4bit | 2bit (full / 256 / 128 / 64 / 32 / 16 / 8 px, blocky on purpose)
-splash = true                  # the short boxvibe boot screen (any key skips it)
+album_art = "picture"          # picture | off
+retro_mode = "hd"              # hd | 64bit | 32bit | 16bit | 8bit | 4bit | 2bit (full / 256 / 128 / 64 / 32 / 16 / 8 px, blocky on purpose)
 art_tint = "off"               # off | duotone | palette: recolour the cover with the theme's colours
 ```
 
+The 0.1–0.3 files had `[pandora]`, `[player]` and `[ui]` tables. They still
+load, and the next time the app saves something it moves each key into its
+group above (comments and the rest of the file stay). Settings → each setting's
+description in the box below the list says where it is saved.
+
 `--theme NAME` and `--icons SET` change them for one run without saving.
 A bad `album_art`, `retro_mode` or `art_tint` value is ignored with a warning (picture / hd / off).
+The old `album_art = "blocks"` reads as `picture` (half blocks are what Picture uses when the terminal has no graphics).
 The 0.3 betas' `art_pixelation` key (off / extra_low / low / medium / high / max) still reads as `retro_mode`.
 
 ## Album art
@@ -185,8 +196,7 @@ startup what it can draw:
 - Anything else, and always inside **tmux** or **Zellij**: coloured half blocks (▀).
 
 Shift+`C`, `R` and `H` cycle album art, Retro mode and tint without opening Settings.
-Settings → LOOK → **Album art** picks Picture, Blocks (half blocks even when
-the terminal could do better) or Off. **Retro mode** makes the cover blocky
+Settings → LOOK → **Album art** picks Picture or Off. **Retro mode** makes the cover blocky
 for fun, like an old console: 64-bit, 32-bit, 16-bit, 8-bit, 4-bit and 2-bit shrink it
 to 256, 128, 64, 32, 16 or 8 pixels across and blow it back up, nearest-neighbour;
 HD leaves it alone. **Tint art with theme colors** recolours the cover using
@@ -204,9 +214,9 @@ A cover that fails to download is tried again after 2, 6 and 15 seconds, and aga
 
 Covers download in the background and are kept in memory and in
 `~/.cache/boxvibe/art` (`$XDG_CACHE_HOME`), at most 50 MB, oldest dropped
-first. While a cover loads, when a song has none, or with Album art Off, the
-box shows a spectrum visualizer of the music that is playing (frozen while
-paused).
+first. While a cover loads the box says "Loading cover art…"; when a song has
+none, or with Album art Off, it says "No cover art" in the space the cover would
+fill.
 
 ## Updating
 
@@ -274,7 +284,7 @@ What that means:
   "Pandora's bot check blocked the login". That depends on your network
   (home connections usually pass; servers and VPNs often don't). Waiting,
   another network, or logging in once on pandora.com in a browser may help;
-  `[pandora] user_agent` lets you change the browser boxvibe says it is
+  `[account] user_agent` lets you change the browser boxvibe says it is
 - The API is unofficial: Pandora could change or close it
 
 ## Screenshots

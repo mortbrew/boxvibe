@@ -26,7 +26,7 @@ use crate::update::{Progress, Replace};
 use ratatui_image::{Resize, StatefulImage};
 
 thread_local! {
-    /// `[ui] border_style` of the frame being drawn (set by [`draw`]), like tubevibe.
+    /// `[look] border_style` of the frame being drawn (set by [`draw`]), like tubevibe.
     static BORDERS: std::cell::Cell<BorderStyle> = const { std::cell::Cell::new(BorderStyle::Plain) };
 }
 
@@ -792,17 +792,16 @@ pub const STACK_WITH_BUTTONS: u16 = 11;
 /// Blank cells between Now Playing's border and what it holds, on every side.
 pub const NOW_PLAYING_PAD: u16 = 1;
 
-/// Draws the cover (or the visualizer) and returns where it went.
+/// Draws the cover, or a message that there is none, and returns where it went.
 fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) -> Rect {
     let p = app.palette;
-    // No frame: the cover (or the visualizer) fills the box itself.
+    // No frame: the cover (or the message) fills the box itself.
     let inner = area;
     app.art.last_area.set(inner);
     if inner.width == 0 || inner.height == 0 {
         return inner;
     }
     let look = crate::art::Look::of(&app.config.ui, p);
-    let mode = look.mode;
     if let Some(mut cover) = app.art.protocol(&song.cover_art_url, look) {
         // Against the left edge of the box (the pane's padding), centred
         // top to bottom: the picture keeps its shape.
@@ -817,64 +816,18 @@ fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) -> Rect {
         return at;
     }
     app.art.hide();
-    let ic = icons(app.config.ui.icons);
-    let caption = match (mode, app.art.status(&song.cover_art_url)) {
-        (AlbumArt::Off, _) => String::new(),
-        (_, Cover::Loading) if !song.cover_art_url.is_empty() => format!("{} loading cover…", ic.title),
-        _ => format!("{} no cover", ic.title),
-    };
-    draw_visualizer(frame, &p, &app.art.bars, &caption, inner);
+    // No cover to draw: say so, in the middle of the space the cover would fill.
+    let loading = app.config.ui.album_art == AlbumArt::Picture
+        && !song.cover_art_url.is_empty()
+        && matches!(app.art.status(&song.cover_art_url), Cover::Loading);
+    let message = if loading { "Loading cover art…" } else { "No cover art" };
+    let line = Rect { y: inner.y + inner.height / 2, height: 1, ..inner };
+    frame.render_widget(
+        Paragraph::new(Span::styled(message, Style::new().fg(p.muted).add_modifier(Modifier::DIM)))
+            .alignment(Alignment::Center),
+        line,
+    );
     inner
-}
-
-/// Spectrum bars from the bottom of `area` up, green → yellow → orange, with
-/// a peak cap over each; `caption` dim on the top row.
-fn draw_visualizer(frame: &mut Frame, p: &Palette, bars: &crate::visualizer::Bars, caption: &str, area: Rect) {
-    const EIGHTHS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-    let top = u16::from(!caption.is_empty());
-    let h = area.height.saturating_sub(top);
-    let count = usize::from(area.width.div_ceil(2));
-    if h == 0 || count == 0 {
-        return;
-    }
-    let buf = frame.buffer_mut();
-    let level = |i: usize, of: &[f32]| -> f32 {
-        if of.is_empty() {
-            return 0.0;
-        }
-        // Spread the bands over the bars that fit.
-        of[(i * of.len() / count).min(of.len() - 1)]
-    };
-    for i in 0..count {
-        let x = area.x + (i as u16) * 2;
-        let eighths = (level(i, &bars.levels) * f32::from(h) * 8.0).round() as u16;
-        let peak_row = (level(i, &bars.peaks) * f32::from(h)).ceil() as u16;
-        for row in 0..h {
-            let y = area.y + area.height - 1 - row;
-            let fill = eighths.saturating_sub(row * 8).min(8);
-            let frac = f32::from(row) / f32::from(h);
-            let color = if frac < 0.5 {
-                p.green
-            } else if frac < 0.8 {
-                p.yellow
-            } else {
-                p.orange
-            };
-            if fill > 0 {
-                buf[(x, y)].set_symbol(EIGHTHS[usize::from(fill)]).set_fg(color);
-            } else if peak_row > 0 && row + 1 == peak_row && peak_row * 8 > eighths {
-                buf[(x, y)].set_symbol("▔").set_fg(p.orange);
-            }
-        }
-    }
-    if top == 1 {
-        let line = Rect { height: 1, ..area };
-        frame.render_widget(
-            Paragraph::new(Span::styled(caption, Style::new().fg(p.muted).add_modifier(Modifier::DIM)))
-                .alignment(Alignment::Center),
-            line,
-        );
-    }
 }
 
 /// The four CarPlay buttons (the key bar and help show their keys).
@@ -1384,7 +1337,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("N", "skip to the next song"),
             ("U D", "thumbs up / down the playing song (down skips it)"),
             ("z", "tired of this song (a month off)"),
-            ("Shift ← →", "volume down / up"),
+            ("Shift ← →", "volume down / up (saved)"),
         ],
     ),
     (
@@ -1414,10 +1367,10 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
     (
         "LOOK AND BOXVIBE",
         &[
-            ("C", "album art: picture / blocks (saved)"),
+            ("C", "album art: picture / off (saved)"),
             ("R", "retro level: HD, 64-bit … 2-bit (saved)"),
             ("H", "tint: off / duotone / palette (saved)"),
-            ("i", "emoji / Nerd Font / Unicode icons (saved)"),
+            ("i", "Nerd Font / emoji / Unicode icons (saved)"),
             ("{ }", "menu narrower / wider (saved)"),
             ("?", "this help"),
             ("Q Ctrl+c", "quit (asks first) / quit now"),
@@ -1476,6 +1429,8 @@ mod tests {
 
     fn demo() -> App {
         let mut app = App::new(Config::default(), None, &[], true);
+        // The tests look for emoji (the default is the Nerd Font set).
+        app.config.ui.icons = crate::config::IconSet::Emoji;
         app.demo_warm_up(3, std::time::Duration::ZERO);
         app
     }
@@ -1929,29 +1884,68 @@ mod tests {
         }
     }
 
-    #[test]
-    fn with_album_art_off_the_box_shows_the_visualizer() {
-        let mut app = demo();
-        app.config.ui.album_art = crate::config::AlbumArt::Off;
-        app.art.bars.update(&[0.9; 48]);
-        let (lines, _) = screen(&app, 120, 36);
-        let (top, bottom, left, right) = art_box(&app);
-        let inside: String = lines[top + 1..bottom]
+    /// What the art box holds, row by row (no border: it is the area itself).
+    fn art_rows(app: &App, lines: &[String]) -> Vec<String> {
+        let a = app.art.last_area.get();
+        lines[a.y as usize..(a.y + a.height) as usize]
             .iter()
-            .map(|l| l.chars().skip(left + 1).take(right - left - 1).collect::<String>())
-            .collect();
-        assert!(inside.contains('█'), "bars:\n{}", lines.join("\n"));
-        assert!(!inside.contains('▀'), "no picture when Off");
+            .map(|l| l.chars().skip(a.x as usize).take(a.width as usize).collect())
+            .collect()
+    }
+
+    /// The art box shows just `message`, centred, and no picture or bars.
+    fn assert_only_message(app: &App, message: &str) {
+        let (lines, _) = screen(app, 120, 36);
+        let rows = art_rows(app, &lines);
+        let shown: Vec<(usize, &String)> = rows.iter().enumerate().filter(|(_, r)| !r.trim().is_empty()).collect();
+        let [(row, text)] = shown[..] else { panic!("one line of text in the art box:\n{}", rows.join("\n")) };
+        assert_eq!(text.trim(), message);
+        assert_eq!(row, rows.len() / 2, "in the middle, top to bottom");
+        let width = app.art.last_area.get().width as usize;
+        let left = text.chars().take_while(|c| *c == ' ').count();
+        let right = width - left - message.width();
+        assert!(left.abs_diff(right) <= 1, "centred: {left} left, {right} right");
+        for glyph in ['▀', '▄', '█', '▁', '▂', '▃', '▅', '▆', '▇', '▔'] {
+            assert!(!rows.iter().any(|r| r.contains(glyph)), "no picture or bars ({glyph}):\n{}", rows.join("\n"));
+        }
     }
 
     #[test]
-    fn without_a_cover_the_visualizer_says_so() {
+    fn with_album_art_off_the_space_says_there_is_no_cover_art() {
+        let mut app = demo();
+        app.config.ui.album_art = crate::config::AlbumArt::Off;
+        assert_only_message(&app, "No cover art");
+        // Playing music changes nothing: there is no visualizer to fall back on.
+        assert_only_message(&app, "No cover art");
+    }
+
+    #[test]
+    fn without_a_cover_the_space_says_so_and_not_a_visualizer() {
         let mut app = demo();
         if let Some(song) = app.now.as_mut() {
             song.cover_art_url.clear();
         }
-        let (lines, _) = screen(&app, 120, 36);
-        assert!(lines.join("\n").contains("no cover"), "{}", lines.join("\n"));
+        assert_only_message(&app, "No cover art");
+    }
+
+    #[test]
+    fn a_cover_on_its_way_says_loading_and_a_lost_one_says_no_cover() {
+        let mut app = demo();
+        app.art = crate::art::Art::default();
+        let url = app.now.as_ref().map(|s| s.cover_art_url.clone()).unwrap();
+        assert!(app.art.want(&url), "the download starts");
+        assert_only_message(&app, "Loading cover art…");
+        // Art off while one downloads: nothing is coming, so it says no cover art.
+        app.config.ui.album_art = crate::config::AlbumArt::Off;
+        assert_only_message(&app, "No cover art");
+        // A cover that has been given up on (every try failed).
+        app.config.ui.album_art = crate::config::AlbumArt::Picture;
+        let mut gone = crate::art::Art::default();
+        for _ in 0..=crate::art::RETRY_WAITS.len() {
+            gone.arrived(url.clone(), None);
+        }
+        app.art = gone;
+        assert_only_message(&app, "No cover art");
     }
 
     #[test]

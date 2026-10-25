@@ -34,8 +34,6 @@ pub struct Audio {
     paused: bool,
     active: bool,
     volume: u8,
-    /// What the speakers get, for the visualizer.
-    pub samples: crate::visualizer::Samples,
     /// Why there is no sound, when there is none.
     pub problem: Option<String>,
 }
@@ -54,16 +52,7 @@ impl Audio {
                 Err(e) => (None, Some(format!("no sound device ({e}): playing silently"))),
             }
         };
-        Self {
-            device,
-            player: None,
-            clock: Clock::default(),
-            paused: false,
-            active: false,
-            volume,
-            problem,
-            samples: Default::default(),
-        }
+        Self { device, player: None, clock: Clock::default(), paused: false, active: false, volume, problem }
     }
 
     pub fn has_device(&self) -> bool {
@@ -81,7 +70,7 @@ impl Audio {
         let decoder = decoder(data).map_err(|e| format!("can't decode this song: {e}"))?;
         let player = rodio::Player::connect_new(device.mixer());
         player.set_volume(gain(self.volume));
-        player.append(crate::visualizer::Tap::new(decoder, self.samples.clone()));
+        player.append(decoder);
         player.play();
         self.player = Some(player);
         Ok(())
@@ -93,7 +82,6 @@ impl Audio {
         }
         self.active = false;
         self.clock = Clock::default();
-        self.samples.clear();
     }
 
     pub fn toggle_pause(&mut self) {

@@ -17,7 +17,6 @@ use ratatui_image::protocol::StatefulProtocol;
 
 use crate::config::{AlbumArt, ArtTint, RetroMode};
 use crate::theme::Palette;
-use crate::visualizer::Bars;
 
 /// Covers kept in memory.
 const MEMORY: usize = 24;
@@ -107,11 +106,10 @@ pub struct Art {
     shown: RefCell<Option<Shown>>,
     /// A picture protocol was drawn and then replaced: clear the screen once.
     pub needs_clear: std::cell::Cell<bool>,
-    pub bars: Bars,
     /// A popup (Help, the quit box) is open: a terminal picture would draw
     /// over it, so none is shown until it closes.
     suspended: std::cell::Cell<bool>,
-    /// Where the art box was last drawn (the cover or visualizer fills it).
+    /// Where the art box was last drawn (the cover, or the message that there is none).
     pub last_area: std::cell::Cell<ratatui::layout::Rect>,
     /// Where the cover itself was last drawn inside that box.
     pub last_cover: std::cell::Cell<ratatui::layout::Rect>,
@@ -219,7 +217,7 @@ impl Art {
     pub fn protocol(&self, url: &str, look: Look) -> Option<RefMut<'_, StatefulProtocol>> {
         let mode = look.mode;
         let mut shown = self.shown.borrow_mut();
-        // Half blocks for Blocks, without graphics, under a popup, or when
+        // Half blocks without graphics, under a popup, or when
         // the terminal couldn't encode this cover.
         let picture = match (mode, &self.graphics) {
             (AlbumArt::Picture, Some(p)) if !self.suspended.get() && !self.unencodable.borrow().contains(url) => {
@@ -490,7 +488,7 @@ mod tests {
         let mut art = Art::default();
         art.arrived("u".into(), Some(demo_cover("u")));
         let p = crate::theme::BUILT_IN[0].2;
-        let mut look = Look { mode: AlbumArt::Blocks, pixelation: RetroMode::Hd, tint: ArtTint::Duotone, palette: p };
+        let mut look = Look { mode: AlbumArt::Picture, pixelation: RetroMode::Hd, tint: ArtTint::Duotone, palette: p };
         let first = art.protocol("u", look).map(|_| ()).is_some();
         assert!(first);
         let ptr = |art: &Art| art.shown.borrow().as_ref().map(|s| s.look);
@@ -534,8 +532,8 @@ mod tests {
         assert!(art.protocol("u", look(AlbumArt::Picture, RetroMode::Hd)).is_none());
         art.arrived("u".into(), Some(demo_cover("u")));
         assert!(!art.want("u"));
-        assert!(art.protocol("u", look(AlbumArt::Blocks, RetroMode::Hd)).is_some());
-        assert!(art.protocol("u", look(AlbumArt::Off, RetroMode::Hd)).is_none(), "off: the visualizer");
+        assert!(art.protocol("u", look(AlbumArt::Picture, RetroMode::Hd)).is_some(), "half blocks without graphics");
+        assert!(art.protocol("u", look(AlbumArt::Off, RetroMode::Hd)).is_none(), "off: no cover");
         art.arrived("bad".into(), None);
         assert!(!art.want("bad"), "a failure waits before it is asked again");
         assert_eq!(art.protocol_name(), "half blocks", "no terminal query in tests");

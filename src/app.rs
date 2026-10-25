@@ -45,7 +45,7 @@ pub enum MenuItem {
     NowPlaying,
     /// Opens the station list on the right.
     Stations,
-    /// A starred station, by its index in `[ui] favorites`.
+    /// A starred station, by its index in `[playback] favorites`.
     Favorite(usize),
     Settings,
     About,
@@ -142,45 +142,81 @@ impl Setting {
         }
     }
 
-    /// One line on what the setting does, under the list.
+    /// The config.toml `[table]` and key a setting is saved in, or `None` for
+    /// one that is an action rather than a saved choice (LogIn, LogOut,
+    /// EditFile, MenuEntry). `about` says it, and a test holds it to the truth.
+    #[cfg(test)]
+    fn saved_as(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::CheckUpdates => Some(("boxvibe", "check_updates")),
+            Self::Splash => Some(("boxvibe", "splash")),
+            Self::Email => Some(("account", "username")),
+            Self::Password => Some(("account", "password")),
+            Self::Quality => Some(("playback", "audio_quality")),
+            Self::Volume => Some(("playback", "volume")),
+            Self::Autoplay => Some(("playback", "autoplay_last_station")),
+            Self::Notify => Some(("playback", "notifications")),
+            Self::Theme => Some(("look", "theme")),
+            Self::Icons => Some(("look", "icons")),
+            Self::BorderStyle => Some(("look", "border_style")),
+            Self::MenuWidth => Some(("look", "menu_width")),
+            Self::AlbumArt => Some(("look", "album_art")),
+            Self::RetroMode => Some(("look", "retro_mode")),
+            Self::ArtTint => Some(("look", "art_tint")),
+            Self::LogIn | Self::LogOut | Self::EditFile | Self::MenuEntry => None,
+        }
+    }
+
+    /// One line on what the setting does, under the list. Every setting kept
+    /// in config.toml ends with where ("Saved as [look] theme.").
     pub fn about(self) -> &'static str {
         match self {
-            Self::Email => "What you log in to pandora.com with. Enter types it.",
-            Self::Password => "Saved in config.toml, a file only you can read (mode 600). Enter types it.",
+            Self::Email => "What you log in to pandora.com with. Enter types it. Saved as [account] username.",
+            Self::Password => {
+                "Enter types it. Kept once Pandora accepts it, in a file only you can read (mode 600). Saved as [account] password."
+            }
             Self::LogIn => "Logs in to Pandora with the email and password above and loads your stations.",
             Self::LogOut => "Stops the music and removes the saved password from config.toml.",
             Self::Quality => {
-                "high is 192 kbps MP3 where your plan has it (Plus, Premium), else 128 kbps; standard is 128."
+                "high is 192 kbps MP3 where your plan has it (Plus, Premium), else 128 kbps; standard is 128. Saved as [playback] audio_quality."
             }
-            Self::Volume => "Also ← and → anywhere.",
+            Self::Volume => "Also ← and → anywhere. Saved as [playback] volume.",
             Self::Autoplay => {
-                "When boxvibe opens and logs in, the station you played last starts by itself. Saved as [ui] autoplay_last_station."
+                "When boxvibe opens and logs in, the station you played last starts by itself. Saved as [playback] autoplay_last_station."
             }
             Self::Notify => {
-                "A desktop notification (notify-send, mako on Omarchy) for every new song. Saved as [ui] notifications."
+                "A desktop notification (notify-send, mako on Omarchy) for every new song. Saved as [playback] notifications."
             }
             Self::Theme => {
-                "Omarchy follows your current Omarchy theme; or pick a built-in one. The theme is only changed here."
+                "Omarchy follows your current Omarchy theme; or pick a built-in one. The theme is only changed here. Saved as [look] theme."
             }
             Self::Icons => {
-                "Emoji, Nerd Font (needs one installed) or plain Unicode. Also i (the boxvibe logo always uses the Nerd Font box)."
+                "Nerd Font (needs one installed; Omarchy ships one), emoji or plain Unicode. Also i. Saved as [look] icons."
             }
-            Self::BorderStyle => "How every pane's border is drawn: plain, rounded, thick, double or none.",
-            Self::MenuWidth => "The menu's width, 20 to 40 columns (never more than half the screen). Also { and }.",
+            Self::BorderStyle => {
+                "How every pane's border is drawn: plain, rounded, thick, double or none. Saved as [look] border_style."
+            }
+            Self::MenuWidth => {
+                "The menu's width, 20 to 40 columns (never more than half the screen). Also { and }. Saved as [look] menu_width."
+            }
             Self::AlbumArt => {
-                "Picture: real covers (sixel, kitty, iTerm2); Blocks: coloured half blocks; Off: visualizer. Also Shift+C."
+                "Picture: the real cover (sixel, kitty, iTerm2, or half blocks in other terminals); Off: no cover. Also Shift+C. Saved as [look] album_art."
             }
             Self::ArtTint => {
-                "Recolors the album art using your current theme's color scheme. Duotone: theme background to yellow; Palette: only theme colors. Saved as [ui] art_tint. Also Shift+H."
+                "Recolors the album art using your current theme's color scheme. Duotone: theme background to yellow; Palette: only theme colors. Also Shift+H. Saved as [look] art_tint."
             }
             Self::RetroMode => {
-                "Makes the cover blocky on purpose, like an old console: 64-bit (256 pixels across), 32-bit (128), 16-bit (64), 8-bit (32), 4-bit (16), 2-bit (8), or HD for the full picture. Also Shift+R."
+                "Makes the cover blocky on purpose, like an old console: 64-bit (256 pixels across), 32-bit (128), 16-bit (64), 8-bit (32), 4-bit (16), 2-bit (8), or HD for the full picture. Also Shift+R. Saved as [look] retro_mode."
             }
-            Self::CheckUpdates => "Asks GitHub when boxvibe opens; About shows the new version and Update Now.",
-            Self::Splash => "A short boxvibe logo screen when it opens; any key skips it. Saved as [ui] splash.",
+            Self::CheckUpdates => {
+                "Asks GitHub when boxvibe opens; About shows the new version and Update Now. Saved as [boxvibe] check_updates."
+            }
+            Self::Splash => {
+                "A two-second boxvibe logo screen when it opens; any key skips it. Saved as [boxvibe] splash."
+            }
             Self::EditFile => "Opens config.toml in $EDITOR; boxvibe reads it again when you close it.",
             Self::MenuEntry => {
-                "Enter adds or removes boxvibe.desktop in ~/.local/share/applications, so app launchers (walker on Omarchy) list boxvibe; it runs this boxvibe in a terminal."
+                "Enter adds or removes boxvibe.desktop in ~/.local/share/applications, so app launchers (walker on Omarchy) list boxvibe; it runs this boxvibe in a terminal. Not in config.toml."
             }
         }
     }
@@ -472,7 +508,7 @@ pub struct App {
     pub details: Option<Details>,
     pub buffering: Option<String>,
     audio_cache: HashMap<String, Vec<u8>>,
-    /// Covers and the visualizer's bars.
+    /// The covers.
     pub art: crate::art::Art,
     requested: HashSet<String>,
     playlist_pending: bool,
@@ -500,9 +536,7 @@ const MAX_STATION_NAME: usize = 80;
 /// The longest email or password the prompts take.
 const MAX_PROMPT: usize = 256;
 /// How long the boot screen stays when no key skips it.
-pub const SPLASH: Duration = Duration::from_millis(1600);
-/// Visualizer bands (the art box draws as many as fit).
-const BANDS: usize = 48;
+pub const SPLASH: Duration = Duration::from_millis(2000);
 
 impl App {
     pub fn new(config: Config, config_path: Option<PathBuf>, warnings: &[ConfigWarning], demo: bool) -> Self {
@@ -578,7 +612,7 @@ impl App {
         app
     }
 
-    /// The boot screen starts (main calls this once, if `[ui] splash` is on).
+    /// The boot screen starts (main calls this once, if `[boxvibe] splash` is on).
     pub fn begin_splash(&mut self) {
         self.splash = self.config.ui.splash.then(Instant::now);
     }
@@ -709,7 +743,7 @@ impl App {
     }
 
     /// `f`: stars or unstars the station under the cursor (the list, a
-    /// favorite in the menu) or else the one playing; saved as `[ui] favorites`.
+    /// favorite in the menu) or else the one playing; saved as `[playback] favorites`.
     fn toggle_favorite(&mut self) {
         let (id, name) = match (self.focus, self.view, self.menu_selected()) {
             (Focus::Content, View::Stations, _) => match self.stations.get(self.stations_index()) {
@@ -752,7 +786,7 @@ impl App {
             t.insert("name", f.name.as_str().into());
             list.push(t);
         }
-        self.save(&[("ui", "favorites", toml_edit::Value::Array(list))]);
+        self.save(&[("playback", "favorites", toml_edit::Value::Array(list))]);
     }
 
     /// The menu entry of what the right side shows.
@@ -783,9 +817,6 @@ impl App {
             self.advance();
         }
         self.want_art();
-        if self.animating() {
-            self.step_bars();
-        }
         if self.follows_omarchy() && self.last_theme_poll.elapsed() > Duration::from_secs(2) {
             self.last_theme_poll = Instant::now();
             if let Some(p) = self.omarchy.poll() {
@@ -807,30 +838,6 @@ impl App {
         }
     }
 
-    /// Music is moving: the visualizer animates (and frames come faster).
-    pub fn animating(&self) -> bool {
-        self.now.is_some() && self.audio.is_active() && !self.audio.is_paused() && self.buffering.is_none()
-    }
-
-    /// The visualizer's next frame: the sound's spectrum, or in the demo
-    /// (no sound) a made-up one that moves with the clock.
-    fn step_bars(&mut self) {
-        let target = if self.demo || !self.audio.has_device() {
-            let t = self.audio.position().as_secs_f32();
-            (0..BANDS)
-                .map(|b| {
-                    let x = b as f32 / BANDS as f32;
-                    let wave = ((t * 3.1 + x * 9.0).sin() * 0.5 + 0.5) * ((t * 1.7 - x * 4.0).cos() * 0.25 + 0.75);
-                    (wave * (1.0 - x * 0.5)).clamp(0.0, 1.0)
-                })
-                .collect()
-        } else {
-            let (samples, rate) = self.audio.samples.snapshot();
-            crate::visualizer::bands(&samples, rate, BANDS)
-        };
-        self.art.bars.update(&target);
-    }
-
     pub fn settle(&mut self, timeout: Duration) {
         while let Ok(reply) = self.backend.replies.recv_timeout(timeout) {
             self.on_reply(reply);
@@ -848,8 +855,8 @@ impl App {
                     let (email, password) =
                         (self.config.pandora.username.clone(), self.config.pandora.password.clone());
                     self.save(&[
-                        ("pandora", "username", email.as_str().into()),
-                        ("pandora", "password", password.as_str().into()),
+                        ("account", "username", email.as_str().into()),
+                        ("account", "password", password.as_str().into()),
                     ]);
                     self.status = format!("Logged in as {email}");
                 }
@@ -864,7 +871,7 @@ impl App {
                 if wrong_password {
                     // A wrong password is not kept, here or in config.toml.
                     self.config.pandora.password.clear();
-                    self.save(&[("pandora", "password", "".into())]);
+                    self.save(&[("account", "password", "".into())]);
                 }
                 self.session = Session::Failed(message.clone());
                 self.status = format!("⚠ Login failed: {message}");
@@ -1047,7 +1054,7 @@ impl App {
         self.view = View::Settings;
         self.session = Session::LoggedOut;
         self.config.pandora.password.clear();
-        self.save(&[("pandora", "password", "".into())]);
+        self.save(&[("account", "password", "".into())]);
         self.status = "Logged out: the password was removed from config.toml".into();
     }
 
@@ -1072,7 +1079,7 @@ impl App {
         self.backend.send(Request::Playlist { station_id: station.id.clone() });
         if self.config.pandora.last_station != station.id {
             self.config.pandora.last_station = station.id.clone();
-            self.save(&[("pandora", "last_station", station.id.as_str().into())]);
+            self.save(&[("playback", "last_station", station.id.as_str().into())]);
         }
         self.status = format!("Tuning in to {}", station.name);
         // Every way a station starts lands where Shift+P does: same function, no drift.
@@ -1278,7 +1285,7 @@ impl App {
                 let next = Quality::parse(&self.config.pandora.audio_quality).next();
                 self.config.pandora.audio_quality = next.as_str().into();
                 self.backend.send(Request::Quality(next));
-                self.save(&[("pandora", "audio_quality", next.as_str().into())]);
+                self.save(&[("playback", "audio_quality", next.as_str().into())]);
                 self.status = format!("Audio quality {}: from the next songs Pandora sends", next.as_str());
             }
             Setting::Volume => {
@@ -1288,42 +1295,27 @@ impl App {
             Setting::Autoplay => {
                 let on = !self.config.ui.autoplay_last_station;
                 self.config.ui.autoplay_last_station = on;
-                self.save(&[("ui", "autoplay_last_station", on.into())]);
-                // boxvibe 0.1's name for it goes.
-                if !self.demo
-                    && let Some(path) = &self.config_path
-                    && let Err(e) = config::remove_value(path, "player", "autoplay")
-                {
-                    self.status = format!("⚠ {e}");
-                } else {
-                    self.status = format!("Autoplay last station on open: {}", if on { "on" } else { "off" });
-                }
+                self.save(&[("playback", "autoplay_last_station", on.into())]);
+                self.status = format!("Autoplay last station on open: {}", if on { "on" } else { "off" });
             }
             Setting::Notify => {
                 let on = !self.config.ui.notifications;
                 self.config.ui.notifications = on;
-                self.save(&[("ui", "notifications", on.into())]);
-                if !self.demo
-                    && let Some(path) = &self.config_path
-                    && let Err(e) = config::remove_value(path, "ui", "notify")
-                {
-                    self.status = format!("⚠ {e}");
-                } else {
-                    self.status = format!("Song change notifications {}", if on { "on" } else { "off" });
-                }
+                self.save(&[("playback", "notifications", on.into())]);
+                self.status = format!("Song change notifications {}", if on { "on" } else { "off" });
             }
             Setting::Theme => self.next_theme(),
             Setting::Icons => self.next_icons(),
             Setting::BorderStyle => {
                 let next = self.config.ui.border_style.next();
                 self.config.ui.border_style = next;
-                self.save(&[("ui", "border_style", next.as_str().into())]);
+                self.save(&[("look", "border_style", next.as_str().into())]);
                 self.status = format!("Border style: {}", next.label());
             }
             Setting::MenuWidth => {
                 let next = config::MENU_WIDTH.next(self.config.ui.menu_width);
                 self.config.ui.menu_width = next;
-                self.save(&[("ui", "menu_width", i64::from(next).into())]);
+                self.save(&[("look", "menu_width", i64::from(next).into())]);
                 self.status = format!("Menu width: {next} columns");
             }
             Setting::AlbumArt => self.next_album_art(),
@@ -1331,12 +1323,12 @@ impl App {
             Setting::RetroMode => self.next_retro_mode(),
             Setting::CheckUpdates => {
                 self.config.ui.check_updates = !self.config.ui.check_updates;
-                self.save(&[("ui", "check_updates", self.config.ui.check_updates.into())]);
+                self.save(&[("boxvibe", "check_updates", self.config.ui.check_updates.into())]);
             }
             Setting::Splash => {
                 let on = !self.config.ui.splash;
                 self.config.ui.splash = on;
-                self.save(&[("ui", "splash", on.into())]);
+                self.save(&[("boxvibe", "splash", on.into())]);
                 self.status = format!("Boot screen: {}", if on { "on" } else { "off" });
             }
             Setting::EditFile => {
@@ -1415,7 +1407,7 @@ impl App {
                     Prompt::Email => {
                         let email = text.trim().to_owned();
                         self.config.pandora.username = email.clone();
-                        self.save(&[("pandora", "username", email.as_str().into())]);
+                        self.save(&[("account", "username", email.as_str().into())]);
                         // Then the password, like a login form.
                         if self.config.pandora.password.is_empty() {
                             self.open_prompt(Prompt::Password);
@@ -1746,21 +1738,21 @@ impl App {
         }
     }
 
-    /// `{` / `}`: the menu a step narrower or wider, saved as `[ui] menu_width`.
+    /// `{` / `}`: the menu a step narrower or wider, saved as `[look] menu_width`.
     fn resize_menu(&mut self, dir: i8) {
         let next = config::MENU_WIDTH.step_by(self.config.ui.menu_width, dir);
         self.config.ui.menu_width = next;
-        self.save(&[("ui", "menu_width", i64::from(next).into())]);
+        self.save(&[("look", "menu_width", i64::from(next).into())]);
         self.status = format!("Menu width: {next} columns ({{ and }} change it)");
     }
 
-    /// Settings, and Shift+C: picture, blocks or the visualizer.
+    /// Settings, and Shift+C: the picture or no cover.
     fn next_album_art(&mut self) {
         let next = self.config.ui.album_art.next();
         self.config.ui.album_art = next;
         self.art.forget_shown();
         self.want_art();
-        self.save(&[("ui", "album_art", next.as_str().into())]);
+        self.save(&[("look", "album_art", next.as_str().into())]);
         self.status = format!("Album art: {}", next.label());
     }
 
@@ -1769,8 +1761,8 @@ impl App {
         let next = self.config.ui.retro_mode.next();
         self.config.ui.retro_mode = next;
         self.art.forget_shown();
-        self.save(&[("ui", "retro_mode", next.as_str().into())]);
-        self.status = format!("Retro mode: {} 🎮", next.label());
+        self.save(&[("look", "retro_mode", next.as_str().into())]);
+        self.status = format!("Retro mode: {}", next.label());
     }
 
     /// Settings, and Shift+H: off, duotone or palette.
@@ -1778,7 +1770,7 @@ impl App {
         let next = self.config.ui.art_tint.next();
         self.config.ui.art_tint = next;
         self.art.forget_shown();
-        self.save(&[("ui", "art_tint", next.as_str().into())]);
+        self.save(&[("look", "art_tint", next.as_str().into())]);
         self.status = format!("Tint art with theme colors: {}", next.label());
     }
 
@@ -1786,14 +1778,14 @@ impl App {
         let next = theme::next(&self.config.ui.theme);
         self.config.ui.theme = next.into();
         self.apply_theme();
-        self.save(&[("ui", "theme", next.into())]);
+        self.save(&[("look", "theme", next.into())]);
         self.status = format!("Theme: {}", theme::label(next));
     }
 
     fn next_icons(&mut self) {
         let next = self.config.ui.icons.next();
         self.config.ui.icons = next;
-        self.save(&[("ui", "icons", next.as_str().into())]);
+        self.save(&[("look", "icons", next.as_str().into())]);
         self.status = format!("Icons: {}", crate::icons::label(next));
     }
 
@@ -1801,7 +1793,7 @@ impl App {
         let volume = (i16::from(self.config.player.volume) + by).clamp(0, 100) as u8;
         self.config.player.volume = volume;
         self.audio.set_volume(volume);
-        self.save(&[("player", "volume", i64::from(volume).into())]);
+        self.save(&[("playback", "volume", i64::from(volume).into())]);
         self.status = format!("Volume {volume}%");
     }
 
@@ -1967,19 +1959,19 @@ mod tests {
         app.view = View::Settings;
         app.focus = Focus::Content;
         for (setting, first, second) in
-            [(Setting::AlbumArt, "Blocks", "Off (visualizer)"), (Setting::RetroMode, "64-bit", "32-bit")]
+            [(Setting::AlbumArt, "Off", "Picture"), (Setting::RetroMode, "64-bit", "32-bit")]
         {
             app.settings_cursor = Setting::ALL.iter().position(|(_, s)| *s == setting).unwrap();
             assert_eq!(Setting::ALL[app.settings_cursor].0, "LOOK");
             app.on_key(key(KeyCode::Enter));
             assert_eq!(app.setting_value(setting), first);
             app.on_key(key(KeyCode::Enter));
-            assert_eq!(app.setting_value(setting), second);
+            assert!(app.setting_value(setting).starts_with(second), "{}", app.setting_value(setting));
         }
-        assert_eq!(app.config.ui.album_art, AlbumArt::Off);
+        assert_eq!(app.config.ui.album_art, AlbumArt::Picture);
         assert_eq!(app.config.ui.retro_mode, crate::config::RetroMode::Bit32);
-        assert_eq!(app.status, "Retro mode: 32-bit 🎮");
-        assert!(app.setting_value(Setting::AlbumArt).starts_with("Off"));
+        assert_eq!(app.status, "Retro mode: 32-bit");
+        assert!(!app.status.contains('🎮'), "no controller icon: {}", app.status);
     }
 
     #[test]
@@ -2522,6 +2514,72 @@ mod tests {
     }
 
     #[test]
+    fn every_setting_that_is_saved_says_where_and_the_others_do_not() {
+        for (_, setting) in Setting::ALL {
+            let about = setting.about();
+            match setting.saved_as() {
+                Some((table, key)) => {
+                    assert!(
+                        about.contains(&format!("Saved as [{table}] {key}.")),
+                        "{setting:?} does not say where it is saved: {about}"
+                    );
+                    assert!(config::LAYOUT.iter().any(|(t, k, _)| *t == table && *k == key), "{table}.{key}");
+                }
+                None => assert!(!about.contains("Saved as"), "{setting:?} is not a saved choice: {about}"),
+            }
+        }
+        // The claim matches the tables the Settings groups are named after.
+        for (group, setting) in Setting::ALL {
+            if let Some((table, _)) = setting.saved_as() {
+                assert_eq!(table, group.to_lowercase(), "{setting:?} is in {group}");
+            }
+        }
+    }
+
+    #[test]
+    fn what_a_setting_says_about_where_it_is_saved_is_true() {
+        for (_, setting) in Setting::ALL {
+            // The account and the volume have their own flows (below).
+            let Some((table, name)) = setting.saved_as() else { continue };
+            if matches!(setting, Setting::Email | Setting::Password | Setting::Volume) {
+                continue;
+            }
+            let mut app = saving_app(&format!("saved-{setting:?}"));
+            app.view = View::Settings;
+            app.focus = Focus::Content;
+            app.settings_cursor = Setting::at(setting);
+            app.on_key(key(KeyCode::Enter));
+            let doc: toml_edit::DocumentMut = saved(&app).parse().unwrap();
+            assert!(doc.get(table).and_then(|t| t.get(name)).is_some(), "{setting:?} → [{table}] {name}:\n{doc}");
+        }
+        // Email: when the prompt is accepted.
+        let mut app = saving_app("saved-email");
+        app.view = View::Settings;
+        app.open_prompt(Prompt::Email);
+        for c in "me@example.com".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        app.on_key(key(KeyCode::Enter));
+        assert!(saved(&app).contains("[account]") && saved(&app).contains("username = \"me@example.com\""));
+        // Volume: Shift+→ anywhere.
+        let mut app = saving_app("saved-volume");
+        app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+        assert!(saved(&app).contains("[playback]") && saved(&app).contains("volume ="), "{}", saved(&app));
+    }
+
+    #[test]
+    fn the_boot_screen_is_two_seconds_long() {
+        assert_eq!(SPLASH, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn the_defaults_are_nerd_icons_and_a_theme_that_exists() {
+        let c = Config::default();
+        assert_eq!(c.ui.icons, crate::config::IconSet::Nerd);
+        assert!(theme::names().any(|n| n == c.ui.theme));
+    }
+
+    #[test]
     fn no_key_is_bound_twice_and_the_removed_ones_are_gone() {
         for (i, a) in KEYMAP.iter().enumerate() {
             for b in &KEYMAP[i + 1..] {
@@ -2542,8 +2600,9 @@ mod tests {
         let mut app = saving_app("cover-keys");
         assert_eq!(app.config.ui.album_art, AlbumArt::Picture);
         app.on_key(shift('C'));
-        assert_eq!(app.config.ui.album_art, AlbumArt::Blocks);
-        app.config.ui.album_art = AlbumArt::Picture;
+        assert_eq!(app.config.ui.album_art, AlbumArt::Off);
+        app.on_key(shift('C'));
+        assert_eq!(app.config.ui.album_art, AlbumArt::Picture, "Picture and Off, nothing else");
         let retro = app.config.ui.retro_mode;
         app.on_key(shift('R'));
         assert_eq!(app.config.ui.retro_mode, retro.next());

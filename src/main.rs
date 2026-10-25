@@ -15,7 +15,6 @@ mod splash;
 mod theme;
 mod ui;
 mod update;
-mod visualizer;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -119,14 +118,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow::Result
             terminal.clear()?;
         }
         terminal.draw(|frame| ui::draw(frame, app))?;
-        // ~18 fps while the visualizer moves, 10 otherwise.
-        let frame_time = Duration::from_millis(if app.splash.is_some() {
-            40
-        } else if app.animating() {
-            55
-        } else {
-            100
-        });
+        // Faster while the boot screen moves, 10 fps otherwise.
+        let frame_time = Duration::from_millis(if app.splash.is_some() { 40 } else { 100 });
         let wait = frame_time.saturating_sub(last.elapsed());
         if event::poll(wait)? {
             match event::read()? {
@@ -147,7 +140,7 @@ fn edit_config(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow
     let Some(path) = app.config_path.clone() else { return Ok(()) };
     if !path.exists() {
         // Something to edit, private from the start.
-        config::set_values(&path, &[("ui", "theme", app.config.ui.theme.as_str().into())])?;
+        config::set_values(&path, &[("look", "theme", app.config.ui.theme.as_str().into())])?;
     }
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))

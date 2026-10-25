@@ -1,4 +1,4 @@
-//! The three icon sets (`i` cycles them, `[ui] icons` remembers), like tubevibe's. The boxvibe logo ignores the choice: it is always the Nerd Font box.
+//! The three icon sets (`i` cycles them, `[look] icons` remembers), like tubevibe's. The boxvibe logo ignores the choice: it is always the Nerd Font box.
 
 use crate::config::IconSet;
 
@@ -19,7 +19,6 @@ pub struct Icons {
     pub down: &'static str,
     /// Neither thumb.
     pub unrated: &'static str,
-    pub title: &'static str,
     pub volume: &'static str,
     pub muted: &'static str,
     pub sleep: &'static str,
@@ -46,7 +45,6 @@ const EMOJI: Icons = Icons {
     up: "👍",
     down: "👎",
     unrated: "·",
-    title: "🎵",
     volume: "🔊",
     muted: "🔇",
     sleep: "😴",
@@ -74,7 +72,6 @@ const NERD: Icons = Icons {
     up: "\u{f164}",
     down: "\u{f165}",
     unrated: "\u{f087}",
-    title: "\u{f001}",
     volume: "\u{f028}",
     muted: "\u{f026}",
     sleep: "\u{f186}",
@@ -103,7 +100,6 @@ const UNICODE: Icons = Icons {
     up: "▲",
     down: "▼",
     unrated: "·",
-    title: "♪",
     volume: "◖",
     muted: "✕",
     sleep: "☾",

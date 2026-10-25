@@ -89,6 +89,7 @@ pub enum Setting {
     ArtTint,
     Animations,
     CheckUpdates,
+    DependencyCheck,
     Splash,
     EditFile,
     MenuEntry,
@@ -96,15 +97,15 @@ pub enum Setting {
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 20] = [
-        ("BOXVIBE", Self::CheckUpdates),
-        ("BOXVIBE", Self::Splash),
-        ("BOXVIBE", Self::EditFile),
-        ("BOXVIBE", Self::MenuEntry),
+    pub const ALL: [(&'static str, Self); 21] = [
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
         ("ACCOUNT", Self::LogOut),
+        ("BOXVIBE", Self::CheckUpdates),
+        ("BOXVIBE", Self::DependencyCheck),
+        ("BOXVIBE", Self::EditFile),
+        ("BOXVIBE", Self::MenuEntry),
         ("PLAYBACK", Self::Quality),
         ("PLAYBACK", Self::Volume),
         ("PLAYBACK", Self::Autoplay),
@@ -117,6 +118,7 @@ impl Setting {
         ("LOOK", Self::RetroMode),
         ("LOOK", Self::ArtTint),
         ("LOOK", Self::Animations),
+        ("LOOK", Self::Splash),
     ];
 
     /// Where `setting` is in [`Setting::ALL`] (the Settings cursor).
@@ -143,6 +145,7 @@ impl Setting {
             Self::ArtTint => "Tint art with theme colors",
             Self::Animations => "Animations",
             Self::CheckUpdates => "Look for new versions on startup",
+            Self::DependencyCheck => "Check dependencies at start",
             Self::Splash => "Boot screen",
             Self::EditFile => "Edit config.toml",
             Self::MenuEntry => "App menu entry",
@@ -156,7 +159,8 @@ impl Setting {
     fn saved_as(self) -> Option<(&'static str, &'static str)> {
         match self {
             Self::CheckUpdates => Some(("boxvibe", "check_updates")),
-            Self::Splash => Some(("boxvibe", "splash")),
+            Self::DependencyCheck => Some(("boxvibe", "dependency_check")),
+            Self::Splash => Some(("look", "splash")),
             Self::Email => Some(("account", "username")),
             Self::Password => Some(("account", "password")),
             Self::Quality => Some(("playback", "audio_quality")),
@@ -216,6 +220,9 @@ impl Setting {
             Self::RetroMode => {
                 "Makes the cover blocky on purpose, like an old console: 64-bit (256 pixels across), 32-bit (128), 16-bit (64), 8-bit (32), 4-bit (16), 2-bit (8), or HD for the full picture. Also Shift+R. Saved as [look] retro_mode."
             }
+            Self::DependencyCheck => {
+                "When boxvibe opens, checks for a Nerd Font and notify-send and, if something is missing, offers to install it (Arch only; other systems get the package names). Saved as [boxvibe] dependency_check."
+            }
             Self::Animations => {
                 "On: the boot screen fades in. Off: no motion anywhere, so the boot screen is skipped (the song progress and clock still update). Saved as [look] animations."
             }
@@ -223,7 +230,7 @@ impl Setting {
                 "Asks GitHub when boxvibe opens; About shows the new version and Update Now. Saved as [boxvibe] check_updates."
             }
             Self::Splash => {
-                "A two-second boxvibe logo screen when it opens; any key skips it (Animations off skips it too). Saved as [boxvibe] splash."
+                "A two-second boxvibe logo screen when it opens; any key skips it (Animations off skips it too). Saved as [look] splash."
             }
             Self::EditFile => "Opens config.toml in $EDITOR; boxvibe reads it again when you close it.",
             Self::MenuEntry => {
@@ -567,6 +574,13 @@ pub struct App {
     pub help: bool,
     /// The boot screen: when it began (`None` once it is over or switched off).
     pub splash: Option<Instant>,
+    /// The startup dependency screen, shown before the boot screen: what is
+    /// missing, and the question whether to install it (`None`: not showing).
+    pub deps: Option<crate::deps::Prompt>,
+    /// `y` on that screen: main opens the terminal with the install command (and clears this).
+    pub install_deps: bool,
+    /// A key while the install terminal is open: main looks again and goes on (and clears this).
+    pub recheck_deps: bool,
     /// `x` asked "Delete this station?": y does, any other key doesn't.
     pub confirm_delete: Option<StationRef>,
     /// `r` is typing a new station name.
@@ -642,6 +656,9 @@ impl App {
             status: String::new(),
             help: false,
             splash: None,
+            deps: None,
+            install_deps: false,
+            recheck_deps: false,
             confirm_delete: None,
             rename: None,
             add_station: None,
@@ -692,7 +709,62 @@ impl App {
         app
     }
 
-    /// The boot screen starts (main calls this once, if `[boxvibe] splash` and `[look] animations` are on).
+    /// What the app opens with, once main has looked at the system: the
+    /// dependency screen when something is missing (and `[boxvibe] dependency_check`
+    /// is on), then the boot screen.
+    pub fn begin_startup(&mut self, missing: Option<crate::deps::Prompt>) {
+        self.deps = missing.filter(|_| self.config.ui.dependency_check);
+        if self.deps.is_none() {
+            self.begin_splash();
+        }
+    }
+
+    /// The dependency screen is over, `still_missing` is what a new look found
+    /// (everything, when it never looked); the boot screen follows.
+    pub fn finish_deps(&mut self, still_missing: &[crate::deps::Dep], installed: bool) {
+        self.deps = None;
+        self.install_deps = false;
+        self.recheck_deps = false;
+        if still_missing.is_empty() {
+            if installed {
+                self.status =
+                    "Installed. If icons still look wrong, restart your terminal so it picks up the font.".into();
+            }
+        } else {
+            let names: Vec<&str> = still_missing.iter().map(|d| d.name()).collect();
+            self.status = format!(
+                "Still missing: {}. Settings → BOXVIBE → Check dependencies at start turns the check off.",
+                names.join(", ")
+            );
+        }
+        self.begin_splash();
+    }
+
+    /// Keys on the dependency screen. `y` installs (when it can), `d` never asks again,
+    /// anything else goes on without installing, as the quit box takes any other key for no.
+    fn on_deps_key(&mut self, key: KeyEvent) {
+        let Some(prompt) = self.deps.as_mut() else { return };
+        if prompt.waiting {
+            self.recheck_deps = true;
+            return;
+        }
+        match key.code {
+            KeyCode::Char('y' | 'Y') if prompt.can_install => {
+                prompt.waiting = true;
+                self.install_deps = true;
+            }
+            KeyCode::Char('d' | 'D') => {
+                self.config.ui.dependency_check = false;
+                self.save(&[("boxvibe", "dependency_check", false.into())]);
+                self.finish_deps(&[], false);
+                self.status =
+                    "Won't check again. Settings → BOXVIBE → Check dependencies at start turns it back on.".into();
+            }
+            _ => self.finish_deps(&[], false),
+        }
+    }
+
+    /// The boot screen starts (main calls this once, if `[look] splash` and `[look] animations` are on).
     pub fn begin_splash(&mut self) {
         self.splash = (self.config.ui.splash && self.config.ui.animations).then(Instant::now);
     }
@@ -1508,6 +1580,7 @@ impl App {
             Setting::Animations => on(self.config.ui.animations),
             Setting::CheckUpdates => on(self.config.ui.check_updates),
             Setting::Splash => on(self.config.ui.splash),
+            Setting::DependencyCheck => on(self.config.ui.dependency_check),
             Setting::EditFile => self
                 .config_path
                 .as_ref()
@@ -1586,10 +1659,16 @@ impl App {
                 self.save(&[("look", "animations", on.into())]);
                 self.status = format!("Animations: {}", if on { "on" } else { "off" });
             }
+            Setting::DependencyCheck => {
+                let on = !self.config.ui.dependency_check;
+                self.config.ui.dependency_check = on;
+                self.save(&[("boxvibe", "dependency_check", on.into())]);
+                self.status = format!("Dependency check at start: {}", if on { "on" } else { "off" });
+            }
             Setting::Splash => {
                 let on = !self.config.ui.splash;
                 self.config.ui.splash = on;
-                self.save(&[("boxvibe", "splash", on.into())]);
+                self.save(&[("look", "splash", on.into())]);
                 self.status = format!("Boot screen: {}", if on { "on" } else { "off" });
             }
             Setting::EditFile => {
@@ -1694,6 +1773,10 @@ impl App {
     pub fn on_key(&mut self, key: KeyEvent) {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.quit = true;
+            return;
+        }
+        if self.deps.is_some() {
+            self.on_deps_key(key);
             return;
         }
         if self.splash.is_some() {
@@ -2216,10 +2299,13 @@ mod tests {
     }
 
     #[test]
-    fn settings_start_with_boxvibe_then_account_playback_look() {
+    fn settings_start_with_account_then_boxvibe_playback_look() {
         let mut groups: Vec<&str> = Setting::ALL.iter().map(|(g, _)| *g).collect();
         groups.dedup();
-        assert_eq!(groups, ["BOXVIBE", "ACCOUNT", "PLAYBACK", "LOOK"]);
+        assert_eq!(groups, ["ACCOUNT", "BOXVIBE", "PLAYBACK", "LOOK"]);
+        assert_eq!(Setting::ALL[0].1, Setting::Email, "the account is on top");
+        assert!(Setting::at(Setting::Splash) > Setting::at(Setting::Theme), "the boot screen is under LOOK");
+        assert_eq!(App::new(Config::default(), None, &[], true).setting(), Setting::Email, "the cursor starts on it");
         let emoji = crate::icons::icons(crate::config::IconSet::Emoji);
         assert_eq!(emoji.setting[Setting::at(Setting::CheckUpdates)], "🆕", "icons move with their settings");
         assert_eq!(emoji.setting[Setting::at(Setting::Email)], "👤");
@@ -3300,5 +3386,139 @@ mod tests {
         assert!(app.config.ui.animations);
         app.begin_splash();
         assert!(app.splash.is_some(), "on again: the boot screen is back");
+    }
+
+    // --- The startup dependency screen ---
+
+    fn prompt(can_install: bool) -> crate::deps::Prompt {
+        use crate::deps::{Dep, Install, Prompt};
+        Prompt {
+            missing: vec![Dep::NerdFont, Dep::NotifySend],
+            install: Some(Install {
+                line: "sudo pacman -S --needed ttf-nerd-fonts-symbols libnotify".into(),
+                left_out: vec![],
+            }),
+            can_install,
+            waiting: false,
+            note: None,
+        }
+    }
+
+    #[test]
+    fn the_dependency_screen_comes_before_the_boot_screen_and_any_other_key_goes_on() {
+        let mut app = saving_app("deps-skip");
+        app.begin_startup(Some(prompt(true)));
+        assert!(app.deps.is_some() && app.splash.is_none(), "the question first");
+        app.on_key(key(KeyCode::Char('n')));
+        assert!(app.deps.is_none() && !app.install_deps);
+        assert!(app.splash.is_some(), "then the boot screen");
+        assert!(app.config.ui.dependency_check, "n is only for now");
+        assert!(saved(&app).is_empty(), "nothing saved");
+        // The keys are used up: the first one didn't reach the menu.
+        assert_eq!(app.view, View::Player);
+        for code in [KeyCode::Enter, KeyCode::Esc, KeyCode::Char('x')] {
+            let mut app = saving_app("deps-skip2");
+            app.begin_startup(Some(prompt(true)));
+            app.on_key(key(code));
+            assert!(app.deps.is_none() && !app.install_deps, "{code:?}");
+        }
+    }
+
+    #[test]
+    fn nothing_missing_or_the_check_off_goes_straight_to_the_boot_screen() {
+        let mut app = saving_app("deps-none");
+        app.begin_startup(None);
+        assert!(app.deps.is_none() && app.splash.is_some());
+        let mut app = saving_app("deps-off");
+        app.config.ui.dependency_check = false;
+        app.begin_startup(Some(prompt(true)));
+        assert!(app.deps.is_none() && app.splash.is_some(), "turned off in Settings: no screen");
+    }
+
+    #[test]
+    fn y_asks_main_to_open_the_terminal_then_any_key_looks_again_and_goes_on() {
+        let mut app = saving_app("deps-y");
+        app.begin_startup(Some(prompt(true)));
+        app.on_key(key(KeyCode::Char('y')));
+        assert!(app.install_deps, "main opens the terminal");
+        assert!(app.deps.as_ref().unwrap().waiting);
+        assert!(app.splash.is_none(), "still on the screen");
+        // While it is open a key asks for a new look (and is used up).
+        app.install_deps = false;
+        app.on_key(key(KeyCode::Char('q')));
+        assert!(app.recheck_deps && !app.quit && app.deps.is_some(), "q doesn't quit here");
+        // Main looked again and found everything.
+        app.finish_deps(&[], true);
+        assert!(app.deps.is_none() && !app.recheck_deps && !app.install_deps);
+        assert!(app.status.contains("Installed") && app.status.contains("restart your terminal"), "{}", app.status);
+        assert!(app.splash.is_some());
+    }
+
+    #[test]
+    fn what_is_still_missing_after_the_install_is_said_and_the_app_goes_on() {
+        let mut app = saving_app("deps-still");
+        app.begin_startup(Some(prompt(true)));
+        app.finish_deps(&[crate::deps::Dep::NotifySend], true);
+        assert!(app.deps.is_none(), "never blocks");
+        assert!(app.status.contains("Still missing: notify-send"), "{}", app.status);
+        assert!(app.splash.is_some());
+    }
+
+    #[test]
+    fn y_does_nothing_where_nothing_can_be_installed() {
+        let mut app = saving_app("deps-no-y");
+        app.begin_startup(Some(prompt(false)));
+        app.on_key(key(KeyCode::Char('y')));
+        assert!(!app.install_deps, "nothing is launched");
+        assert!(app.deps.is_none(), "it just goes on");
+    }
+
+    #[test]
+    fn d_never_asks_again_and_saves_it_in_boxvibe() {
+        let mut app = saving_app("deps-d");
+        app.begin_startup(Some(prompt(true)));
+        app.on_key(key(KeyCode::Char('d')));
+        assert!(app.deps.is_none() && !app.install_deps);
+        assert!(!app.config.ui.dependency_check);
+        let text = saved(&app);
+        assert!(text.contains("[boxvibe]") && text.contains("dependency_check = false"), "{text}");
+        assert!(app.status.contains("Check dependencies at start"), "says how to turn it back on: {}", app.status);
+        let (config, warnings) = Config::load(app.config_path.as_ref().unwrap());
+        assert!(!config.ui.dependency_check && warnings.is_empty(), "{warnings:?}");
+        assert!(app.splash.is_some());
+    }
+
+    #[test]
+    fn the_settings_entry_turns_the_check_on_and_off_in_the_boxvibe_table() {
+        let mut app = saving_app("deps-setting");
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.settings_cursor = Setting::at(Setting::DependencyCheck);
+        assert_eq!(Setting::DependencyCheck.label(), "Check dependencies at start");
+        assert_eq!(Setting::ALL[app.settings_cursor].0, "BOXVIBE");
+        assert_eq!(app.setting_value(Setting::DependencyCheck), "on", "on by default");
+        app.on_key(key(KeyCode::Enter));
+        assert!(!app.config.ui.dependency_check);
+        assert_eq!(app.setting_value(Setting::DependencyCheck), "off");
+        assert!(saved(&app).contains("dependency_check = false"), "{}", saved(&app));
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.config.ui.dependency_check && saved(&app).contains("dependency_check = true"));
+    }
+
+    #[test]
+    fn the_boot_screen_toggle_saves_under_look_and_drops_the_old_place() {
+        let mut app = saving_app("splash-look");
+        std::fs::write(app.config_path.as_ref().unwrap(), "[boxvibe]\nsplash = true\ncheck_updates = false\n").unwrap();
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.settings_cursor = Setting::at(Setting::Splash);
+        assert_eq!(Setting::ALL[app.settings_cursor].0, "LOOK");
+        app.on_key(key(KeyCode::Enter));
+        assert!(!app.config.ui.splash);
+        let text = saved(&app);
+        assert!(text.contains("[look]") && text.contains("splash = false"), "{text}");
+        assert_eq!(text.matches("splash").count(), 1, "the stale [boxvibe] key is gone: {text}");
+        assert!(text.contains("check_updates = false"), "the rest stays: {text}");
+        assert!(Setting::Splash.about().contains("Saved as [look] splash."));
     }
 }

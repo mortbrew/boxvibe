@@ -73,6 +73,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // Built-in themes paint their background; Omarchy's is the terminal's own.
     let base = if app.follows_omarchy() { Style::new().fg(p.fg) } else { Style::new().fg(p.fg).bg(p.background) };
     frame.render_widget(Block::new().style(base), area);
+    if let Some(prompt) = &app.deps {
+        draw_deps(frame, &p, prompt, area);
+        return;
+    }
     if let Some(progress) = app.splash_progress() {
         let version = format!("v{}", env!("CARGO_PKG_VERSION"));
         crate::splash::draw(frame, &p, progress, &version, "Pandora in your terminal");
@@ -1333,7 +1337,7 @@ fn draw_about(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 
 /// The keys that work right now: (keys, what they do). The last two (help, quit) always fit.
 pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
-    if app.splash.is_some() {
+    if app.splash.is_some() || app.deps.is_some() {
         return Vec::new();
     }
     if app.rename.is_some() {
@@ -1579,6 +1583,96 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     let box_area = centered(area, width, (rows as u16 + 2).min(area.height));
     frame.render_widget(Clear, box_area);
     let block = panel(help_title(&p), &p, true).style(Style::new().bg(p.background));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), box_area);
+}
+
+/// The startup screen for what is missing. Plain letters only: it has to
+/// read without the very font it may be missing.
+fn draw_deps(frame: &mut Frame, p: &Palette, prompt: &crate::deps::Prompt, area: Rect) {
+    let text = Style::new().fg(p.fg);
+    let muted = Style::new().fg(p.muted);
+    let key = |k: &str, what: &str| {
+        vec![
+            Span::styled(format!(" {k} "), Style::new().fg(p.background).bg(p.fg).bold()),
+            Span::styled(format!(" {what}   "), text),
+        ]
+    };
+    let mut lines = vec![
+        Line::from(Span::styled("Something boxvibe uses is missing on this computer:", text.bold())),
+        Line::raw(""),
+    ];
+    for dep in &prompt.missing {
+        lines.push(Line::from(vec![
+            Span::styled("  - ", Style::new().fg(p.red).bold()),
+            Span::styled(dep.name().to_owned(), Style::new().fg(p.orange).bold()),
+            Span::styled(format!("   (package: {})", dep.arch_package()), muted),
+        ]));
+        lines.push(Line::from(Span::styled(format!("      {}", dep.why()), muted)));
+    }
+    lines.push(Line::raw(""));
+    if prompt.missing.contains(&crate::deps::Dep::NerdFont) {
+        lines.push(Line::from(Span::styled(
+            "boxvibe can only see fonts installed on this computer, not the font your terminal is set to use. If your terminal already uses a Nerd Font, you can skip this.",
+            muted,
+        )));
+        lines.push(Line::raw(""));
+    }
+    let mut keys: Vec<Span> = Vec::new();
+    if prompt.waiting {
+        lines.push(Line::from(Span::styled("A terminal window opened to install them.", text.bold())));
+        lines.push(Line::from(Span::styled(
+            "Type your password there. This screen goes on by itself when that window closes, or press any key to go on now.",
+            text,
+        )));
+    } else {
+        match (&prompt.install, prompt.can_install) {
+            (Some(install), true) => {
+                lines.push(Line::from(Span::styled("Install them now?", text.bold())));
+                lines.push(Line::from(Span::styled(
+                    "This opens a terminal window with this one command (you type your password there, not here):",
+                    text,
+                )));
+                lines.push(Line::from(Span::styled(format!("  {}", install.line), Style::new().fg(p.green))));
+                keys.extend(key("y", "Install now"));
+            }
+            (Some(install), false) => {
+                lines.push(Line::from(Span::styled("Install them by running this in a terminal:", text.bold())));
+                lines.push(Line::from(Span::styled(format!("  {}", install.line), Style::new().fg(p.green))));
+            }
+            (None, _) => {
+                lines.push(Line::from(Span::styled("Install these with your package manager:", text.bold())));
+                for dep in &prompt.missing {
+                    lines.push(Line::from(Span::styled(format!("  - {}", dep.elsewhere()), Style::new().fg(p.green))));
+                }
+            }
+        }
+        for dep in prompt.install.iter().flat_map(|i| &i.left_out) {
+            lines.push(Line::from(Span::styled(
+                format!("  {} is only in the AUR: install it with an AUR helper such as yay.", dep.name()),
+                muted,
+            )));
+        }
+        if let Some(note) = &prompt.note {
+            lines.push(Line::from(Span::styled(format!("Nothing opened: {note}"), Style::new().fg(p.orange))));
+        }
+        lines.push(Line::raw(""));
+        keys.extend(key("n", "Not now"));
+        keys.extend(key("d", "Don't ask again"));
+    }
+    lines.push(Line::from(keys));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Settings → BOXVIBE → Check dependencies at start turns this check on or off.",
+        muted,
+    )));
+    let width = 96.min(area.width);
+    let inner_w = width.saturating_sub(4).max(1) as usize;
+    let rows: usize = lines.iter().map(|l| l.width().max(1).div_ceil(inner_w)).sum();
+    let box_area = centered(area, width, (rows as u16 + 2).min(area.height));
+    let block = framed()
+        .border_style(Style::new().fg(p.accent))
+        .title(Line::from(Span::styled(" boxvibe: before you start ", Style::new().fg(p.fg).bold())))
+        .padding(ratatui::widgets::Padding::horizontal(1));
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), box_area);
 }
 
@@ -2618,6 +2712,83 @@ mod tests {
             let icons = crate::icons::icons(set);
             assert!(!icons.genre.is_empty(), "{set:?}");
             assert!(!icons.setting[crate::app::Setting::at(crate::app::Setting::Animations)].is_empty(), "{set:?}");
+        }
+    }
+
+    #[test]
+    fn the_dependency_screen_lists_what_is_missing_and_asks() {
+        use crate::deps::{Dep, Install, Prompt};
+        let mut app = App::new(Config::default(), None, &[], true);
+        let mut prompt = Prompt {
+            missing: vec![Dep::NerdFont, Dep::NotifySend],
+            install: Some(Install {
+                line: "sudo pacman -S --needed ttf-nerd-fonts-symbols libnotify".into(),
+                left_out: vec![],
+            }),
+            can_install: true,
+            waiting: false,
+            note: None,
+        };
+        app.deps = Some(prompt.clone());
+        let (lines, _) = screen(&app, 100, 30);
+        let all = lines.join("\n");
+        for want in [
+            "before you start",
+            "Nerd Font symbols",
+            "notify-send",
+            "ttf-nerd-fonts-symbols",
+            "only see fonts installed on this computer",
+            "Install them now?",
+            "sudo pacman -S --needed ttf-nerd-fonts-symbols libnotify",
+            "Install now",
+            "Not now",
+            "Don't ask again",
+            "Check dependencies at start",
+        ] {
+            assert!(all.contains(want), "{want:?} is missing from:\n{all}");
+        }
+        assert!(key_caps(&app).is_empty(), "the screen has its own keys");
+        // Not a pixel of the main UI behind it.
+        assert!(!all.contains("STATIONS") && !all.contains("NOW PLAYING"), "{all}");
+        // Waiting for the terminal.
+        prompt.waiting = true;
+        app.deps = Some(prompt.clone());
+        let all = screen(&app, 100, 30).0.join("\n");
+        assert!(all.contains("A terminal window opened") && !all.contains("Install now"), "{all}");
+        // No install here: the names for the system's own package manager.
+        prompt.waiting = false;
+        prompt.install = None;
+        prompt.can_install = false;
+        app.deps = Some(prompt.clone());
+        let all = screen(&app, 100, 30).0.join("\n");
+        assert!(
+            all.contains("package manager") && all.contains("libnotify-bin") && !all.contains("Install now"),
+            "{all}"
+        );
+        // A failed try says why.
+        prompt.note = Some("no terminal found to open".into());
+        app.deps = Some(prompt);
+        let all = screen(&app, 100, 30).0.join("\n");
+        assert!(all.contains("Nothing opened: no terminal found to open"), "{all}");
+    }
+
+    #[test]
+    fn the_dependency_screen_is_plain_text_and_fits_a_small_terminal() {
+        use crate::deps::{Dep, Install, Prompt};
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.deps = Some(Prompt {
+            missing: vec![Dep::NerdFont],
+            install: Some(Install { line: "sudo pacman -S --needed ttf-nerd-fonts-symbols".into(), left_out: vec![] }),
+            can_install: true,
+            waiting: false,
+            note: None,
+        });
+        // No glyph from the private use area: it must read without a Nerd Font.
+        for (cols, rows) in [(100, 30), (60, 24), (40, 20)] {
+            let (lines, _) = screen(&app, cols, rows);
+            let all = lines.join("");
+            assert!(!all.chars().any(|c| ('\u{e000}'..='\u{f8ff}').contains(&c) || c > '\u{f0000}'), "{cols}x{rows}");
+            assert!(all.contains("y") && all.contains("Not now") || cols < 60, "{cols}x{rows}\n{}", lines.join("\n"));
         }
     }
 }

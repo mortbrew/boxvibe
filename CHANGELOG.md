@@ -112,6 +112,31 @@ bound twice.
   all motion off: the boot screen's fade is the only motion boxvibe has, so it is
   skipped. The song progress and clock still update. Missing or bad values mean on.
 
+### Batch 4
+
+- **Settings → ACCOUNT is the first section** (then BOXVIBE, PLAYBACK, LOOK), and
+  the cursor starts on it.
+- **The boot screen setting is under LOOK** (after Animations). Its key moved to
+  `[look] splash`. A file with `[boxvibe] splash` still loads; the next save
+  writes `[look] splash` and removes the old key, keeping comments and unknown keys.
+- **Startup dependency check.** Before the boot screen boxvibe checks, only for what
+  your settings use, for a Nerd Font (`fc-list`: a family named "Nerd Font" or a
+  font that has the logo and station glyphs) and for `notify-send`. When something
+  is missing a screen says what and why (plain letters, so it reads without the
+  font) and asks **Install them now?** On Arch-based systems `y` opens a terminal
+  (`xdg-terminal-exec`, then `$TERMINAL`, then foot, ghostty, kitty, alacritty,
+  wezterm, konsole, gnome-terminal, xterm) running one
+  `sudo pacman -S --needed <only the missing packages>` and then "Press Enter to close";
+  when it closes (or on a key) boxvibe looks again and goes on. Other systems get
+  the names and nothing is launched. `n` or any other key goes on, `d` saves
+  `[boxvibe] dependency_check = false`. The check never blocks the app, never runs
+  `sudo` itself, and says nothing when `fc-list` is missing or slow (it only sees
+  installed fonts, not the terminal's own font).
+- **Settings → BOXVIBE → Check dependencies at start** (`[boxvibe] dependency_check`,
+  default on).
+- README lists everything boxvibe needs from the system, and why.
+- `--snapshot FILE --screen deps` draws the new screen.
+
 ### Fixes
 
 - A cover that failed to download is tried again (after 2, 6 and 15 seconds),

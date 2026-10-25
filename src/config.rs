@@ -86,8 +86,12 @@ pub struct UiConfig {
     pub notifications: bool,
     /// Ask GitHub, each time the app opens, whether there is a newer version.
     pub check_updates: bool,
-    /// Show the boxvibe boot screen for a moment when the app opens.
+    /// Show the boxvibe boot screen for a moment when the app opens
+    /// (`[look] splash`; 0.4 betas had it in `[boxvibe]`).
     pub splash: bool,
+    /// At start, look for what boxvibe needs but the system lacks (a Nerd
+    /// Font, `notify-send`) and offer to install it. `[boxvibe] dependency_check`.
+    pub dependency_check: bool,
     /// Motion in the interface (today: the boot screen's fade). Off: none
     /// (the boot screen is skipped). `[look] animations`.
     pub animations: bool,
@@ -128,6 +132,7 @@ impl Default for UiConfig {
             notifications: true,
             check_updates: true,
             splash: true,
+            dependency_check: true,
             animations: true,
             autoplay_last_station: true,
             border_style: BorderStyle::Plain,
@@ -513,14 +518,14 @@ fn section<T: serde::de::DeserializeOwned + Default>(
 }
 
 /// Where each setting lives: (table, key, the table 0.1–0.3 kept it in).
-/// The tables are Settings' groups: BOXVIBE, ACCOUNT, PLAYBACK and LOOK.
+/// The tables are Settings' groups: ACCOUNT, BOXVIBE, PLAYBACK and LOOK.
 /// The old tables still load, and are cleared out when anything is saved.
 pub const LAYOUT: &[(&str, &str, &str)] = &[
-    ("boxvibe", "check_updates", "ui"),
-    ("boxvibe", "splash", "ui"),
     ("account", "username", "pandora"),
     ("account", "password", "pandora"),
     ("account", "user_agent", "pandora"),
+    ("boxvibe", "check_updates", "ui"),
+    ("boxvibe", "dependency_check", "ui"),
     ("playback", "audio_quality", "pandora"),
     ("playback", "volume", "player"),
     ("playback", "autoplay_last_station", "ui"),
@@ -535,6 +540,7 @@ pub const LAYOUT: &[(&str, &str, &str)] = &[
     ("look", "retro_mode", "ui"),
     ("look", "art_tint", "ui"),
     ("look", "animations", "ui"),
+    ("look", "splash", "ui"),
 ];
 
 /// Names a setting had before: (old table, old key, table, key). Read when
@@ -543,6 +549,7 @@ const OLD_NAMES: &[(&str, &str, &str, &str)] = &[
     ("player", "autoplay", "playback", "autoplay_last_station"),
     ("ui", "notify", "playback", "notifications"),
     ("ui", "art_pixelation", "look", "retro_mode"),
+    ("boxvibe", "splash", "look", "splash"),
 ];
 
 /// The tables of the old layout.
@@ -586,9 +593,16 @@ fn gather(table: toml::Table, warnings: &mut Vec<ConfigWarning>) -> toml::Table 
         for (key, value) in keys {
             let path = format!("{name}.{key}");
             if is_new {
-                match LAYOUT.iter().find(|(t, k, _)| *t == name && *k == key) {
-                    Some((_, _, old)) => put(&mut internal, old, key, value, 3),
-                    None => warnings.push(ConfigWarning::Unknown(path)),
+                let old_name = OLD_NAMES.iter().find(|(t, k, ..)| *t == name && *k == key);
+                match (LAYOUT.iter().find(|(t, k, _)| *t == name && *k == key), old_name) {
+                    (Some((_, _, old)), _) => put(&mut internal, old, key, value, 3),
+                    // A setting that moved out of this table: still read from here.
+                    (None, Some((_, _, new, new_key))) => {
+                        let old =
+                            LAYOUT.iter().find(|(t, k, _)| t == new && k == new_key).map_or("ui", |(.., old)| *old);
+                        put(&mut internal, old, (*new_key).to_owned(), value, 1);
+                    }
+                    (None, None) => warnings.push(ConfigWarning::Unknown(path)),
                 }
             } else if LAYOUT.iter().any(|(_, k, t)| *t == name && *k == key) {
                 let old = OLD_TABLES.iter().find(|t| **t == name).copied().unwrap_or_default();
@@ -1127,7 +1141,7 @@ mod tests {
             }
             all
         });
-        assert_eq!(tables, ["boxvibe", "account", "playback", "look"], "BOXVIBE, ACCOUNT, PLAYBACK, LOOK");
+        assert_eq!(tables, ["account", "boxvibe", "playback", "look"], "ACCOUNT, BOXVIBE, PLAYBACK, LOOK");
     }
 
     #[test]
@@ -1193,7 +1207,9 @@ mod tests {
         assert_eq!(doc["account"]["username"].as_str(), Some("me@example.com"));
         assert_eq!(doc["playback"]["volume"].as_integer(), Some(55));
         assert_eq!(doc["look"]["theme"].as_str(), Some("catppuccin"));
-        assert_eq!(doc["boxvibe"]["splash"].as_bool(), Some(false));
+        assert_eq!(doc["look"]["splash"].as_bool(), Some(false), "the boot screen is under [look] now");
+        assert!(doc.get("boxvibe").and_then(|t| t.get("splash")).is_none(), "{text}");
+        assert_eq!(doc["boxvibe"]["check_updates"].as_bool(), Some(false));
         assert!(text.contains("# my settings") && text.contains("# login") && text.contains("# quiet"), "{text}");
         assert!(text.contains("album_art = \"picture\"") && !text.contains("blocks"), "{text}");
         // Nothing but the saved theme changed (and blocks, which is picture now).
@@ -1267,5 +1283,55 @@ mod tests {
         assert!(c.ui.animations, "a bad value keeps the default");
         assert_eq!(c.ui.icons, IconSet::Emoji, "and the others still load");
         assert_eq!(w.len(), 1, "{w:?}");
+    }
+
+    #[test]
+    fn the_boot_screen_moved_to_look_and_the_old_place_still_reads() {
+        let (c, w) = Config::parse("[boxvibe]\nsplash = false\n").unwrap();
+        assert!(!c.ui.splash && w.is_empty(), "{w:?}");
+        let (c, w) = Config::parse("[look]\nsplash = false\n").unwrap();
+        assert!(!c.ui.splash && w.is_empty(), "{w:?}");
+        // The new place wins over the old one, whichever comes first.
+        let (c, _) = Config::parse("[look]\nsplash = true\n[boxvibe]\nsplash = false\n").unwrap();
+        assert!(c.ui.splash);
+        let (c, _) = Config::parse("[boxvibe]\nsplash = false\n[look]\nsplash = true\n").unwrap();
+        assert!(c.ui.splash);
+        // A bad value is named by where it should be now.
+        let (c, w) = Config::parse("[boxvibe]\nsplash = \"never\"\n").unwrap();
+        assert!(c.ui.splash);
+        assert!(matches!(&w[..], [ConfigWarning::BadValue { key, .. }] if key == "look.splash"), "{w:?}");
+    }
+
+    #[test]
+    fn saving_moves_a_boxvibe_splash_to_look_keeping_comments_and_unknown_keys() {
+        let path = temp_dir("splash-move").join("config.toml");
+        std::fs::write(
+            &path,
+            "# top\n[boxvibe]\ncheck_updates = false # no\nsplash = false # quiet start\nmystery = 1\n\n[look]\ntheme = \"nord\"\n",
+        )
+        .unwrap();
+        set_values(&path, &[("look", "icons", "emoji".into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let doc: toml_edit::DocumentMut = text.parse().unwrap();
+        assert_eq!(doc["look"]["splash"].as_bool(), Some(false), "{text}");
+        assert!(doc["boxvibe"].as_table().unwrap().get("splash").is_none(), "{text}");
+        assert_eq!(doc["boxvibe"]["mystery"].as_integer(), Some(1), "unknown keys stay");
+        assert!(text.contains("# top") && text.contains("# no") && text.contains("# quiet start"), "{text}");
+        assert_eq!(text.matches("splash").count(), 1, "{text}");
+        // Saved from the Settings entry: the new place is written, no stale copy comes back.
+        set_values(&path, &[("look", "splash", true.into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("splash").count(), 1, "{text}");
+        assert!(Config::load(&path).0.ui.splash);
+    }
+
+    #[test]
+    fn dependency_check_is_on_by_default_in_boxvibe_and_loads_tolerantly() {
+        let (c, w) = Config::parse("").unwrap();
+        assert!(c.ui.dependency_check && w.is_empty());
+        let (c, _) = Config::parse("[boxvibe]\ndependency_check = false\n").unwrap();
+        assert!(!c.ui.dependency_check);
+        let (c, w) = Config::parse("[boxvibe]\ndependency_check = \"no\"\n").unwrap();
+        assert!(c.ui.dependency_check && w.len() == 1, "{w:?}");
     }
 }

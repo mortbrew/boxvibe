@@ -46,7 +46,7 @@ work right now drawn as key caps at the bottom.
   sized for 10 songs and Now Playing gets the rest of the height; on a short window Now Playing keeps
   9 rows and the song panes shrink and scroll. `Tab` goes menu → Now Playing → Up Next →
   History; `l` / `b` rate the selected row (or the playing song from Now Playing)
-- **Settings** (account, audio quality, volume, autoplay, song change
+- **Settings** (account first, then audio quality, volume, autoplay, song change
   notifications, theme, icons, border style, menu width, update check, edit `config.toml` in `$EDITOR`, app menu entry) and **About**
   (links, version, and the update button) below the stations
 - **Updates itself** from GitHub releases: see [Updating](#updating)
@@ -70,6 +70,38 @@ work right now drawn as key caps at the bottom.
 - A Pandora account (free or paid). Pandora only works in the US
 - Optional: a [Nerd Font](https://www.nerdfonts.com) for `icons = "nerd"`
   (Omarchy ships one), `notify-send` (`libnotify`) for notifications
+
+### What boxvibe needs from the system
+
+When boxvibe opens it checks the first two rows below (only the ones your
+settings use). If something is missing it shows a screen before the app
+(before the boot screen) that says what and why, and asks **Install them
+now? y / n**. `y` opens your terminal (`xdg-terminal-exec`, then `$TERMINAL`,
+then foot, ghostty, kitty, alacritty, wezterm, konsole, gnome-terminal, xterm)
+running **one** command, such as
+`sudo pacman -S --needed ttf-nerd-fonts-symbols libnotify`, for only what is
+missing. You type your password in that terminal; boxvibe never runs `sudo`
+itself and never blocks: `n` (or any other key) goes on, `d` never asks again.
+Only Arch-based systems (Arch, Manjaro, EndeavourOS, CachyOS, Omarchy...) get
+the install offer; elsewhere the screen lists the names for your package
+manager. The check can only see fonts **installed** on the computer (with
+`fc-list`), not the font your terminal is set to; with no `fc-list` it says
+nothing. Turn it off with `[boxvibe] dependency_check = false` or Settings →
+BOXVIBE → **Check dependencies at start**.
+
+| Needs | Why | Required? | Arch package | Checked at start |
+|---|---|---|---|---|
+| Nerd Font symbols | the Nerd icon set (the default) and the logo glyph | for `icons = "nerd"`; the logo always uses it | `ttf-nerd-fonts-symbols` | yes, with `fc-list` |
+| `notify-send` | song-change notifications | optional | `libnotify` | yes, when notifications are on |
+| ALSA library (`libasound.so.2`) | sound output (rodio) | required to start | `alsa-lib` | no: without it boxvibe doesn't start |
+| An ALSA bridge to your sound server | so ALSA output reaches PipeWire or PulseAudio | required for sound | `pipewire-alsa` (or `pulseaudio-alsa`) | no: can't be told reliably |
+| `update-desktop-database` | refreshes the launcher after "App menu entry" | optional, best effort | `desktop-file-utils` | no |
+| `pacman` | tells a package install from a manual one | optional | (Arch) | no |
+| `$VISUAL` / `$EDITOR`, else `nano`, else `vi` | Settings → Edit config.toml | optional | `nano` | no |
+| A terminal with sixel, kitty or iTerm2 graphics | a real album picture instead of half blocks | optional | (a terminal feature) | no (the terminal is asked once) |
+
+Nothing else: no ffmpeg or mpv, no OpenSSL (TLS is built in), no clipboard or
+`xdg-open` tools. The GitHub and Pandora calls use the built-in HTTP client.
 
 ## Build (Arch / Omarchy)
 
@@ -148,15 +180,15 @@ boxvibe from starting: one that is not valid TOML is moved to
 `config.toml.bad-<UTC time>` and boxvibe starts with the defaults and says so.
 
 ```toml
-# The tables are the Settings groups: BOXVIBE, ACCOUNT, PLAYBACK and LOOK.
-[boxvibe]
-check_updates = true           # look for a new release on GitHub at startup
-splash = true                  # the 2 second boxvibe boot screen (any key skips it)
-
+# The tables are the Settings groups: ACCOUNT, BOXVIBE, PLAYBACK and LOOK.
 [account]
 username = "you@example.com"   # saved from Settings → Email or username
 password = "…"                 # saved once a login works (the file is mode 600)
 user_agent = ""                # empty: boxvibe's default (a desktop Firefox); see below
+
+[boxvibe]
+check_updates = true           # look for a new release on GitHub at startup
+dependency_check = true        # at startup, look for a missing Nerd Font / notify-send and offer to install it
 
 [playback]
 audio_quality = "high"         # high: MP3 192 kbps if your plan has it (Plus, Premium), else 128
@@ -178,11 +210,14 @@ album_art = "picture"          # picture | off
 retro_mode = "hd"              # hd | 64bit | 32bit | 16bit | 8bit | 4bit | 2bit (full / 256 / 128 / 64 / 32 / 16 / 8 px, blocky on purpose)
 art_tint = "off"               # off | duotone | palette: recolour the cover with the theme's colours
 animations = true              # false: no motion (the 2 second boot screen is skipped); Settings → LOOK → Animations
+splash = true                  # the 2 second boxvibe boot screen (any key skips it); was [boxvibe] splash in the 0.4 betas
 ```
 
 The 0.1–0.3 files had `[pandora]`, `[player]` and `[ui]` tables. They still
 load, and the next time the app saves something it moves each key into its
-group above (comments and the rest of the file stay). Settings → each setting's
+group above (comments and the rest of the file stay). The boot screen's `splash`
+key moved from `[boxvibe]` to `[look]`: the old place still reads, and the next save
+writes the new one and removes the old. Settings → each setting's
 description in the box below the list says where it is saved.
 
 `--theme NAME` and `--icons SET` change them for one run without saving.

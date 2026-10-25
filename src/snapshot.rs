@@ -23,6 +23,20 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
     app.demo_warm_up(3, Duration::from_secs(102));
     match screen {
         "help" => app.help = true,
+        // The startup screen for a missing Nerd Font and notify-send, on Arch.
+        "deps" => {
+            use crate::deps::{Dep, Install, Prompt};
+            app.deps = Some(Prompt {
+                missing: vec![Dep::NerdFont, Dep::NotifySend],
+                install: Some(Install {
+                    line: "sudo pacman -S --needed ttf-nerd-fonts-symbols libnotify".into(),
+                    left_out: Vec::new(),
+                }),
+                can_install: true,
+                waiting: false,
+                note: None,
+            });
+        }
         // The boot screen a little over half way (the logo has faded in).
         "splash" => app.splash = std::time::Instant::now().checked_sub(Duration::from_millis(1000)),
         "settings" => {

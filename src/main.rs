@@ -6,6 +6,7 @@ mod audio;
 mod backend;
 mod config;
 mod demo;
+mod deps;
 mod desktop;
 mod icons;
 mod input;
@@ -44,7 +45,7 @@ struct Args {
     /// Draw one demo frame to an HTML file and exit (for screenshots).
     #[arg(long, hide = true, value_name = "FILE")]
     snapshot: Option<PathBuf>,
-    /// Snapshot screen: main, settings, about or help.
+    /// Snapshot screen: main, settings, about, help or deps.
     #[arg(long, hide = true, default_value = "main")]
     screen: String,
     #[arg(long, hide = true, default_value_t = 120)]
@@ -76,11 +77,14 @@ fn main() -> anyhow::Result<()> {
     let demo = args.demo;
     // Open the sound device before the screen switches, so ALSA's warnings can't scribble on it.
     let mut app = App::new(config, path, &warnings, demo);
+    // What is missing from the system (a quick look; fonts get 1.5 s at most), before the screen switches.
+    let facts = app.config.ui.dependency_check.then(|| deps::probe(DEPS_LOOK));
+    let prompt = facts.as_ref().and_then(|f| deps::prompt(deps::Wants::from_config(&app.config, demo), f));
     let mut terminal = ratatui::init();
     // Once, before any events are read: what pictures this terminal shows.
     app.art.set_graphics(art::detect());
-    app.begin_splash();
-    let result = run(&mut terminal, &mut app);
+    app.begin_startup(prompt);
+    let result = run(&mut terminal, &mut app, demo, facts.unwrap_or_default());
     let restart = app.restart && result.is_ok();
     // Stop the sound and the backend before the new version takes over.
     drop(app);
@@ -105,10 +109,48 @@ fn restart_into(exe: &std::path::Path) -> std::io::Error {
     std::process::Command::new(exe).args(&args).exec()
 }
 
-fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow::Result<()> {
+/// How long the start waits for `fc-list`.
+const DEPS_LOOK: Duration = Duration::from_millis(1500);
+/// A terminal that closes sooner than this has only handed the window to a
+/// server that is running already (foot, kitty, ghostty...): the install is
+/// going on without it, so the screen waits for a key instead.
+const HANDED_OFF: Duration = Duration::from_secs(3);
+
+fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App, demo: bool, facts: deps::Facts) -> anyhow::Result<()> {
     let mut last = Instant::now();
+    // The terminal that is installing, and when it opened.
+    let mut installer: Option<(std::process::Child, Instant)> = None;
     while !app.quit {
         app.tick();
+        if std::mem::take(&mut app.install_deps)
+            && let Some(prompt) = app.deps.as_mut()
+        {
+            match deps::launch(prompt, &facts) {
+                Ok(child) => installer = Some((child, Instant::now())),
+                Err(note) => {
+                    prompt.waiting = false;
+                    prompt.can_install = false;
+                    prompt.note = Some(note);
+                }
+            }
+        }
+        if app.deps.is_none() {
+            // Gone on by a key: that terminal is left to finish on its own.
+            installer = None;
+        }
+        if let Some((child, since)) = installer.as_mut()
+            && child.try_wait().is_ok_and(|status| status.is_some())
+        {
+            if since.elapsed() >= HANDED_OFF {
+                app.recheck_deps = true;
+            }
+            installer = None;
+        }
+        if std::mem::take(&mut app.recheck_deps) {
+            // Closed, or a key: look again and go on, whatever the answer.
+            let now = deps::missing(deps::Wants::from_config(&app.config, demo), &deps::probe(DEPS_LOOK));
+            app.finish_deps(&now, true);
+        }
         if app.edit_config {
             app.edit_config = false;
             edit_config(terminal, app)?;
@@ -161,5 +203,5 @@ fn edit_config(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow
 }
 
 fn which(program: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
+    deps::in_path(program)
 }

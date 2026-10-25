@@ -244,6 +244,28 @@ bound twice.
   call and the filled macros, empty answers, and in the app: the ask → ads → music flow, no History
   entries, skip / thumbs blocked, pause, off asks nothing, failure and timeout paths, station change.
 
+#### Station icons and the password popup
+
+- **Password popup.** The Pandora password is now asked in a popup box (the page
+  behind is dimmed), titled "Pandora password", with plain words: it is saved in
+  your **system keychain** (the Secret Service: GNOME Keyring, KDE Wallet or
+  KeePassXC), it is **never written to `config.toml`** or any other file, and
+  `Enter` logs in and saves, `Esc` cancels. The input is masked. When no keychain
+  was found the popup says so ("No system keychain was found") and that the
+  password is kept **for this session only**. The email is still typed in its
+  own box in Settings. The keychain, the old-password migration and the login
+  are unchanged; only what you see changed. New snapshot screens: `password`
+  and `password-nokeychain`.
+- **Station icons moved and changed.** The lock is gone. The icon now sits
+  right after the star and before the station name (it used to follow the
+  name), in Stations and in the menu's FAVORITES:
+  - a Pandora genre station (one that can't be renamed) gets the boxvibe logo
+    (`\u{f1b2}`, the same in all three icon sets);
+  - a station you made gets a little person: `👤` (emoji), `\u{f007}` (Nerd
+    Font), `☺` (plain Unicode set);
+  - Shuffle gets neither, and neither icon shows on the Genres page.
+  Help's `r` line explains both icons.
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

@@ -35,8 +35,11 @@ work right now drawn as key caps at the bottom.
   password. The email goes in `~/.config/boxvibe/config.toml` (mode 600); the
   **password goes in your desktop keychain** (any Secret Service one: GNOME
   Keyring, KeePassXC…), never in the file. From then on it logs in by itself.
-  No keychain running? It says "No keychain found: you'll be asked for your
-  password each start" and keeps the password in memory for that session only.
+  The password is asked in a **popup** that says so plainly: where it goes
+  (your system keychain, the Secret Service), that it is never written to
+  `config.toml` or any other file, and `Enter` / `Esc` for log in / cancel.
+  No keychain running? The popup says "No system keychain was found" and that
+  the password is kept for this session only (you are asked again each start).
   Change the account, forget the saved password or log out in Settings any time
 - **Your stations** (Shuffle too) on the left; `Enter` plays one, and the
   last one you played starts again next time
@@ -152,7 +155,7 @@ Try it without an account (made-up stations, no network, no sound):
 | `f` | favorite / unfavorite the station (the menu's FAVORITES section) |
 | `a` | add a station: search artists and songs (on the Stations page; also the "Add station…" row) |
 | `r` | rename the selected station (Stations, or a favorite's station); asks for the name |
-| | A lock after a station's name (`🔒`, Nerd Font lock, or `#` in the plain set) means a Pandora genre station: it can't be renamed |
+| | The icon right after a station's star (before its name): the boxvibe logo (`\uf1b2`, in every icon set) is a Pandora genre station, which can't be renamed; a little person (`👤` emoji, `\uf007` Nerd Font, `☺` plain set) is a station you made. Shuffle has neither, and neither shows on the Genres page |
 | `x` | delete the selected station from your Pandora account; asks first (`y` = delete, any other key keeps it) |
 | `e` | edit the station's seeds and look at its thumbs history (Stations, or a favorite's station). In the editor: `Tab` switches Seeds / Thumbs, `a` adds a seed, `x` removes a seed or takes back a thumb (asks first), `t` flips thumbs up / down, `Esc` closes |
 | `v` | details: a song, or a station's seeds, thumbs up / down counts, genres and dates |

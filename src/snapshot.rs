@@ -37,6 +37,17 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
                 crate::app::Setting::ALL.iter().position(|(_, s)| *s == crate::app::Setting::BorderStyle).unwrap_or(0);
             app.status = "Settings are saved to config.toml as you change them".into();
         }
+        // The password popup: with a system keychain, and without one
+        // (the password lasts the session). Some letters are typed to show the mask.
+        "password" | "password-nokeychain" => {
+            app.config.pandora.username = "you@example.com".into();
+            app.keychain_state = if screen == "password" {
+                crate::app::KeychainState::NotSaved
+            } else {
+                crate::app::KeychainState::Unavailable
+            };
+            app.ask_password_for_snapshot("hunter2hunter2");
+        }
         "about" | "about-restart" => {
             app.view = View::About;
             app.focus = Focus::Content;

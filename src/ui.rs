@@ -120,6 +120,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if let Some(ed) = &app.editor {
         draw_editor(frame, &p, ic, area, ed);
     }
+    if app.prompt == Some(Prompt::Password) {
+        draw_password_box(frame, app, ic, area);
+    }
 }
 
 /// How bright the screen behind a popup stays, and how much colour it keeps.
@@ -619,12 +622,12 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
                     style = style.patch(sel);
                 }
                 let icon = if playing { ic.play } else { ic.favorite };
-                // The favorite's station may not be loaded yet: no lock until it is.
-                let locked = app.stations.iter().any(|s| s.id == f.id && s.is_locked());
-                let lock = if locked { format!(" {}", icon_cell(ic.lock).trim_end()) } else { String::new() };
-                let head = format!(" {} ", pad(icon, 2));
-                let room = (list_area.width as usize).saturating_sub(safe_width(&head) + safe_width(&lock));
-                let line = format!("{head}{}{lock}", truncate(&clean(&f.name), room));
+                // The favorite's station may not be loaded yet: no mark until it is.
+                let mark = app.stations.iter().find(|s| s.id == f.id).and_then(|s| station_mark(s, ic));
+                let mark = mark.map(|m| format!("{} ", icon_cell(m))).unwrap_or_default();
+                let head = format!(" {} {mark}", pad(icon, 2));
+                let room = (list_area.width as usize).saturating_sub(safe_width(&head));
+                let line = format!("{head}{}", truncate(&clean(&f.name), room));
                 ListItem::new(Line::from(pad(&line, list_area.width as usize))).style(style)
             })
             .collect();
@@ -658,6 +661,20 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 
 // --- Stations ---
 
+/// The icon after a station's star: the boxvibe logo for one of Pandora's
+/// genre stations (Pandora won't let you rename it), a person for one you
+/// made. Shuffle is neither. Only Stations and Favorites show it, never the
+/// Genres page.
+fn station_mark(s: &crate::pandora::Station, ic: &Icons) -> Option<&'static str> {
+    if s.is_shuffle {
+        None
+    } else if s.is_locked() {
+        Some(ic.genre_station)
+    } else {
+        Some(ic.own_station)
+    }
+}
+
 fn draw_stations(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let p = app.palette;
     let focused = app.focus == Focus::Content;
@@ -690,11 +707,12 @@ fn draw_stations(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             let style = if playing { Style::new().fg(p.green).bold() } else { Style::new().fg(p.fg) };
             let mark = if playing { ic.play } else { " " };
             let head = format!(" {} {} {} ", pad(mark, 1), icon_cell(icon), icon_cell(star));
-            // A lock right after the name of a station Pandora won't let you rename.
-            let lock = if s.is_locked() { format!(" {}", icon_cell(ic.lock).trim_end()) } else { String::new() };
-            let room = (inner.width as usize).saturating_sub(safe_width(&head) + safe_width(&lock));
+            // Right after the star: the logo for a genre station, a person for your own.
+            let mark = station_mark(s, ic).map(|m| format!("{} ", icon_cell(m))).unwrap_or_default();
+            let head = format!("{head}{mark}");
+            let room = (inner.width as usize).saturating_sub(safe_width(&head));
             let name = fit(&s.name, room);
-            ListItem::new(Line::from(format!("{head}{name}{lock}"))).style(style)
+            ListItem::new(Line::from(format!("{head}{name}"))).style(style)
         }))
         .collect();
     let list = List::new(items).highlight_style(selection(&p, focused));
@@ -758,6 +776,98 @@ fn draw_genres(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let list = List::new(items).highlight_style(selection(&p, focused));
     let mut state = ListState::default().with_selected(Some(selected_row));
     frame.render_stateful_widget(list, inner, &mut state);
+}
+
+/// What the password popup says, by what is known about the keychain.
+/// The first line is the reassurance, the rest the detail; `warn` marks the
+/// no-keychain case.
+pub struct PasswordNote {
+    pub warn: bool,
+    pub lines: Vec<String>,
+    pub hint: &'static str,
+}
+
+pub fn password_note(state: crate::app::KeychainState) -> PasswordNote {
+    use crate::app::KeychainState;
+    match state {
+        KeychainState::Unavailable => PasswordNote {
+            warn: true,
+            lines: vec![
+                "No system keychain was found on this computer.".into(),
+                "Your password will be kept for this session only: boxvibe asks for it again the next time it starts.".into(),
+                "It is never written to config.toml or to any other file.".into(),
+            ],
+            hint: "Enter = log in · Esc = cancel",
+        },
+        KeychainState::Unknown => PasswordNote {
+            warn: false,
+            lines: vec![
+                "boxvibe saves your password in your system keychain (the Secret Service: GNOME Keyring, KDE Wallet or KeePassXC).".into(),
+                "If there is no keychain it is kept for this session only.".into(),
+                "It is never written to config.toml or to any other file.".into(),
+            ],
+            hint: "Enter = log in and save · Esc = cancel",
+        },
+        KeychainState::Saved | KeychainState::NotSaved => PasswordNote {
+            warn: false,
+            lines: vec![
+                "Your password is saved in your system keychain (the Secret Service: GNOME Keyring, KDE Wallet or KeePassXC).".into(),
+                "It is never written to config.toml or to any other file, and boxvibe never keeps it in a file of its own.".into(),
+            ],
+            hint: "Enter = log in and save · Esc = cancel",
+        },
+    }
+}
+
+/// The password popup (a modal): who it is for, where the password goes,
+/// the masked input and the keys.
+fn draw_password_box(frame: &mut Frame, app: &App, ic: &Icons, screen: Rect) {
+    let p = app.palette;
+    let note = password_note(app.keychain_state);
+    let width = 66.min(screen.width.saturating_sub(4)).max(screen.width.min(8));
+    let inner_w = usize::from(width.saturating_sub(2 + 4));
+    let border = if note.warn { p.orange } else { p.cyan };
+    let who = clean(app.config.pandora.username.trim());
+    let who = if who.is_empty() { "your Pandora account".to_owned() } else { who };
+    let mut lines = vec![Line::raw("")];
+    for part in wrap_question(&format!("Password for {who}"), inner_w, 2) {
+        lines.push(Line::from(Span::styled(format!("  {part}"), Style::new().fg(p.fg).bold())));
+    }
+    lines.push(Line::raw(""));
+    for (i, text) in note.lines.iter().enumerate() {
+        let (mark, style) = match (note.warn, i) {
+            (true, 0) => (format!("{} ", ic.warn), Style::new().fg(p.orange).bold()),
+            (false, 0) => (format!("{} ", ic.ok), Style::new().fg(p.green)),
+            _ => ("  ".to_owned(), Style::new().fg(p.fg)),
+        };
+        let indent = safe_width(&mark);
+        for (j, part) in wrap_question(text, inner_w.saturating_sub(indent), 4).into_iter().enumerate() {
+            let head = if j == 0 { mark.clone() } else { " ".repeat(indent) };
+            lines.push(Line::from(Span::styled(format!("  {head}{part}"), style)).left_aligned());
+        }
+    }
+    lines.push(Line::raw(""));
+    let input_row = lines.len() as u16;
+    let (shown, column) = app.query.window(inner_w.saturating_sub(3), true, safe_char_width);
+    lines.push(
+        Line::from(vec![
+            Span::styled("   › ", Style::new().fg(border)),
+            Span::styled(shown, Style::new().fg(p.fg).bold()),
+        ])
+        .left_aligned(),
+    );
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(note.hint, Style::new().fg(p.muted))).centered());
+    lines.push(Line::raw(""));
+    let area = centered(screen, width, lines.len() as u16 + 2);
+    frame.render_widget(Clear, area);
+    let block = framed()
+        .border_style(Style::new().fg(border))
+        .title(Span::styled(" Pandora password ", Style::new().fg(border).bold()))
+        .style(Style::new().bg(p.background));
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+    let x = area.x + 1 + 5 + column as u16;
+    frame.set_cursor_position(Position::new(x.min(area.right().saturating_sub(2)), area.y + 1 + input_row));
 }
 
 /// `a`: the add-station box: the search text and, once Enter searched, the
@@ -1374,10 +1484,11 @@ fn draw_settings(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let inner = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
-    let prompt_h = if app.prompt.is_some() { 4 } else { 0 };
+    let prompt_h = if app.prompt == Some(Prompt::Email) { 4 } else { 0 };
     let [prompt_area, list_area, about] =
         Layout::vertical([Constraint::Length(prompt_h), Constraint::Fill(1), Constraint::Length(3)]).areas(inner);
-    if let Some(prompt) = app.prompt {
+    // The email is typed in a box above the list; the password gets a popup.
+    if let Some(prompt @ Prompt::Email) = app.prompt {
         draw_prompt(frame, app, prompt, Rect { height: 3, ..prompt_area });
     }
     let label_w = Setting::ALL.iter().map(|(_, s)| s.label().width()).max().unwrap_or(0) + 3;
@@ -1775,7 +1886,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
         &[
             ("l b", "like / bad the selected row (Now Playing: its song)"),
             ("f", "star / unstar the selected station"),
-            ("r", "rename the selected station (a locked one is a genre station: Pandora says no)"),
+            ("r", "rename the selected station (logo icon = a genre station, Pandora says no; person icon = your own)"),
             ("x", "delete the selected station from Pandora (asks first)"),
             ("a", "add a station: search artists and songs (Stations page)"),
             ("v", "details: a song, or a station's seeds and thumbs"),
@@ -1964,6 +2075,57 @@ mod tests {
         let lines =
             (0..rows).map(|y| (0..cols).map(|x| buffer[(x, y)].symbol().to_owned()).collect::<String>()).collect();
         (cursor, lines)
+    }
+
+    #[test]
+    fn the_password_is_asked_in_a_popup_that_says_where_it_goes() {
+        use crate::app::KeychainState;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = demo();
+        app.config.pandora.username = "you@example.com".into();
+        app.keychain_state = KeychainState::NotSaved;
+        app.ask_password_for_snapshot("s3cret");
+        assert!(app.overlay_open(), "a popup: the page behind is dimmed and its keys are off");
+        let (cursor, lines) = cursor_of(&app, 110, 34);
+        let text = lines.join("\n");
+        for want in [
+            "Pandora password",
+            "Password for you@example.com",
+            "system keychain",
+            "Secret Service",
+            "never written to config.toml",
+            "Enter = log in and save",
+            "Esc = cancel",
+        ] {
+            assert!(text.contains(want), "{want:?} in:\n{text}");
+        }
+        assert!(!text.contains("session only"), "a keychain is there: {text}");
+        assert!(!text.contains("s3cret"), "masked");
+        let row = lines.iter().position(|l| l.contains("› ••••••")).expect("six dots");
+        assert_eq!(usize::from(cursor.y), row, "the cursor is on the input row");
+        assert!(lines[row].chars().nth(usize::from(cursor.x) - 1) == Some('•'), "right after the dots: {}", lines[row]);
+        // Without a keychain it says the password lasts this session only.
+        app.keychain_state = KeychainState::Unavailable;
+        let text = screen(&app, 110, 34).0.join("\n");
+        assert!(text.contains("No system keychain was found"), "{text}");
+        assert!(text.contains("session only"), "{text}");
+        assert!(text.contains("never written to config.toml"), "{text}");
+        assert!(text.contains("Enter = log in ·") && !text.contains("and save"), "{text}");
+        // Keychain not asked yet: it says what it will try.
+        app.keychain_state = KeychainState::Unknown;
+        let text = screen(&app, 110, 34).0.join("\n");
+        assert!(text.contains("If there is no keychain it is kept for this session only"), "{text}");
+        // A small terminal still fits it, and the email box stays inline.
+        let (_, lines) = cursor_of(&app, 60, 20);
+        assert!(lines.iter().any(|l| l.contains("Pandora password")), "{lines:#?}");
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.prompt.is_none() && !app.overlay_open(), "Esc closes it");
+        let text = screen(&app, 110, 34).0.join("\n");
+        assert!(!text.contains("Pandora password"), "{text}");
+        app.open_prompt(Prompt::Email);
+        assert!(app.prompt == Some(Prompt::Email) && !app.overlay_open(), "the email box is not a popup");
+        let text = screen(&app, 110, 34).0.join("\n");
+        assert!(!text.contains("Pandora password"), "the email stays in its own box: {text}");
     }
 
     #[test]
@@ -2630,7 +2792,7 @@ mod tests {
     }
 
     #[test]
-    fn a_lock_follows_the_name_of_stations_that_cant_be_renamed() {
+    fn a_station_icon_sits_between_the_star_and_the_name() {
         use crate::config::IconSet;
         let mut app = demo();
         app.view = View::Stations;
@@ -2638,27 +2800,69 @@ mod tests {
         let genre = app.stations.iter().find(|s| s.name == "Today's Hits").cloned().unwrap();
         assert!(genre.is_locked() && genre.allow_delete, "a genre station");
         let made = app.stations.iter().find(|s| s.allow_rename && s.allow_delete).cloned().unwrap();
+        app.config.ui.favorites.push(crate::config::Favorite { id: made.id.clone(), name: made.name.clone() });
         assert!(!made.is_locked());
-        // One glyph in each icon set, the plain one ASCII.
-        for (set, lock) in [(IconSet::Emoji, "🔒"), (IconSet::Nerd, "\u{f023}"), (IconSet::Unicode, "#")] {
-            assert_eq!(icons(set).lock, lock);
+        let shuffle = app.stations.iter().find(|s| s.is_shuffle).cloned().unwrap();
+        // The logo for a genre station, a person for your own, in each icon set.
+        let sets = [
+            (IconSet::Emoji, "\u{f1b2}", "👤"),
+            (IconSet::Nerd, "\u{f1b2}", "\u{f007}"),
+            (IconSet::Unicode, "\u{f1b2}", "☺"),
+        ];
+        for (set, logo, person) in sets {
+            let ic = icons(set);
+            assert_eq!((ic.genre_station, ic.own_station), (logo, person));
+            assert_eq!(ic.genre_station, crate::icons::LOGO, "the same icon as the logo");
             app.config.ui.icons = set;
-            let lock = icon_cell(lock).trim_end().to_owned();
             let (lines, _) = screen(&app, 120, 36);
-            let row = |name: &str| lines.iter().find(|l| l.contains(name)).cloned().unwrap();
-            assert!(row(&genre.name).contains(&format!("{} {lock}", genre.name)), "{set:?}: {}", row(&genre.name));
-            assert!(!row(&made.name).contains(&lock), "{set:?}: user-made stations get no mark: {}", row(&made.name));
+            let row = |name: &str| {
+                let page = lines.iter().map(|l| l.chars().skip(30).collect::<String>());
+                page.into_iter().find(|l| l.contains(name)).unwrap()
+            };
+            let (g, m) = (row(&genre.name), row(&made.name));
+            let right_before = |row: &str, icon: &str, name: &str| {
+                let (at, name) = (row.find(icon).unwrap(), row.find(name).unwrap());
+                at < name && row[at + icon.len()..name].trim().is_empty()
+            };
+            assert!(right_before(&g, logo, &genre.name), "{set:?}: {g}");
+            assert!(!g.contains(person), "{set:?}: a genre station has no person: {g}");
+            assert!(right_before(&m, person, &made.name), "{set:?}: {m}");
+            assert!(!m.contains(logo), "{set:?}: your own station has no logo: {m}");
+            // After the star, before the name.
+            let (star, at, name) = (m.find(ic.favorite).unwrap(), m.find(person).unwrap(), m.find(&made.name).unwrap());
+            assert!(star < at && at < name, "{set:?}: star, icon, name: {m}");
+            // Shuffle is neither.
+            let s = row(&shuffle.name);
+            assert!(!s.contains(logo) && !s.contains(person), "{set:?}: {s}");
         }
         // Favorites in the menu too, once the station is loaded.
         app.config.ui.icons = IconSet::Unicode;
         app.config.ui.favorites.push(crate::config::Favorite { id: genre.id.clone(), name: genre.name.clone() });
         let (lines, _) = screen(&app, 120, 36);
         let menu: Vec<String> = lines.iter().map(|l| l.chars().take(30).collect()).collect();
-        assert!(menu.iter().any(|l| l.contains("Today's Hits #")), "{menu:#?}");
-        // A narrow list cuts the name, never the lock.
+        assert!(menu.iter().any(|l| l.contains("\u{f1b2}") && l.contains("Today's Hits")), "{menu:#?}");
+        // A narrow list cuts the name, never the icon.
         let (lines, _) = screen(&app, 52, 36);
         let row = lines.iter().rfind(|l| l.contains("Today")).unwrap();
-        assert!(row.trim_end().trim_end_matches('│').trim_end().ends_with('#'), "{row}");
+        assert!(row.find("\u{f1b2}").unwrap() < row.find("Today").unwrap(), "{row}");
+    }
+
+    #[test]
+    fn the_genres_page_shows_neither_station_icon() {
+        use crate::config::IconSet;
+        let mut app = demo();
+        app.view = View::Genres;
+        app.focus = crate::app::Focus::Content;
+        app.settle(std::time::Duration::from_millis(300));
+        for set in [IconSet::Emoji, IconSet::Nerd, IconSet::Unicode] {
+            app.config.ui.icons = set;
+            let ic = icons(set);
+            let (lines, _) = screen(&app, 120, 36);
+            let page: String =
+                lines.iter().map(|l| l.chars().skip(30).collect::<String>()).collect::<Vec<_>>().join("\n");
+            assert!(page.contains("Genres"), "{page}");
+            assert!(!page.contains(ic.genre_station) && !page.contains(ic.own_station), "{set:?}: {page}");
+        }
     }
 
     #[test]

@@ -1487,6 +1487,20 @@ impl App {
         self.status = format!("Type the password for {}", self.config.pandora.username.trim());
     }
 
+    /// The password popup with `typed` already in it (the snapshot screens).
+    pub fn ask_password_for_snapshot(&mut self, typed: &str) {
+        self.ask_password();
+        for c in typed.chars() {
+            self.query.key(
+                ratatui::crossterm::event::KeyEvent::new(
+                    ratatui::crossterm::event::KeyCode::Char(c),
+                    ratatui::crossterm::event::KeyModifiers::NONE,
+                ),
+                MAX_PROMPT,
+            );
+        }
+    }
+
     /// What the keychain answered (it always runs on its own thread).
     fn on_keychain(&mut self, reply: KeychainReply) {
         match reply {
@@ -1745,6 +1759,7 @@ impl App {
             || self.add_station.is_some()
             || self.details.is_some()
             || self.editor.is_some()
+            || self.prompt == Some(Prompt::Password)
     }
 
     pub fn in_songs(&self) -> bool {

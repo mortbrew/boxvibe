@@ -14,8 +14,10 @@ pub struct Icons {
     pub shared: &'static str,
     /// A favorite station.
     pub favorite: &'static str,
-    /// After the name of a station Pandora won't let you rename (its genre stations).
-    pub lock: &'static str,
+    /// Right after the star of a Pandora genre station (one you can't rename): the boxvibe logo.
+    pub genre_station: &'static str,
+    /// Right after the star of a station you made yourself: a little person.
+    pub own_station: &'static str,
     pub play: &'static str,
     pub pause: &'static str,
     pub skip: &'static str,
@@ -43,7 +45,8 @@ const EMOJI: Icons = Icons {
     shuffle: "🔀",
     shared: "👥",
     favorite: "⭐",
-    lock: "🔒",
+    genre_station: LOGO,
+    own_station: "👤",
     // One cell each, like tubevibe: emoji play/pause signs differ per terminal.
     play: "▶",
     pause: "‖",
@@ -73,7 +76,8 @@ const NERD: Icons = Icons {
     shuffle: "\u{f074}",
     shared: "\u{f0c0}",
     favorite: "\u{f005}",
-    lock: "\u{f023}",
+    genre_station: LOGO,
+    own_station: "\u{f007}",
     play: "\u{f04b}",
     pause: "\u{f04c}",
     skip: "\u{f051}",
@@ -103,8 +107,9 @@ const UNICODE: Icons = Icons {
     shuffle: "⇄",
     shared: "⚇",
     favorite: "★",
-    // Plain ASCII: it is the one that is the same in every font.
-    lock: "#",
+    // The logo is the Nerd Font box in every set; the person is a plain smiley.
+    genre_station: LOGO,
+    own_station: "☺",
     play: "▶",
     pause: "‖",
     skip: "»",

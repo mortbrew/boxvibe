@@ -78,7 +78,7 @@ pub struct Station {
 
 impl Station {
     /// Pandora won't let this station be renamed: its genre stations (and
-    /// Shuffle). The same test as the rename error, so the lock icon in the
+    /// Shuffle). The same test as the rename error, so the logo icon in the
     /// lists and that message always agree.
     pub fn is_locked(&self) -> bool {
         !self.allow_rename

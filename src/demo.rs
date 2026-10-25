@@ -1,7 +1,9 @@
 //! `--demo`: made-up stations and songs, no network and no sound, so the
 //! interface can be tried (and screenshotted) without a Pandora account.
 
-use crate::pandora::{AudioFormat, Rating, Seed, Song, Station, StationDetails};
+use crate::pandora::{
+    AudioFormat, Genre, GenreCategory, HitKind, Rating, SearchHit, Seed, Song, Station, StationDetails,
+};
 
 pub fn stations() -> Vec<Station> {
     let names = [
@@ -82,4 +84,87 @@ pub fn station_details(station_id: &str) -> StationDetails {
         last_played: "2026-10-23T21:05:00.000-04:00".into(),
         creator: String::new(),
     }
+}
+
+/// The made-up catalogue the demo search looks in: (id, kind, name, artist).
+const CATALOGUE: [(&str, HitKind, &str, &str); 14] = [
+    ("AR:demo-m83", HitKind::Artist, "M83", ""),
+    ("AR:demo-mgmt", HitKind::Artist, "MGMT", ""),
+    ("AR:demo-daft", HitKind::Artist, "Daft Punk", ""),
+    ("AR:demo-tame", HitKind::Artist, "Tame Impala", ""),
+    ("AR:demo-phoenix", HitKind::Artist, "Phoenix", ""),
+    ("AR:demo-fleetwood", HitKind::Artist, "Fleetwood Mac", ""),
+    ("AR:demo-chvrches", HitKind::Artist, "CHVRCHES", ""),
+    ("TR:demo-midnight", HitKind::Song, "Midnight City", "M83"),
+    ("TR:demo-kids", HitKind::Song, "Kids", "MGMT"),
+    ("TR:demo-digital", HitKind::Song, "Digital Love", "Daft Punk"),
+    ("TR:demo-happen", HitKind::Song, "Let It Happen", "Tame Impala"),
+    ("TR:demo-1901", HitKind::Song, "1901", "Phoenix"),
+    ("TR:demo-dreams", HitKind::Song, "Dreams", "Fleetwood Mac"),
+    ("TR:demo-nightcall", HitKind::Song, "Nightcall", "Kavinsky"),
+];
+
+/// Artists and songs whose name or artist has `query` in it.
+pub fn search(query: &str) -> Vec<SearchHit> {
+    let q = query.trim().to_lowercase();
+    CATALOGUE
+        .iter()
+        .filter(|(_, _, name, by)| {
+            !q.is_empty() && (name.to_lowercase().contains(&q) || by.to_lowercase().contains(&q))
+        })
+        .map(|(id, kind, name, by)| SearchHit { id: (*id).into(), kind: *kind, name: (*name).into(), by: (*by).into() })
+        .collect()
+}
+
+/// (id, name, description) of a demo genre station.
+type DemoGenre = (&'static str, &'static str, &'static str);
+
+const GENRES: [(&str, &[DemoGenre]); 3] = [
+    (
+        "Pop",
+        &[
+            ("GE:demo-hits", "Today's Hits", "The biggest songs right now."),
+            ("GE:demo-indie", "Indie Pop", "Bedroom dreams and big choruses."),
+        ],
+    ),
+    ("Electronic", &[("GE:demo-synthwave", "Synthwave", "Neon, night drives and analogue synths.")]),
+    (
+        "Rock",
+        &[("GE:demo-classic", "Classic Rock", ""), ("GE:demo-alt90s", "90s Alternative", "Loud guitars, flannel.")],
+    ),
+];
+
+pub fn genres() -> Vec<GenreCategory> {
+    GENRES
+        .iter()
+        .map(|(name, genres)| GenreCategory {
+            name: (*name).into(),
+            genres: genres
+                .iter()
+                .map(|(id, name, description)| Genre {
+                    id: (*id).into(),
+                    name: (*name).into(),
+                    description: (*description).into(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// The station Pandora would make from a hit or a genre (`None`: not in the demo catalogue).
+pub fn new_station(pandora_id: &str, existing: usize) -> Option<Station> {
+    let name = if let Some((_, _, name, _)) = CATALOGUE.iter().find(|(id, ..)| *id == pandora_id) {
+        format!("{name} Radio")
+    } else {
+        GENRES.iter().flat_map(|(_, g)| g.iter()).find(|(id, ..)| *id == pandora_id)?.1.to_owned()
+    };
+    Some(Station {
+        id: format!("demo-new-{existing}"),
+        name,
+        is_shuffle: false,
+        is_shared: false,
+        art_url: String::new(),
+        allow_rename: true,
+        allow_delete: true,
+    })
 }

@@ -58,6 +58,8 @@ work right now drawn as key caps at the bottom.
   Latte, Rosé Pine Dawn, Nord, Everforest and Kanagawa
 - **Icon sets** (Settings → LOOK → Icons): Nerd Font (the default), colour emoji or plain Unicode. The boxvibe logo is always the Nerd Font box
 - **Rename and delete stations** (`r`, `x`) and **details** (`v`): see [Keys](#keys)
+- **Make a station by searching** (`a` on the Stations page, or the "Add station…" row): type an artist or song, `Enter` searches, pick one with `j` / `k`, `Enter` makes the station and plays it
+- **Genres** (`G`, Shift+g, or Genres in the menu): Pandora's genre stations under their categories; `Enter` adds one to your stations and plays it. The list loads once per session
 - **Song change notifications** with `notify-send` (mako on Omarchy)
 - Whatever you change in the app (theme, icons, volume, last station) is
   saved to `config.toml` right away, keeping your comments
@@ -115,9 +117,11 @@ Try it without an account (made-up stations, no network, no sound):
 | `Esc` | back to the menu |
 | `P` (Shift+p) | Now Playing: back to the player with the keys on the Now Playing pane and the menu on NOW PLAYING |
 | `S` (Shift+s) | Stations: every station on the right, `Enter` plays one |
+| `G` (Shift+g) | Genres: Pandora's genre stations, `Enter` adds one and plays it |
 | `T` (Shift+t) / `A` (Shift+a) | Settings / About, with the menu on that entry |
 | `F` (Shift+f) | the menu, on the first of FAVORITES |
 | `f` | favorite / unfavorite the station (the menu's FAVORITES section) |
+| `a` | add a station: search artists and songs (on the Stations page; also the "Add station…" row) |
 | `r` | rename the selected station (Stations, or a favorite's station); asks for the name |
 | `x` | delete the selected station from your Pandora account; asks first (`y` = delete, any other key keeps it) |
 | `v` | details: a song, or a station's seeds, thumbs up / down counts, genres and dates |
@@ -173,6 +177,7 @@ menu_width = 30                # the menu, in columns: 20–40, step 2 (at most 
 album_art = "picture"          # picture | off
 retro_mode = "hd"              # hd | 64bit | 32bit | 16bit | 8bit | 4bit | 2bit (full / 256 / 128 / 64 / 32 / 16 / 8 px, blocky on purpose)
 art_tint = "off"               # off | duotone | palette: recolour the cover with the theme's colours
+animations = true              # false: no motion (the 2 second boot screen is skipped); Settings → LOOK → Animations
 ```
 
 The 0.1–0.3 files had `[pandora]`, `[player]` and `[ui]` tables. They still
@@ -264,7 +269,8 @@ provider (Apache-2.0, see [THIRD_PARTY.md](THIRD_PARTY.md)):
    `v1/listener/addTiredSong` and `v1/station/trackStarted` (sent when a song
    starts, like the site does); for `r`, `x` and `v`:
    `v1/station/updateStation`, `v1/station/removeStation` and
-   `v1/station/getStationDetails`
+   `v1/station/getStationDetails`; for `a` and Genres: `v3/sod/search`,
+   `v1/station/createStation`, `v1/music/genrecategories` and `v1/music/genres`
 4. When the login expires (HTTP 401) boxvibe logs in again with the saved
    password and retries once. When another device is playing on the account
    (429 `STREAM_VIOLATION`) it takes over with `v1/station/playbackResumed`

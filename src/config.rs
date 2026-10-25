@@ -88,6 +88,9 @@ pub struct UiConfig {
     pub check_updates: bool,
     /// Show the boxvibe boot screen for a moment when the app opens.
     pub splash: bool,
+    /// Motion in the interface (today: the boot screen's fade). Off: none
+    /// (the boot screen is skipped). `[look] animations`.
+    pub animations: bool,
     /// Start the station played last as soon as boxvibe opens (and has
     /// logged in). boxvibe 0.1's `[player] autoplay` reads as this.
     pub autoplay_last_station: bool,
@@ -125,6 +128,7 @@ impl Default for UiConfig {
             notifications: true,
             check_updates: true,
             splash: true,
+            animations: true,
             autoplay_last_station: true,
             border_style: BorderStyle::Plain,
             menu_width: MENU_WIDTH.default,
@@ -530,6 +534,7 @@ pub const LAYOUT: &[(&str, &str, &str)] = &[
     ("look", "album_art", "ui"),
     ("look", "retro_mode", "ui"),
     ("look", "art_tint", "ui"),
+    ("look", "animations", "ui"),
 ];
 
 /// Names a setting had before: (old table, old key, table, key). Read when
@@ -1250,5 +1255,17 @@ mod tests {
         let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_792_544_100);
         assert_eq!(utc_stamp(at), "20261021T005500Z");
         assert_eq!(utc_stamp(std::time::UNIX_EPOCH), "19700101T000000Z");
+    }
+
+    #[test]
+    fn animations_default_on_and_load_tolerantly() {
+        let (c, w) = Config::parse("").unwrap();
+        assert!(c.ui.animations && w.is_empty());
+        let (c, _) = Config::parse("[look]\nanimations = false\n").unwrap();
+        assert!(!c.ui.animations);
+        let (c, w) = Config::parse("[look]\nanimations = \"sometimes\"\nicons = \"emoji\"\n").unwrap();
+        assert!(c.ui.animations, "a bad value keeps the default");
+        assert_eq!(c.ui.icons, IconSet::Emoji, "and the others still load");
+        assert_eq!(w.len(), 1, "{w:?}");
     }
 }

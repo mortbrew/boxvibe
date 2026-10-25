@@ -37,6 +37,12 @@ documentation", <https://6xq.net/pandora-apidoc/rest/>
 (<https://github.com/PromyLOPh/pandora-apidoc>, WTFPL). Only the
 documentation was used; no code.
 
+The search, create-station and genre requests (`v3/sod/search`,
+`v1/station/createStation`, `v1/music/genrecategories`, `v1/music/genres`) are
+written from the community's notes on the website's API, including the
+request / answer shapes that libepimetheusKotlin documents. Those shapes were
+noted as facts only; none of libepimetheusKotlin's (GPL-3.0) code was copied.
+
 ## tubevibe
 
 The Omarchy theme reader (`src/theme.rs`), the tolerant config loader

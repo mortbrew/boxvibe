@@ -8,7 +8,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use crate::demo;
-use crate::pandora::{self, Client, Error, Quality, Song, Station, StationDetails};
+use crate::pandora::{self, Client, Error, GenreCategory, Quality, SearchHit, Song, Station, StationDetails};
 use crate::update::{self, Checked, Update};
 
 pub enum Request {
@@ -31,6 +31,16 @@ pub enum Request {
         station_id: String,
         current: bool,
     },
+    /// Search Pandora for artists and songs to start a station from.
+    Search {
+        query: String,
+    },
+    /// Make a station from a search hit or a genre station (`pandora_id`).
+    CreateStation {
+        pandora_id: String,
+    },
+    /// Pandora's genre categories and their stations.
+    Genres,
     Playlist {
         station_id: String,
     },
@@ -79,6 +89,14 @@ pub enum Reply {
         station_id: String,
         details: StationDetails,
     },
+    /// `query`: what was asked, so a late answer to an older query is ignored.
+    SearchResults {
+        query: String,
+        hits: Vec<SearchHit>,
+    },
+    /// A station Pandora just made (the account now has it).
+    StationCreated(Station),
+    Genres(Vec<GenreCategory>),
     Playlist {
         station_id: String,
         songs: Vec<Song>,
@@ -216,6 +234,22 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
             Request::StationDetails { station_id, .. } => {
                 Reply::StationDetails { details: demo::station_details(&station_id), station_id }
             }
+            Request::Search { query } => Reply::SearchResults { hits: demo::search(&query), query },
+            Request::CreateStation { pandora_id } => match demo::new_station(&pandora_id, stations.len()) {
+                Some(station) => {
+                    // Like Pandora: an existing one is not made twice; a new one comes after Shuffle.
+                    match stations.iter().find(|s| s.name == station.name) {
+                        Some(known) => Reply::StationCreated(known.clone()),
+                        None => {
+                            let at = usize::from(stations.first().is_some_and(|s| s.is_shuffle));
+                            stations.insert(at, station.clone());
+                            Reply::StationCreated(station)
+                        }
+                    }
+                }
+                None => Reply::Failed { what: "create station", message: "no such artist, song or genre".into() },
+            },
+            Request::Genres => Reply::Genres(demo::genres()),
             Request::Playlist { station_id } => {
                 round += 1;
                 Reply::Playlist { songs: demo::playlist(&station_id, round - 1), station_id }
@@ -260,6 +294,13 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                         .map(|details| Reply::StationDetails { station_id: station_id.clone(), details })
                 })
             }
+            Request::Search { query } => run(&mut client, &login, &mut took_over, "search", |c| {
+                c.search(&query).map(|hits| Reply::SearchResults { query: query.clone(), hits })
+            }),
+            Request::CreateStation { pandora_id } => run(&mut client, &login, &mut took_over, "create station", |c| {
+                c.create_station(&pandora_id).map(Reply::StationCreated)
+            }),
+            Request::Genres => run(&mut client, &login, &mut took_over, "genres", |c| c.genres().map(Reply::Genres)),
             Request::Playlist { station_id } => run(&mut client, &login, &mut took_over, "playlist", |c| {
                 c.fragment(&station_id).map(|songs| Reply::Playlist { station_id: station_id.clone(), songs })
             }),

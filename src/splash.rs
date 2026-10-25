@@ -1,5 +1,5 @@
 //! The boot screen: a small box drawn with half blocks beside "boxvibe" in
-//! big letters, the tagline, the version and "any key to go on". It fades in
+//! big letters, the tagline and the version. It fades in
 //! from the theme's background to the theme's colours, left to right, in the
 //! colours of the active theme. `app.splash_progress()` says how far along
 //! it is (0 to 1); any key ends it (the app does that).
@@ -9,7 +9,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -51,9 +51,8 @@ pub fn picture_width() -> u16 {
     (BOX_W + 2 + WORD.len() * 5) as u16
 }
 
-/// Rows of the whole screen's content: the picture, a gap, the tagline, a
-/// gap and the hint.
-const CONTENT_ROWS: u16 = 7 + 1 + 1 + 1 + 1;
+/// Rows of the whole screen's content: the picture, a gap and the tagline.
+const CONTENT_ROWS: u16 = 7 + 1 + 1;
 
 /// `from` mixed toward `to` by `k` (0 to 1). Only RGB colours can be mixed;
 /// any other colour (a named one) shows once `k` is past a third.
@@ -95,7 +94,7 @@ fn fading(
         .collect()
 }
 
-pub fn draw(frame: &mut Frame, p: &Palette, progress: f32, version: &str, tagline: &str, hint: &str) {
+pub fn draw(frame: &mut Frame, p: &Palette, progress: f32, version: &str, tagline: &str) {
     let area = frame.area();
     let width = picture_width();
     if area.width < width || area.height < CONTENT_ROWS + 1 {
@@ -140,8 +139,6 @@ pub fn draw(frame: &mut Frame, p: &Palette, progress: f32, version: &str, taglin
         ])
         .centered(),
     );
-    lines.push(Line::raw(""));
-    lines.push(Line::from(hint.to_owned()).fg(mix(p.background, p.muted, late)).centered());
     let at =
         Rect::new(area.x + (area.width - width) / 2, area.y + (area.height - CONTENT_ROWS) / 2, width, CONTENT_ROWS);
     frame.render_widget(Paragraph::new(lines), at);
@@ -156,7 +153,7 @@ mod tests {
     fn show(cols: u16, rows: u16, progress: f32) -> ratatui::buffer::Buffer {
         let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
         let p = crate::theme::TOKYO_NIGHT;
-        terminal.draw(|f| draw(f, &p, progress, "v9.9.9", "Pandora in your terminal", "any key to go on")).unwrap();
+        terminal.draw(|f| draw(f, &p, progress, "v9.9.9", "Pandora in your terminal")).unwrap();
         terminal.backend().buffer().clone()
     }
 
@@ -178,10 +175,14 @@ mod tests {
     }
 
     #[test]
-    fn the_whole_screen_shows_the_box_the_word_the_tagline_and_the_hint() {
+    fn the_whole_screen_shows_the_box_the_word_the_tagline_and_no_hint_about_keys() {
         let all = text(&show(80, 24, 1.0));
         assert!(all.contains("Pandora in your terminal"), "{all}");
-        assert!(all.contains("v9.9.9") && all.contains("any key to go on"), "{all}");
+        assert!(all.contains("v9.9.9"), "{all}");
+        assert!(
+            !all.to_lowercase().contains("any key") && !all.contains("continue"),
+            "no on-screen text about keys: {all}"
+        );
         // The wordmark's rows: "box" then "vibe", from the letters.
         let row = WORD.iter().map(|g| g[2]).collect::<String>();
         assert!(all.contains(&row), "the letters' third row\n{all}");

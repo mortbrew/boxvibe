@@ -458,7 +458,9 @@ fn searching_creating_and_genres_send_what_the_site_expects() {
 fn creating_a_station_needs_an_answer_that_names_it_and_all_genres_failing_is_an_error() {
     let (base, _) = fake_pandora(Box::new(|r| match r.path.as_str() {
         "/api/v1/auth/login" => login_ok("tok"),
-        "/api/v1/music/genrecategories" => (200, json!({ "categories": [ { "name": "A", "token": "a" } ] }).to_string()),
+        "/api/v1/music/genrecategories" => {
+            (200, json!({ "categories": [ { "name": "A", "token": "a" } ] }).to_string())
+        }
         "/api/v1/music/genres" => (500, json!({ "errorCode": 0, "errorString": "INTERNAL" }).to_string()),
         _ => (200, "{}".into()),
     }));

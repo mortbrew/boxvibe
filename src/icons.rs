@@ -8,6 +8,8 @@ pub const LOGO: &str = "\u{f1b2}";
 
 pub struct Icons {
     pub station: &'static str,
+    /// The Genres page.
+    pub genre: &'static str,
     pub shuffle: &'static str,
     pub shared: &'static str,
     /// A favorite station.
@@ -30,11 +32,12 @@ pub struct Icons {
     pub update: &'static str,
     pub ok: &'static str,
     /// One per [`crate::app::Setting::ALL`] row.
-    pub setting: [&'static str; 19],
+    pub setting: [&'static str; 20],
 }
 
 const EMOJI: Icons = Icons {
     station: "📻",
+    genre: "🎼",
     shuffle: "🔀",
     shared: "👥",
     favorite: "⭐",
@@ -57,12 +60,13 @@ const EMOJI: Icons = Icons {
     ok: "✅",
     setting: [
         "🆕", "🚀", "📝", "📌", "👤", "🔑", "🔓", "🚪", "🎧", "🔊", "🎶", "🔔", "🎨", "😀", "🔲", "📐", "💿", "👾",
-        "🌈",
+        "🌈", "✨",
     ],
 };
 
 const NERD: Icons = Icons {
     station: "\u{f0439}",
+    genre: "\u{f001}",
     shuffle: "\u{f074}",
     shared: "\u{f0c0}",
     favorite: "\u{f005}",
@@ -85,12 +89,13 @@ const NERD: Icons = Icons {
     setting: [
         "\u{f0aa}", "\u{f135}", "\u{f044}", "\u{f0c9}", "\u{f007}", "\u{f084}", "\u{f09c}", "\u{f08b}", "\u{f025}",
         "\u{f028}", "\u{f04b}", "\u{f0f3}", "\u{f1fc}", "\u{f118}", "\u{f0c8}", "\u{f07e}", "\u{f03e}", "\u{f00a}",
-        "\u{f53f}",
+        "\u{f53f}", "\u{f0d0}",
     ],
 };
 
 const UNICODE: Icons = Icons {
     station: "◉",
+    genre: "♬",
     shuffle: "⇄",
     shared: "⚇",
     favorite: "★",
@@ -110,7 +115,7 @@ const UNICODE: Icons = Icons {
     quit: "⏻",
     update: "↑",
     ok: "✔",
-    setting: ["↑", "◈", "✎", "☰", "@", "*", "→", "⏻", "♫", "◖", "▶", "♪", "◐", "☺", "▢", "↔", "▦", "▩", "◑"],
+    setting: ["↑", "◈", "✎", "☰", "@", "*", "→", "⏻", "♫", "◖", "▶", "♪", "◐", "☺", "▢", "↔", "▦", "▩", "◑", "✦"],
 };
 
 pub fn icons(set: IconSet) -> &'static Icons {

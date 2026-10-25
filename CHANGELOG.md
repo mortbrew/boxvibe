@@ -86,6 +86,32 @@ bound twice.
   (and wrap around the ends); the icon set is Settings → LOOK → Icons. Help
   and the key bar no longer list them, and `i` does nothing.
 
+### Batch 3
+
+- **Make a station by searching.** Lowercase **`a`** on the Stations page (or
+  Enter on the new "Add station…" first row of the list) opens a search box.
+  Type, `Enter` searches (on Enter, not on every letter, to spare Pandora's
+  API), then `j` / `k` or the arrows pick an artist or song (each tagged), `Enter`
+  creates the station and plays it, `Esc` cancels. `/` or `Tab` goes back to
+  typing. The new station sits after Shuffle; one that already exists is
+  played, not duplicated. Uses `v3/sod/search` and `v1/station/createStation`.
+- **Genres.** **`G`** (Shift+g) or the new **Genres** menu entry (icons in the
+  Nerd, emoji and Unicode sets) shows Pandora's genre categories as headers with
+  their stations; `j` / `k` move, `Enter` adds the station and plays it. The list
+  is loaded once per session (`v1/music/genrecategories`, `v1/music/genres`);
+  a failed load can be tried again with Enter.
+- Key map: `a` and `G` are new; Help, the key bar (hints only where the key
+  works) and tests are updated. `G` used to mean nothing (jump to the end was
+  removed earlier).
+- **Not done**: editing a station's seeds and "why this song" need Pandora calls
+  whose request / answer shapes are not documented anywhere I could confirm,
+  so they are left out rather than guessed.
+- **No more "any key to go on"** text on the boot screen. A key press still
+  skips it and it still lasts 2 seconds.
+- **Settings → LOOK → Animations** (`[look] animations`, default on). Off turns
+  all motion off: the boot screen's fade is the only motion boxvibe has, so it is
+  skipped. The song progress and clock still update. Missing or bad values mean on.
+
 ### Fixes
 
 - A cover that failed to download is tried again (after 2, 6 and 15 seconds),

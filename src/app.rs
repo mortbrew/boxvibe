@@ -17,7 +17,7 @@ use crate::audio::Audio;
 use crate::backend::{Backend, Reply, Request};
 use crate::config::{self, AlbumArt, Config, ConfigWarning};
 use crate::input::TextInput;
-use crate::pandora::{Quality, Rating, Song, Station, StationDetails};
+use crate::pandora::{GenreCategory, Quality, Rating, SearchHit, Song, Station, StationDetails};
 use crate::theme::{self, Palette};
 use crate::update::{Progress, Replace, Update};
 
@@ -27,6 +27,8 @@ pub enum View {
     Player,
     /// Every station, to pick one (`Enter`) or star it (`f`).
     Stations,
+    /// Pandora's genre stations, to add one (`Enter`).
+    Genres,
     Settings,
     About,
 }
@@ -45,6 +47,8 @@ pub enum MenuItem {
     NowPlaying,
     /// Opens the station list on the right.
     Stations,
+    /// Opens Pandora's genre stations on the right.
+    Genres,
     /// A starred station, by its index in `[playback] favorites`.
     Favorite(usize),
     Settings,
@@ -83,6 +87,7 @@ pub enum Setting {
     AlbumArt,
     RetroMode,
     ArtTint,
+    Animations,
     CheckUpdates,
     Splash,
     EditFile,
@@ -91,7 +96,7 @@ pub enum Setting {
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 19] = [
+    pub const ALL: [(&'static str, Self); 20] = [
         ("BOXVIBE", Self::CheckUpdates),
         ("BOXVIBE", Self::Splash),
         ("BOXVIBE", Self::EditFile),
@@ -111,6 +116,7 @@ impl Setting {
         ("LOOK", Self::AlbumArt),
         ("LOOK", Self::RetroMode),
         ("LOOK", Self::ArtTint),
+        ("LOOK", Self::Animations),
     ];
 
     /// Where `setting` is in [`Setting::ALL`] (the Settings cursor).
@@ -135,6 +141,7 @@ impl Setting {
             Self::AlbumArt => "Album art",
             Self::RetroMode => "Retro mode",
             Self::ArtTint => "Tint art with theme colors",
+            Self::Animations => "Animations",
             Self::CheckUpdates => "Look for new versions on startup",
             Self::Splash => "Boot screen",
             Self::EditFile => "Edit config.toml",
@@ -163,6 +170,7 @@ impl Setting {
             Self::AlbumArt => Some(("look", "album_art")),
             Self::RetroMode => Some(("look", "retro_mode")),
             Self::ArtTint => Some(("look", "art_tint")),
+            Self::Animations => Some(("look", "animations")),
             Self::LogIn | Self::LogOut | Self::EditFile | Self::MenuEntry => None,
         }
     }
@@ -208,11 +216,14 @@ impl Setting {
             Self::RetroMode => {
                 "Makes the cover blocky on purpose, like an old console: 64-bit (256 pixels across), 32-bit (128), 16-bit (64), 8-bit (32), 4-bit (16), 2-bit (8), or HD for the full picture. Also Shift+R. Saved as [look] retro_mode."
             }
+            Self::Animations => {
+                "On: the boot screen fades in. Off: no motion anywhere, so the boot screen is skipped (the song progress and clock still update). Saved as [look] animations."
+            }
             Self::CheckUpdates => {
                 "Asks GitHub when boxvibe opens; About shows the new version and Update Now. Saved as [boxvibe] check_updates."
             }
             Self::Splash => {
-                "A two-second boxvibe logo screen when it opens; any key skips it. Saved as [boxvibe] splash."
+                "A two-second boxvibe logo screen when it opens; any key skips it (Animations off skips it too). Saved as [boxvibe] splash."
             }
             Self::EditFile => "Opens config.toml in $EDITOR; boxvibe reads it again when you close it.",
             Self::MenuEntry => {
@@ -242,6 +253,8 @@ pub enum Cmd {
     Skip,
     NowPlaying,
     Stations,
+    Genres,
+    Add,
     Settings,
     About,
     Favorites,
@@ -295,6 +308,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(KeyCode::Char('N'), Cmd::Skip),
     bind(KeyCode::Char('P'), Cmd::NowPlaying),
     bind(KeyCode::Char('S'), Cmd::Stations),
+    bind(KeyCode::Char('G'), Cmd::Genres),
     bind(KeyCode::Char('T'), Cmd::Settings),
     bind(KeyCode::Char('A'), Cmd::About),
     bind(KeyCode::Char('F'), Cmd::Favorites),
@@ -313,6 +327,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(KeyCode::Char(' '), Cmd::Pause),
     bind(KeyCode::Char('l'), Cmd::LikePane),
     bind(KeyCode::Char('b'), Cmd::BadPane),
+    bind(KeyCode::Char('a'), Cmd::Add),
     bind(KeyCode::Char('f'), Cmd::Star),
     bind(KeyCode::Char('r'), Cmd::Rename),
     bind(KeyCode::Char('x'), Cmd::Delete),
@@ -331,6 +346,64 @@ pub const KEYMAP: &[Binding] = &[
 pub fn command_for(key: KeyEvent) -> Option<Cmd> {
     let shifted = key.modifiers.contains(KeyModifiers::SHIFT);
     KEYMAP.iter().find(|b| b.code == key.code && (!b.shift || shifted)).map(|b| b.cmd)
+}
+
+/// The longest search the add-station box takes.
+const MAX_SEARCH: usize = 80;
+
+/// Which part of the add-station box has the keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchMode {
+    /// The text: every key types (Enter searches).
+    Typing,
+    /// The answers: j/k move, Enter makes the station.
+    Results,
+}
+
+/// The add-station box (`a`, or the "Add station…" row): a search for
+/// artists and songs, and what Pandora answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StationSearch {
+    pub text: TextInput,
+    pub mode: SearchMode,
+    pub hits: Vec<SearchHit>,
+    pub cursor: usize,
+    /// The text that was sent, once Enter searched (its answer is `hits`).
+    pub asked: Option<String>,
+    /// A search is on its way.
+    pub waiting: bool,
+    /// Why the last search failed.
+    pub error: Option<String>,
+}
+
+impl StationSearch {
+    fn new() -> Self {
+        Self {
+            text: TextInput::default(),
+            mode: SearchMode::Typing,
+            hits: Vec::new(),
+            cursor: 0,
+            asked: None,
+            waiting: false,
+            error: None,
+        }
+    }
+
+    /// The hit the cursor is on.
+    pub fn selected(&self) -> Option<&SearchHit> {
+        self.hits.get(self.cursor.min(self.hits.len().saturating_sub(1)))
+    }
+}
+
+/// Pandora's genre stations, loaded once per session.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum GenresState {
+    /// Not asked for yet.
+    #[default]
+    Idle,
+    Loading,
+    Loaded(Vec<GenreCategory>),
+    Failed(String),
 }
 
 /// A station to rename or delete.
@@ -471,6 +544,8 @@ pub struct App {
     pub settings_cursor: usize,
     /// Selected row of the station list.
     pub stations_cursor: usize,
+    /// The cursor is on the "Add station…" row above the list.
+    pub on_add_row: bool,
     /// Which song pane has the keys while the player has them.
     pub pane: Pane,
     /// Selected row of Up Next (0 = the next song).
@@ -496,6 +571,14 @@ pub struct App {
     pub confirm_delete: Option<StationRef>,
     /// `r` is typing a new station name.
     pub rename: Option<Rename>,
+    /// `a`: the add-station search box.
+    pub add_station: Option<StationSearch>,
+    /// Pandora's genre stations (the Genres page).
+    pub genres: GenresState,
+    /// Selected genre station, counted over the stations only (not the headings).
+    pub genres_cursor: usize,
+    /// A station is being made: a second Enter waits for it.
+    creating: bool,
     /// `v`: the details popup.
     pub details: Option<Details>,
     pub buffering: Option<String>,
@@ -542,6 +625,7 @@ impl App {
             menu_cursor: 0,
             settings_cursor: 0,
             stations_cursor: 0,
+            on_add_row: false,
             pane: Pane::UpNext,
             next_cursor: 0,
             history_cursor: 0,
@@ -560,6 +644,10 @@ impl App {
             splash: None,
             confirm_delete: None,
             rename: None,
+            add_station: None,
+            genres: GenresState::Idle,
+            genres_cursor: 0,
+            creating: false,
             details: None,
             buffering: None,
             audio_cache: HashMap::new(),
@@ -604,9 +692,9 @@ impl App {
         app
     }
 
-    /// The boot screen starts (main calls this once, if `[boxvibe] splash` is on).
+    /// The boot screen starts (main calls this once, if `[boxvibe] splash` and `[look] animations` are on).
     pub fn begin_splash(&mut self) {
-        self.splash = self.config.ui.splash.then(Instant::now);
+        self.splash = (self.config.ui.splash && self.config.ui.animations).then(Instant::now);
     }
 
     /// How far along the boot screen is, 0.0 to 1.0 (`None`: not showing).
@@ -651,7 +739,7 @@ impl App {
     pub fn menu_items(&self) -> Vec<MenuItem> {
         let top = self.has_now_playing().then_some(MenuItem::NowPlaying);
         top.into_iter()
-            .chain([MenuItem::Stations])
+            .chain([MenuItem::Stations, MenuItem::Genres])
             .chain((0..self.config.ui.favorites.len()).map(MenuItem::Favorite))
             .chain([MenuItem::Settings, MenuItem::About, MenuItem::Quit])
             .collect()
@@ -666,6 +754,7 @@ impl App {
         match self.menu_selected() {
             MenuItem::NowPlaying => self.show_now_playing(),
             MenuItem::Stations => self.show_stations(),
+            MenuItem::Genres => self.show_genres(),
             MenuItem::Favorite(i) => {
                 let Some(fav) = self.config.ui.favorites.get(i).cloned() else { return };
                 match self.stations.iter().position(|s| s.id == fav.id) {
@@ -721,9 +810,146 @@ impl App {
     fn show_stations(&mut self) {
         self.view = View::Stations;
         self.focus = Focus::Content;
+        self.on_add_row = false;
         if let Some(at) = self.current_station.as_ref().and_then(|id| self.stations.iter().position(|s| &s.id == id)) {
             self.stations_cursor = at;
         }
+    }
+
+    /// Genres (menu entry or `G`): Pandora's genre stations, loaded the
+    /// first time (and again after a failure).
+    fn show_genres(&mut self) {
+        self.view = View::Genres;
+        self.focus = Focus::Content;
+        self.point_menu_at_view();
+        if matches!(self.genres, GenresState::Idle | GenresState::Failed(_)) {
+            if self.session != Session::LoggedIn {
+                self.status = "Log in first (Settings, Shift+T) to browse genres".into();
+                return;
+            }
+            self.genres = GenresState::Loading;
+            self.backend.send(Request::Genres);
+        }
+    }
+
+    /// Every genre station, in the order the page lists them.
+    pub fn genre_rows(&self) -> Vec<&crate::pandora::Genre> {
+        match &self.genres {
+            GenresState::Loaded(categories) => categories.iter().flat_map(|c| c.genres.iter()).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    pub fn genres_index(&self) -> usize {
+        self.genres_cursor.min(self.genre_rows().len().saturating_sub(1))
+    }
+
+    /// Enter on a genre: Pandora makes the station and it plays; on a
+    /// failed or empty page, Enter asks again.
+    fn add_genre_station(&mut self) {
+        let genre = self.genre_rows().get(self.genres_index()).map(|g| (g.id.clone(), g.name.clone()));
+        match (genre, &self.genres) {
+            (Some((id, name)), _) => self.create_station(&id, &name),
+            (None, GenresState::Loading) => {}
+            (None, _) => {
+                self.genres = GenresState::Idle;
+                self.show_genres();
+            }
+        }
+    }
+
+    // --- Adding stations (a, Genres) ---
+
+    /// `a` or the "Add station…" row: opens the search box.
+    fn open_add_station(&mut self) {
+        if self.session != Session::LoggedIn {
+            self.status = "Log in first (Settings, Shift+T) to add a station".into();
+            return;
+        }
+        self.add_station = Some(StationSearch::new());
+    }
+
+    /// `a`: in the station list; anywhere else says where.
+    fn ask_add_station(&mut self) {
+        if self.focus == Focus::Content && self.view == View::Stations {
+            self.open_add_station();
+        } else {
+            self.status = "a adds a station: open Stations (Shift+S) first".into();
+        }
+    }
+
+    fn search_key(&mut self, key: KeyEvent) {
+        let Some(search) = self.add_station.as_mut() else { return };
+        let len = search.hits.len();
+        match (search.mode, key.code) {
+            (_, KeyCode::Esc) => {
+                self.add_station = None;
+                self.status = "No station added".into();
+            }
+            (SearchMode::Typing, KeyCode::Enter) => {
+                let text = search.text.text().trim().to_owned();
+                if text.is_empty() || search.waiting {
+                    return;
+                }
+                if search.asked.as_deref() == Some(text.as_str()) && search.selected().is_some() {
+                    // Already searched for this: Enter picks what the cursor is on.
+                    return self.make_selected_station();
+                }
+                search.asked = Some(text.clone());
+                search.waiting = true;
+                search.hits.clear();
+                search.cursor = 0;
+                search.error = None;
+                self.backend.send(Request::Search { query: text });
+            }
+            (SearchMode::Typing, KeyCode::Down | KeyCode::Up | KeyCode::Tab) if len > 0 => {
+                search.mode = SearchMode::Results;
+            }
+            (SearchMode::Typing, _) => {
+                search.text.key(key, MAX_SEARCH);
+            }
+            (SearchMode::Results, KeyCode::Enter) => self.make_selected_station(),
+            (SearchMode::Results, KeyCode::Char('j') | KeyCode::Down) => search.cursor = step(search.cursor, len, 1),
+            (SearchMode::Results, KeyCode::Char('k') | KeyCode::Up) => search.cursor = step(search.cursor, len, -1),
+            (SearchMode::Results, KeyCode::Char('/') | KeyCode::Tab | KeyCode::BackTab) => {
+                search.mode = SearchMode::Typing;
+            }
+            (SearchMode::Results, _) => {}
+        }
+    }
+
+    fn make_selected_station(&mut self) {
+        let Some(hit) = self.add_station.as_ref().and_then(|s| s.selected().cloned()) else { return };
+        self.add_station = None;
+        self.create_station(&hit.id, &hit.name);
+    }
+
+    /// Asks Pandora for a station seeded by `pandora_id` (it plays when it arrives).
+    fn create_station(&mut self, pandora_id: &str, name: &str) {
+        if self.creating {
+            self.status = "Still making the last station…".into();
+            return;
+        }
+        self.creating = true;
+        self.status = format!("Making a station from {name}…");
+        self.backend.send(Request::CreateStation { pandora_id: pandora_id.to_owned() });
+    }
+
+    /// Pandora made (or already had) a station: it joins the list, and plays.
+    fn station_created(&mut self, station: Station) {
+        self.creating = false;
+        let at = match self.stations.iter().position(|s| s.id == station.id) {
+            Some(at) => at,
+            None => {
+                // Newest first, after Shuffle (which stays on top).
+                let at = usize::from(self.stations.first().is_some_and(|s| s.is_shuffle));
+                self.stations.insert(at, station);
+                at
+            }
+        };
+        self.on_add_row = false;
+        self.stations_cursor = at;
+        self.tune(at);
     }
 
     pub fn stations_index(&self) -> usize {
@@ -738,6 +964,10 @@ impl App {
     /// favorite in the menu) or else the one playing; saved as `[playback] favorites`.
     fn toggle_favorite(&mut self) {
         let (id, name) = match (self.focus, self.view, self.menu_selected()) {
+            (Focus::Content, View::Stations, _) if self.on_add_row => {
+                self.status = "f stars a station: move onto one".into();
+                return;
+            }
             (Focus::Content, View::Stations, _) => match self.stations.get(self.stations_index()) {
                 Some(s) => (s.id.clone(), s.name.clone()),
                 None => return,
@@ -788,6 +1018,7 @@ impl App {
             View::Settings => Some(MenuItem::Settings),
             View::About => Some(MenuItem::About),
             View::Stations => Some(MenuItem::Stations),
+            View::Genres => Some(MenuItem::Genres),
             View::Player if self.has_now_playing() => Some(MenuItem::NowPlaying),
             View::Player => None,
         };
@@ -873,6 +1104,7 @@ impl App {
             }
             Reply::Stations(stations) => {
                 self.stations = stations;
+                self.on_add_row = self.stations.is_empty();
                 let last = &self.config.pandora.last_station;
                 let at = self.stations.iter().position(|s| &s.id == last);
                 self.stations_cursor = at.unwrap_or(0);
@@ -921,6 +1153,22 @@ impl App {
                 if let Some(d) = self.details.as_mut().filter(|d| d.station_id == station_id) {
                     d.from_pandora = Some(Ok(details));
                 }
+            }
+            Reply::SearchResults { query, hits } => {
+                if let Some(search) = self.add_station.as_mut().filter(|s| s.asked.as_deref() == Some(query.as_str())) {
+                    search.waiting = false;
+                    search.error = None;
+                    // Typing on while it searched keeps the keys in the text.
+                    let same = search.text.text().trim() == query;
+                    search.mode = if hits.is_empty() || !same { SearchMode::Typing } else { SearchMode::Results };
+                    search.cursor = 0;
+                    search.hits = hits;
+                }
+            }
+            Reply::StationCreated(station) => self.station_created(station),
+            Reply::Genres(categories) => {
+                self.genres = GenresState::Loaded(categories);
+                self.genres_cursor = 0;
             }
             Reply::Playlist { station_id, songs } => {
                 if self.current_station.as_deref() != Some(&station_id) {
@@ -971,6 +1219,19 @@ impl App {
             Reply::Failed { what, message } => {
                 if what == "playlist" {
                     self.playlist_pending = false;
+                }
+                if what == "search"
+                    && let Some(search) = self.add_station.as_mut()
+                {
+                    search.waiting = false;
+                    search.error = Some(message);
+                    return;
+                }
+                if what == "create station" {
+                    self.creating = false;
+                }
+                if what == "genres" {
+                    self.genres = GenresState::Failed(message.clone());
                 }
                 if what == "details"
                     && let Some(d) = self.details.as_mut().filter(|d| d.from_pandora.is_none())
@@ -1195,6 +1456,7 @@ impl App {
             || self.confirm_quit
             || self.confirm_delete.is_some()
             || self.rename.is_some()
+            || self.add_station.is_some()
             || self.details.is_some()
     }
 
@@ -1243,6 +1505,7 @@ impl App {
             },
             Setting::RetroMode => self.config.ui.retro_mode.label().into(),
             Setting::ArtTint => self.config.ui.art_tint.label().into(),
+            Setting::Animations => on(self.config.ui.animations),
             Setting::CheckUpdates => on(self.config.ui.check_updates),
             Setting::Splash => on(self.config.ui.splash),
             Setting::EditFile => self
@@ -1316,6 +1579,12 @@ impl App {
             Setting::CheckUpdates => {
                 self.config.ui.check_updates = !self.config.ui.check_updates;
                 self.save(&[("boxvibe", "check_updates", self.config.ui.check_updates.into())]);
+            }
+            Setting::Animations => {
+                let on = !self.config.ui.animations;
+                self.config.ui.animations = on;
+                self.save(&[("look", "animations", on.into())]);
+                self.status = format!("Animations: {}", if on { "on" } else { "off" });
             }
             Setting::Splash => {
                 let on = !self.config.ui.splash;
@@ -1451,6 +1720,9 @@ impl App {
         if self.rename.is_some() {
             return self.rename_key(key);
         }
+        if self.add_station.is_some() {
+            return self.search_key(key);
+        }
         if self.prompt.is_some() {
             return self.prompt_key(key);
         }
@@ -1477,6 +1749,8 @@ impl App {
             Cmd::Skip => self.skip(),
             Cmd::NowPlaying => self.show_now_playing(),
             Cmd::Stations => self.show_stations(),
+            Cmd::Genres => self.show_genres(),
+            Cmd::Add => self.ask_add_station(),
             Cmd::Settings => self.show_page(View::Settings),
             Cmd::About => self.show_page(View::About),
             Cmd::Favorites => self.show_favorites(),
@@ -1524,6 +1798,7 @@ impl App {
     /// or the station of the favorite the menu is on. `None` anywhere else.
     pub fn station_in_reach(&self) -> Option<(Station, bool)> {
         match (self.focus, self.view, self.menu_selected()) {
+            (Focus::Content, View::Stations, _) if self.on_add_row => None,
             (Focus::Content, View::Stations, _) => {
                 self.stations.get(self.stations_index()).cloned().map(|s| (s, false))
             }
@@ -1704,12 +1979,14 @@ impl App {
             (Focus::Menu, _) => self.open_menu_item(),
             (Focus::Content, View::Settings) => self.change_setting(),
             (Focus::Content, View::About) => self.press_update(),
+            (Focus::Content, View::Stations) if self.on_add_row => self.open_add_station(),
             (Focus::Content, View::Stations) => {
                 if self.stations.is_empty() {
                     return;
                 }
                 self.tune(self.stations_index());
             }
+            (Focus::Content, View::Genres) => self.add_genre_station(),
             (Focus::Content, View::Player) => {}
         }
     }
@@ -1721,7 +1998,16 @@ impl App {
             (Focus::Content, View::Settings) => self.settings_cursor = clamp(self.settings_cursor, Setting::ALL.len()),
             (Focus::Content, View::Player) => self.move_song(by),
             (Focus::Content, View::Stations) => {
-                self.stations_cursor = clamp(self.stations_index(), self.stations.len().max(1))
+                // The "Add station…" row is the list's first row.
+                let at = if self.on_add_row { 0 } else { self.stations_index() + 1 };
+                let to = clamp(at, self.stations.len() + 1);
+                self.on_add_row = to == 0;
+                if to > 0 {
+                    self.stations_cursor = to - 1;
+                }
+            }
+            (Focus::Content, View::Genres) => {
+                self.genres_cursor = clamp(self.genres_index(), self.genre_rows().len().max(1))
             }
             (Focus::Content, View::About) => {}
         }
@@ -2087,7 +2373,13 @@ mod tests {
         app.view = View::Stations;
         app.stations_cursor = app.stations.len() - 1;
         app.on_key(key(KeyCode::Down));
-        assert_eq!(app.stations_index(), 0, "stations wrap too");
+        assert!(app.on_add_row, "stations: the last one is followed by the Add station row");
+        app.on_key(key(KeyCode::Down));
+        assert_eq!((app.on_add_row, app.stations_index()), (false, 0), "and then the list wraps");
+        app.on_key(key(KeyCode::Up));
+        assert!(app.on_add_row, "up from the first station is the Add station row");
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.stations_index(), app.stations.len() - 1, "and up from that wraps to the last");
     }
 
     #[test]
@@ -2095,8 +2387,8 @@ mod tests {
         let app = demo();
         let items = app.menu_items();
         assert_eq!(items[0], MenuItem::NowPlaying, "a station plays: NOW PLAYING on top");
-        assert_eq!(items[1], MenuItem::Stations);
-        assert_eq!(items.len(), 5, "no favorites yet: no FAVORITES entries");
+        assert_eq!((items[1], items[2]), (MenuItem::Stations, MenuItem::Genres));
+        assert_eq!(items.len(), 6, "no favorites yet: no FAVORITES entries");
         assert_eq!(&items[items.len() - 3..], [MenuItem::Settings, MenuItem::About, MenuItem::Quit]);
     }
 
@@ -2104,7 +2396,7 @@ mod tests {
     fn enter_on_settings_and_about_opens_them() {
         let mut app = demo();
         app.focus = Focus::Menu;
-        app.menu_cursor = 2;
+        app.menu_cursor = 3;
         app.on_key(key(KeyCode::Enter));
         assert_eq!((app.view, app.focus), (View::Settings, Focus::Content));
         app.on_key(key(KeyCode::Esc));
@@ -2179,7 +2471,14 @@ mod tests {
         assert!(app.is_favorite(&third.id));
         assert_eq!(
             app.menu_items(),
-            [MenuItem::Stations, MenuItem::Favorite(0), MenuItem::Settings, MenuItem::About, MenuItem::Quit]
+            [
+                MenuItem::Stations,
+                MenuItem::Genres,
+                MenuItem::Favorite(0),
+                MenuItem::Settings,
+                MenuItem::About,
+                MenuItem::Quit
+            ]
         );
         let saved = Config::load(&path).0.ui.favorites;
         assert_eq!(
@@ -2188,6 +2487,8 @@ mod tests {
         );
         // Enter on the favorite in the menu plays it.
         app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(app.menu_selected(), MenuItem::Genres);
         app.on_key(key(KeyCode::Char('j')));
         assert_eq!(app.menu_selected(), MenuItem::Favorite(0));
         app.on_key(key(KeyCode::Enter));
@@ -2633,7 +2934,7 @@ mod tests {
     fn i_g_and_home_end_are_not_keys_any_more() {
         let mut app = saving_app("no-icon-key");
         let icons = app.config.ui.icons;
-        for code in [KeyCode::Char('i'), KeyCode::Char('g'), KeyCode::Char('G'), KeyCode::Home, KeyCode::End] {
+        for code in [KeyCode::Char('i'), KeyCode::Char('g'), KeyCode::Home, KeyCode::End] {
             assert_eq!(command_for(key(code)), None, "{code:?}");
         }
         app.on_key(key(KeyCode::Char('i')));
@@ -2768,5 +3069,236 @@ mod tests {
         app.on_key(key(KeyCode::Char('v')));
         app.settle(Duration::from_millis(150));
         assert!(matches!(app.details.as_ref().unwrap().of, DetailsOf::Station(_)));
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    fn open_stations_page() -> App {
+        let mut app = demo();
+        app.settle(Duration::from_millis(300));
+        app.on_key(shift('S'));
+        app
+    }
+
+    #[test]
+    fn a_searches_then_enter_makes_the_station_and_plays_it() {
+        let mut app = open_stations_page();
+        let before = app.stations.len();
+        app.on_key(key(KeyCode::Char('a')));
+        assert!(app.add_station.is_some(), "a opens the search box");
+        // Letters go into the box, not to j/k/q/a keys.
+        type_text(&mut app, "mid");
+        assert_eq!(app.add_station.as_ref().unwrap().text.text(), "mid");
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.add_station.as_ref().unwrap().waiting);
+        app.settle(Duration::from_millis(300));
+        let search = app.add_station.as_ref().unwrap();
+        assert_eq!(search.hits.len(), 1, "{:?}", search.hits);
+        assert_eq!(search.hits[0].name, "Midnight City");
+        assert_eq!(search.mode, SearchMode::Results, "the answer is ready to pick from");
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.add_station.is_none());
+        app.settle(Duration::from_millis(400));
+        assert_eq!(app.stations.len(), before + 1);
+        let at = usize::from(app.stations[0].is_shuffle);
+        assert_eq!(app.stations[at].name, "Midnight City Radio", "new stations go after Shuffle");
+        assert_eq!(app.current_station.as_deref(), Some(app.stations[at].id.as_str()), "and it plays");
+        assert_eq!(app.view, View::Player);
+        // Making it again does not add a second copy.
+        let again = app.stations[at].clone();
+        app.station_created(again);
+        assert_eq!(app.stations.len(), before + 1);
+    }
+
+    #[test]
+    fn the_results_move_with_j_k_and_arrows_and_esc_cancels() {
+        let mut app = open_stations_page();
+        app.on_key(key(KeyCode::Char('a')));
+        type_text(&mut app, "m");
+        app.on_key(key(KeyCode::Enter));
+        app.settle(Duration::from_millis(300));
+        let n = app.add_station.as_ref().unwrap().hits.len();
+        assert!(n >= 3, "artists and songs both match 'm': {n}");
+        use crate::pandora::HitKind;
+        let hits = &app.add_station.as_ref().unwrap().hits;
+        assert!(
+            hits.iter().any(|h| h.kind == HitKind::Artist) && hits.iter().any(|h| h.kind == HitKind::Song),
+            "both artists and songs are listed"
+        );
+        let cursor = |app: &App| app.add_station.as_ref().unwrap().cursor;
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(cursor(&app), 1);
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(cursor(&app), 2);
+        app.on_key(key(KeyCode::Char('k')));
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(cursor(&app), 0);
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(cursor(&app), n - 1, "wraps");
+        // / goes back to typing; j is then just a letter.
+        app.on_key(key(KeyCode::Char('/')));
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(app.add_station.as_ref().unwrap().text.text(), "mj");
+        let before = app.stations.len();
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.add_station.is_none());
+        app.settle(Duration::from_millis(100));
+        assert_eq!(app.stations.len(), before, "Esc adds nothing");
+    }
+
+    #[test]
+    fn the_add_station_row_does_the_same_as_a() {
+        let mut app = open_stations_page();
+        app.stations_cursor = 0;
+        app.on_key(key(KeyCode::Up));
+        assert!(app.on_add_row, "the row sits above the first station");
+        app.on_key(key(KeyCode::Char('f')));
+        assert!(app.config.ui.favorites.is_empty(), "f does nothing to the row");
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.add_station.is_some());
+        assert!(app.current_station.is_some(), "Enter did not play a station");
+    }
+
+    #[test]
+    fn a_late_answer_to_an_older_search_is_not_shown_and_errors_are() {
+        let mut app = open_stations_page();
+        app.on_key(key(KeyCode::Char('a')));
+        type_text(&mut app, "kids");
+        app.on_key(key(KeyCode::Enter));
+        // Change the text before the answer comes.
+        app.on_key(key(KeyCode::Backspace));
+        app.settle(Duration::from_millis(300));
+        let search = app.add_station.as_ref().unwrap();
+        assert_eq!(search.mode, SearchMode::Typing, "the text moved on: keep typing");
+        // Enter searches the new text.
+        app.on_key(key(KeyCode::Enter));
+        app.settle(Duration::from_millis(300));
+        assert!(!app.add_station.as_ref().unwrap().hits.is_empty());
+        app.on_reply(Reply::Failed { what: "search", message: "Pandora is down".into() });
+        let search = app.add_station.as_ref().unwrap();
+        assert_eq!((search.waiting, search.error.as_deref()), (false, Some("Pandora is down")));
+    }
+
+    #[test]
+    fn a_outside_the_station_list_says_where_and_logged_out_asks_to_log_in() {
+        let mut app = open_stations_page();
+        app.on_key(shift('A'));
+        app.on_key(key(KeyCode::Char('a')));
+        assert!(app.add_station.is_none() && app.status.contains("Shift+S"), "{}", app.status);
+        let mut out = App::new(Config::default(), None, &[], false);
+        out.prompt = None;
+        out.view = View::Stations;
+        out.focus = Focus::Content;
+        out.on_key(key(KeyCode::Char('a')));
+        assert!(out.add_station.is_none() && out.status.contains("Log in"), "{}", out.status);
+    }
+
+    #[test]
+    fn a_second_create_is_ignored_while_one_is_on_its_way() {
+        let mut app = open_stations_page();
+        app.create_station("AR:demo-m83", "M83");
+        app.create_station("AR:demo-mgmt", "MGMT");
+        assert!(app.status.contains("Still"), "{}", app.status);
+        app.settle(Duration::from_millis(300));
+        assert!(!app.creating);
+        assert_eq!(app.stations.iter().filter(|s| s.name == "M83 Radio").count(), 1);
+        assert!(!app.stations.iter().any(|s| s.name == "MGMT Radio"), "the second was dropped");
+        app.on_reply(Reply::Failed { what: "create station", message: "no".into() });
+        assert!(!app.creating);
+    }
+
+    #[test]
+    fn shift_g_opens_genres_loads_them_once_and_enter_adds_and_plays() {
+        let mut app = demo();
+        app.settle(Duration::from_millis(300));
+        app.on_key(shift('G'));
+        assert_eq!((app.view, app.focus), (View::Genres, Focus::Content));
+        assert_eq!(app.menu_selected(), MenuItem::Genres);
+        assert_eq!(app.genres, GenresState::Loading);
+        app.settle(Duration::from_millis(300));
+        let GenresState::Loaded(categories) = &app.genres else { panic!("{:?}", app.genres) };
+        assert_eq!(categories.len(), 3);
+        // Moving, wrapping.
+        let rows = app.genre_rows().len();
+        assert_eq!(rows, 5);
+        app.on_key(key(KeyCode::Char('j')));
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.genres_index(), 2);
+        app.on_key(key(KeyCode::Char('k')));
+        app.on_key(key(KeyCode::Up));
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.genres_index(), rows - 1);
+        // Leaving and coming back does not ask again (it is cached).
+        app.on_key(shift('S'));
+        let loaded = app.genres.clone();
+        app.on_key(shift('G'));
+        assert_eq!(app.genres, loaded);
+        assert!(app.backend.replies.recv_timeout(Duration::from_millis(100)).is_err(), "no second request");
+        // Enter on Synthwave.
+        app.genres_cursor = 2;
+        let before = app.stations.len();
+        app.on_key(key(KeyCode::Enter));
+        app.settle(Duration::from_millis(400));
+        assert_eq!(app.stations.len(), before + 1);
+        let at = usize::from(app.stations[0].is_shuffle);
+        assert_eq!(app.stations[at].name, "Synthwave");
+        assert_eq!(app.current_station.as_deref(), Some(app.stations[at].id.as_str()));
+    }
+
+    #[test]
+    fn a_genre_list_that_failed_is_asked_for_again_and_logged_out_says_so() {
+        let mut app = demo();
+        app.settle(Duration::from_millis(300));
+        app.on_reply(Reply::Failed { what: "genres", message: "no".into() });
+        assert_eq!(app.genres, GenresState::Failed("no".into()));
+        app.on_key(key(KeyCode::Enter)); // not on the page yet: this is the menu/other view
+        app.on_key(shift('G'));
+        assert_eq!(app.genres, GenresState::Loading, "G tries again");
+        let mut out = App::new(Config::default(), None, &[], false);
+        out.prompt = None;
+        out.on_key(shift('G'));
+        assert!(out.status.contains("Log in") && out.genres == GenresState::Idle, "{}", out.status);
+    }
+
+    #[test]
+    fn genres_is_in_the_menu_under_stations_and_a_g_are_bound_once() {
+        let app = demo();
+        let items = app.menu_items();
+        let at = items.iter().position(|m| *m == MenuItem::Stations).unwrap();
+        assert_eq!(items[at + 1], MenuItem::Genres);
+        assert_eq!(command_for(KeyEvent::from(KeyCode::Char('a'))), Some(Cmd::Add));
+        assert_eq!(command_for(shift('G')), Some(Cmd::Genres));
+    }
+
+    #[test]
+    fn animations_off_skips_the_boot_screen_and_is_saved() {
+        let mut app = saving_app("animations");
+        assert!(app.config.ui.animations, "on by default");
+        app.begin_splash();
+        assert!(app.splash.is_some());
+        app.splash = None;
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.settings_cursor = Setting::at(Setting::Animations);
+        assert_eq!(app.setting_value(Setting::Animations), "on");
+        app.on_key(key(KeyCode::Enter));
+        assert!(!app.config.ui.animations);
+        assert_eq!(app.setting_value(Setting::Animations), "off");
+        assert!(saved(&app).contains("[look]") && saved(&app).contains("animations = false"), "{}", saved(&app));
+        app.begin_splash();
+        assert!(app.splash.is_none() && app.splash_progress().is_none(), "no boot screen when off");
+        // It loads back.
+        let (config, warnings) = Config::load(app.config_path.as_ref().unwrap());
+        assert!(!config.ui.animations && warnings.is_empty(), "{warnings:?}");
+        // And the other settings are unaffected: the clock and progress still count.
+        assert!(config.ui.splash);
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.config.ui.animations);
+        app.begin_splash();
+        assert!(app.splash.is_some(), "on again: the boot screen is back");
     }
 }

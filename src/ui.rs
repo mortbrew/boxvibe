@@ -463,13 +463,14 @@ fn rating_word<'a>(rating: Rating, p: &Palette, ic: &Icons) -> Span<'a> {
 // --- Status bar ---
 
 /// What is going on, on a shaded bar above the keys (where tubevibe has it),
-/// and the logged-in account at its far right.
+/// and "Logged In As: <email>" at its far right.
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette;
     let color = if app.status.starts_with('⚠') { p.yellow } else { p.fg };
     frame.render_widget(Block::new().bg(p.highlight), area);
-    let account = account_label(app);
     // The account gets at most half the bar, and never less than the status.
+    let room = (area.width / 2).saturating_sub(3) as usize;
+    let account = account_label(app, room);
     let want = account.as_ref().map_or(0, |a| safe_width(a) as u16 + 3);
     let right_w = want.min(area.width / 2);
     let [left, right] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(right_w)]).areas(area);
@@ -484,12 +485,16 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// "👤 me@example.com" while logged in; nothing otherwise.
-fn account_label(app: &App) -> Option<String> {
-    let name = app.config.pandora.username.trim();
-    (app.session == Session::LoggedIn && !name.is_empty()).then(|| {
-        format!("{}{}", icon_cell(icons(app.config.ui.icons).setting[Setting::at(Setting::Email)]), clean(name))
-    })
+/// "Logged In As: me@example.com" while logged in; nothing otherwise. When
+/// the bar's right half (`room` columns) is too narrow for all of it, just the
+/// email, so the part that matters is what stays.
+fn account_label(app: &App, room: usize) -> Option<String> {
+    let name = clean(app.config.pandora.username.trim());
+    if app.session != Session::LoggedIn || name.is_empty() {
+        return None;
+    }
+    let full = format!("Logged In As: {name}");
+    Some(if safe_width(&full) <= room { full } else { name })
 }
 
 /// The logo on the menu's top border, like tubevibe's: the box icon (always
@@ -2426,15 +2431,17 @@ mod tests {
         let (lines, buffer) = screen(&app, 120, 36);
         let bar = &lines[34];
         assert!(bar.starts_with(" hello status"), "{bar}");
-        assert!(bar.trim_end().ends_with("toby@example.com"), "{bar}");
-        assert!(bar.ends_with("toby@example.com "), "one space before the edge: {bar:?}");
-        let x = (bar.chars().count() - "toby@example.com ".len()) as u16;
+        assert!(bar.trim_end().ends_with("Logged In As: toby@example.com"), "{bar}");
+        assert!(bar.ends_with("Logged In As: toby@example.com "), "one space before the edge: {bar:?}");
+        let x = (bar.chars().count() - "Logged In As: toby@example.com ".len()) as u16;
         assert_eq!(buffer[(x, 34)].fg, app.palette.blue, "tubevibe's account colour");
         // Narrow, with a long status: both cut, never overlapping.
         app.status = "a very long status message that goes on and on and on".into();
         let (lines, _) = screen(&app, 40, 36);
         let bar = &lines[34];
         assert!(bar.contains('…') && bar.contains('@'), "{bar}");
+        assert!(bar.trim_end().ends_with("toby@example.com"), "narrow: just the email, whole: {bar}");
+        assert!(!bar.contains("Logged In As"), "{bar}");
         assert!(bar.chars().count() == 40);
         let status_end = bar.find("on").unwrap();
         assert!(status_end < bar.find('@').unwrap());

@@ -1137,7 +1137,8 @@ impl App {
                         ("account", "username", email.as_str().into()),
                         ("account", "password", password.as_str().into()),
                     ]);
-                    self.status = format!("Logged in as {email}");
+                    // The status bar's right side says who is logged in.
+                    self.status.clear();
                 }
                 if first && self.view == View::Settings && self.stations.is_empty() {
                     // Straight to the music after logging in from Settings.

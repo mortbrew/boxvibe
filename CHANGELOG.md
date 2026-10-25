@@ -148,6 +148,16 @@ bound twice.
   clippy), CodeQL for Rust and a weekly `cargo audit`, with badges in the README.
 - `rustls-webpki` 0.103.16 and `webpki-roots` 1.0.11 (RUSTSEC-2026-0381 and -0382).
 
+### Batch 5
+
+#### Status bar
+
+- The left side of the status bar no longer says "Logged in as …" after a
+  login. The right side now reads **Logged In As: <email>**, in the same
+  colour as before. When the right half is too narrow for all of it (small
+  terminals), it shows just the email, cut with `…` only if even that is too
+  long; it never takes more than half the bar or overlaps the status text.
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

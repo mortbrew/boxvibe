@@ -237,7 +237,7 @@ theme colour. It follows theme changes right away and works with Retro mode.
 The cover has no frame around it. While Help or the quit box is open, a
 terminal picture is held back (it would draw over the popup) and sent again,
 cleanly, when the popup closes. Everything behind a popup, the cover's half
-blocks included, is dimmed so the popup stands out. The status bar shows the logged-in account at
+blocks included, is dimmed so the popup stands out. The status bar shows "Logged In As: <email>" at
 its right.
 
 A cover that fails to download is tried again after 2, 6 and 15 seconds, and again when it is needed (a popup closes, the song changes).

@@ -64,6 +64,7 @@ work right now drawn as key caps at the bottom.
 - **Make a station by searching** (`a` on the Stations page, or the "Add station…" row): type an artist or song, `Enter` searches, pick one with `j` / `k`, `Enter` makes the station and plays it
 - **Edit a station's seeds and see its thumbs history** (`e` on a Stations or Favorites row): a popup with two tabs, **Seeds** and **Thumbs**, switched with `Tab` / `Shift+Tab` (or `←` `→`); `Esc` closes. In Seeds, `a` adds an artist or song (suggestions show while the box is empty, typing searches, `Enter` adds) and `x` removes one after asking; the last seed can't be removed. In Thumbs, `t` flips between thumbs up and thumbs down, the list loads more as you reach its end, and `x` takes a thumb back after asking. Pandora's genre stations and Shuffle can't be edited and say so
 - **Genres** (`G`, Shift+g, or Genres in the menu): Pandora's genre stations under their categories; `Enter` adds one to your stations and plays it. The list loads once per session
+- **Good Guy boxvibe** (Settings → PLAYBACK, on by default): when a song ends or you skip, boxvibe asks Pandora for an ad, as the website does, and plays any audio ad in Now Playing ("Advertisement", with a countdown; no skip or thumbs, `p` still pauses, nothing goes into History). It reports each ad the way the website's player does, so advertisers are paid and your account looks like any other listener's. Most plans (Plus, Premium) get none. Off, boxvibe never asks and skips ads like before
 - **Song change notifications** with `notify-send` (mako on Omarchy)
 - Whatever you change in the app (theme, icons, volume, last station) is
   saved to `config.toml` right away, keeping your comments
@@ -192,6 +193,7 @@ audio_quality = "high"         # high: MP3 192 kbps if your plan has it (Plus, P
 volume = 70                    # 0–100
 notifications = true           # a desktop notification when the song changes (Settings toggles it)
 autoplay_last_station = true   # start the station played last when boxvibe opens
+good_guy = true                # play Pandora's audio ads and report them, like the website does; false skips ads (Settings toggles it)
 last_station = ""              # the station to start on, kept by the app
 favorites = []                 # starred stations, { id = "…", name = "…" }, set with f
 
@@ -305,8 +307,19 @@ provider (Apache-2.0, see [THIRD_PARTY.md](THIRD_PARTY.md)):
 4. When the login expires (HTTP 401) boxvibe logs in again with the saved
    password and retries once. When another device is playing on the account
    (429 `STREAM_VIOLATION`) it takes over with `v1/station/playbackResumed`
-   and says so in the header line. Ads, artist messages and curator
-   messages are skipped
+   and says so in the header line. Artist messages and curator messages
+   are skipped
+5. Good Guy boxvibe (on by default): when a song ends or is skipped,
+   `v1/ad/getAdList` (an empty list is the usual answer). For each audio
+   ad, boxvibe downloads its `audioUrlMap` audio and plays it, then sends the
+   tracking links Pandora gave for it, as the website's player does:
+   the impression and `other_ad_interaction` and `audio_start` at the start
+   (with `v1/ad/registerAudioProgrammaticImpression`), `first_quartile`,
+   `midpoint`, `third_quartile` and `complete` at 25, 50, 75 and 100 %, with
+   `[PLAYERSTATE]`, `[ADPLAYHEAD]`, `[ASSETURI]` and `[TIMESTAMP]` filled in.
+   Reports go out in the background, only to https hosts named in Pandora's
+   answer, with short timeouts. Ads are never clicked through, and a failed
+   ad just goes on to your music
 
 What that means:
 

@@ -216,6 +216,34 @@ bound twice.
 - `--screen thumbs|thumbs-delete` draws it. Help and the shortcut bar show
   `t` and `x` on that tab only.
 
+#### Good Guy boxvibe
+
+- New setting **Good Guy boxvibe** (Settings → PLAYBACK, `good_guy = true` in `[playback]`, on by default,
+  saved as you change it). On, boxvibe behaves like the website's player about ads; off, it asks for none
+  and the music goes on at once, as before.
+- At each song end, skip, thumbs-down or "tired of this song", it asks `v1/ad/getAdList`. An empty list
+  (the usual answer, and always for plans without ads) means the next song starts as before. For each
+  audio ad (up to 4, at most 3 minutes, https only) it plays the `mediumQuality` audio.
+- **Now Playing during an ad** shows "Advertisement", "Ad 1 of 2 · your music comes right after", a
+  playing / paused state, a countdown bar and the volume. `Shift+N`, `Shift+U`, `Shift+D` and `Shift+Z`
+  say the ad can't be skipped or rated; `p` pauses and resumes; volume works. Nothing is added to History,
+  and the station changes or Log Out end the ad.
+- **Reports, as the website's player sends them:** at the start the impression links, `other_ad_interaction`,
+  `audio_start`, then `v1/ad/registerAudioProgrammaticImpression`; then `first_quartile`, `midpoint`,
+  `third_quartile` and `complete` at 25, 50, 75 and 100 %, with `[PLAYERSTATE]`, `[ADPLAYHEAD]`,
+  `[ASSETURI]` and `[TIMESTAMP]` filled in. They go out on background threads with a 5 second limit,
+  only to https hosts with a name (never an address or localhost) taken from Pandora's answer.
+  No click-throughs, and no pause, skip or mute events.
+- **Never stuck:** no answer in 8 seconds, an error, an ad that can't be downloaded in 20 seconds or
+  can't be played all go on to your next song, and boxvibe doesn't ask again for that break. An ad that
+  stops before 80 % is given up without a `complete` report.
+- The demo serves a two-ad pod (6 s and 4 s, silent, nothing is sent) on every third question;
+  `--snapshot FILE --screen ad` draws it.
+- Tests: the website's pod shape parsed (only fake values), unsafe links dropped, macros, UTC dates, the
+  start / quartile / complete order, a fake Pandora serving a 2-ad pod that checks the order of every
+  call and the filled macros, empty answers, and in the app: the ask → ads → music flow, no History
+  entries, skip / thumbs blocked, pause, off asks nothing, failure and timeout paths, station change.
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

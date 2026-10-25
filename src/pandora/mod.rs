@@ -35,6 +35,19 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 pub const SITE: &str = "https://www.pandora.com";
+/// The web player version `getAdList` reports in `deviceProperties` (the
+/// website's own number when this was written).
+const AD_APP_VERSION: &str = "1.300.0";
+
+/// What `getAdList` is told about the song that just ended.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdAsk {
+    pub station_id: String,
+    pub track_token: String,
+    pub seconds_played: u32,
+    /// The listener skipped (or thumbed down) rather than the song ending.
+    pub user_initiated: bool,
+}
 /// A current desktop Firefox on Linux. Pandora's bot check answered Chrome-like
 /// agents with 403s in Music Assistant's testing; Firefox ones got through.
 /// `[pandora] user_agent` in config.toml overrides it.
@@ -979,6 +992,56 @@ impl Client {
     /// account's other device and play here.
     pub fn take_over(&mut self) -> Result<(), Error> {
         self.post("/api/v1/station/playbackResumed", &json!({ "forceActive": true })).map(|_| ())
+    }
+
+    /// `v1/ad/getAdList`: what the site asks when a song ends or is skipped.
+    /// The answer is `{"ads": [...]}`, usually empty; read it with
+    /// [`crate::ads::parse_ad_list`].
+    pub fn ad_list(&mut self, ask: &AdAsk) -> Result<Value, Error> {
+        self.post(
+            "/api/v1/ad/getAdList",
+            &json!({
+                "videoAdIndex": 1,
+                "audioAdIndex": 1,
+                "nextTrackStationId": ask.station_id,
+                "secondsUntilAd": 0,
+                "currentTrackStationId": ask.station_id,
+                "currentTrackToken": ask.track_token,
+                "currentTrackType": "Track",
+                "adsWizzAdId": null,
+                "adBlockerEnabled": false,
+                "httpReferrer": "",
+                "currentTrackSecondsPlayed": ask.seconds_played,
+                "userInitiatedTrackEnd": ask.user_initiated,
+                "userInitiatedTrackEndActionType": if ask.user_initiated { "GLOBAL_SKIP_TRACK" } else { "" },
+                "secondsSinceDisplayAd": 0,
+                "skipForReplay": false,
+                "userTimedOut": false,
+                "currentTrackDeliveryType": null,
+                "nextTrackDeliveryType": null,
+                "deviceProperties": { "applicationVersion": AD_APP_VERSION },
+            }),
+        )
+    }
+
+    /// `v1/ad/registerAudioProgrammaticImpression`: tells Pandora an audio ad
+    /// began to play.
+    pub fn register_audio_impression(
+        &mut self,
+        ad_token: &str,
+        request_meta: &str,
+        station_id: &str,
+    ) -> Result<(), Error> {
+        self.post(
+            "/api/v1/ad/registerAudioProgrammaticImpression",
+            &json!({
+                "adRequestMetaData": request_meta,
+                "adToken": ad_token,
+                "stationId": station_id,
+                "httpReferrer": "",
+            }),
+        )
+        .map(|_| ())
     }
 
     /// Downloads a song's audio (a few MB) to decode it.

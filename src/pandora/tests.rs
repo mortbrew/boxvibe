@@ -598,3 +598,145 @@ fn a_refused_seed_change_is_an_error_not_a_success() {
     assert!(second.contains("FAILED"), "{second}");
     assert!(c.add_seed("9", "AR:1").is_err(), "an answer with no status is not OK");
 }
+
+/// A two-ad pod whose report links point back at the fake server (`host`).
+fn fake_pod(host: &str) -> Value {
+    let ad = |n: u32, length: f64| {
+        let url = |what: &str, query: &str| format!("http://{host}/haymaker/{what}/{n}{query}");
+        json!({
+            "adToken": format!("pod:1/2/{n}"), "adRequestMetaData": format!("meta-{n}"),
+            "adType": "AUDIO_AD", "adLength": length,
+            "audioUrlMap": { "mediumQuality": format!("http://{host}/audio/{n}.mp4") },
+            "adVerificationData": [{ "vendor": "pandora-monocle", "parameters": format!("m={n}") }],
+            "vastTrackingEvents": [
+                { "eventType": "IMPRESSION", "urls": [url("imp", "?ts=[TIMESTAMP]")] },
+                { "eventType": "AUDIO_START", "urls": [url("start", "?ps=[PLAYERSTATE]&ph=[ADPLAYHEAD]")] },
+                { "eventType": "AUDIO_FIRST_QUARTILE", "urls": [url("q1", "?ph=[ADPLAYHEAD]&uri=[ASSETURI]")] },
+                { "eventType": "AUDIO_MIDPOINT", "urls": [url("mid", "?ph=[ADPLAYHEAD]")] },
+                { "eventType": "AUDIO_THIRD_QUARTILE", "urls": [url("q3", "?ph=[ADPLAYHEAD]")] },
+                { "eventType": "AUDIO_COMPLETE", "urls": [url("done", "?ph=[ADPLAYHEAD]")] },
+            ],
+        })
+    };
+    json!({ "ads": [ad(1, 8.0), ad(2, 4.0)] })
+}
+
+#[test]
+fn a_two_ad_pod_is_asked_played_and_reported_in_the_websites_order() {
+    use crate::ads::{Action, Break, Tracker, parse_ad_list};
+    use std::time::{Duration, SystemTime};
+    let (base, seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        "/api/v1/ad/getAdList" => (200, fake_pod(r.header("Host").unwrap()).to_string()),
+        _ => (200, "{}".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    let ask = AdAsk { station_id: "st9".into(), track_token: "trk".into(), seconds_played: 31, user_initiated: true };
+    let answer = c.ad_list(&ask).unwrap();
+    let ads = parse_ad_list(&answer, false);
+    assert_eq!(ads.len(), 2);
+
+    // Play both ads the way the app does, sending every report in order.
+    let tracker = Tracker::new(true, false, "boxvibe-test");
+    let mut brk = Break::new(ads, "st9");
+    let now = SystemTime::now();
+    let send = |c: &mut Client, actions: Vec<Action>| {
+        for action in actions {
+            match action {
+                Action::Track { urls, .. } => tracker.fire(urls).unwrap().join().unwrap(),
+                Action::Register { token, request_meta, station_id } => {
+                    c.register_audio_impression(&token, &request_meta, &station_id).unwrap()
+                }
+            }
+        }
+    };
+    while !brk.done() {
+        send(&mut c, brk.start(now));
+        let length = brk.ad().unwrap().length;
+        for part in [0.25, 0.5, 0.75] {
+            send(&mut c, brk.progress(Duration::from_secs_f64(length * part), now));
+        }
+        send(&mut c, brk.finish(now));
+    }
+
+    let seen = seen.lock().unwrap();
+    let calls: Vec<String> = seen
+        .iter()
+        .map(|s| s.path.clone())
+        .filter(|p| p.starts_with("/api/v1/ad") || p.starts_with("/haymaker"))
+        .collect();
+    let q = |p: &str| calls.iter().position(|c| c.starts_with(p)).unwrap_or_else(|| panic!("{p} missing in {calls:?}"));
+    assert_eq!(calls[0], "/api/v1/ad/getAdList");
+    let order = [
+        "/haymaker/imp/1?ts=",
+        "/haymaker/te/other_ad_interaction?m=1",
+        "/haymaker/start/1?ps=foreground&ph=00:00:00.000",
+        "/api/v1/ad/registerAudioProgrammaticImpression",
+        "/haymaker/q1/1?ph=00:00:02.000&uri=http%3A%2F%2F127.0.0.1%3A",
+        "/haymaker/mid/1?ph=00:00:04.000",
+        "/haymaker/q3/1?ph=00:00:06.000",
+        "/haymaker/done/1?ph=00:00:08.000",
+        "/haymaker/imp/2?ts=",
+        "/haymaker/te/other_ad_interaction?m=2",
+        "/haymaker/start/2",
+        "/api/v1/ad/registerAudioProgrammaticImpression",
+        "/haymaker/q1/2?ph=00:00:01.000",
+        "/haymaker/mid/2?ph=00:00:02.000",
+        "/haymaker/q3/2?ph=00:00:03.000",
+        "/haymaker/done/2?ph=00:00:04.000",
+    ];
+    let mut at = 0;
+    for step in order {
+        let found = calls[at..]
+            .iter()
+            .position(|c| c.starts_with(step))
+            .unwrap_or_else(|| panic!("{step} not after #{at} in {calls:?}"));
+        at += found + 1;
+    }
+    assert!(q("/haymaker/imp/1") < q("/haymaker/imp/2"));
+    assert_eq!(calls.len(), 1 + order.len(), "{calls:?}");
+    // The timestamp is a filled-in ISO date, no macro left behind.
+    assert!(calls.iter().all(|c| !c.contains('[') && !c.contains("%5B")), "{calls:?}");
+    let imp = &calls[q("/haymaker/imp/1")];
+    assert!(imp.contains("ts=20") && imp.ends_with('Z'), "{imp}");
+    // What the site's player sent for the ask and the registration.
+    let ask_body = &seen.iter().find(|s| s.path.ends_with("getAdList")).unwrap().body;
+    assert_eq!(ask_body["currentTrackStationId"], "st9");
+    assert_eq!(ask_body["currentTrackToken"], "trk");
+    assert_eq!(ask_body["currentTrackSecondsPlayed"], 31);
+    assert_eq!(ask_body["userInitiatedTrackEnd"], true);
+    assert!(ask_body.get("uid").is_none());
+    let reg = &seen.iter().find(|s| s.path.ends_with("registerAudioProgrammaticImpression")).unwrap();
+    assert_eq!(reg.method, "POST");
+    assert_eq!(reg.header("X-AuthToken"), Some("tok"));
+    assert_eq!(
+        reg.body,
+        json!({ "adRequestMetaData": "meta-1", "adToken": "pod:1/2/1", "stationId": "st9", "httpReferrer": "" })
+    );
+    // Reports to the tracking hosts carry no Pandora login.
+    let imp_request = seen.iter().find(|s| s.path.starts_with("/haymaker/imp/1")).unwrap();
+    assert_eq!(imp_request.header("X-AuthToken"), None);
+    assert_eq!(imp_request.header("User-Agent"), Some("boxvibe-test"));
+}
+
+#[test]
+fn an_empty_or_odd_ad_answer_means_no_ads_and_a_refusal_is_an_error() {
+    use crate::ads::parse_ad_list;
+    let mut answers = vec![json!({ "ads": [] }).to_string(), "{}".into(), "[]".into()].into_iter();
+    let (base, _) = fake_pandora(Box::new(move |r| match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        "/api/v1/ad/getAdList" => match answers.next() {
+            Some(a) => (200, a),
+            None => (500, r#"{"errorCode":0,"errorString":"INTERNAL"}"#.into()),
+        },
+        _ => (200, "{}".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    let ask = AdAsk { station_id: "s".into(), track_token: "t".into(), seconds_played: 0, user_initiated: false };
+    for _ in 0..3 {
+        assert!(parse_ad_list(&c.ad_list(&ask).unwrap(), true).is_empty());
+    }
+    assert!(c.ad_list(&ask).is_err());
+}

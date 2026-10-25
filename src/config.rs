@@ -101,11 +101,14 @@ impl Default for PandoraConfig {
 pub struct PlayerConfig {
     /// 0–100.
     pub volume: u8,
+    /// Play Pandora's audio ads and report them like the website does (free
+    /// accounts get them). Off: no ad is asked for, so none plays.
+    pub good_guy: bool,
 }
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self { volume: 70 }
+        Self { volume: 70, good_guy: true }
     }
 }
 
@@ -561,6 +564,7 @@ pub const LAYOUT: &[(&str, &str, &str)] = &[
     ("boxvibe", "check_updates", "ui"),
     ("playback", "audio_quality", "pandora"),
     ("playback", "volume", "player"),
+    ("playback", "good_guy", "player"),
     ("playback", "autoplay_last_station", "ui"),
     ("playback", "last_station", "pandora"),
     ("playback", "notifications", "ui"),

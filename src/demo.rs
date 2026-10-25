@@ -53,6 +53,28 @@ const SONGS: [(&str, &str, &str, u32); 12] = [
     ("Pumped Up Kicks", "Foster the People", "Torches", 239),
 ];
 
+/// The demo's answer to the `n`-th "is an ad due?": every third time a made-up
+/// pod of two short ads (nothing to download or report; the demo plays silently).
+pub fn ads(n: usize) -> Vec<crate::ads::Ad> {
+    #[allow(clippy::manual_is_multiple_of)] // is_multiple_of needs Rust 1.91; the MSRV is 1.90
+    let none = n % 3 != 0;
+    if none {
+        return Vec::new();
+    }
+    [("Sparkle Seltzer: taste the demo", 6.0), ("Acme Umbrellas: for every forecast", 4.0)]
+        .iter()
+        .enumerate()
+        .map(|(i, (_, length))| crate::ads::Ad {
+            token: format!("pod:1/2/{}", i + 1),
+            request_meta: "demo".into(),
+            length: *length,
+            audio_url: format!("https://ads.example.com/demo/{}.mp4", i + 1),
+            events: Vec::new(),
+            monocle: String::new(),
+        })
+        .collect()
+}
+
 /// Four songs for `station_id`, the `round`-th batch (like a `getFragment`).
 pub fn playlist(station_id: &str, round: usize) -> Vec<Song> {
     (0..4)

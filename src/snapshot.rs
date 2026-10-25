@@ -59,6 +59,20 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
         // The station editor (`e` on a station): seeds, the add box, the
         // remove question, the thumbs history and its take-back question.
         "seeds" | "seeds-add" | "seeds-remove" | "thumbs" | "thumbs-delete" => editor_screen(&mut app, screen),
+        // An audio ad playing (the demo serves a pod on every third question),
+        // a few seconds in.
+        "ad" => {
+            use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+            app.config.player.good_guy = true;
+            for _ in 0..9 {
+                if app.ad_view().is_some() {
+                    break;
+                }
+                app.on_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT));
+                app.settle(Duration::from_millis(100));
+            }
+            app.audio.seek_silent(Duration::from_secs(2));
+        }
         _ => {}
     }
     let mut terminal = Terminal::new(TestBackend::new(cols, rows))?;

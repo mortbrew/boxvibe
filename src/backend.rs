@@ -8,10 +8,11 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
+use crate::ads::{self, Ad};
 use crate::demo;
 use crate::keychain::Keychain;
 use crate::pandora::{
-    self, Client, Error, FeedbackPage, GenreCategory, Quality, SearchHit, Seed, Song, Station, StationDetails,
+    self, AdAsk, Client, Error, FeedbackPage, GenreCategory, Quality, SearchHit, Seed, Song, Station, StationDetails,
 };
 use crate::update::{self, Checked, Update};
 
@@ -85,6 +86,16 @@ pub enum Request {
     },
     Tired {
         track_token: String,
+    },
+    /// `getAdList`: a song ended (or was skipped); is an ad due?
+    AdList {
+        ask: AdAsk,
+    },
+    /// `registerAudioProgrammaticImpression`: an audio ad began to play.
+    AdImpression {
+        token: String,
+        request_meta: String,
+        station_id: String,
     },
     /// The song began playing (Pandora's `trackStarted`).
     Started {
@@ -169,6 +180,11 @@ pub enum Reply {
     },
     Tired {
         track_token: String,
+    },
+    /// The ads due now (usually none), for the song that ended on `station_id`.
+    AdList {
+        station_id: String,
+        ads: Vec<Ad>,
     },
     /// Another device was streaming on the account; boxvibe took over.
     TookOver,
@@ -311,6 +327,7 @@ impl Backend {
 
 fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
     let mut round = 0;
+    let mut ads_asked = 0;
     // The made-up account: renames and removals change this list only.
     let mut stations = demo::stations();
     let mut editing = demo::Editing::default();
@@ -382,7 +399,15 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
             }
             Request::Rate { track_token, positive } => Reply::Rated { track_token, positive },
             Request::Tired { track_token } => Reply::Tired { track_token },
-            Request::Audio { .. } | Request::Art { .. } | Request::Quality(_) | Request::Started { .. } => continue,
+            Request::AdList { ask } => {
+                ads_asked += 1;
+                Reply::AdList { ads: demo::ads(ads_asked), station_id: ask.station_id }
+            }
+            Request::Audio { .. }
+            | Request::Art { .. }
+            | Request::Quality(_)
+            | Request::Started { .. }
+            | Request::AdImpression { .. } => continue,
         };
         if replies.send(reply).is_err() {
             break;
@@ -474,6 +499,20 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
             Request::Tired { track_token } => run(&mut client, &login, &mut took_over, "tired", |c| {
                 c.add_tired(&track_token).map(|()| Reply::Tired { track_token: track_token.clone() })
             }),
+            Request::AdList { ask } => run(&mut client, &login, &mut took_over, "ads", |c| {
+                c.ad_list(&ask)
+                    .map(|v| Reply::AdList { station_id: ask.station_id.clone(), ads: ads::parse_ad_list(&v, true) })
+            }),
+            Request::AdImpression { token, request_meta, station_id } => {
+                // A report only: Pandora's answer is empty and a failure is not worth a message.
+                let _ = pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| {
+                    c.register_audio_impression(&token, &request_meta, &station_id)
+                });
+                if !took_over {
+                    continue;
+                }
+                Reply::TookOver
+            }
             Request::Started { track_token } => {
                 // A report only: a failure here is not worth a message.
                 let _ = pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| {

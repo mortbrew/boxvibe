@@ -1031,6 +1031,10 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         width: inner.width.saturating_sub(2 * NOW_PLAYING_PAD),
         height: inner.height.saturating_sub(2 * NOW_PLAYING_PAD),
     };
+    if let Some(ad) = app.ad_view() {
+        draw_ad(frame, app, ic, &ad, inner);
+        return;
+    }
     let Some(song) = &app.now else {
         let text = match (&app.session, &app.current_station) {
             (Session::LoggedIn, Some(_)) => format!("{} Getting songs from Pandora…", ic.loading),
@@ -1092,6 +1096,38 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     if buttons_h > 0 {
         draw_buttons(frame, app, ic, song, buttons);
     }
+}
+
+/// Now Playing while one of Pandora's audio ads plays (Good Guy boxvibe): no
+/// cover, no skip or thumbs, a countdown instead of the song's time.
+fn draw_ad(frame: &mut Frame, app: &App, ic: &Icons, ad: &crate::app::AdView, area: Rect) {
+    let p = app.palette;
+    app.art.hide();
+    let w = area.width as usize;
+    let state = if ad.loading {
+        Span::styled(format!("{} getting the ad…", ic.loading), Style::new().fg(p.yellow))
+    } else if ad.paused {
+        Span::styled(format!("{} paused", ic.pause), Style::new().fg(p.yellow).bold())
+    } else {
+        Span::styled(format!("{} playing", ic.play), Style::new().fg(p.green))
+    };
+    let lines = vec![
+        Line::from(Span::styled("Advertisement", Style::new().fg(p.yellow).bold())).alignment(Alignment::Center),
+        Line::from(Span::styled(
+            fit(&format!("Ad {} of {} · your music comes right after", ad.number, ad.count), w),
+            Style::new().fg(p.muted),
+        ))
+        .alignment(Alignment::Center),
+        Line::raw(""),
+        Line::from(state).alignment(Alignment::Center),
+    ];
+    let stack = centered(area, area.width.min(60), 6.min(area.height));
+    let [text, _, progress, volume] =
+        Layout::vertical([Constraint::Length(4), Constraint::Length(0), Constraint::Length(1), Constraint::Length(1)])
+            .areas(stack);
+    frame.render_widget(Paragraph::new(lines), text);
+    progress_bar(frame, &p, ad.elapsed.as_secs(), u64::from(ad.length), true, progress);
+    draw_volume(frame, app, ic, volume);
 }
 
 /// Rows Now Playing needs before the buttons join the stack.
@@ -1163,11 +1199,18 @@ fn draw_buttons(frame: &mut Frame, app: &App, ic: &Icons, song: &Song, area: Rec
 
 fn draw_progress(frame: &mut Frame, app: &App, song: &Song, area: Rect) {
     let p = app.palette;
-    let length = u64::from(song.length);
-    let position = app.audio.position().as_secs();
+    progress_bar(frame, &p, app.audio.position().as_secs(), u64::from(song.length), false, area);
+}
+
+/// The time line: elapsed, the bar, then the length (`countdown`: the time left).
+fn progress_bar(frame: &mut Frame, p: &Palette, position: u64, length: u64, countdown: bool, area: Rect) {
     let position = if length > 0 { position.min(length) } else { position };
     let left = format!("{} ", clock(position));
-    let right = format!(" {}", if length > 0 { clock(length) } else { "--:--".into() });
+    let right = match (length > 0, countdown) {
+        (true, true) => format!(" -{}", clock(length - position)),
+        (true, false) => format!(" {}", clock(length)),
+        (false, _) => " --:--".into(),
+    };
     let bar = (area.width as usize).saturating_sub(left.len() + right.len());
     let ratio = if length > 0 { position as f64 / length as f64 } else { 0.0 };
     let done = ((bar as f64 * ratio) as usize).min(bar.saturating_sub(1));
@@ -1885,6 +1928,23 @@ mod tests {
         app.config.ui.icons = crate::config::IconSet::Emoji;
         app.demo_warm_up(3, std::time::Duration::ZERO);
         app
+    }
+
+    #[test]
+    fn the_ad_card_says_advertisement_with_a_countdown_and_no_rating_line() {
+        let mut app = demo();
+        for _ in 0..3 {
+            app.on_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('N'),
+                crossterm::event::KeyModifiers::SHIFT,
+            ));
+            app.settle(std::time::Duration::from_millis(300));
+        }
+        assert!(app.ad_view().is_some());
+        let text = screen(&app, 110, 34).0.join("\n");
+        assert!(text.contains("Advertisement") && text.contains("Ad 1 of 2"), "{text}");
+        assert!(text.contains("playing") && text.contains("-0:06"), "{text}");
+        assert!(text.contains("your music comes right after"), "{text}");
     }
 
     /// The Now Playing art box as (top, bottom, left, right), each one

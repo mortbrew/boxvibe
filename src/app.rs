@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::ads;
 use crate::audio::Audio;
 use crate::backend::{Backend, KeychainJob, KeychainReply, Reply, Request};
 use crate::config::{self, AlbumArt, Config, ConfigWarning, Secret};
@@ -23,7 +24,9 @@ use crate::pandora::{GenreCategory, Quality, Rating, SearchHit, Song, Station, S
 use crate::theme::{self, Palette};
 use crate::update::{Progress, Replace, Update};
 
+mod ad;
 mod editor;
+pub use ad::{AdPhase, AdView, End};
 pub use editor::{Editor, EditorTab, FeedState, Loaded};
 
 /// What boxvibe knows about the Pandora password in the desktop keychain.
@@ -98,6 +101,7 @@ pub enum Setting {
     Volume,
     Autoplay,
     Notify,
+    GoodGuy,
     Theme,
     Icons,
     BorderStyle,
@@ -114,7 +118,7 @@ pub enum Setting {
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 20] = [
+    pub const ALL: [(&'static str, Self); 21] = [
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
@@ -126,6 +130,7 @@ impl Setting {
         ("PLAYBACK", Self::Volume),
         ("PLAYBACK", Self::Autoplay),
         ("PLAYBACK", Self::Notify),
+        ("PLAYBACK", Self::GoodGuy),
         ("LOOK", Self::Theme),
         ("LOOK", Self::Icons),
         ("LOOK", Self::BorderStyle),
@@ -152,6 +157,7 @@ impl Setting {
             Self::Volume => "Volume",
             Self::Autoplay => "Autoplay last station on open",
             Self::Notify => "Song change notifications",
+            Self::GoodGuy => "Good Guy boxvibe",
             Self::Theme => "Theme",
             Self::Icons => "Icons",
             Self::BorderStyle => "Border style",
@@ -180,6 +186,7 @@ impl Setting {
             Self::Volume => Some(("playback", "volume")),
             Self::Autoplay => Some(("playback", "autoplay_last_station")),
             Self::Notify => Some(("playback", "notifications")),
+            Self::GoodGuy => Some(("playback", "good_guy")),
             Self::Theme => Some(("look", "theme")),
             Self::Icons => Some(("look", "icons")),
             Self::BorderStyle => Some(("look", "border_style")),
@@ -213,6 +220,9 @@ impl Setting {
             }
             Self::Notify => {
                 "A desktop notification (notify-send, mako on Omarchy) for every new song. Saved as [playback] notifications."
+            }
+            Self::GoodGuy => {
+                "Play Pandora's audio ads and report them, like the website does. Off skips ads. Saved as [playback] good_guy."
             }
             Self::Theme => {
                 "Omarchy follows your current Omarchy theme; or pick a built-in one. The theme is only changed here. Saved as [look] theme."
@@ -612,6 +622,10 @@ pub struct App {
     pub details: Option<Details>,
     /// `e`: the seeds and thumbs editor.
     pub editor: Option<Editor>,
+    /// Good Guy boxvibe: where the ad break is (see [`ad`]).
+    pub ad: AdPhase,
+    ad_serial: u32,
+    ad_tracker: ads::Tracker,
     pub buffering: Option<String>,
     audio_cache: HashMap<String, Vec<u8>>,
     /// The covers.
@@ -668,6 +682,11 @@ impl App {
         let quality = Quality::parse(&config.pandora.audio_quality);
         let audio = Audio::open(demo, config.player.volume);
         let backend = Backend::spawn(demo, quality, config.pandora.user_agent.clone());
+        let user_agent = match config.pandora.user_agent.trim() {
+            "" => crate::pandora::DEFAULT_USER_AGENT,
+            agent => agent,
+        }
+        .to_owned();
         let mut app = Self {
             session: Session::LoggedOut,
             view: View::Player,
@@ -703,6 +722,9 @@ impl App {
             creating: false,
             details: None,
             editor: None,
+            ad: AdPhase::Off,
+            ad_serial: 0,
+            ad_tracker: ads::Tracker::new(!demo, true, &user_agent),
             buffering: None,
             audio_cache: HashMap::new(),
             requested: HashSet::new(),
@@ -1157,8 +1179,9 @@ impl App {
             self.system_checked(&facts);
         }
         if self.now.as_ref().is_some_and(|s| self.audio.finished(s.length)) {
-            self.advance();
+            self.end_song(End::Played);
         }
+        self.ad_tick();
         self.want_art();
         if self.follows_omarchy() && self.last_theme_poll.elapsed() > Duration::from_secs(2) {
             self.last_theme_poll = Instant::now();
@@ -1314,9 +1337,9 @@ impl App {
                     self.status = "Pandora sent no songs for this station".into();
                 }
                 self.queue.extend(songs);
-                if self.now.is_none() {
+                if self.now.is_none() && !self.ad_break() {
                     self.advance();
-                } else {
+                } else if self.now.is_some() {
                     self.prefetch();
                 }
             }
@@ -1334,7 +1357,9 @@ impl App {
                 let sleep = crate::icons::icons(self.config.ui.icons).sleep;
                 self.status = format!("{sleep} Tired of {title}: Pandora won't play it for a month");
             }
+            Reply::AdList { station_id, ads } => self.ad_list_arrived(&station_id, ads),
             Reply::Audio { track_token, data } => {
+                let Some(data) = self.ad_audio_arrived(&track_token, data) else { return };
                 if self.buffering.as_deref() == Some(&track_token) {
                     self.buffering = None;
                     self.play_now(Some(data));
@@ -1344,6 +1369,9 @@ impl App {
             }
             Reply::Art { url, image } => self.art.arrived(url, image),
             Reply::AudioFailed { track_token, message } => {
+                if self.ad_audio_failed(&track_token, &message) {
+                    return;
+                }
                 self.requested.remove(&track_token);
                 if self.buffering.as_deref() == Some(&track_token) {
                     self.buffering = None;
@@ -1360,6 +1388,10 @@ impl App {
             | Reply::FeedbackDeleted { .. } => {}
             Reply::Failed { what, message } => {
                 if self.editor_failed(what, &message) {
+                    return;
+                }
+                if what == "ads" {
+                    self.ad_ask_failed(&message);
                     return;
                 }
                 if what == "playlist" {
@@ -1539,6 +1571,7 @@ impl App {
 
     fn log_out(&mut self) {
         self.audio.stop();
+        self.ad = AdPhase::Off;
         self.now = None;
         self.queue.clear();
         self.history.clear();
@@ -1563,6 +1596,7 @@ impl App {
             self.push_history(song);
         }
         self.audio.stop();
+        self.ad = AdPhase::Off;
         self.queue.clear();
         self.audio_cache.clear();
         self.requested.clear();
@@ -1600,6 +1634,11 @@ impl App {
         }
         self.audio.stop();
         self.buffering = None;
+        self.next_song();
+    }
+
+    /// Starts the next song of the queue (or asks for more).
+    fn next_song(&mut self) {
         let Some(song) = self.queue.pop_front() else {
             self.request_more();
             return;
@@ -1748,6 +1787,7 @@ impl App {
             Setting::Volume => format!("{}%", self.config.player.volume),
             Setting::Autoplay => on(self.config.ui.autoplay_last_station),
             Setting::Notify => on(self.config.ui.notifications),
+            Setting::GoodGuy => on(self.config.player.good_guy),
             Setting::Theme => theme::label(&self.config.ui.theme),
             Setting::Icons => crate::icons::label(self.config.ui.icons).into(),
             Setting::BorderStyle => self.config.ui.border_style.label().into(),
@@ -1811,6 +1851,13 @@ impl App {
                 self.config.ui.notifications = on;
                 self.save(&[("playback", "notifications", on.into())]);
                 self.status = format!("Song change notifications {}", if on { "on" } else { "off" });
+            }
+            Setting::GoodGuy => {
+                let on = !self.config.player.good_guy;
+                self.config.player.good_guy = on;
+                self.save(&[("playback", "good_guy", on.into())]);
+                self.status =
+                    format!("Good Guy boxvibe {}", if on { "on: Pandora's audio ads play" } else { "off: no ads" });
             }
             Setting::Theme => self.next_theme(),
             Setting::Icons => self.next_icons(),
@@ -2070,7 +2117,9 @@ impl App {
     fn skip(&mut self) {
         if self.now.is_some() {
             self.status = "Skipped".into();
-            self.advance();
+            self.end_song(End::Skipped);
+        } else if matches!(self.ad, AdPhase::Playing(_)) {
+            self.status = "Ads can't be skipped: your music is right after".into();
         } else {
             self.status = "Nothing is playing to skip".into();
         }
@@ -2359,7 +2408,11 @@ impl App {
     /// `U` / `D`: thumbs on the playing song, whatever has the keys.
     fn rate(&mut self, positive: bool) {
         let Some(song) = self.now.as_mut() else {
-            self.status = "Nothing is playing to rate".into();
+            self.status = if matches!(self.ad, AdPhase::Playing(_)) {
+                "Ads can't be rated: thumbs are for your songs".into()
+            } else {
+                "Nothing is playing to rate".into()
+            };
             return;
         };
         if song.station_id.is_empty() || song.track_token.is_empty() {
@@ -2371,7 +2424,7 @@ impl App {
         self.backend.send(request);
         // Like Pandora: a thumbs down on the playing song skips it.
         if !positive {
-            self.advance();
+            self.end_song(End::Skipped);
         }
     }
 
@@ -2415,7 +2468,7 @@ impl App {
     fn tired(&mut self) {
         let Some(song) = &self.now else { return };
         self.backend.send(Request::Tired { track_token: song.track_token.clone() });
-        self.advance();
+        self.end_song(End::Skipped);
     }
 
     /// About's button can be pressed: a new version is out, this copy can be
@@ -2620,8 +2673,19 @@ mod tests {
     }
 
     fn demo() -> App {
-        let mut app = App::new(Config::default(), None, &[], true);
+        // Ads have their own tests: here a skip goes straight to the next song.
+        let mut config = Config::default();
+        config.player.good_guy = false;
+        let mut app = App::new(config, None, &[], true);
         app.demo_warm_up(2, Duration::ZERO);
+        app
+    }
+
+    /// A demo app that asks for ads (every third answer is a pod of two).
+    fn ad_demo() -> App {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.settle(Duration::from_millis(300));
+        assert!(app.now.is_some() && app.config.player.good_guy);
         app
     }
 
@@ -2951,6 +3015,129 @@ mod tests {
         let (saved, _) = Config::load(&path);
         assert!(!saved.ui.notifications);
         assert!(!std::fs::read_to_string(&path).unwrap().contains("notify ="), "the 0.1 name is gone");
+    }
+
+    #[test]
+    fn good_guy_is_on_by_default_and_its_toggle_is_saved() {
+        assert!(Config::default().player.good_guy);
+        let path = crate::config::temp_dir("good-guy").join("config.toml");
+        let mut config = Config::default();
+        config.ui.check_updates = false;
+        let mut app = App::new(config, Some(path.clone()), &[], false);
+        app.prompt = None;
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.settings_cursor = Setting::at(Setting::GoodGuy);
+        assert_eq!(app.setting_value(Setting::GoodGuy), "on");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.setting_value(Setting::GoodGuy), "off");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[playback]") && text.contains("good_guy = false"), "{text}");
+        assert!(!Config::load(&path).0.player.good_guy);
+        assert!(Setting::GoodGuy.about().contains("good_guy") && Setting::GoodGuy.about().contains("Saved"));
+    }
+
+    /// Skips until the demo's third answer, a pod of two ads.
+    fn skip_into_an_ad(app: &mut App) {
+        for _ in 0..3 {
+            app.on_key(shift('N'));
+            app.settle(Duration::from_millis(300));
+        }
+    }
+
+    #[test]
+    fn an_ad_pod_plays_in_now_playing_without_touching_history_and_the_music_comes_back() {
+        let mut app = ad_demo();
+        let songs = app.history.len();
+        app.on_key(shift('N'));
+        app.settle(Duration::from_millis(300));
+        assert!(app.now.is_some() && !app.ad_break(), "no ad is due the first time");
+        app.on_key(shift('N'));
+        app.settle(Duration::from_millis(300));
+        app.on_key(shift('N'));
+        assert!(app.now.is_none() && app.ad_break(), "asking: the next song waits");
+        app.settle(Duration::from_millis(300));
+        let view = app.ad_view().expect("an ad is playing");
+        assert_eq!((view.number, view.count, view.length), (1, 2, 6));
+        assert_eq!(app.history.len(), songs + 3, "the three skipped songs, no ad");
+        // No skip, no thumbs; pause works.
+        let history = app.history.len();
+        app.on_key(shift('N'));
+        assert!(app.status.contains("can't be skipped") && app.ad_view().unwrap().number == 1, "{}", app.status);
+        app.on_key(shift('U'));
+        assert!(app.status.contains("can't be rated"), "{}", app.status);
+        app.on_key(shift('D'));
+        assert!(app.ad_break() && app.history.len() == history);
+        app.on_key(key(KeyCode::Char('p')));
+        assert!(app.ad_view().unwrap().paused);
+        app.on_key(key(KeyCode::Char('p')));
+        assert!(!app.ad_view().unwrap().paused);
+        // The first ad ends, then the second, then the music.
+        app.audio.seek_silent(Duration::from_secs(7));
+        app.tick();
+        let view = app.ad_view().expect("the second ad");
+        assert_eq!((view.number, view.length), (2, 4));
+        app.audio.seek_silent(Duration::from_secs(5));
+        app.tick();
+        assert!(!app.ad_break() && app.ad_view().is_none());
+        app.settle(Duration::from_millis(300));
+        assert!(app.now.is_some(), "the next song plays after the ads");
+        assert_eq!(app.history.len(), history, "ads are not added to History");
+    }
+
+    #[test]
+    fn with_good_guy_off_no_ad_is_asked_for_and_the_next_song_starts_at_once() {
+        let mut config = Config::default();
+        config.player.good_guy = false;
+        let mut app = App::new(config, None, &[], true);
+        app.settle(Duration::from_millis(300));
+        let first = app.now.as_ref().unwrap().track_token.clone();
+        for _ in 0..4 {
+            app.on_key(shift('N'));
+            assert!(!app.ad_break(), "no waiting for an answer");
+            app.settle(Duration::from_millis(300));
+            assert!(app.now.is_some());
+        }
+        assert_ne!(app.now.as_ref().unwrap().track_token, first);
+        app.settle(Duration::from_millis(300));
+        assert!(!app.ad_break(), "no pod ever came");
+    }
+
+    #[test]
+    fn an_ad_question_that_fails_or_never_answers_goes_on_to_the_next_song() {
+        let mut app = ad_demo();
+        app.end_song(End::Skipped);
+        assert!(matches!(app.ad, AdPhase::Asking(_)) && app.now.is_none());
+        app.on_reply(Reply::Failed { what: "ads", message: "boom".into() });
+        assert!(!app.ad_break() && app.now.is_some(), "{}", app.status);
+        assert!(app.status.starts_with("Ads:") && app.status.contains("playing on"), "{}", app.status);
+        // No answer at all.
+        app.end_song(End::Played);
+        app.ad = AdPhase::Asking(Instant::now() - Duration::from_secs(9));
+        app.tick();
+        assert!(!app.ad_break() && app.now.is_some());
+        // The audio of an ad can't be fetched.
+        app.demo = false;
+        app.ad_list_arrived(&app.current_station.clone().unwrap(), crate::demo::ads(3));
+        // (not asking, so ignored)
+        assert!(!app.ad_break());
+        app.ad = AdPhase::Asking(Instant::now());
+        app.ad_list_arrived(&app.current_station.clone().unwrap(), crate::demo::ads(3));
+        assert!(app.ad_view().is_some_and(|v| v.loading));
+        app.on_reply(Reply::AudioFailed { track_token: format!("ad:{}:0", app.ad_serial), message: "gone".into() });
+        assert!(!app.ad_break() && app.status.contains("playing on"), "{}", app.status);
+    }
+
+    #[test]
+    fn songs_arriving_during_an_ad_wait_and_changing_station_ends_the_ad() {
+        let mut app = ad_demo();
+        skip_into_an_ad(&mut app);
+        assert!(app.ad_view().is_some());
+        let station = app.current_station.clone().unwrap();
+        app.on_reply(Reply::Playlist { station_id: station, songs: crate::demo::playlist("x", 9) });
+        assert!(app.now.is_none() && app.ad_view().is_some(), "the music waits for the ad");
+        app.tune(1);
+        assert!(!app.ad_break());
     }
 
     #[test]

@@ -300,6 +300,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(KeyCode::Char('F'), Cmd::Favorites),
     bind(KeyCode::Char('U'), Cmd::ThumbUp),
     bind(KeyCode::Char('D'), Cmd::ThumbDown),
+    bind(KeyCode::Char('Z'), Cmd::Tired),
     bind(KeyCode::Char('C'), Cmd::ArtType),
     bind(KeyCode::Char('R'), Cmd::Retro),
     bind(KeyCode::Char('H'), Cmd::Tint),
@@ -312,7 +313,6 @@ pub const KEYMAP: &[Binding] = &[
     bind(KeyCode::Char(' '), Cmd::Pause),
     bind(KeyCode::Char('l'), Cmd::LikePane),
     bind(KeyCode::Char('b'), Cmd::BadPane),
-    bind(KeyCode::Char('z'), Cmd::Tired),
     bind(KeyCode::Char('f'), Cmd::Star),
     bind(KeyCode::Char('r'), Cmd::Rename),
     bind(KeyCode::Char('x'), Cmd::Delete),
@@ -2608,6 +2608,25 @@ mod tests {
         }
         assert!(seen.contains(&crate::config::RetroMode::Bit64));
         assert_eq!(seen.first(), seen.last());
+    }
+
+    #[test]
+    fn shift_z_is_tired_of_this_song_and_lowercase_z_is_nothing() {
+        assert_eq!(command_for(key(KeyCode::Char('z'))), None);
+        assert_eq!(command_for(shift('Z')), Some(Cmd::Tired));
+        // From any pane, on the playing song: it goes to History and the next one starts.
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.begin_splash();
+        app.on_key(key(KeyCode::Char(' ')));
+        app.settle(std::time::Duration::from_millis(400));
+        let Some(playing) = app.now.clone() else { panic!("demo plays a song") };
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.on_key(key(KeyCode::Char('z')));
+        assert_eq!(app.now.as_ref().map(|s| &s.track_token), Some(&playing.track_token), "z does nothing");
+        app.on_key(shift('Z'));
+        assert_ne!(app.now.as_ref().map(|s| &s.track_token), Some(&playing.track_token), "Z moves on");
+        assert!(app.history.iter().any(|s| s.track_token == playing.track_token));
     }
 
     #[test]

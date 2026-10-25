@@ -1336,7 +1336,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("space p", "play / pause"),
             ("N", "skip to the next song"),
             ("U D", "thumbs up / down the playing song (down skips it)"),
-            ("z", "tired of this song (a month off)"),
+            ("Z", "tired of this song (a month off)"),
             ("Shift ← →", "volume down / up (saved)"),
         ],
     ),

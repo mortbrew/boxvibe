@@ -79,6 +79,8 @@ bound twice.
   same key in an old one) and are moved to the new layout the next time the app
   saves; comments, other tables and unknown keys are left alone, and the file
   stays mode 600. Warnings name the new table (`look.theme`, not `ui.theme`).
+- **`Z` (Shift+z) is "tired of this song"** (it was lowercase `z`, which is now
+  unbound): any pane, on the playing song, as before.
 - **Keys removed:** `g` / `G` / `Home` / `End` (jump to the first / last row)
   and lowercase `i` (cycle the icon set). `j` `k` and the arrows still move
   (and wrap around the ends); the icon set is Settings → LOOK → Icons. Help

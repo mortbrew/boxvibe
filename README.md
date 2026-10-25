@@ -40,7 +40,7 @@ work right now drawn as key caps at the bottom.
 - **Now Playing**: title, artist, album, your thumb, a progress bar with the
   time, and the volume
 - **Thumbs up / down** (`U` / `D`, from any pane). Like in Pandora, a thumbs down skips the
-  song. **Tired of this song** (`z`) keeps it off all your stations for a month
+  song. **Tired of this song** (`Z`, Shift+z) keeps it off all your stations for a month
 - **Up Next** and **History**: the few songs Pandora sent up next on the
   left, the last 10 you heard on the right (stacked on a narrow window). Each pane is
   sized for 10 songs and Now Playing gets the rest of the height; on a short window Now Playing keeps
@@ -106,8 +106,8 @@ Try it without an account (made-up stations, no network, no sound):
 | `space` `p` | play / pause |
 | `N` (Shift+n) | skip to the next song, from any pane |
 | `U` `D` (Shift) | thumbs up / down the playing song, from any pane (down skips it) |
+| `Z` (Shift+z) | tired of this song, from any pane: Pandora keeps it off your stations for a month, and the next song starts |
 | `l` `b` | like / bad the selected row in Up Next or History, or the song when Now Playing has the keys |
-| `z` | tired of this song (off for a month) |
 | `Shift+←` `Shift+→` | volume down / up |
 | `j` `k` `↑` `↓` | move (wraps around the ends) |
 | `Enter` | play the station · open Settings / About · change a setting · Update Now |

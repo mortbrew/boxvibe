@@ -125,9 +125,8 @@ bound twice.
   the package to install under the missing ones, in plain letters so it reads
   without the font. It opens by itself only when something required is missing
   (the Nerd Font, while the Nerd icon set is on); otherwise the status bar gets
-  one line. Settings → BOXVIBE → **System Check** opens it any time; Enter looks
-  again, any other key closes it. boxvibe installs nothing, and there is no setting
-  or config key for it (an old `[boxvibe] dependency_check` is ignored without a
+  one line. In the list, Enter looks again and any other key closes it. boxvibe
+  installs nothing, and there is no setting or config key for it (an old `[boxvibe] dependency_check` is ignored without a
   warning). It never blocks the app, and says nothing when `fc-list` is missing or
   slow (it sees installed fonts, not the terminal's own font).
 - README lists everything boxvibe needs from the system, and why.

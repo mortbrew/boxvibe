@@ -89,7 +89,6 @@ pub enum Setting {
     ArtTint,
     Animations,
     CheckUpdates,
-    SystemCheck,
     Splash,
     EditFile,
     MenuEntry,
@@ -97,13 +96,12 @@ pub enum Setting {
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 21] = [
+    pub const ALL: [(&'static str, Self); 20] = [
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
         ("ACCOUNT", Self::LogOut),
         ("BOXVIBE", Self::CheckUpdates),
-        ("BOXVIBE", Self::SystemCheck),
         ("BOXVIBE", Self::EditFile),
         ("BOXVIBE", Self::MenuEntry),
         ("PLAYBACK", Self::Quality),
@@ -145,7 +143,6 @@ impl Setting {
             Self::ArtTint => "Tint art with theme colors",
             Self::Animations => "Animations",
             Self::CheckUpdates => "Look for new versions on startup",
-            Self::SystemCheck => "System Check",
             Self::Splash => "Boot screen",
             Self::EditFile => "Edit config.toml",
             Self::MenuEntry => "App menu entry",
@@ -174,7 +171,7 @@ impl Setting {
             Self::RetroMode => Some(("look", "retro_mode")),
             Self::ArtTint => Some(("look", "art_tint")),
             Self::Animations => Some(("look", "animations")),
-            Self::LogIn | Self::LogOut | Self::EditFile | Self::MenuEntry | Self::SystemCheck => None,
+            Self::LogIn | Self::LogOut | Self::EditFile | Self::MenuEntry => None,
         }
     }
 
@@ -218,9 +215,6 @@ impl Setting {
             }
             Self::RetroMode => {
                 "Makes the cover blocky on purpose, like an old console: 64-bit (256 pixels across), 32-bit (128), 16-bit (64), 8-bit (32), 4-bit (16), 2-bit (8), or HD for the full picture. Also Shift+R. Saved as [look] retro_mode."
-            }
-            Self::SystemCheck => {
-                "Enter lists what boxvibe uses from the system (a Nerd Font, notify-send): what is there, what is missing, and the package. It opens by itself at startup when the Nerd Font is missing. Not in config.toml."
             }
             Self::Animations => {
                 "On: the boot screen fades in. Off: no motion anywhere, so the boot screen is skipped (the song progress and clock still update). Saved as [look] animations."
@@ -726,7 +720,7 @@ impl App {
         let lacking: Vec<&str> = checks.iter().filter(|c| c.needed && !c.ok()).map(|c| c.dep.name()).collect();
         let extras = checks.iter().filter(|c| !c.needed && !c.ok()).count();
         if !lacking.is_empty() {
-            self.status = format!("⚠ Missing: {} · Settings → BOXVIBE → System Check", lacking.join(", "));
+            self.status = format!("⚠ Missing: {}", lacking.join(", "));
             if !self.overlay_open() && self.prompt.is_none() {
                 self.system_open = true;
             }
@@ -734,8 +728,8 @@ impl App {
             self.status = "System checked".into();
         } else if extras > 0 && !self.status.starts_with('⚠') {
             // (a config warning already showing matters more)
-            let s = if extras == 1 { "" } else { "s" };
-            self.status = format!("{extras} optional tool{s} not installed · Settings → BOXVIBE → System Check");
+            let names: Vec<&str> = checks.iter().filter(|c| !c.needed && !c.ok()).map(|c| c.dep.name()).collect();
+            self.status = format!("Optional, not installed: {}", names.join(", "));
         }
         self.system = Some(checks);
     }
@@ -1571,12 +1565,6 @@ impl App {
             Setting::Animations => on(self.config.ui.animations),
             Setting::CheckUpdates => on(self.config.ui.check_updates),
             Setting::Splash => on(self.config.ui.splash),
-            Setting::SystemCheck => match &self.system {
-                None => String::new(),
-                Some(checks) if checks.iter().any(|c| c.needed && !c.ok()) => "Something needed is missing".into(),
-                Some(checks) if checks.iter().all(crate::deps::Check::ok) => "All installed".into(),
-                Some(_) => "The essentials are there".into(),
-            },
             Setting::EditFile => self
                 .config_path
                 .as_ref()
@@ -1654,12 +1642,6 @@ impl App {
                 self.config.ui.animations = on;
                 self.save(&[("look", "animations", on.into())]);
                 self.status = format!("Animations: {}", if on { "on" } else { "off" });
-            }
-            Setting::SystemCheck => {
-                self.system_open = true;
-                if self.system.is_none() && self.system_look.is_none() {
-                    self.start_system_check();
-                }
             }
             Setting::Splash => {
                 let on = !self.config.ui.splash;
@@ -3398,14 +3380,10 @@ mod tests {
         let mut app = App::new(Config::default(), None, &[], true);
         app.system_checked(&facts(true, false));
         assert!(!app.system_open, "the font is there: only a line about the extra");
-        assert!(app.status.starts_with("1 optional tool not installed"), "{}", app.status);
-        assert_eq!(app.setting_value(Setting::SystemCheck), "The essentials are there");
+        assert_eq!(app.status, "Optional, not installed: notify-send");
         app.system_checked(&facts(false, true));
         assert!(app.system_open, "no Nerd Font: the list opens");
         assert!(app.status.contains("Missing: Nerd Font symbols"), "{}", app.status);
-        assert_eq!(app.setting_value(Setting::SystemCheck), "Something needed is missing");
-        app.system_checked(&facts(true, true));
-        assert_eq!(app.setting_value(Setting::SystemCheck), "All installed");
     }
 
     #[test]
@@ -3422,7 +3400,7 @@ mod tests {
         app.config.ui.icons = crate::config::IconSet::Emoji;
         app.system_checked(&facts(false, true));
         assert!(!app.system_open);
-        assert!(app.status.contains("optional"), "the font is listed but optional: {}", app.status);
+        assert!(app.status.contains("Optional"), "the font is listed but optional: {}", app.status);
     }
 
     #[test]
@@ -3432,7 +3410,6 @@ mod tests {
         app.system_checked(&facts(false, true));
         assert!(!app.system_open, "the email box keeps the keys");
         assert!(app.status.contains("Missing: Nerd Font symbols"), "{}", app.status);
-        assert!(app.system.is_some(), "it is still in Settings → System Check");
         app.prompt = None;
         app.help = true;
         app.system_checked(&facts(false, true));
@@ -3460,21 +3437,6 @@ mod tests {
         send.send(facts(false, true)).unwrap();
         app.tick();
         assert!(app.system.is_some() && app.system_open);
-    }
-
-    #[test]
-    fn the_settings_entry_opens_the_list_and_is_not_a_saved_setting() {
-        let mut app = saving_app("system-setting");
-        app.view = View::Settings;
-        app.focus = Focus::Content;
-        app.settings_cursor = Setting::at(Setting::SystemCheck);
-        assert_eq!(Setting::SystemCheck.label(), "System Check");
-        assert_eq!(Setting::ALL[app.settings_cursor].0, "BOXVIBE");
-        app.system = Some(crate::deps::checks(true, &facts(true, true)));
-        app.on_key(key(KeyCode::Enter));
-        assert!(app.system_open);
-        assert!(!saved(&app).contains("dependency"), "nothing is written: {}", saved(&app));
-        assert!(Setting::SystemCheck.about().contains("Not in config.toml"));
     }
 
     #[test]

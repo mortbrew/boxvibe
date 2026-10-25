@@ -477,7 +477,7 @@ impl ConfigWarning {
 /// them still loads without a warning. `ui.now_playing_size` went when Up Next
 /// and History became fixed at 10 songs (Now Playing takes the rest).
 /// `boxvibe.dependency_check` was a 0.4 beta setting for a startup check that
-/// is now always the same list (Settings → BOXVIBE → System Check).
+/// is now always the same list, with no switch.
 const RETIRED_KEYS: &[&str] = &["ui.now_playing_size", "boxvibe.dependency_check"];
 
 /// One `[section]`: each key is tried on its own, so an unknown or broken

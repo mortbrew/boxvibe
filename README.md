@@ -77,9 +77,8 @@ When boxvibe opens it looks, in the background, for the first two rows below.
 If something **required** is missing (the Nerd Font, while the Nerd icon set is
 on) the **System Check** list opens by itself: a mark for each item, what it is
 for, and the package to install under the missing ones. Otherwise it only puts
-one line in the status bar. Open it any time from Settings → BOXVIBE → **System
-Check**; Enter looks again, any other key closes it. boxvibe installs nothing
-and has no setting for this. The check can only see fonts **installed** on the
+one line in the status bar. In the list, Enter looks again and any other key
+closes it. boxvibe installs nothing, and there is no setting for this. The check can only see fonts **installed** on the
 computer (with `fc-list`), not the font your terminal is set to.
 
 | Needs | Why | Required? | Arch package | Checked at start |

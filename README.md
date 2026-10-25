@@ -56,7 +56,7 @@ work right now drawn as key caps at the bottom.
 - **Themes** (Settings): *Omarchy* (follows your current Omarchy theme, live, and
   is Tokyo Night elsewhere, and what a first run starts on) plus Tokyo Night, Gruvbox, Catppuccin, Catppuccin
   Latte, Rosé Pine Dawn, Nord, Everforest and Kanagawa
-- **Icon sets** (`i`): Nerd Font (the default), colour emoji or plain Unicode. The boxvibe logo is always the Nerd Font box
+- **Icon sets** (Settings → LOOK → Icons): Nerd Font (the default), colour emoji or plain Unicode. The boxvibe logo is always the Nerd Font box
 - **Rename and delete stations** (`r`, `x`) and **details** (`v`): see [Keys](#keys)
 - **Song change notifications** with `notify-send` (mako on Omarchy)
 - Whatever you change in the app (theme, icons, volume, last station) is
@@ -109,7 +109,7 @@ Try it without an account (made-up stations, no network, no sound):
 | `l` `b` | like / bad the selected row in Up Next or History, or the song when Now Playing has the keys |
 | `z` | tired of this song (off for a month) |
 | `Shift+←` `Shift+→` | volume down / up |
-| `j` `k` `↑` `↓` | move (wraps around the ends) · `g` first · `G` (Shift+g) last |
+| `j` `k` `↑` `↓` | move (wraps around the ends) |
 | `Enter` | play the station · open Settings / About · change a setting · Update Now |
 | `Tab` | menu → Now Playing → Up Next → History on the player (`Shift+Tab` back); menu ⇄ Stations / Settings / About |
 | `Esc` | back to the menu |
@@ -122,7 +122,6 @@ Try it without an account (made-up stations, no network, no sound):
 | `x` | delete the selected station from your Pandora account; asks first (`y` = delete, any other key keeps it) |
 | `v` | details: a song, or a station's seeds, thumbs up / down counts, genres and dates |
 | `C` `R` `H` (Shift) | album art: picture / off · Retro level · tint; saved |
-| `i` | next icon set |
 | `{` `}` | menu narrower / wider |
 | `?` | every key |
 | `Q` (Shift+q) / `Ctrl+c` | quit (asks first: `y` = yes, any other key = no) / quit now |

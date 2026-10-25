@@ -1349,7 +1349,6 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("x", "delete the selected station from Pandora (asks first)"),
             ("v", "details: a song, or a station's seeds and thumbs"),
             ("j k ↑ ↓", "move in the list"),
-            ("g G Home End", "first / last (Shift+G is the last)"),
             ("Enter", "play the station · open Settings / About"),
         ],
     ),
@@ -1370,7 +1369,6 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("C", "album art: picture / off (saved)"),
             ("R", "retro level: HD, 64-bit … 2-bit (saved)"),
             ("H", "tint: off / duotone / palette (saved)"),
-            ("i", "Nerd Font / emoji / Unicode icons (saved)"),
             ("{ }", "menu narrower / wider (saved)"),
             ("?", "this help"),
             ("Q Ctrl+c", "quit (asks first) / quit now"),
@@ -1811,7 +1809,9 @@ mod tests {
         app.settle(std::time::Duration::from_millis(400));
         app.on_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
         let keys = |app: &App| key_caps(app).iter().map(|(k, _)| *k).collect::<Vec<_>>();
-        app.on_key(KeyEvent::from(KeyCode::Char('g')));
+        while app.stations_index() > 0 {
+            app.on_key(KeyEvent::from(KeyCode::Char('k')));
+        }
         for (i, s) in app.stations.clone().iter().enumerate() {
             while app.stations_index() < i {
                 app.on_key(KeyEvent::from(KeyCode::Char('j')));

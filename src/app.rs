@@ -261,14 +261,11 @@ pub enum Cmd {
     ToMenu,
     Down,
     Up,
-    Top,
-    Bottom,
     Enter,
     VolumeUp,
     VolumeDown,
     MenuNarrower,
     MenuWider,
-    Icons,
     ArtType,
     Retro,
     Tint,
@@ -306,8 +303,6 @@ pub const KEYMAP: &[Binding] = &[
     bind(KeyCode::Char('C'), Cmd::ArtType),
     bind(KeyCode::Char('R'), Cmd::Retro),
     bind(KeyCode::Char('H'), Cmd::Tint),
-    bind(KeyCode::Char('G'), Cmd::Bottom),
-    bind(KeyCode::End, Cmd::Bottom),
     Binding { code: KeyCode::Right, shift: true, cmd: Cmd::VolumeUp },
     Binding { code: KeyCode::Left, shift: true, cmd: Cmd::VolumeDown },
     bind(KeyCode::Char('{'), Cmd::MenuNarrower),
@@ -322,13 +317,10 @@ pub const KEYMAP: &[Binding] = &[
     bind(KeyCode::Char('r'), Cmd::Rename),
     bind(KeyCode::Char('x'), Cmd::Delete),
     bind(KeyCode::Char('v'), Cmd::Details),
-    bind(KeyCode::Char('i'), Cmd::Icons),
     bind(KeyCode::Char('j'), Cmd::Down),
     bind(KeyCode::Down, Cmd::Down),
     bind(KeyCode::Char('k'), Cmd::Up),
     bind(KeyCode::Up, Cmd::Up),
-    bind(KeyCode::Char('g'), Cmd::Top),
-    bind(KeyCode::Home, Cmd::Top),
     bind(KeyCode::Tab, Cmd::NextFocus),
     bind(KeyCode::BackTab, Cmd::PrevFocus),
     bind(KeyCode::Esc, Cmd::ToMenu),
@@ -1505,14 +1497,11 @@ impl App {
             }
             Cmd::Down => self.move_cursor(1),
             Cmd::Up => self.move_cursor(-1),
-            Cmd::Top => self.move_cursor(-1000),
-            Cmd::Bottom => self.move_cursor(1000),
             Cmd::Enter => self.enter(),
             Cmd::VolumeUp => self.change_volume(5),
             Cmd::VolumeDown => self.change_volume(-5),
             Cmd::MenuNarrower => self.resize_menu(-1),
             Cmd::MenuWider => self.resize_menu(1),
-            Cmd::Icons => self.next_icons(),
             Cmd::ArtType => self.next_album_art(),
             Cmd::Retro => self.next_retro_mode(),
             Cmd::Tint => self.next_art_tint(),
@@ -2622,10 +2611,20 @@ mod tests {
     }
 
     #[test]
-    fn lowercase_i_still_cycles_icons_and_saves() {
-        let mut app = saving_app("icons-key");
+    fn i_g_and_home_end_are_not_keys_any_more() {
+        let mut app = saving_app("no-icon-key");
         let icons = app.config.ui.icons;
+        for code in [KeyCode::Char('i'), KeyCode::Char('g'), KeyCode::Char('G'), KeyCode::Home, KeyCode::End] {
+            assert_eq!(command_for(key(code)), None, "{code:?}");
+        }
         app.on_key(key(KeyCode::Char('i')));
+        assert_eq!(app.config.ui.icons, icons, "i no longer cycles the icons");
+        assert!(saved(&app).is_empty());
+        // The icon set is still a setting.
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.settings_cursor = Setting::at(Setting::Icons);
+        app.on_key(key(KeyCode::Enter));
         assert_eq!(app.config.ui.icons, icons.next());
         assert!(saved(&app).contains("icons"));
     }

@@ -19,6 +19,15 @@
 //! written from the community docs (which list the endpoints and show the
 //! details answer) and from what other web-API clients send (alexpreiss/
 //! pandora-app, libepimetheusKotlin, Panedora): no code was copied from them.
+//!
+//! Search (`v3/sod/search` with `{query, start, count, annotate, types}`; the
+//! answer is a `results` list of ids plus an `annotations` map), creating a
+//! station (`v1/station/createStation` with `{pandoraId, stationName}`) and the
+//! genre stations (`v1/music/genrecategories` with `{}`, then `v1/music/genres`
+//! with `{categoryToken}`) are written from the community docs (which show the
+//! `createStation` request and answer and the genre station ids) and from the
+//! requests and answers libepimetheusKotlin (GPL-3.0) sends and reads. Only
+//! those request and answer shapes were taken, as facts; no code was copied.
 
 use std::collections::HashSet;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -57,6 +66,49 @@ pub struct Seed {
     /// `Artist`, `Song` or `Genre`.
     pub kind: &'static str,
     pub name: String,
+}
+
+/// What a search hit is: only artists and songs can seed a station here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HitKind {
+    Artist,
+    Song,
+}
+
+impl HitKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Artist => "Artist",
+            Self::Song => "Song",
+        }
+    }
+}
+
+/// One `v3/sod/search` result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchHit {
+    /// `pandoraId` (`AR:…`, `CO:…`, `TR:…`): what `createStation` takes.
+    pub id: String,
+    pub kind: HitKind,
+    pub name: String,
+    /// A song's artist (empty for artists).
+    pub by: String,
+}
+
+/// A genre station Pandora offers (`v1/music/genres`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Genre {
+    /// `pandoraId` (`GE:…`): what `createStation` takes.
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+
+/// A genre category and its stations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenreCategory {
+    pub name: String,
+    pub genres: Vec<Genre>,
 }
 
 /// What `v1/station/getStationDetails` tells about a station. Everything
@@ -344,6 +396,68 @@ pub fn parse_station_details(v: &Value) -> StationDetails {
     }
 }
 
+/// `v3/sod/search`: the `results` ids in order, each looked up in
+/// `annotations`. Artists (`AR`, `CO`) and songs (`TR`) are kept; albums,
+/// playlists, stations and anything unknown are skipped.
+pub fn parse_search(v: &Value) -> Vec<SearchHit> {
+    let notes = v.get("annotations");
+    v.get("results")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|id| {
+            let id = id.as_str()?;
+            let note = notes?.get(id)?;
+            let name = str_of(note, "name").trim().to_owned();
+            let own = str_of(note, "pandoraId");
+            let pandora_id = if own.is_empty() { id.to_owned() } else { own };
+            if name.is_empty() {
+                return None;
+            }
+            match pandora_id.get(..2)? {
+                "AR" | "CO" => Some(SearchHit { id: pandora_id, kind: HitKind::Artist, name, by: String::new() }),
+                "TR" => {
+                    let by = str_of(note, "artistName").trim().to_owned();
+                    Some(SearchHit { id: pandora_id, kind: HitKind::Song, name, by })
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// `v1/music/genrecategories`: `(name, categoryToken)` pairs.
+pub fn parse_genre_categories(v: &Value) -> Vec<(String, String)> {
+    v.get("categories")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            let token = str_of(c, "token");
+            let name = str_of(c, "name").trim().to_owned();
+            (!token.is_empty() && !name.is_empty()).then_some((name, token))
+        })
+        .collect()
+}
+
+/// `v1/music/genres`: the genre stations of one category.
+pub fn parse_genres(v: &Value) -> Vec<Genre> {
+    v.get("genres")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|g| {
+            let id = str_of(g, "pandoraId");
+            let name = str_of(g, "name").trim().to_owned();
+            (!id.is_empty() && !name.is_empty()).then(|| Genre {
+                id,
+                name,
+                description: str_of(g, "description").trim().to_owned(),
+            })
+        })
+        .collect()
+}
+
 /// One fragment track; `None` for ads, artist and curator messages and
 /// anything else that isn't a song with audio.
 pub fn parse_track(v: &Value, station_id: &str) -> Option<Song> {
@@ -577,6 +691,49 @@ impl Client {
             &json!({ "stationId": station_id, "isCurrentStation": current }),
         )?;
         Ok(parse_station_details(&v))
+    }
+
+    /// `v3/sod/search`: artists and songs matching `query`.
+    pub fn search(&mut self, query: &str) -> Result<Vec<SearchHit>, Error> {
+        let v = self.post(
+            "/api/v3/sod/search",
+            &json!({ "query": query, "start": 0, "count": 20, "annotate": true, "types": ["AR", "CO", "TR"] }),
+        )?;
+        Ok(parse_search(&v))
+    }
+
+    /// `v1/station/createStation`: a new station seeded by `pandora_id` (a
+    /// search hit or a genre station). Returns it as the account lists it.
+    pub fn create_station(&mut self, pandora_id: &str) -> Result<Station, Error> {
+        let v = self.post("/api/v1/station/createStation", &json!({ "pandoraId": pandora_id, "stationName": "" }))?;
+        parse_station(&v).ok_or(Error::InvalidResponse)
+    }
+
+    /// `v1/music/genrecategories`, then `v1/music/genres` for each category.
+    /// A category whose list fails is left out; the first error is returned
+    /// only when nothing could be listed.
+    pub fn genres(&mut self) -> Result<Vec<GenreCategory>, Error> {
+        let v = self.post("/api/v1/music/genrecategories", &json!({}))?;
+        let mut out = Vec::new();
+        let mut first_error = None;
+        for (name, token) in parse_genre_categories(&v) {
+            match self.post("/api/v1/music/genres", &json!({ "categoryToken": token })) {
+                Ok(v) => {
+                    let genres = parse_genres(&v);
+                    if !genres.is_empty() {
+                        out.push(GenreCategory { name, genres });
+                    }
+                }
+                Err(e) if e.is_auth_expired() => return Err(e),
+                Err(e) => {
+                    first_error.get_or_insert(e);
+                }
+            }
+        }
+        match (out.is_empty(), first_error) {
+            (true, Some(e)) => Err(e),
+            _ => Ok(out),
+        }
     }
 
     /// `v1/playlist/getFragment`: the next few songs of `station_id`.

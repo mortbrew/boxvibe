@@ -364,6 +364,110 @@ fn renaming_removing_and_details_send_what_the_site_expects() {
     assert_eq!(body("getStationDetails"), json!({ "stationId": "9", "isCurrentStation": true }));
 }
 
+fn search_answer() -> Value {
+    json!({
+        "results": ["AR:1", "TR:2", "AL:3", "CO:4", "PL:5", "AR:gone", "TR:6"],
+        "annotations": {
+            "AR:1": { "name": " Tee Grizzley ", "pandoraId": "AR:1", "trackCount": 9, "icon": {} },
+            "TR:2": { "name": "Slow Hands", "artistName": "Niall Horan", "pandoraId": "TR:2" },
+            "AL:3": { "name": "An album", "pandoraId": "AL:3" },
+            "CO:4": { "name": "A Composer", "pandoraId": "CO:4" },
+            "PL:5": { "name": "A playlist", "pandoraId": "PL:5" },
+            "TR:6": { "name": "", "pandoraId": "TR:6" }
+        }
+    })
+}
+
+#[test]
+fn search_keeps_artists_and_songs_in_order_and_ignores_the_rest() {
+    let hits = parse_search(&search_answer());
+    let got: Vec<(HitKind, &str, &str, &str)> =
+        hits.iter().map(|h| (h.kind, h.id.as_str(), h.name.as_str(), h.by.as_str())).collect();
+    assert_eq!(
+        got,
+        vec![
+            (HitKind::Artist, "AR:1", "Tee Grizzley", ""),
+            (HitKind::Song, "TR:2", "Slow Hands", "Niall Horan"),
+            (HitKind::Artist, "CO:4", "A Composer", ""),
+        ]
+    );
+    assert!(parse_search(&json!({})).is_empty());
+    assert!(parse_search(&json!({ "results": ["AR:1"] })).is_empty(), "no annotations");
+    assert!(parse_search(&json!({ "results": "nope", "annotations": 4 })).is_empty());
+}
+
+#[test]
+fn genres_parse_tolerantly() {
+    let cats = parse_genre_categories(&json!({ "categories": [
+        { "name": " Rock ", "token": "rock", "art": [] }, { "name": "No token" }, { "token": "x" } ] }));
+    assert_eq!(cats, vec![("Rock".to_owned(), "rock".to_owned())]);
+    let genres = parse_genres(&json!({ "genres": [
+        { "name": "Classic Rock ", "token": "classic-rock", "musicId": "G1", "pandoraId": "GE:1",
+          "description": " Big guitars. ", "listenerCount": 5, "unknown": [1] },
+        { "name": "No id" }, { "pandoraId": "GE:9" } ] }));
+    assert_eq!(
+        genres,
+        vec![Genre { id: "GE:1".into(), name: "Classic Rock".into(), description: "Big guitars.".into() }]
+    );
+    assert!(parse_genres(&json!({ "genres": 3 })).is_empty());
+}
+
+#[test]
+fn searching_creating_and_genres_send_what_the_site_expects() {
+    let (base, seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        "/api/v3/sod/search" => (200, search_answer().to_string()),
+        "/api/v1/station/createStation" => (
+            200,
+            json!({ "stationId": "3815", "pandoraId": "ST:0:3815", "name": "Tee Grizzley Radio",
+                    "allowRename": true, "allowDelete": true, "isShuffle": false })
+            .to_string(),
+        ),
+        "/api/v1/music/genrecategories" => (
+            200,
+            json!({ "categories": [ { "name": "Rock", "token": "rock" }, { "name": "Empty", "token": "none" },
+                                    { "name": "Broken", "token": "bad" } ] })
+            .to_string(),
+        ),
+        "/api/v1/music/genres" => match r.body["categoryToken"].as_str() {
+            Some("rock") => (200, json!({ "genres": [ { "name": "Classic Rock", "pandoraId": "GE:1" } ] }).to_string()),
+            Some("bad") => (500, json!({ "errorCode": 0, "errorString": "INTERNAL" }).to_string()),
+            _ => (200, json!({ "genres": [] }).to_string()),
+        },
+        _ => (200, "{}".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    assert_eq!(c.search("tee").unwrap().len(), 3);
+    let made = c.create_station("AR:1").unwrap();
+    assert_eq!((made.id.as_str(), made.name.as_str()), ("3815", "Tee Grizzley Radio"));
+    let cats = c.genres().unwrap();
+    assert_eq!(cats.len(), 1, "empty and failing categories are left out");
+    assert_eq!((cats[0].name.as_str(), cats[0].genres[0].id.as_str()), ("Rock", "GE:1"));
+    let seen = seen.lock().unwrap();
+    let body = |end: &str| seen.iter().find(|s| s.path.ends_with(end)).unwrap().body.clone();
+    assert_eq!(
+        body("sod/search"),
+        json!({ "query": "tee", "start": 0, "count": 20, "annotate": true, "types": ["AR", "CO", "TR"] })
+    );
+    assert_eq!(body("createStation"), json!({ "pandoraId": "AR:1", "stationName": "" }));
+    assert_eq!(body("genrecategories"), json!({}));
+}
+
+#[test]
+fn creating_a_station_needs_an_answer_that_names_it_and_all_genres_failing_is_an_error() {
+    let (base, _) = fake_pandora(Box::new(|r| match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        "/api/v1/music/genrecategories" => (200, json!({ "categories": [ { "name": "A", "token": "a" } ] }).to_string()),
+        "/api/v1/music/genres" => (500, json!({ "errorCode": 0, "errorString": "INTERNAL" }).to_string()),
+        _ => (200, "{}".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    assert_eq!(c.create_station("AR:1"), Err(Error::InvalidResponse));
+    assert!(c.genres().is_err());
+}
+
 /// `cargo test live_site -- --ignored`: the real www.pandora.com hands out a
 /// csrftoken to boxvibe's HEAD (no login, nothing else sent).
 #[test]

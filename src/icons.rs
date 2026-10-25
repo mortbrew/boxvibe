@@ -14,6 +14,8 @@ pub struct Icons {
     pub shared: &'static str,
     /// A favorite station.
     pub favorite: &'static str,
+    /// After the name of a station Pandora won't let you rename (its genre stations).
+    pub lock: &'static str,
     pub play: &'static str,
     pub pause: &'static str,
     pub skip: &'static str,
@@ -41,6 +43,7 @@ const EMOJI: Icons = Icons {
     shuffle: "🔀",
     shared: "👥",
     favorite: "⭐",
+    lock: "🔒",
     // One cell each, like tubevibe: emoji play/pause signs differ per terminal.
     play: "▶",
     pause: "‖",
@@ -70,6 +73,7 @@ const NERD: Icons = Icons {
     shuffle: "\u{f074}",
     shared: "\u{f0c0}",
     favorite: "\u{f005}",
+    lock: "\u{f023}",
     play: "\u{f04b}",
     pause: "\u{f04c}",
     skip: "\u{f051}",
@@ -99,6 +103,8 @@ const UNICODE: Icons = Icons {
     shuffle: "⇄",
     shared: "⚇",
     favorite: "★",
+    // Plain ASCII: it is the one that is the same in every font.
+    lock: "#",
     play: "▶",
     pause: "‖",
     skip: "»",

@@ -616,7 +616,12 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
                     style = style.patch(sel);
                 }
                 let icon = if playing { ic.play } else { ic.favorite };
-                let line = format!(" {} {}", pad(icon, 2), f.name);
+                // The favorite's station may not be loaded yet: no lock until it is.
+                let locked = app.stations.iter().any(|s| s.id == f.id && s.is_locked());
+                let lock = if locked { format!(" {}", icon_cell(ic.lock).trim_end()) } else { String::new() };
+                let head = format!(" {} ", pad(icon, 2));
+                let room = (list_area.width as usize).saturating_sub(safe_width(&head) + safe_width(&lock));
+                let line = format!("{head}{}{lock}", truncate(&clean(&f.name), room));
                 ListItem::new(Line::from(pad(&line, list_area.width as usize))).style(style)
             })
             .collect();
@@ -682,8 +687,11 @@ fn draw_stations(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             let style = if playing { Style::new().fg(p.green).bold() } else { Style::new().fg(p.fg) };
             let mark = if playing { ic.play } else { " " };
             let head = format!(" {} {} {} ", pad(mark, 1), icon_cell(icon), icon_cell(star));
-            let name = fit(&s.name, (inner.width as usize).saturating_sub(safe_width(&head)));
-            ListItem::new(Line::from(format!("{head}{name}"))).style(style)
+            // A lock right after the name of a station Pandora won't let you rename.
+            let lock = if s.is_locked() { format!(" {}", icon_cell(ic.lock).trim_end()) } else { String::new() };
+            let room = (inner.width as usize).saturating_sub(safe_width(&head) + safe_width(&lock));
+            let name = fit(&s.name, room);
+            ListItem::new(Line::from(format!("{head}{name}{lock}"))).style(style)
         }))
         .collect();
     let list = List::new(items).highlight_style(selection(&p, focused));
@@ -1530,6 +1538,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("l b", "like / bad the selected row (Now Playing: its song)"),
             ("f", "star / unstar the selected station"),
             ("r", "rename the selected station (a favorite: its station)"),
+            ("locked", "= Pandora genre station, can't be renamed"),
             ("x", "delete the selected station from Pandora (asks first)"),
             ("a", "add a station: search artists and songs (Stations page)"),
             ("v", "details: a song, or a station's seeds and thumbs"),
@@ -2355,6 +2364,38 @@ mod tests {
         );
         assert!(lines[0].contains("Stations ("), "the page: {}", lines[0]);
         assert!(lines[35].contains(" f  Favorite"), "key bar: {}", lines[35]);
+    }
+
+    #[test]
+    fn a_lock_follows_the_name_of_stations_that_cant_be_renamed() {
+        use crate::config::IconSet;
+        let mut app = demo();
+        app.view = View::Stations;
+        app.focus = crate::app::Focus::Content;
+        let genre = app.stations.iter().find(|s| s.name == "Today's Hits").cloned().unwrap();
+        assert!(genre.is_locked() && genre.allow_delete, "a genre station");
+        let made = app.stations.iter().find(|s| s.allow_rename && s.allow_delete).cloned().unwrap();
+        assert!(!made.is_locked());
+        // One glyph in each icon set, the plain one ASCII.
+        for (set, lock) in [(IconSet::Emoji, "🔒"), (IconSet::Nerd, "\u{f023}"), (IconSet::Unicode, "#")] {
+            assert_eq!(icons(set).lock, lock);
+            app.config.ui.icons = set;
+            let lock = icon_cell(lock).trim_end().to_owned();
+            let (lines, _) = screen(&app, 120, 36);
+            let row = |name: &str| lines.iter().find(|l| l.contains(name)).cloned().unwrap();
+            assert!(row(&genre.name).contains(&format!("{} {lock}", genre.name)), "{set:?}: {}", row(&genre.name));
+            assert!(!row(&made.name).contains(&lock), "{set:?}: user-made stations get no mark: {}", row(&made.name));
+        }
+        // Favorites in the menu too, once the station is loaded.
+        app.config.ui.icons = IconSet::Unicode;
+        app.config.ui.favorites.push(crate::config::Favorite { id: genre.id.clone(), name: genre.name.clone() });
+        let (lines, _) = screen(&app, 120, 36);
+        let menu: Vec<String> = lines.iter().map(|l| l.chars().take(30).collect()).collect();
+        assert!(menu.iter().any(|l| l.contains("Today's Hits #")), "{menu:#?}");
+        // A narrow list cuts the name, never the lock.
+        let (lines, _) = screen(&app, 52, 36);
+        let row = lines.iter().rfind(|l| l.contains("Today")).unwrap();
+        assert!(row.trim_end().trim_end_matches('│').trim_end().ends_with('#'), "{row}");
     }
 
     #[test]

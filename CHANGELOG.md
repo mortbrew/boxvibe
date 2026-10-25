@@ -158,6 +158,16 @@ bound twice.
   terminals), it shows just the email, cut with `…` only if even that is too
   long; it never takes more than half the bar or overlaps the status text.
 
+#### Genre stations
+
+- Stations Pandora won't let you rename (its genre stations, and Shuffle) get a
+  **lock** right after the name, in Stations and in the menu's FAVORITES (once
+  that station has loaded). A new icon in every set: `🔒` (emoji), the Nerd Font
+  lock, and `#` in the plain set. Stations you made have no mark. It uses the
+  same test as the "Pandora doesn't let you rename …" message (`allowRename`
+  from Pandora), so the two always agree. Help has one line for it.
+- The demo's "Today's Hits" is now a genre station (can be deleted, not renamed).
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

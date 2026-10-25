@@ -147,6 +147,7 @@ Try it without an account (made-up stations, no network, no sound):
 | `f` | favorite / unfavorite the station (the menu's FAVORITES section) |
 | `a` | add a station: search artists and songs (on the Stations page; also the "Add station…" row) |
 | `r` | rename the selected station (Stations, or a favorite's station); asks for the name |
+| | A lock after a station's name (`🔒`, Nerd Font lock, or `#` in the plain set) means a Pandora genre station: it can't be renamed |
 | `x` | delete the selected station from your Pandora account; asks first (`y` = delete, any other key keeps it) |
 | `v` | details: a song, or a station's seeds, thumbs up / down counts, genres and dates |
 | `C` `R` `H` (Shift) | album art: picture / off · Retro level · tint; saved |

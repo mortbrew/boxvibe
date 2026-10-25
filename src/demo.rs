@@ -26,7 +26,9 @@ pub fn stations() -> Vec<Station> {
             is_shuffle: *shuffle,
             is_shared: *shared,
             art_url: format!("https://example.invalid/station/{i}.jpg"),
-            allow_rename: !*shuffle,
+            // Shuffle can't be renamed or deleted; "Today's Hits" is a genre
+            // station like Pandora's: it can be deleted but not renamed.
+            allow_rename: !*shuffle && *name != "Today's Hits",
             allow_delete: !*shuffle,
         })
         .collect()

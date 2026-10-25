@@ -60,6 +60,15 @@ pub struct Station {
     pub allow_delete: bool,
 }
 
+impl Station {
+    /// Pandora won't let this station be renamed: its genre stations (and
+    /// Shuffle). The same test as the rename error, so the lock icon in the
+    /// lists and that message always agree.
+    pub fn is_locked(&self) -> bool {
+        !self.allow_rename
+    }
+}
+
 /// One of the seeds a station is built from (an artist, a song or a genre).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Seed {

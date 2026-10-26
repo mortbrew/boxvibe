@@ -164,7 +164,7 @@ Try it without an account (made-up stations, no network, no sound):
 | `e` | edit the station's seeds and look at its thumbs history (Stations, a favorite's station, or the playing station from Now Playing, like `r`). In the editor: `Tab` switches Seeds / Thumbs, `a` adds a seed, `x` removes a seed or takes back a thumb (asks first), `t` flips thumbs up / down, `Esc` closes. Help (`?`) explains seeds and the thumbs dates under this key |
 | `v` | details: a song, or a station's seeds, thumbs up / down counts, genres and dates |
 | `C` `R` `H` (Shift) | album art: picture / off · Retro level · tint; saved |
-| `{` `}` | menu narrower / wider |
+| `{` `}` | menu narrower / wider (saved). Not listed in the bottom key bar, which keeps its room for keys that act on the selection |
 | `?` | every key |
 | `Q` (Shift+q) / `Ctrl+c` | quit (asks first: `y` = yes, any other key = no) / quit now |
 

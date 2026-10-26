@@ -1986,7 +1986,7 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if in_songs && row_here {
         keys.push(("l/b", "Like/Bad"));
     }
-    keys.extend([("⇧←→", "Volume"), ("{/}", "Menu Size"), ("?", "Help"), ("Q", "Quit")]);
+    keys.extend([("⇧←→", "Volume"), ("?", "Help"), ("Q", "Quit")]);
     keys
 }
 
@@ -2027,9 +2027,23 @@ fn draw_keys(frame: &mut Frame, p: &Palette, keys: &[(&str, &str)], area: Rect) 
         ]
     };
     let width = |spans: &[Span]| spans.iter().map(Span::width).sum::<usize>();
+    // On a narrow screen the least useful hints go first, in this order; the rest
+    // (Rename, Edit and the like) stay as long as they can. The last two (Help, Quit) always stay.
+    const DROP_FIRST: [&str; 14] =
+        ["j/k ↑↓", "⇧←→", "U/D", "N", "space", "l/b", "Esc", "v", "P", "a", "Tab", "x", "f", "Enter"];
     let split = keys.len().saturating_sub(2);
-    let (rest, last) = keys.split_at(split);
-    let last: Vec<Span> = last.iter().flat_map(cap).collect();
+    let mut shown: Vec<&(&str, &str)> = keys.iter().collect();
+    let cost = |shown: &[&(&str, &str)]| 2 + shown.iter().map(|k| width(&cap(k))).sum::<usize>();
+    for gone in DROP_FIRST {
+        if cost(&shown) <= area.width as usize {
+            break;
+        }
+        // Only keys before the last two can go.
+        let pinned: Vec<&(&str, &str)> = keys[split..].iter().collect();
+        shown.retain(|k| k.0 != gone || pinned.iter().any(|q| std::ptr::eq(*q, *k)));
+    }
+    let (rest, last) = shown.split_at(shown.len().saturating_sub(2));
+    let last: Vec<Span> = last.iter().copied().flat_map(cap).collect();
     let mut spans = vec![Span::raw(" ")];
     let room = (area.width as usize).saturating_sub(width(&last) + 1);
     for k in rest {
@@ -2415,6 +2429,49 @@ mod tests {
                 assert!(app.rename.is_none() && app.editor.is_none() && app.genre_notice.is_none());
                 assert!(app.status.contains("Pandora doesn't let you"), "{}", app.status);
             }
+        }
+    }
+
+    /// The key bar line of a drawn screen: the last row with text.
+    fn key_bar_line(app: &App, cols: u16) -> String {
+        let lines = screen(app, cols, 36).0;
+        lines.iter().rev().find(|l| !l.trim().is_empty()).unwrap().trim().to_owned()
+    }
+
+    #[test]
+    fn the_key_bar_has_no_menu_size_hint_and_shows_e_where_the_editor_opens() {
+        use crate::config::Favorite;
+        for cols in [110u16, 50] {
+            // The playing station, from the Now Playing pane and from the menu's NOW PLAYING entry.
+            for menu in [false, true] {
+                let app = playing_demo("M83 Radio", menu);
+                let bar = key_bar_line(&app, cols);
+                assert!(!bar.contains("Menu Size") && !bar.contains("{/}"), "{cols}: {bar}");
+                assert!(bar.contains("r  Rename") && bar.contains("e  Edit"), "{cols} menu={menu}: {bar}");
+                assert!(bar.contains("?  Help") && bar.contains("Q  Quit"), "{cols}: {bar}");
+            }
+            // A favorite in the menu.
+            let mut app = playing_demo("M83 Radio", true);
+            let id = app.stations.iter().find(|s| s.name == "Lo-Fi Beats").unwrap().id.clone();
+            app.config.ui.favorites = vec![Favorite { id, name: "Lo-Fi Beats".into() }];
+            app.menu_cursor = app.menu_items().iter().position(|m| matches!(m, MenuItem::Favorite(_))).unwrap();
+            let bar = key_bar_line(&app, cols);
+            assert!(!bar.contains("Menu Size") && bar.contains("?  Help") && bar.contains("Q  Quit"), "{cols}: {bar}");
+            assert!(bar.contains("r  Rename") && bar.contains("e  Edit"), "{cols} favorite: {bar}");
+            // Never for a station Pandora won't let you change, nor on the plain Stations entry.
+            let genre = playing_demo("Today's Hits", false);
+            assert!(!key_bar_line(&genre, cols).contains("Edit"), "genre station");
+            // The Stations page: a station row has r and e too.
+            let mut app = playing_demo("M83 Radio", true);
+            app.view = View::Stations;
+            app.focus = crate::app::Focus::Content;
+            app.stations_cursor = 2;
+            let bar = key_bar_line(&app, cols);
+            assert!(bar.contains("r  Rename") && bar.contains("e  Edit") && !bar.contains("Menu Size"), "{bar}");
+            app.focus = crate::app::Focus::Menu;
+            app.menu_cursor = app.menu_items().iter().position(|m| *m == MenuItem::Stations).unwrap();
+            let bar = key_bar_line(&app, cols);
+            assert!(!bar.contains("Edit") && !bar.contains("Menu Size"), "{cols} Stations entry: {bar}");
         }
     }
 

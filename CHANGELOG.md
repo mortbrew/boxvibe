@@ -331,6 +331,12 @@ bound twice.
 - Renaming the playing station updates the name shown in Now Playing; closing the editor or the rename box
   leaves the keys on Now Playing. Help and the README say the same
 
+#### Key bar: no Menu Size, and r / e stay on narrow screens
+
+- The bottom key bar no longer lists `{ }` "Menu Size". The keys still work (menu narrower / wider, saved) and stay in Help (`?`) and the README.
+- `r Rename` and `e Edit` show on the Now Playing pane, on the menu's NOW PLAYING entry (when the playing station can be changed), on Favorites and on a station row, and stay off genre stations, Shuffle and the plain Stations menu entry, where the key would be refused.
+- On a narrow window the bar now gives up the less important hints first (move, volume, thumbs, pause, skip, details, then the page hints) so `r`, `e`, `?` and `Q` are still there at 50 columns; `?` and `Q` are never dropped.
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

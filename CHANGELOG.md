@@ -265,6 +265,13 @@ bound twice.
     Font), `☺` (plain Unicode set);
   - Shuffle gets neither, and neither icon shows on the Genres page.
   Help's `r` line explains both icons.
+- **Risk notice in the password popup.** Both variants (with and without a
+  keychain) now end with a yellow notice: "Use at your own risk: boxvibe is not
+  made by Pandora. By logging in with boxvibe you accept that neither boxvibe nor
+  its creator is responsible if Pandora limits or bans your account." It wraps to
+  the popup width. On a short terminal the blank spacer rows go first, then (only
+  on a tiny one) the key hint and the top lines, so the input and the notice
+  stay visible. The README says the same.
 
 ## 0.3.0 (2026-10-23)
 

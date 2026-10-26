@@ -40,6 +40,9 @@ work right now drawn as key caps at the bottom.
   `config.toml` or any other file, and `Enter` / `Esc` for log in / cancel.
   No keychain running? The popup says "No system keychain was found" and that
   the password is kept for this session only (you are asked again each start).
+  The popup also says: **"Use at your own risk: boxvibe is not made by Pandora.
+  By logging in with boxvibe you accept that neither boxvibe nor its creator is
+  responsible if Pandora limits or bans your account."**
   Change the account, forget the saved password or log out in Settings any time
 - **Your stations** (Shuffle too) on the left; `Enter` plays one, and the
   last one you played starts again next time

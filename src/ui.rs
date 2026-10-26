@@ -778,6 +778,9 @@ fn draw_genres(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     frame.render_stateful_widget(list, inner, &mut state);
 }
 
+/// Said in the password popup (both variants), the README and the CHANGELOG.
+pub const PASSWORD_DISCLAIMER: &str = "Use at your own risk: boxvibe is not made by Pandora. By logging in with boxvibe you accept that neither boxvibe nor its creator is responsible if Pandora limits or bans your account.";
+
 /// What the password popup says, by what is known about the keychain.
 /// The first line is the reassurance, the rest the detail; `warn` marks the
 /// no-keychain case.
@@ -847,7 +850,12 @@ fn draw_password_box(frame: &mut Frame, app: &App, ic: &Icons, screen: Rect) {
         }
     }
     lines.push(Line::raw(""));
-    let input_row = lines.len() as u16;
+    // The risk notice, set apart in yellow (every variant).
+    for part in wrap_question(PASSWORD_DISCLAIMER, inner_w, 5) {
+        lines.push(Line::from(Span::styled(format!("  {part}"), Style::new().fg(p.yellow))).left_aligned());
+    }
+    lines.push(Line::raw(""));
+    let mut input_row = lines.len() as u16;
     let (shown, column) = app.query.window(inner_w.saturating_sub(3), true, safe_char_width);
     lines.push(
         Line::from(vec![
@@ -859,6 +867,20 @@ fn draw_password_box(frame: &mut Frame, app: &App, ic: &Icons, screen: Rect) {
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(note.hint, Style::new().fg(p.muted))).centered());
     lines.push(Line::raw(""));
+    // A short terminal: the blank spacer rows go first so the input stays on screen.
+    if lines.len() as u16 + 2 > screen.height {
+        let blank = |l: &Line| l.spans.iter().all(|s| s.content.trim().is_empty());
+        input_row -= lines[..usize::from(input_row)].iter().filter(|l| blank(l)).count() as u16;
+        lines.retain(|l| !blank(l));
+        // Still too tall (a tiny terminal): the key hint goes, then the top lines.
+        let excess = (lines.len() as u16 + 2).saturating_sub(screen.height);
+        if excess > 0 {
+            lines.truncate(usize::from(input_row) + 1);
+            let drop = usize::from((lines.len() as u16 + 2).saturating_sub(screen.height));
+            lines.drain(..drop);
+            input_row -= drop as u16;
+        }
+    }
     let area = centered(screen, width, lines.len() as u16 + 2);
     frame.render_widget(Clear, area);
     let block = framed()
@@ -2115,9 +2137,27 @@ mod tests {
         app.keychain_state = KeychainState::Unknown;
         let text = screen(&app, 110, 34).0.join("\n");
         assert!(text.contains("If there is no keychain it is kept for this session only"), "{text}");
-        // A small terminal still fits it, and the email box stays inline.
-        let (_, lines) = cursor_of(&app, 60, 20);
-        assert!(lines.iter().any(|l| l.contains("Pandora password")), "{lines:#?}");
+        // The risk notice is in every variant (checked on one line: it wraps).
+        for state in [KeychainState::NotSaved, KeychainState::Unavailable, KeychainState::Unknown] {
+            app.keychain_state = state;
+            let (_, lines) = cursor_of(&app, 110, 34);
+            let flat: String =
+                lines.iter().map(|l| l.chars().skip(22).take(66).collect::<String>()).collect::<Vec<_>>().join(" ");
+            let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+            let flat: String = flat.replace("│ │", "").replace("│", "");
+            let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(flat.contains(PASSWORD_DISCLAIMER), "{state:?}: {flat}");
+        }
+        // Small terminals still fit all of it, with the input and its cursor on screen.
+        for (cols, rows) in [(60u16, 20u16), (60, 24), (70, 18), (50, 16)] {
+            let (cursor, lines) = cursor_of(&app, cols, rows);
+            let text = lines.join("\n");
+            assert!(text.contains("Pandora password"), "{cols}x{rows}:\n{text}");
+            assert!(rows < 18 || text.contains("Esc = cancel"), "{cols}x{rows}:\n{text}");
+            assert!(text.contains("responsible"), "{cols}x{rows}:\n{text}");
+            assert!(text.contains("› "), "{cols}x{rows}: the input row:\n{text}");
+            assert!(lines[usize::from(cursor.y)].contains("› "), "{cols}x{rows}: cursor on the input row");
+        }
         app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.prompt.is_none() && !app.overlay_open(), "Esc closes it");
         let text = screen(&app, 110, 34).0.join("\n");

@@ -350,6 +350,23 @@ fn icon_cell(icon: &str) -> String {
     pad(icon, w)
 }
 
+/// One icon column: as wide as the widest of `icons` in `icon_cell` form,
+/// counted the way the screen lays cells out (unicode-width: a Nerd glyph is
+/// one cell, its padding is what gives it room). A row without an icon here
+/// gets that many blanks, so the next column and the name start at the same
+/// place on every row.
+fn column(icons: &[&str]) -> usize {
+    icons.iter().map(|i| icon_cell(i).width()).max().unwrap_or(1)
+}
+
+/// `icon` in a column of `width` cells; `None` is a blank column.
+fn cell(icon: Option<&str>, width: usize) -> String {
+    match icon {
+        Some(i) => pad(&icon_cell(i), width),
+        None => " ".repeat(width),
+    }
+}
+
 fn clock(secs: u64) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
 }
@@ -615,6 +632,8 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             Paragraph::new(Span::styled(format!(" FAVORITES ({})", favorites.len()), Style::new().fg(p.orange).bold())),
             head,
         );
+        let c_fav = column(&[ic.play, ic.favorite]);
+        let c_mark = column(&[ic.genre_station, ic.own_station]);
         let items: Vec<ListItem> = favorites
             .iter()
             .enumerate()
@@ -625,10 +644,9 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
                     style = style.patch(sel);
                 }
                 let icon = if playing { ic.play } else { ic.favorite };
-                // The favorite's station may not be loaded yet: no mark until it is.
+                // The favorite's station may not be loaded yet: a blank mark until it is.
                 let mark = app.stations.iter().find(|s| s.id == f.id).and_then(|s| station_mark(s, ic));
-                let mark = mark.map(|m| format!("{} ", icon_cell(m))).unwrap_or_default();
-                let head = format!(" {} {mark}", pad(icon, 2));
+                let head = format!(" {} {} ", cell(Some(icon), c_fav), cell(mark, c_mark));
                 let room = (list_area.width as usize).saturating_sub(safe_width(&head));
                 let line = format!("{head}{}", truncate(&clean(&f.name), room));
                 ListItem::new(Line::from(pad(&line, list_area.width as usize))).style(style)
@@ -693,9 +711,15 @@ fn draw_stations(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         frame.render_widget(Paragraph::new(text).fg(p.muted), inner);
         return;
     }
-    // "Add station…" is the list's first row, above every station.
-    let add_row = ListItem::new(Line::from(format!(" {} {} Add station…", " ", icon_cell("+"))))
-        .style(Style::new().fg(p.orange).bold());
+    // Fixed columns, so every row's icons and name line up whatever it has:
+    // [playing] [kind: radio / shuffle / shared] [star] [genre logo / person] name.
+    // A row without a star or a mark keeps its blank cells.
+    let (c_play, c_kind) = (ic.play.width().max(1), column(&[ic.station, ic.shuffle, ic.shared]));
+    let (c_star, c_mark) = (column(&[ic.favorite]), column(&[ic.genre_station, ic.own_station]));
+    // "Add station…" is the list's first row, above every station; its + sits in the kind column.
+    let add_row =
+        ListItem::new(Line::from(format!(" {} {} Add station…", " ".repeat(c_play), cell(Some("+"), c_kind))))
+            .style(Style::new().fg(p.orange).bold());
     let items: Vec<ListItem> = std::iter::once(add_row)
         .chain(app.stations.iter().map(|s| {
             let playing = app.current_station.as_deref() == Some(s.id.as_str());
@@ -706,13 +730,17 @@ fn draw_stations(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             } else {
                 ic.station
             };
-            let star = if app.is_favorite(&s.id) { ic.favorite } else { " " };
+            let star = app.is_favorite(&s.id).then_some(ic.favorite);
             let style = if playing { Style::new().fg(p.green).bold() } else { Style::new().fg(p.fg) };
-            let mark = if playing { ic.play } else { " " };
-            let head = format!(" {} {} {} ", pad(mark, 1), icon_cell(icon), icon_cell(star));
+            let mark = playing.then_some(ic.play);
             // Right after the star: the logo for a genre station, a person for your own.
-            let mark = station_mark(s, ic).map(|m| format!("{} ", icon_cell(m))).unwrap_or_default();
-            let head = format!("{head}{mark}");
+            let head = format!(
+                " {} {} {} {} ",
+                pad(mark.unwrap_or(" "), c_play),
+                cell(Some(icon), c_kind),
+                cell(star, c_star),
+                cell(station_mark(s, ic), c_mark),
+            );
             let room = (inner.width as usize).saturating_sub(safe_width(&head));
             let name = fit(&s.name, room);
             ListItem::new(Line::from(format!("{head}{name}"))).style(style)
@@ -2201,6 +2229,106 @@ mod tests {
         app.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
         assert!(app.genre_notice.is_some());
         app
+    }
+
+    /// The cell column where `name` starts on the row that has it, at or after `from`.
+    fn name_column(buffer: &ratatui::buffer::Buffer, name: &str, from: u16, to: u16) -> Option<u16> {
+        (0..buffer.area.height).find_map(|y| {
+            (from..to).find_map(|x| {
+                let rest: String = (x..to).map(|i| buffer[(i, y)].symbol()).collect();
+                rest.trim_start_matches(' ').starts_with(name).then_some(())?;
+                // The first cell of the name itself, not the blanks before it.
+                (rest.starts_with(name) && buffer[(x, y)].symbol() == &name[..1]).then_some(x)
+            })
+        })
+    }
+
+    #[test]
+    fn every_station_row_starts_its_name_in_the_same_column() {
+        use crate::config::{Favorite, IconSet};
+        for set in [IconSet::Nerd, IconSet::Unicode, IconSet::Emoji] {
+            let mut app = demo();
+            app.config.ui.icons = set;
+            app.view = View::Stations;
+            app.focus = crate::app::Focus::Content;
+            // Starred and not, genre, yours, shared, Shuffle and the one playing.
+            for name in ["M83 Radio", "Today's Hits", "Shuffle", "Synthwave Radio"] {
+                let st = app.stations.iter().find(|s| s.name == name).unwrap();
+                app.config.ui.favorites.push(Favorite { id: st.id.clone(), name: st.name.clone() });
+            }
+            app.current_station = app.stations.iter().find(|s| s.name == "Lo-Fi Beats").map(|s| s.id.clone());
+            for cursor in [0, 3] {
+                app.stations_cursor = cursor; // the highlighted row lines up too
+                let buffer = screen(&app, 120, 34).1;
+                let offsets: Vec<(&str, Option<u16>)> = [
+                    "Shuffle",          // starred, no kind icon
+                    "Thumbprint Radio", // yours, no star
+                    "M83 Radio",        // yours, starred
+                    "Lo-Fi Beats",      // yours, playing
+                    "Classic Rock Radio",
+                    "Synthwave Radio", // shared, starred
+                    "Today's Hits",    // genre, starred
+                ]
+                .iter()
+                .map(|n| (*n, name_column(&buffer, n, 31, 120)))
+                .collect();
+                let first = offsets[0].1.expect("Shuffle is listed");
+                for (name, at) in &offsets {
+                    assert_eq!(*at, Some(first), "{set:?} (cursor {cursor}): {name} is off: {offsets:?}");
+                }
+            }
+            // The logo and person sit in one column: same x on every row that has one.
+            let ic = icons(set);
+            let buffer = screen(&app, 120, 34).1;
+            let x_of = |glyph: &str, name: &str| {
+                (0..buffer.area.height).find_map(|y| {
+                    let line: String = (31..120).map(|i| buffer[(i, y)].symbol()).collect();
+                    line.contains(name).then(|| (31..120).find(|&i| buffer[(i, y)].symbol() == glyph))?
+                })
+            };
+            let person = [x_of(ic.own_station, "M83 Radio"), x_of(ic.own_station, "Thumbprint Radio")];
+            assert!(person[0].is_some() && person[0] == person[1], "{set:?}: person icons {person:?}");
+            let genre = x_of(ic.genre_station, "Today's Hits");
+            assert!(genre.is_some() && genre == person[0], "{set:?}: logo {genre:?} vs person {person:?}");
+        }
+    }
+
+    #[test]
+    fn favorites_in_the_menu_line_up_and_the_add_row_sits_over_the_radio_icons() {
+        use crate::config::{Favorite, IconSet};
+        for set in [IconSet::Nerd, IconSet::Unicode, IconSet::Emoji] {
+            let mut app = demo();
+            app.config.ui.icons = set;
+            app.view = View::Stations;
+            // A genre station, one of yours, Shuffle, and one not loaded (no mark yet).
+            for name in ["Today's Hits", "M83 Radio", "Shuffle"] {
+                let st = app.stations.iter().find(|s| s.name == name).unwrap();
+                app.config.ui.favorites.push(Favorite { id: st.id.clone(), name: st.name.clone() });
+            }
+            app.config.ui.favorites.push(Favorite { id: "gone".into(), name: "Quiet Storm".into() });
+            let buffer = screen(&app, 120, 34).1;
+            let at: Vec<_> = ["Today's Hits", "M83 Radio", "Shuffle", "Quiet Storm"]
+                .iter()
+                .map(|n| (*n, name_column(&buffer, n, 1, 29)))
+                .collect();
+            assert!(at[0].1.is_some() && at.iter().all(|(_, x)| *x == at[0].1), "{set:?}: {at:?}");
+        }
+    }
+
+    #[test]
+    fn a_narrow_stations_list_cuts_the_names_and_keeps_the_icons() {
+        use crate::config::IconSet;
+        for set in [IconSet::Nerd, IconSet::Unicode, IconSet::Emoji] {
+            let mut app = demo();
+            app.config.ui.icons = set;
+            app.view = View::Stations;
+            let ic = icons(set);
+            let (lines, _) = screen(&app, 56, 34);
+            let row = lines.iter().find(|l| l.contains(ic.genre_station)).expect("the genre row");
+            assert!(row.contains(ic.station), "{set:?}: {row}");
+            let rows: Vec<&String> = lines.iter().filter(|l| l.contains(ic.own_station)).collect();
+            assert!(!rows.is_empty() && rows.iter().any(|r| r.contains('…')), "{set:?}: names are cut: {rows:?}");
+        }
     }
 
     #[test]

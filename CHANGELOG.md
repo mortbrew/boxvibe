@@ -296,6 +296,17 @@ bound twice.
   `the_genre_popup_explains_the_problem_and_both_icons`, `help_explains_the_station_icons_in_the_active_set`,
   `the_settings_page_lists_the_genre_popup_row`
 
+#### Station rows line up
+
+- Stations list and the menu's Favorites: every row now keeps fixed icon columns (playing mark, radio / Shuffle
+  / shared icon, star, genre logo / person), blank where a row has nothing there, so station names start at
+  the same place whether or not the row is starred, is a genre station, is yours, or is Shuffle. Each icon
+  column is as wide as its widest icon in the chosen set plus one space between columns. Narrow windows still
+  cut the name, never the icons.
+- Tests: `every_station_row_starts_its_name_in_the_same_column` (Nerd, Unicode and Emoji; the highlighted
+  row too), `favorites_in_the_menu_line_up_and_the_add_row_sits_over_the_radio_icons`,
+  `a_narrow_stations_list_cuts_the_names_and_keeps_the_icons`
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

@@ -216,9 +216,9 @@ bound twice.
 - `--screen thumbs|thumbs-delete` draws it. Help and the shortcut bar show
   `t` and `x` on that tab only.
 
-#### Good Guy boxvibe
+#### Good Vibes Only
 
-- New setting **Good Guy boxvibe** (Settings → PLAYBACK, `good_guy = true` in `[playback]`, on by default,
+- New setting **Good Vibes Only** (Settings → PLAYBACK, `good_guy = true` in `[playback]`, on by default,
   saved as you change it). On, boxvibe behaves like the website's player about ads; off, it asks for none
   and the music goes on at once, as before.
 - At each song end, skip, thumbs-down or "tired of this song", it asks `v1/ad/getAdList`. An empty list
@@ -336,6 +336,13 @@ bound twice.
 - The bottom key bar no longer lists `{ }` "Menu Size". The keys still work (menu narrower / wider, saved) and stay in Help (`?`) and the README.
 - `r Rename` and `e Edit` show on the Now Playing pane, on the menu's NOW PLAYING entry (when the playing station can be changed), on Favorites and on a station row, and stay off genre stations, Shuffle and the plain Stations menu entry, where the key would be refused.
 - On a narrow window the bar now gives up the less important hints first (move, volume, thumbs, pause, skip, details, then the page hints) so `r`, `e`, `?` and `Q` are still there at 50 columns; `?` and `Q` are never dropped.
+
+#### Good Vibes Only: a risk popup before turning ads on or off
+
+- The setting **Good Guy boxvibe** is now **Good Vibes Only** (Settings, PLAYBACK, its description, the messages and the docs). The config key is still `good_guy` in `[playback]`, so existing config files keep working, and it is still on by default.
+- Turning it **off** in Settings now opens a popup first, in the same yellow risk style as the Pandora password popup, titled "Turn off Good Vibes Only?": "Skipping Pandora's ads could violate Pandora's terms of service. Use at your own risk: neither boxvibe nor its creator is responsible if Pandora limits or bans your account." `Enter` turns it off anyway (and saves `good_guy = false`), `Esc` keeps it on and changes nothing. Other keys do nothing while it is open. Turning it back **on** shows no popup and applies at once.
+- The popup wraps to the window and, on a short or narrow terminal, drops its blank rows and its first paragraph before the risk notice, which is never cut while there is room for it. The key bar shows "Enter Turn Off Anyway · Esc Keep On".
+- Snapshot: `--screen good-vibes-off`. Tests cover the popup, Esc, Enter + save, no popup when turning it on, and small terminals.
 
 ## 0.3.0 (2026-10-23)
 

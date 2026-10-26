@@ -126,6 +126,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if let Some(notice) = &app.genre_notice {
         draw_genre_notice(frame, &p, ic, area, notice);
     }
+    if app.confirm_good_vibes_off {
+        draw_good_vibes_off(frame, &p, area);
+    }
 }
 
 /// How bright the screen behind a popup stays, and how much colour it keeps.
@@ -875,6 +878,10 @@ fn draw_genre_notice(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, n
 /// Said in the password popup (both variants), the README and the CHANGELOG.
 pub const PASSWORD_DISCLAIMER: &str = "Use at your own risk: boxvibe is not made by Pandora. By logging in with boxvibe you accept that neither boxvibe nor its creator is responsible if Pandora limits or bans your account.";
 
+/// Said in the popup that asks before Good Vibes Only is turned off, the
+/// README and the CHANGELOG.
+pub const GOOD_VIBES_DISCLAIMER: &str = "Skipping Pandora's ads could violate Pandora's terms of service. Use at your own risk: neither boxvibe nor its creator is responsible if Pandora limits or bans your account.";
+
 /// What the password popup says, by what is known about the keychain.
 /// The first line is the reassurance, the rest the detail; `warn` marks the
 /// no-keychain case.
@@ -984,6 +991,65 @@ fn draw_password_box(frame: &mut Frame, app: &App, ic: &Icons, screen: Rect) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
     let x = area.x + 1 + 5 + column as u16;
     frame.set_cursor_position(Position::new(x.min(area.right().saturating_sub(2)), area.y + 1 + input_row));
+}
+
+/// Settings: turning Good Vibes Only off. Styled like the password popup,
+/// with the same yellow risk notice; Enter turns it off, Esc keeps it on.
+fn draw_good_vibes_off(frame: &mut Frame, p: &Palette, screen: Rect) {
+    let width = 66.min(screen.width.saturating_sub(4)).max(screen.width.min(8));
+    let inner_w = usize::from(width.saturating_sub(2 + 4));
+    let text_lines = |text: &str, color: Color| -> Vec<Line<'static>> {
+        wrap_question(text, inner_w, 12)
+            .into_iter()
+            .map(|part| Line::from(Span::styled(format!("  {part}"), Style::new().fg(color))).left_aligned())
+            .collect()
+    };
+    let intro = text_lines(
+        "Good Vibes Only plays Pandora's audio ads, like the website does. Turning it off skips them.",
+        p.fg,
+    );
+    // The risk notice, set apart in yellow like the one in the password popup; never shortened.
+    let risk = text_lines(GOOD_VIBES_DISCLAIMER, p.yellow);
+    let hint = if "Enter = turn it off anyway · Esc = keep it on".width() <= inner_w {
+        "Enter = turn it off anyway · Esc = keep it on"
+    } else {
+        "Enter = turn off · Esc = keep on"
+    };
+    let hint = Line::from(Span::styled(hint, Style::new().fg(p.muted))).centered();
+    let build = |with_intro: bool, spaced: bool| {
+        let gap = || spaced.then(|| Line::raw(""));
+        let mut lines: Vec<Line> = gap().into_iter().collect();
+        if with_intro {
+            lines.extend(intro.clone());
+            lines.extend(gap());
+        }
+        lines.extend(risk.clone());
+        lines.extend(gap());
+        lines.push(hint.clone());
+        lines.extend(gap());
+        lines
+    };
+    // A short terminal: the blank spacer rows go first, then the first paragraph.
+    let mut lines = build(true, true);
+    for (with_intro, spaced) in [(true, false), (false, false)] {
+        if lines.len() as u16 + 2 <= screen.height {
+            break;
+        }
+        lines = build(with_intro, spaced);
+    }
+    // Still too tall (a tiny terminal): the key line goes (the bar below has the keys),
+    // and last of all the end of the notice.
+    if lines.len() as u16 + 2 > screen.height {
+        lines.pop();
+        lines.truncate(usize::from(screen.height.saturating_sub(2)));
+    }
+    let area = centered(screen, width, lines.len() as u16 + 2);
+    frame.render_widget(Clear, area);
+    let block = framed()
+        .border_style(Style::new().fg(p.yellow))
+        .title(Span::styled(" Turn off Good Vibes Only? ", Style::new().fg(p.yellow).bold()))
+        .style(Style::new().bg(p.background));
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// `a`: the add-station box: the search text and, once Enter searched, the
@@ -1354,7 +1420,7 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     }
 }
 
-/// Now Playing while one of Pandora's audio ads plays (Good Guy boxvibe): no
+/// Now Playing while one of Pandora's audio ads plays (Good Vibes Only): no
 /// cover, no skip or thumbs, a countdown instead of the song's time.
 fn draw_ad(frame: &mut Frame, app: &App, ic: &Icons, ad: &crate::app::AdView, area: Rect) {
     let p = app.palette;
@@ -1828,6 +1894,9 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     }
     if app.confirm_delete.is_some() {
         return vec![("y", "Yes, Delete"), ("Other Key", "No")];
+    }
+    if app.confirm_good_vibes_off {
+        return vec![("Enter", "Turn Off Anyway"), ("Esc", "Keep On"), ("Ctrl+c", "Quit")];
     }
     if app.genre_notice.is_some() {
         return vec![("Space", "Tick Box"), ("Enter", "OK"), ("Esc", "Close"), ("Ctrl+c", "Quit")];
@@ -2803,6 +2872,55 @@ mod tests {
         assert!(app.prompt == Some(Prompt::Email) && !app.overlay_open(), "the email box is not a popup");
         let text = screen(&app, 110, 34).0.join("\n");
         assert!(!text.contains("Pandora password"), "the email stays in its own box: {text}");
+    }
+
+    /// The words inside the "Turn off Good Vibes Only?" popup, joined by single spaces.
+    fn good_vibes_popup_words(app: &App, cols: u16, rows: u16) -> Option<String> {
+        let lines = screen(app, cols, rows).0;
+        let width = usize::from(66.min(cols.saturating_sub(4)).max(cols.min(8)));
+        let top = lines.iter().position(|l| l.contains("Turn off Good Vibes"))?;
+        let left = lines[top].chars().take_while(|c| *c != 'T').count().saturating_sub(2);
+        let words: Vec<String> = lines[top + 1..]
+            .iter()
+            .map(|l| l.chars().skip(left + 1).take(width - 2).collect::<String>())
+            .take_while(|l| !l.contains('─'))
+            .collect();
+        Some(words.join(" ").split_whitespace().collect::<Vec<_>>().join(" "))
+    }
+
+    #[test]
+    fn turning_good_vibes_only_off_asks_first_in_a_risk_popup_that_fits_small_terminals() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = demo();
+        app.view = View::Settings;
+        app.focus = crate::app::Focus::Content;
+        app.settings_cursor = crate::app::Setting::at(crate::app::Setting::GoodGuy);
+        // The row and its description use the new name.
+        let text = screen(&app, 120, 40).0.join("\n");
+        assert!(text.contains("Good Vibes Only") && !text.contains("Good Guy"), "{text}");
+        assert!(good_vibes_popup_words(&app, 120, 40).is_none(), "no popup yet");
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.confirm_good_vibes_off && app.overlay_open() && app.config.player.good_guy);
+        let text = screen(&app, 120, 40).0.join("\n");
+        assert!(text.contains("Turn off Good Vibes Only?") && text.contains("Enter = turn it off anyway"), "{text}");
+        assert!(text.contains("Esc = keep it on") && !text.contains("http"), "{text}");
+        assert!(text.contains("Turn Off Anyway") && text.contains("Keep On"), "the key bar: {text}");
+        // The whole risk notice is there, at any size that has room for it.
+        for (cols, rows) in [(120u16, 40u16), (80, 24), (60, 20), (50, 16), (40, 16), (40, 14)] {
+            let words = good_vibes_popup_words(&app, cols, rows).unwrap_or_default();
+            assert!(words.contains(GOOD_VIBES_DISCLAIMER), "{cols}x{rows}: {words}");
+            assert!(words.contains("Esc = keep it on") || words.contains("Esc = keep on"), "{cols}x{rows}: {words}");
+        }
+        // A tiny terminal still draws a popup inside the screen, from the start of the notice.
+        for (cols, rows) in [(30u16, 8u16), (24, 6)] {
+            let (lines, _) = screen(&app, cols, rows);
+            assert!(lines.iter().any(|l| l.contains("Turn off")), "{cols}x{rows}");
+            assert!(lines.iter().any(|l| l.contains("Skipping")), "{cols}x{rows}: {lines:?}");
+        }
+        // Esc leaves it on, closes the popup; Enter in a second round turns it off.
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.confirm_good_vibes_off && app.config.player.good_guy);
+        assert!(!screen(&app, 120, 40).0.join("\n").contains("Turn off Good Vibes Only?"));
     }
 
     #[test]

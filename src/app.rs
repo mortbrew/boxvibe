@@ -170,7 +170,7 @@ impl Setting {
             Self::Volume => "Volume",
             Self::Autoplay => "Autoplay last station on open",
             Self::Notify => "Song change notifications",
-            Self::GoodGuy => "Good Guy boxvibe",
+            Self::GoodGuy => "Good Vibes Only",
             Self::Theme => "Theme",
             Self::Icons => "Icons",
             Self::BorderStyle => "Border style",
@@ -237,7 +237,7 @@ impl Setting {
                 "A desktop notification (notify-send, mako on Omarchy) for every new song. Saved as [playback] notifications."
             }
             Self::GoodGuy => {
-                "Play Pandora's audio ads and report them, like the website does. Off skips ads. Saved as [playback] good_guy."
+                "Play Pandora's audio ads and report them, like the website does. Off skips ads, which could break Pandora's terms: asks first. Saved as [playback] good_guy."
             }
             Self::Theme => {
                 "Omarchy follows your current Omarchy theme; or pick a built-in one. The theme is only changed here. Saved as [look] theme."
@@ -628,6 +628,9 @@ pub struct App {
     pub confirm_delete: Option<StationRef>,
     /// The "genre stations can't be changed" popup, while it is open.
     pub genre_notice: Option<GenreNotice>,
+    /// Good Vibes Only was turned off in Settings: the risk popup asks first
+    /// (Enter = turn it off anyway, Esc = keep it on).
+    pub confirm_good_vibes_off: bool,
     /// `r` is typing a new station name.
     pub rename: Option<Rename>,
     /// `a`: the add-station search box.
@@ -642,7 +645,7 @@ pub struct App {
     pub details: Option<Details>,
     /// `e`: the seeds and thumbs editor.
     pub editor: Option<Editor>,
-    /// Good Guy boxvibe: where the ad break is (see [`ad`]).
+    /// Good Vibes Only: where the ad break is (see [`ad`]).
     pub ad: AdPhase,
     ad_serial: u32,
     ad_tracker: ads::Tracker,
@@ -736,6 +739,7 @@ impl App {
             system_look: None,
             confirm_delete: None,
             genre_notice: None,
+            confirm_good_vibes_off: false,
             rename: None,
             add_station: None,
             genres: GenresState::Idle,
@@ -1777,6 +1781,7 @@ impl App {
             || self.confirm_quit
             || self.confirm_delete.is_some()
             || self.genre_notice.is_some()
+            || self.confirm_good_vibes_off
             || self.rename.is_some()
             || self.add_station.is_some()
             || self.details.is_some()
@@ -1890,12 +1895,12 @@ impl App {
                 self.save(&[("playback", "notifications", on.into())]);
                 self.status = format!("Song change notifications {}", if on { "on" } else { "off" });
             }
+            // Turning it off asks first (the risk popup); turning it on needs no question.
+            Setting::GoodGuy if self.config.player.good_guy => self.confirm_good_vibes_off = true,
             Setting::GoodGuy => {
-                let on = !self.config.player.good_guy;
-                self.config.player.good_guy = on;
-                self.save(&[("playback", "good_guy", on.into())]);
-                self.status =
-                    format!("Good Guy boxvibe {}", if on { "on: Pandora's audio ads play" } else { "off: no ads" });
+                self.config.player.good_guy = true;
+                self.save(&[("playback", "good_guy", true.into())]);
+                self.status = "Good Vibes Only on: Pandora's audio ads play".into();
             }
             Setting::Theme => self.next_theme(),
             Setting::Icons => self.next_icons(),
@@ -2091,6 +2096,9 @@ impl App {
         if self.genre_notice.is_some() {
             return self.genre_notice_key(key);
         }
+        if self.confirm_good_vibes_off {
+            return self.good_vibes_off_key(key);
+        }
         if self.rename.is_some() {
             return self.rename_key(key);
         }
@@ -2258,6 +2266,24 @@ impl App {
                     self.status =
                         format!("{} · The popup is off (Settings, BOXVIBE: Genre station edit popup)", self.status);
                 }
+            }
+            _ => {}
+        }
+    }
+
+    /// Keys in the "Turn off Good Vibes Only?" popup: Enter turns it off (and
+    /// saves), Esc keeps it on. Other keys do nothing.
+    fn good_vibes_off_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter => {
+                self.confirm_good_vibes_off = false;
+                self.config.player.good_guy = false;
+                self.save(&[("playback", "good_guy", false.into())]);
+                self.status = "Good Vibes Only off: no ads".into();
+            }
+            KeyCode::Esc => {
+                self.confirm_good_vibes_off = false;
+                self.status = "Good Vibes Only stays on".into();
             }
             _ => {}
         }
@@ -3268,13 +3294,48 @@ mod tests {
         app.view = View::Settings;
         app.focus = Focus::Content;
         app.settings_cursor = Setting::at(Setting::GoodGuy);
+        assert_eq!(Setting::GoodGuy.label(), "Good Vibes Only");
         assert_eq!(app.setting_value(Setting::GoodGuy), "on");
+        // Turning it off asks first; nothing changes or is saved until Enter.
         app.on_key(key(KeyCode::Enter));
+        assert!(app.confirm_good_vibes_off && app.overlay_open());
+        assert_eq!(app.setting_value(Setting::GoodGuy), "on");
+        assert!(!std::fs::read_to_string(&path).unwrap_or_default().contains("good_guy"));
+        app.on_key(key(KeyCode::Enter));
+        assert!(!app.confirm_good_vibes_off);
         assert_eq!(app.setting_value(Setting::GoodGuy), "off");
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("[playback]") && text.contains("good_guy = false"), "{text}");
         assert!(!Config::load(&path).0.player.good_guy);
         assert!(Setting::GoodGuy.about().contains("good_guy") && Setting::GoodGuy.about().contains("Saved"));
+        // Turning it back on needs no question and is saved at once.
+        app.on_key(key(KeyCode::Enter));
+        assert!(!app.confirm_good_vibes_off, "no popup for turning it on");
+        assert_eq!(app.setting_value(Setting::GoodGuy), "on");
+        assert!(std::fs::read_to_string(&path).unwrap().contains("good_guy = true"));
+        assert!(Config::load(&path).0.player.good_guy);
+    }
+
+    #[test]
+    fn esc_in_the_good_vibes_popup_keeps_it_on_and_other_keys_do_nothing() {
+        let path = crate::config::temp_dir("good-vibes-esc").join("config.toml");
+        let mut config = Config::default();
+        config.ui.check_updates = false;
+        let mut app = App::new(config, Some(path.clone()), &[], false);
+        app.prompt = None;
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.settings_cursor = Setting::at(Setting::GoodGuy);
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.confirm_good_vibes_off);
+        for code in [KeyCode::Char('y'), KeyCode::Char(' '), KeyCode::Down, KeyCode::Char('q')] {
+            app.on_key(key(code));
+            assert!(app.confirm_good_vibes_off && app.config.player.good_guy, "{code:?}");
+        }
+        app.on_key(key(KeyCode::Esc));
+        assert!(!app.confirm_good_vibes_off && app.config.player.good_guy);
+        assert_eq!(app.setting_value(Setting::GoodGuy), "on");
+        assert!(!std::fs::read_to_string(&path).unwrap_or_default().contains("good_guy"), "nothing saved");
     }
 
     /// Skips until the demo's third answer, a pod of two ads.
@@ -3785,6 +3846,10 @@ mod tests {
             app.focus = Focus::Content;
             app.settings_cursor = Setting::at(setting);
             app.on_key(key(KeyCode::Enter));
+            if setting == Setting::GoodGuy {
+                // Turning it off asks first; Enter says yes.
+                app.on_key(key(KeyCode::Enter));
+            }
             let doc: toml_edit::DocumentMut = saved(&app).parse().unwrap();
             assert!(doc.get(table).and_then(|t| t.get(name)).is_some(), "{setting:?} → [{table}] {name}:\n{doc}");
         }

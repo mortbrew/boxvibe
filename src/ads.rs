@@ -1,5 +1,5 @@
 //! Pandora's audio ads, played and reported the way the website does it
-//! (Settings → PLAYBACK → Good Guy boxvibe).
+//! (Settings → PLAYBACK → Good Vibes Only).
 //!
 //! At a song's end `getAdList` may answer with a pod of audio ads. Each is
 //! played in full; as it plays, the tracking URLs Pandora listed for it are

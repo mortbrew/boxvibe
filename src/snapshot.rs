@@ -60,6 +60,14 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
                 app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
             }
         }
+        // Settings → PLAYBACK → Good Vibes Only, Enter on it: the risk popup.
+        "good-vibes-off" => {
+            use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+            app.view = View::Settings;
+            app.focus = Focus::Content;
+            app.settings_cursor = crate::app::Setting::at(crate::app::Setting::GoodGuy);
+            app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        }
         "about" | "about-restart" => {
             app.view = View::About;
             app.focus = Focus::Content;

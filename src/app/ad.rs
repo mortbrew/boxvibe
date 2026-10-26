@@ -1,6 +1,6 @@
-//! Good Guy boxvibe: the audio ads Pandora's website plays between songs.
+//! Good Vibes Only: the audio ads Pandora's website plays between songs.
 //!
-//! When a song ends (or is skipped), and Settings → Good Guy boxvibe is on,
+//! When a song ends (or is skipped), and Settings → Good Vibes Only is on,
 //! `getAdList` is asked whether an ad is due. Usually the answer is none and
 //! the next song starts as always. A pod of ads plays one after the other in
 //! the Now Playing card (no skip, no thumbs; pause works), each reported as

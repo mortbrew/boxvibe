@@ -52,7 +52,7 @@ jobs:
           mkdir -p dist/boxvibe
           cp target/release/boxvibe README.md dist/boxvibe/
           tar -C dist -czf dist/boxvibe-${{ matrix.arch }}-linux.tar.gz boxvibe
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.TAG }}
           fail_on_unmatched_files: true

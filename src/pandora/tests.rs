@@ -526,7 +526,11 @@ fn seed_and_thumb_calls_send_what_the_site_expects() {
         "/api/v1/station/getSeeds" => {
             (200, json!({ "seeds": [{ "pandoraId": "AR:1", "artist": { "artistName": "M83" } }] }).to_string())
         }
-        "/api/v1/station/getSeedSuggestions" => (200, json!([{ "name": "MGMT", "pandoraId": "AR:9" }]).to_string()),
+        "/api/v1/search/getSeedSuggestions" => (200, json!([{ "name": "MGMT", "pandoraId": "AR:9" }]).to_string()),
+        // Pandora's answer to a path it doesn't have (what the old suggestions path got).
+        "/api/v1/station/getSeedSuggestions" => {
+            (404, json!({ "errorCode": 0, "errorString": "NOT_FOUND", "message": "Service method not found" }).to_string())
+        }
         // The first graphql path is unknown to this fake: the second works.
         "/api/v1/graphql" => (404, json!({ "errorCode": 0, "errorString": "NOT_FOUND" }).to_string()),
         "/api/v1/graphql/graphql" => {

@@ -1236,7 +1236,7 @@ impl App {
         }
     }
 
-    fn on_reply(&mut self, reply: Reply) {
+    pub(crate) fn on_reply(&mut self, reply: Reply) {
         if self.editor_reply(&reply) {
             return;
         }

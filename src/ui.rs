@@ -1074,6 +1074,14 @@ struct AddLook<'a> {
     results_hint: &'a str,
 }
 
+/// What the add boxes say when a search fails: a plain sentence for the
+/// raw answers of the site ("Service method not found (HTTP 404)"), the
+/// short messages of our own (offline, login expired) kept as they are.
+pub fn search_error_text(error: &str) -> String {
+    let raw = ["HTTP", "not found", "Service method", "{", "errorCode", "NOT_FOUND"].iter().any(|k| error.contains(k));
+    if raw { "Couldn't search Pandora right now".to_owned() } else { format!("Search failed: {}", clean(error)) }
+}
+
 /// The search box both of them share: the text, Pandora's answers below.
 fn draw_search_box(frame: &mut Frame, p: &Palette, screen: Rect, search: &StationSearch, look: &AddLook) {
     let width = 64.min(screen.width.saturating_sub(4)).max(screen.width.min(8));
@@ -1093,7 +1101,7 @@ fn draw_search_box(frame: &mut Frame, p: &Palette, screen: Rect, search: &Statio
     let note = if search.waiting {
         "Searching…".to_owned()
     } else if let Some(error) = &search.error {
-        format!("Search failed: {}", clean(error))
+        search_error_text(error)
     } else if search.asked.is_some() && search.hits.is_empty() {
         "No artists or songs found".to_owned()
     } else if search.asked.is_none() && look.suggested {
@@ -4027,6 +4035,29 @@ mod tests {
 
     fn all_text(lines: &[String]) -> String {
         lines.join("\n")
+    }
+
+    #[test]
+    fn a_failed_search_in_the_seed_box_says_so_in_plain_words() {
+        use crate::backend::Reply;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        assert_eq!(
+            search_error_text("Service method not found (HTTP 404, NOT_FOUND)"),
+            "Couldn't search Pandora right now"
+        );
+        assert_eq!(search_error_text("offline"), "Search failed: offline");
+        let mut app = editor_demo();
+        app.on_key(KeyEvent::from(KeyCode::Char('a')));
+        // Pandora's raw answer to the old suggestions path, then a search that failed the same way.
+        app.on_reply(Reply::Failed { what: "suggestions", message: "Service method not found (HTTP 404)".into() });
+        let text = all_text(&screen(&app, 120, 40).0);
+        assert!(
+            !text.contains("Service method") && !text.contains("no suggestions") && !text.contains("Search failed"),
+            "{text}"
+        );
+        app.on_reply(Reply::Failed { what: "search", message: "Service method not found (HTTP 404)".into() });
+        let text = all_text(&screen(&app, 120, 40).0);
+        assert!(text.contains("Couldn't search Pandora right now") && !text.contains("Service method"), "{text}");
     }
 
     #[test]

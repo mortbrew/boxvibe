@@ -348,6 +348,10 @@ bound twice.
 
 - The `e` editor now has three tabs instead of two: **Seeds (n)**, **👍 Thumbs Up n** and **👎 Thumbs Down n** (the icons come from your icon set; on a narrow terminal the titles shrink to the icon and the count). `Tab` / `Shift+Tab` (or `←` `→`) go round Seeds → Thumbs Up → Thumbs Down → Seeds. The `t` key that flipped between up and down is gone, along with its hints. Each list keeps its column heads, paging and `x` to take a thumb back (it asks first), and each loads the first time you open its tab. The key bar, Help and README say the same, and the `thumbs` snapshot screen still works (it shows Thumbs Up) beside the new `thumbs-up`, `thumbs-down` and `thumbs-down-delete`.
 
+#### Seed suggestions: no more "Service method not found"
+
+- Typing in the editor's Add-a-seed box and pressing Enter already searched Pandora fine, but the box also asked Pandora for suggestions first, and Pandora answered "Service method not found (HTTP 404)" because the request went to `/api/v1/station/getSeedSuggestions`, a path Pandora doesn't have. That ugly line showed up as "Search failed: no suggestions (…)" above the search results. The request now goes to `/api/v1/search/getSeedSuggestions`, the path in the public list of Pandora's endpoints (boxvibe's own captures never recorded the site's real call, so this is a best guess), and if it fails for any reason the box says nothing and simply stays a search box. Search itself is unchanged. Any search that fails with a raw Pandora answer (an HTTP number, "not found") now reads "Couldn't search Pandora right now" in both the Add-a-seed box and the Add-station box; plain messages such as "offline" are kept. Tests cover the fake server refusing the old path, the quiet suggestions failure and the friendly line.
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

@@ -810,12 +810,15 @@ impl Client {
         Ok(parse_seeds(&v))
     }
 
-    /// `v1/station/getSeedSuggestions`: artists the site suggests adding,
-    /// near `seed_music_id` (a seed's `musicId`). The path is a best guess
-    /// (not captured), so a failure is only "no suggestions".
+    /// `v1/search/getSeedSuggestions`: artists the site suggests adding,
+    /// near `seed_music_id` (a seed's `musicId`). The path is from the
+    /// public endpoint list (the old `v1/station/` one made Pandora answer
+    /// "Service method not found"); the site's own call was never captured,
+    /// so the body is the captured shape and a failure is silently "no
+    /// suggestions" (the editor shows nothing for it).
     pub fn seed_suggestions(&mut self, station_id: &str, seed_music_id: &str) -> Result<Vec<SearchHit>, Error> {
         let v = self.post(
-            "/api/v1/station/getSeedSuggestions",
+            "/api/v1/search/getSeedSuggestions",
             &json!({ "stationId": station_id, "seedMusicId": seed_music_id, "maxResults": 10 }),
         )?;
         Ok(parse_seed_suggestions(&v))

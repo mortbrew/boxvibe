@@ -520,12 +520,10 @@ impl App {
                 add.search.error = Some(message.to_owned());
                 return true;
             }
+            // No suggestions is not worth a word: the box just stays a search box.
             "suggestions" => {
                 if let Some(add) = ed.add.as_mut() {
                     add.suggesting = false;
-                    if add.search.asked.is_none() && add.search.error.is_none() {
-                        add.search.error = Some(format!("no suggestions ({message})"));
-                    }
                 }
                 return true;
             }
@@ -845,8 +843,23 @@ mod tests {
         press(&mut app, KeyCode::BackTab);
         chr(&mut app, 'a');
         app.status.clear();
-        app.on_reply(Reply::Failed { what: "suggestions", message: "404".into() });
+        app.on_reply(Reply::Failed { what: "suggestions", message: "Service method not found (HTTP 404)".into() });
         assert!(app.status.is_empty(), "{}", app.status);
+    }
+
+    #[test]
+    fn failed_suggestions_leave_the_add_box_quiet_and_a_plain_search_box() {
+        let mut app = editing();
+        chr(&mut app, 'a');
+        app.editor.as_mut().unwrap().add.as_mut().unwrap().suggesting = true;
+        app.status.clear();
+        app.on_reply(Reply::Failed { what: "suggestions", message: "Service method not found (HTTP 404)".into() });
+        assert!(app.status.is_empty(), "{}", app.status);
+        let add = app.editor.as_ref().unwrap().add.as_ref().unwrap();
+        assert!(add.search.error.is_none() && !add.suggesting);
+        // Typing still searches afterwards.
+        chr(&mut app, 'm');
+        assert!(app.editor.as_ref().unwrap().add.is_some());
     }
 
     #[test]

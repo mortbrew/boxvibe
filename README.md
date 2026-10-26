@@ -56,7 +56,7 @@ work right now drawn as key caps at the bottom.
   9 rows and the song panes shrink and scroll. `Tab` goes menu → Now Playing → Up Next →
   History; `l` / `b` rate the selected row (or the playing song from Now Playing)
 - **Settings** (account first, then audio quality, volume, autoplay, song change
-  notifications, theme, icons, border style, menu width, update check, edit `config.toml` in `$EDITOR`, app menu entry) and **About**
+  notifications, theme, icons, border style, menu width, update check, the genre station edit popup, edit `config.toml` in `$EDITOR`, app menu entry) and **About**
   (links, version, and the update button) below the stations
 - **Updates itself** from GitHub releases: see [Updating](#updating)
 - **Gapless-ish playback**: the next song downloads while this one plays.
@@ -159,6 +159,7 @@ Try it without an account (made-up stations, no network, no sound):
 | `a` | add a station: search artists and songs (on the Stations page; also the "Add station…" row) |
 | `r` | rename the selected station (Stations, or a favorite's station); asks for the name |
 | | The icon right after a station's star (before its name): the boxvibe logo (`\uf1b2`, in every icon set) is a Pandora genre station, which can't be renamed; a little person (`👤` emoji, `\uf007` Nerd Font, `☺` plain set) is a station you made. Shuffle has neither, and neither shows on the Genres page |
+| | Trying `r`, `e` (or `x`, where Pandora blocks it) on a genre station says why in the bottom bar, and, until you turn it off, in a **popup** that explains the problem and what the logo (genre station) and person (your own station) icons mean. It has a "Don't show this again" box: `Space` (or `x`) ticks it, `Enter` closes (and saves the box as the setting Off), `Esc` closes without saving. It comes back any time in Settings → BOXVIBE → **Genre station edit popup** (`[boxvibe] genre_edit_popup`). The same icons are explained under STATION ICONS in the help (`?`) |
 | `x` | delete the selected station from your Pandora account; asks first (`y` = delete, any other key keeps it) |
 | `e` | edit the station's seeds and look at its thumbs history (Stations, or a favorite's station). In the editor: `Tab` switches Seeds / Thumbs, `a` adds a seed, `x` removes a seed or takes back a thumb (asks first), `t` flips thumbs up / down, `Esc` closes |
 | `v` | details: a song, or a station's seeds, thumbs up / down counts, genres and dates |
@@ -192,6 +193,8 @@ user_agent = ""                # empty: boxvibe's default (a desktop Firefox); s
 
 [boxvibe]
 check_updates = true           # look for a new release on GitHub at startup
+genre_edit_popup = true        # true: renaming or editing a genre station opens a popup that says why; its
+                               # "Don't show this again" box (or Settings → Genre station edit popup) sets false
 
 [playback]
 audio_quality = "high"         # high: MP3 192 kbps if your plan has it (Plus, Premium), else 128

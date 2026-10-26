@@ -149,7 +149,8 @@ impl App {
             return self.no_station_here("e edits");
         };
         if !station.allow_edit_seeds {
-            self.status = format!("Pandora doesn't let you edit the seeds of “{}”", station.name);
+            let message = format!("Pandora doesn't let you edit the seeds of “{}”", station.name);
+            self.blocked(&station, "edited", message);
             return;
         }
         if self.session != Session::LoggedIn {

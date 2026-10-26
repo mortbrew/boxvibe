@@ -126,6 +126,10 @@ pub struct UiConfig {
     pub notifications: bool,
     /// Ask GitHub, each time the app opens, whether there is a newer version.
     pub check_updates: bool,
+    /// Explain in a popup why a genre station can't be renamed or edited, and
+    /// what the logo and person icons mean (`[boxvibe] genre_edit_popup`).
+    /// Turned off by the popup's "Don't show this again" box.
+    pub genre_edit_popup: bool,
     /// Show the boxvibe boot screen for a moment when the app opens
     /// (`[look] splash`; 0.4 betas had it in `[boxvibe]`).
     pub splash: bool,
@@ -168,6 +172,7 @@ impl Default for UiConfig {
             icons: IconSet::Nerd,
             notifications: true,
             check_updates: true,
+            genre_edit_popup: true,
             splash: true,
             animations: true,
             autoplay_last_station: true,
@@ -562,6 +567,7 @@ pub const LAYOUT: &[(&str, &str, &str)] = &[
     ("account", "username", "pandora"),
     ("account", "user_agent", "pandora"),
     ("boxvibe", "check_updates", "ui"),
+    ("boxvibe", "genre_edit_popup", "ui"),
     ("playback", "audio_quality", "pandora"),
     ("playback", "volume", "player"),
     ("playback", "good_guy", "player"),

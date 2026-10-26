@@ -48,6 +48,18 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
             };
             app.ask_password_for_snapshot("hunter2hunter2");
         }
+        // `r` on a genre station: the popup that says why (and, ticked, the
+        // "Don't show this again" box checked). The bar says it too.
+        "genre-edit-popup" | "genre-edit-popup-ticked" => {
+            use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+            app.view = View::Stations;
+            app.focus = Focus::Content;
+            app.stations_cursor = app.stations.iter().position(|s| s.is_locked() && !s.is_shuffle).unwrap_or(0);
+            app.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+            if screen == "genre-edit-popup-ticked" {
+                app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+            }
+        }
         "about" | "about-restart" => {
             app.view = View::About;
             app.focus = Focus::Content;

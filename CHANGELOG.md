@@ -273,6 +273,29 @@ bound twice.
   on a tiny one) the key hint and the top lines, so the input and the notice
   stay visible. The README says the same.
 
+#### Genre station edit popup and the icons in Help
+
+- Trying to rename (`r`) or edit the seeds (`e`) of a Pandora genre station, or delete one (`x`) where Pandora
+  blocks it, opens a centered popup: what the problem is in plain words (Pandora makes genre stations and
+  doesn't let anyone change them) and what the two station icons mean (the logo = a genre station, the
+  person = a station you made), each with its glyph in the active icon set. The message still shows in the
+  bottom bar too. Shuffle and your own stations get only the bar message, as before.
+- The popup has a "Don't show this again" checkbox (`[ ]` / `[x]`): `Space` or `x` ticks it, `Enter` closes
+  and, when ticked, saves the popup as Off; `Esc` closes and saves nothing. Until then it shows on every
+  attempt. The key bar shows `Space Tick Box`, `Enter OK`, `Esc Close` while it is open.
+- Settings, BOXVIBE: new row "Genre station edit popup" (On / Off), saved as `[boxvibe] genre_edit_popup`
+  (default on; a missing or wrong value uses the default). The popup's box changes the same setting.
+- Help (`?`): a new STATION ICONS section (right after the star) shows the genre station and own station
+  glyphs with what they mean; the `r` line points to it. Blank lines in Help drop on a short terminal.
+- Demo mode: `r` on "Today's Hits" shows the popup. Snapshots: `--screen genre-edit-popup` and
+  `genre-edit-popup-ticked`.
+- Tests: `a_genre_station_that_cant_be_changed_gets_a_popup_and_the_bar_message`,
+  `only_genre_stations_get_the_popup`, `with_the_popup_off_only_the_bar_says_it`,
+  `the_checkbox_turns_the_popup_off_for_good_only_with_enter`, `the_settings_row_toggles_the_popup_and_is_saved`,
+  `the_genre_popup_setting_loads_with_a_default_and_tolerates_junk`,
+  `the_genre_popup_explains_the_problem_and_both_icons`, `help_explains_the_station_icons_in_the_active_set`,
+  `the_settings_page_lists_the_genre_popup_row`
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

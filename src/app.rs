@@ -85,6 +85,17 @@ pub enum Session {
     Failed(String),
 }
 
+/// The popup shown when a genre station is renamed, edited or deleted and
+/// Pandora says no.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenreNotice {
+    pub station: String,
+    /// What was tried: "renamed", "edited" or "deleted".
+    pub what: &'static str,
+    /// The "Don't show this again" box.
+    pub dont_show: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Prompt {
     Email,
@@ -111,6 +122,7 @@ pub enum Setting {
     ArtTint,
     Animations,
     CheckUpdates,
+    GenrePopup,
     Splash,
     EditFile,
     MenuEntry,
@@ -118,12 +130,13 @@ pub enum Setting {
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 21] = [
+    pub const ALL: [(&'static str, Self); 22] = [
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
         ("ACCOUNT", Self::LogOut),
         ("BOXVIBE", Self::CheckUpdates),
+        ("BOXVIBE", Self::GenrePopup),
         ("BOXVIBE", Self::EditFile),
         ("BOXVIBE", Self::MenuEntry),
         ("PLAYBACK", Self::Quality),
@@ -167,6 +180,7 @@ impl Setting {
             Self::ArtTint => "Tint art with theme colors",
             Self::Animations => "Animations",
             Self::CheckUpdates => "Look for new versions on startup",
+            Self::GenrePopup => "Genre station edit popup",
             Self::Splash => "Boot screen",
             Self::EditFile => "Edit config.toml",
             Self::MenuEntry => "App menu entry",
@@ -180,6 +194,7 @@ impl Setting {
     fn saved_as(self) -> Option<(&'static str, &'static str)> {
         match self {
             Self::CheckUpdates => Some(("boxvibe", "check_updates")),
+            Self::GenrePopup => Some(("boxvibe", "genre_edit_popup")),
             Self::Splash => Some(("look", "splash")),
             Self::Email => Some(("account", "username")),
             Self::Quality => Some(("playback", "audio_quality")),
@@ -250,6 +265,9 @@ impl Setting {
             }
             Self::CheckUpdates => {
                 "Asks GitHub when boxvibe opens; About shows the new version and Update Now. Saved as [boxvibe] check_updates."
+            }
+            Self::GenrePopup => {
+                "On: trying to rename or edit a genre station opens a popup that says why and what the logo and person icons mean (the message in the bottom bar always shows too). Its checkbox turns this Off. Saved as [boxvibe] genre_edit_popup."
             }
             Self::Splash => {
                 "A two-second boxvibe logo screen when it opens; any key skips it (Animations off skips it too). Saved as [look] splash."
@@ -608,6 +626,8 @@ pub struct App {
     system_look: Option<std::sync::mpsc::Receiver<crate::deps::Facts>>,
     /// `x` asked "Delete this station?": y does, any other key doesn't.
     pub confirm_delete: Option<StationRef>,
+    /// The "genre stations can't be changed" popup, while it is open.
+    pub genre_notice: Option<GenreNotice>,
     /// `r` is typing a new station name.
     pub rename: Option<Rename>,
     /// `a`: the add-station search box.
@@ -715,6 +735,7 @@ impl App {
             system_open: false,
             system_look: None,
             confirm_delete: None,
+            genre_notice: None,
             rename: None,
             add_station: None,
             genres: GenresState::Idle,
@@ -1755,6 +1776,7 @@ impl App {
             || self.system_open
             || self.confirm_quit
             || self.confirm_delete.is_some()
+            || self.genre_notice.is_some()
             || self.rename.is_some()
             || self.add_station.is_some()
             || self.details.is_some()
@@ -1815,6 +1837,7 @@ impl App {
             Setting::ArtTint => self.config.ui.art_tint.label().into(),
             Setting::Animations => on(self.config.ui.animations),
             Setting::CheckUpdates => on(self.config.ui.check_updates),
+            Setting::GenrePopup => on(self.config.ui.genre_edit_popup),
             Setting::Splash => on(self.config.ui.splash),
             Setting::EditFile => self
                 .config_path
@@ -1894,6 +1917,12 @@ impl App {
             Setting::CheckUpdates => {
                 self.config.ui.check_updates = !self.config.ui.check_updates;
                 self.save(&[("boxvibe", "check_updates", self.config.ui.check_updates.into())]);
+            }
+            Setting::GenrePopup => {
+                let on = !self.config.ui.genre_edit_popup;
+                self.config.ui.genre_edit_popup = on;
+                self.save(&[("boxvibe", "genre_edit_popup", on.into())]);
+                self.status = format!("Genre station edit popup: {}", if on { "on" } else { "off" });
             }
             Setting::Animations => {
                 let on = !self.config.ui.animations;
@@ -2059,6 +2088,9 @@ impl App {
             }
             return;
         }
+        if self.genre_notice.is_some() {
+            return self.genre_notice_key(key);
+        }
         if self.rename.is_some() {
             return self.rename_key(key);
         }
@@ -2176,11 +2208,43 @@ impl App {
             return self.no_station_here("r renames");
         };
         if !station.allow_rename {
-            self.status = format!("Pandora doesn't let you rename “{}”", station.name);
+            self.blocked(&station, "renamed", format!("Pandora doesn't let you rename “{}”", station.name));
             return;
         }
         let text = TextInput::new(&station.name);
         self.rename = Some(Rename { station: StationRef { id: station.id, name: station.name, favorite }, text });
+    }
+
+    /// Pandora says no to a change on `station`: the message goes in the
+    /// status bar, and for a genre station a popup explains it too (until its
+    /// "Don't show this again" box is checked and confirmed).
+    pub(super) fn blocked(&mut self, station: &crate::pandora::Station, what: &'static str, message: String) {
+        self.status = message;
+        if self.config.ui.genre_edit_popup && station.is_locked() && !station.is_shuffle {
+            self.genre_notice = Some(GenreNotice { station: station.name.clone(), what, dont_show: false });
+        }
+    }
+
+    /// Keys in the genre station popup: Space or x ticks the box, Enter says
+    /// OK (and saves a ticked box as "off"), Esc closes without saving it.
+    fn genre_notice_key(&mut self, key: KeyEvent) {
+        let Some(notice) = self.genre_notice.as_mut() else { return };
+        match key.code {
+            KeyCode::Char(' ' | 'x' | 'X') => notice.dont_show = !notice.dont_show,
+            KeyCode::Esc => self.genre_notice = None,
+            KeyCode::Enter => {
+                let off = notice.dont_show;
+                self.genre_notice = None;
+                if off {
+                    self.config.ui.genre_edit_popup = false;
+                    self.save(&[("boxvibe", "genre_edit_popup", false.into())]);
+                    // The message stays in the bar; say where the box comes back.
+                    self.status =
+                        format!("{} · The popup is off (Settings, BOXVIBE: Genre station edit popup)", self.status);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn rename_key(&mut self, key: KeyEvent) {
@@ -2213,7 +2277,7 @@ impl App {
             return self.no_station_here("x deletes");
         };
         if !station.allow_delete {
-            self.status = format!("Pandora doesn't let you delete “{}”", station.name);
+            self.blocked(&station, "deleted", format!("Pandora doesn't let you delete “{}”", station.name));
             return;
         }
         self.confirm_delete = Some(StationRef { id: station.id, name: station.name, favorite });
@@ -3030,6 +3094,151 @@ mod tests {
         let (saved, _) = Config::load(&path);
         assert!(!saved.ui.notifications);
         assert!(!std::fs::read_to_string(&path).unwrap().contains("notify ="), "the 0.1 name is gone");
+    }
+
+    /// A demo app on the Stations page with the cursor on `pick`'s first match.
+    fn on_station(config: Config, path: Option<std::path::PathBuf>, pick: fn(&Station) -> bool) -> App {
+        let mut app = App::new(config, path, &[], true);
+        app.settle(Duration::from_millis(150));
+        app.prompt = None;
+        app.on_key(shift('S'));
+        app.stations_cursor = app.stations.iter().position(pick).expect("a station like that");
+        app
+    }
+
+    fn genre(s: &Station) -> bool {
+        s.is_locked() && !s.is_shuffle
+    }
+
+    #[test]
+    fn a_genre_station_that_cant_be_changed_gets_a_popup_and_the_bar_message() {
+        for (key_pressed, what, bar) in
+            [('r', "renamed", "doesn't let you rename"), ('e', "edited", "doesn't let you edit the seeds")]
+        {
+            let mut app = on_station(Config::default(), None, genre);
+            assert!(app.config.ui.genre_edit_popup, "on by default");
+            app.on_key(key(KeyCode::Char(key_pressed)));
+            let notice = app.genre_notice.clone().expect("the popup");
+            assert_eq!((notice.what, notice.dont_show), (what, false));
+            assert!(app.overlay_open() && app.rename.is_none() && app.editor.is_none());
+            assert!(app.status.contains(bar), "the bar says it too: {}", app.status);
+            // Other keys do nothing; Esc closes it and the bar keeps the message.
+            app.on_key(key(KeyCode::Char('q')));
+            assert!(app.genre_notice.is_some() && !app.confirm_quit, "the popup eats other keys");
+            app.on_key(key(KeyCode::Esc));
+            assert!(app.genre_notice.is_none() && app.status.contains(bar), "{}", app.status);
+        }
+        // Deleting a genre station Pandora does allow deleting asks as before.
+        let mut app = on_station(Config::default(), None, genre);
+        app.on_key(key(KeyCode::Char('x')));
+        assert!(app.confirm_delete.is_some() && app.genre_notice.is_none());
+    }
+
+    #[test]
+    fn only_genre_stations_get_the_popup() {
+        // Shuffle: the bar only. Your own station: it just opens.
+        let mut app = on_station(Config::default(), None, |s| s.is_shuffle);
+        app.on_key(key(KeyCode::Char('r')));
+        assert!(app.genre_notice.is_none() && app.status.contains("doesn't let you rename"), "{}", app.status);
+        let mut app = on_station(Config::default(), None, |s| s.allow_rename);
+        app.on_key(key(KeyCode::Char('r')));
+        assert!(app.genre_notice.is_none() && app.rename.is_some());
+        // A favorite that is a genre station too.
+        let mut app = on_station(Config::default(), None, genre);
+        let st = app.stations[app.stations_cursor].clone();
+        app.config.ui.favorites.push(config::Favorite { id: st.id, name: st.name });
+        app.focus = Focus::Menu;
+        app.menu_cursor = app.menu_items().iter().position(|m| *m == MenuItem::Favorite(0)).unwrap();
+        app.on_key(key(KeyCode::Char('r')));
+        assert!(app.genre_notice.is_some(), "{}", app.status);
+    }
+
+    #[test]
+    fn with_the_popup_off_only_the_bar_says_it() {
+        let mut config = Config::default();
+        config.ui.genre_edit_popup = false;
+        for key_pressed in ['r', 'e'] {
+            let mut app = on_station(config.clone(), None, genre);
+            app.on_key(key(KeyCode::Char(key_pressed)));
+            assert!(app.genre_notice.is_none() && !app.overlay_open());
+            assert!(app.status.contains("doesn't let you"), "{}", app.status);
+        }
+    }
+
+    #[test]
+    fn the_checkbox_turns_the_popup_off_for_good_only_with_enter() {
+        let path = crate::config::temp_dir("genre-popup").join("config.toml");
+        let mut config = Config::default();
+        config.ui.check_updates = false;
+        let mut app = on_station(config, Some(path.clone()), genre);
+        app.demo = false;
+        // Ticked, then Esc: nothing saved, the popup comes back next time.
+        app.on_key(key(KeyCode::Char('r')));
+        app.on_key(key(KeyCode::Char(' ')));
+        assert!(app.genre_notice.as_ref().unwrap().dont_show);
+        app.on_key(key(KeyCode::Char('x')));
+        assert!(!app.genre_notice.as_ref().unwrap().dont_show, "x toggles too");
+        app.on_key(key(KeyCode::Char(' ')));
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.config.ui.genre_edit_popup, "Esc keeps the setting");
+        assert!(!std::fs::read_to_string(&path).unwrap_or_default().contains("genre_edit_popup"));
+        app.on_key(key(KeyCode::Char('r')));
+        assert!(app.genre_notice.as_ref().is_some_and(|n| !n.dont_show), "back, with the box empty again");
+        // Enter without the tick: just closes.
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.genre_notice.is_none() && app.config.ui.genre_edit_popup);
+        // Ticked, then Enter: saved as off, and the bar still has the message.
+        app.on_key(key(KeyCode::Char('r')));
+        app.on_key(key(KeyCode::Char(' ')));
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.genre_notice.is_none() && !app.config.ui.genre_edit_popup);
+        assert!(app.status.contains("doesn't let you rename"), "{}", app.status);
+        assert_eq!(app.setting_value(Setting::GenrePopup), "off");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[boxvibe]") && text.contains("genre_edit_popup = false"), "{text}");
+        assert!(!Config::load(&path).0.ui.genre_edit_popup);
+        // And now it stays quiet.
+        app.on_key(key(KeyCode::Char('r')));
+        assert!(app.genre_notice.is_none());
+    }
+
+    #[test]
+    fn the_settings_row_toggles_the_popup_and_is_saved() {
+        assert!(Config::default().ui.genre_edit_popup);
+        let path = crate::config::temp_dir("genre-popup-row").join("config.toml");
+        let mut config = Config::default();
+        config.ui.check_updates = false;
+        let mut app = App::new(config, Some(path.clone()), &[], false);
+        app.prompt = None;
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.settings_cursor = Setting::at(Setting::GenrePopup);
+        assert_eq!(Setting::GenrePopup.label(), "Genre station edit popup");
+        assert_eq!(Setting::ALL[Setting::at(Setting::GenrePopup)].0, "BOXVIBE");
+        assert_eq!(app.setting_value(Setting::GenrePopup), "on");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.setting_value(Setting::GenrePopup), "off");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[boxvibe]") && text.contains("genre_edit_popup = false"), "{text}");
+        assert!(!Config::load(&path).0.ui.genre_edit_popup);
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.setting_value(Setting::GenrePopup), "on");
+        assert!(Config::load(&path).0.ui.genre_edit_popup);
+        let about = Setting::GenrePopup.about();
+        assert!(about.contains("genre_edit_popup") && about.contains("Saved"), "{about}");
+    }
+
+    #[test]
+    fn the_genre_popup_setting_loads_with_a_default_and_tolerates_junk() {
+        let (c, w) = Config::parse("").unwrap();
+        assert!(c.ui.genre_edit_popup && w.is_empty(), "missing: on");
+        let (c, w) = Config::parse("[boxvibe]\ncheck_updates = false\n").unwrap();
+        assert!(c.ui.genre_edit_popup && !c.ui.check_updates && w.is_empty(), "an older file");
+        let (c, _) = Config::parse("[boxvibe]\ngenre_edit_popup = false\n").unwrap();
+        assert!(!c.ui.genre_edit_popup);
+        let (c, w) = Config::parse("[boxvibe]\ngenre_edit_popup = \"maybe\"\ncheck_updates = false\n").unwrap();
+        assert!(c.ui.genre_edit_popup && !c.ui.check_updates, "a bad value keeps the default, the rest loads");
+        assert!(!w.is_empty());
     }
 
     #[test]

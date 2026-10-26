@@ -123,6 +123,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if app.prompt == Some(Prompt::Password) {
         draw_password_box(frame, app, ic, area);
     }
+    if let Some(notice) = &app.genre_notice {
+        draw_genre_notice(frame, &p, ic, area, notice);
+    }
 }
 
 /// How bright the screen behind a popup stays, and how much colour it keeps.
@@ -776,6 +779,69 @@ fn draw_genres(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let list = List::new(items).highlight_style(selection(&p, focused));
     let mut state = ListState::default().with_selected(Some(selected_row));
     frame.render_stateful_widget(list, inner, &mut state);
+}
+
+/// Why a genre station can't be changed, and what the two station icons
+/// mean, with a "Don't show this again" box. (The same message is always in
+/// the status bar too.)
+fn draw_genre_notice(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, notice: &crate::app::GenreNotice) {
+    let width = 70.min(screen.width.saturating_sub(4)).max(screen.width.min(8));
+    let inner_w = usize::from(width.saturating_sub(2 + 4));
+    let mut lines = vec![Line::raw("")];
+    let head = format!("“{}” can't be {}.", clean(&notice.station), notice.what);
+    for part in wrap_question(&head, inner_w, 2) {
+        lines.push(Line::from(Span::styled(format!("  {part}"), Style::new().fg(p.fg).bold())).left_aligned());
+    }
+    lines.push(Line::raw(""));
+    let why = "Genre stations are made by Pandora, and Pandora doesn't let boxvibe (or anyone) change them.";
+    for part in wrap_question(why, inner_w, 3) {
+        lines.push(Line::from(Span::styled(format!("  {part}"), Style::new().fg(p.fg))).left_aligned());
+    }
+    lines.push(Line::raw(""));
+    let meanings = [
+        (ic.genre_station, p.accent, "Genre station: made by Pandora. It can't be renamed or edited."),
+        (ic.own_station, p.green, "Your own station: you made it. You can rename, edit and delete it."),
+    ];
+    for (glyph, color, text) in meanings {
+        let mark = format!("{} ", icon_cell(glyph));
+        let indent = safe_width(&mark);
+        for (j, part) in wrap_question(text, inner_w.saturating_sub(indent), 3).into_iter().enumerate() {
+            let head = if j == 0 { mark.clone() } else { " ".repeat(indent) };
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {head}"), Style::new().fg(color).bold()),
+                Span::styled(part, Style::new().fg(p.fg)),
+            ]));
+        }
+    }
+    lines.push(Line::raw(""));
+    let (tick, style) =
+        if notice.dont_show { ("[x]", Style::new().fg(p.green).bold()) } else { ("[ ]", Style::new().fg(p.fg).bold()) };
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(tick, style),
+        Span::styled(" Don't show this again", Style::new().fg(p.fg).bold()),
+    ]));
+    let note = "It comes back any time in Settings: BOXVIBE, Genre station edit popup.";
+    for part in wrap_question(note, inner_w.saturating_sub(6), 2) {
+        lines.push(Line::from(Span::styled(format!("      {part}"), Style::new().fg(p.muted))).left_aligned());
+    }
+    lines.push(Line::raw(""));
+    lines.push(
+        Line::from(Span::styled("Space = tick the box · Enter = OK · Esc = close", Style::new().fg(p.muted)))
+            .centered(),
+    );
+    lines.push(Line::raw(""));
+    // A short terminal: the blank spacer rows go first.
+    if lines.len() as u16 + 2 > screen.height {
+        lines.retain(|l| !l.spans.iter().all(|s| s.content.trim().is_empty()));
+    }
+    let area = centered(screen, width, lines.len() as u16 + 2);
+    frame.render_widget(Clear, area);
+    let block = framed()
+        .border_style(Style::new().fg(p.accent))
+        .title(Span::styled(" Genre station ", Style::new().fg(p.accent).bold()))
+        .style(Style::new().bg(p.background));
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// Said in the password popup (both variants), the README and the CHANGELOG.
@@ -1698,6 +1764,9 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.confirm_delete.is_some() {
         return vec![("y", "Yes, Delete"), ("Other Key", "No")];
     }
+    if app.genre_notice.is_some() {
+        return vec![("Space", "Tick Box"), ("Enter", "OK"), ("Esc", "Close"), ("Ctrl+c", "Quit")];
+    }
     if let Some(ed) = &app.editor {
         return editor_key_caps(ed);
     }
@@ -1908,7 +1977,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
         &[
             ("l b", "like / bad the selected row (Now Playing: its song)"),
             ("f", "star / unstar the selected station"),
-            ("r", "rename the selected station (logo icon = a genre station, Pandora says no; person icon = your own)"),
+            ("r", "rename the selected station (a genre station says why; the icons are explained below)"),
             ("x", "delete the selected station from Pandora (asks first)"),
             ("a", "add a station: search artists and songs (Stations page)"),
             ("v", "details: a song, or a station's seeds and thumbs"),
@@ -1959,7 +2028,29 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         }
         lines.push(Line::raw(""));
     }
+    // The station icons, in the glyphs the icon set in use draws.
+    let ic = icons(app.config.ui.icons);
+    lines.push(Line::from(Span::styled(" STATION ICONS (right after the star)", Style::new().fg(p.orange).bold())));
+    let station_icons = [
+        (ic.genre_station, "genre station: made by Pandora, so it can't be renamed or edited (it can be deleted)"),
+        (ic.own_station, "a station you made: you can rename, edit and delete it"),
+    ];
+    for (glyph, what) in station_icons {
+        let glyph = icon_cell(glyph);
+        let pad = (key_w + 2).saturating_sub(safe_width(&glyph));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(format!(" {glyph} "), Style::new().fg(p.background).bg(p.fg).bold()),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(what.to_owned(), Style::new().fg(p.fg)),
+        ]));
+    }
+    lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(HELP_FOOTER, Style::new().fg(p.muted))));
+    // A short terminal: the blank rows between the sections go first.
+    if lines.len() as u16 + 2 > area.height {
+        lines.retain(|l| l.width() > 0);
+    }
     // As wide as the longest line (and the title), plus the borders and one
     // blank cell; only a terminal too narrow for that wraps the lines.
     let title_w = help_title(&p).width() + 2;
@@ -2097,6 +2188,109 @@ mod tests {
         let lines =
             (0..rows).map(|y| (0..cols).map(|x| buffer[(x, y)].symbol().to_owned()).collect::<String>()).collect();
         (cursor, lines)
+    }
+
+    /// A demo app with the genre station popup open (`r` on Today's Hits).
+    fn genre_popup_demo(set: crate::config::IconSet) -> App {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = demo();
+        app.config.ui.icons = set;
+        app.view = View::Stations;
+        app.focus = crate::app::Focus::Content;
+        app.stations_cursor = app.stations.iter().position(|s| s.name == "Today's Hits").unwrap();
+        app.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert!(app.genre_notice.is_some());
+        app
+    }
+
+    #[test]
+    fn the_genre_popup_explains_the_problem_and_both_icons() {
+        use crate::config::IconSet;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        for set in [IconSet::Emoji, IconSet::Nerd, IconSet::Unicode] {
+            let ic = icons(set);
+            let mut app = genre_popup_demo(set);
+            let (lines, _) = screen(&app, 110, 34);
+            let text = lines.join("\n");
+            for want in [
+                "Genre station ─",
+                "“Today's Hits” can't be renamed.",
+                "made by Pandora",
+                "Genre station: made by Pandora",
+                "Your own station: you made it",
+                "[ ] Don't show this again",
+                "Space = tick the box · Enter = OK · Esc = close",
+                "edit popup.",
+            ] {
+                assert!(text.contains(want), "{set:?}: {want:?} in:\n{text}");
+            }
+            // Each meaning has its glyph in front of it.
+            let row = |what: &str| lines.iter().find(|l| l.contains(what)).unwrap().clone();
+            let (g, o) = (row("Genre station: made"), row("Your own station: you"));
+            assert!(
+                g.contains(ic.genre_station) && g[..g.find("Genre station: made").unwrap()].contains(ic.genre_station)
+            );
+            assert!(o.contains(ic.own_station) && o[..o.find("Your own station").unwrap()].contains(ic.own_station));
+            // The bar at the bottom still has the error, and its keys.
+            assert!(lines[32].contains("Pandora doesn't let you rename “Today's Hits”"), "{}", lines[32]);
+            assert!(
+                lines[33].contains("Space") && lines[33].contains("Enter") && lines[33].contains("Esc"),
+                "{}",
+                lines[33]
+            );
+            // The box ticks with Space.
+            app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+            let text = screen(&app, 110, 34).0.join("\n");
+            assert!(text.contains("[x] Don't show this again") && !text.contains("[ ] Don't"), "{text}");
+        }
+        // A small terminal keeps the box, the checkbox and the keys.
+        let app = genre_popup_demo(IconSet::Unicode);
+        for (cols, rows) in [(60u16, 24u16), (60, 18), (50, 16)] {
+            let lines = screen(&app, cols, rows).0;
+            let text = lines.join("\n");
+            assert!(text.contains("Genre station ─") && text.contains("[ ] Don't show"), "{cols}x{rows}:\n{text}");
+            // The hint line is the first to go on a very short screen; the key bar always has the keys.
+            assert!(rows < 18 || text.contains("Esc = close"), "{cols}x{rows}:\n{text}");
+            assert!(lines[rows as usize - 1].contains("Esc"), "{cols}x{rows}:\n{text}");
+        }
+    }
+
+    #[test]
+    fn help_explains_the_station_icons_in_the_active_set() {
+        use crate::config::IconSet;
+        for set in [IconSet::Emoji, IconSet::Nerd, IconSet::Unicode] {
+            let ic = icons(set);
+            let mut app = demo();
+            app.config.ui.icons = set;
+            app.help = true;
+            for (cols, rows) in [(160u16, 40u16), (255, 70)] {
+                let lines = screen(&app, cols, rows).0;
+                let all = lines.join("\n");
+                assert!(all.contains("STATION ICONS"), "{set:?} {cols}x{rows}:\n{all}");
+                let row = |what: &str| lines.iter().find(|l| l.contains(what)).cloned().unwrap_or_default();
+                let g = row("genre station: made by Pandora");
+                let o = row("a station you made");
+                assert!(g.contains(ic.genre_station), "{set:?} {cols}x{rows}: {g}");
+                assert!(g.contains("can't be renamed or edited") && g.contains("can be deleted"), "{g}");
+                assert!(
+                    o.contains(ic.own_station) && o.contains("rename, edit and delete"),
+                    "{set:?} {cols}x{rows}: {o}"
+                );
+                assert!(all.contains(HELP_FOOTER.trim()), "{cols}x{rows}: the footer is still there");
+            }
+        }
+    }
+
+    #[test]
+    fn the_settings_page_lists_the_genre_popup_row() {
+        let mut app = demo();
+        app.view = View::Settings;
+        app.focus = crate::app::Focus::Content;
+        app.settings_cursor = crate::app::Setting::at(crate::app::Setting::GenrePopup);
+        let text = screen(&app, 120, 40).0.join("\n");
+        assert!(text.contains("Genre station edit popup"), "{text}");
+        let line = text.lines().find(|l| l.contains("Genre station edit popup")).unwrap();
+        assert!(line.contains(" on"), "{line}");
     }
 
     #[test]

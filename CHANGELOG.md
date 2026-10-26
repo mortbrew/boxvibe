@@ -369,6 +369,10 @@ bound twice.
 
 - A leftover `[ui]` table that only held the retired `now_playing_size` (and never went away, because saving keeps unknown keys) is gone after the next save. Saving now deletes retired keys wherever they are (`now_playing_size`, `[boxvibe] dependency_check`, and the old-API `[pandora]` keys such as `partner` and `rpc_host`), then removes `[ui]`, `[player]` and `[pandora]` once they are empty. Keys you added yourself are still kept, and so is the table that holds them. `now_playing_size` is never read as `menu_width`. Part of the old-config migration slated for removal at 1.0 (`REMOVE AT 1.0` in `src/config.rs`). Tests: `a_file_with_only_the_retired_now_playing_size_loads_and_loses_the_ui_table_on_save`, `retired_keys_go_on_save_but_unknown_keys_and_their_tables_stay`.
 
+#### Help: the station icons are centred in their highlight
+
+In the help (`?`), the two icons under STATION ICONS (the genre logo and the person) sat at the left of a wider light block, with extra colour on the right. Only the icon and one cell either side are highlighted now, so it sits in the middle, in all three icon sets; the room a Nerd glyph may need is plain background. The station lists, Genres page and the genre popup already coloured the whole row (or nothing), and are unchanged.
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

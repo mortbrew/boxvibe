@@ -2248,12 +2248,15 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         (ic.own_station, "a station you made: you can rename, edit and delete it"),
     ];
     for (glyph, what) in station_icons {
-        let glyph = icon_cell(glyph);
-        let pad = (key_w + 2).saturating_sub(safe_width(&glyph));
+        // Only the glyph and one cell either side wear the pill colour, so the
+        // glyph sits in the middle of it; the room the glyph may need (and the
+        // gap to the text) is plain background, never highlighted.
+        let pill = format!(" {glyph} ");
+        let gap = (key_w + 4).saturating_sub(safe_width(&pill));
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled(format!(" {glyph} "), Style::new().fg(p.background).bg(p.fg).bold()),
-            Span::raw(" ".repeat(pad)),
+            Span::styled(pill, Style::new().fg(p.background).bg(p.fg).bold()),
+            Span::raw(" ".repeat(gap)),
             Span::styled(what.to_owned(), Style::new().fg(p.fg)),
         ]));
     }
@@ -2883,6 +2886,37 @@ mod tests {
                     "{set:?} {cols}x{rows}: {o}"
                 );
                 assert!(all.contains(HELP_FOOTER.trim()), "{cols}x{rows}: the footer is still there");
+            }
+        }
+    }
+
+    #[test]
+    fn help_icons_sit_in_the_middle_of_their_highlight_with_no_extra_colour_on_the_right() {
+        use crate::config::IconSet;
+        use unicode_width::UnicodeWidthStr;
+        for set in [IconSet::Emoji, IconSet::Nerd, IconSet::Unicode] {
+            let ic = icons(set);
+            let mut app = demo();
+            app.config.ui.icons = set;
+            app.help = true;
+            let fg = app.palette.fg;
+            for (cols, rows) in [(160u16, 40u16), (255, 70)] {
+                let (lines, buffer) = screen(&app, cols, rows);
+                for (glyph, what) in
+                    [(ic.genre_station, "genre station: made by Pandora"), (ic.own_station, "a station you made")]
+                {
+                    let y = lines.iter().position(|l| l.contains(what)).unwrap() as u16;
+                    let lit: Vec<u16> = (0..cols).filter(|&x| buffer[(x, y)].bg == fg).collect();
+                    let (first, last) = (lit[0], *lit.last().unwrap());
+                    let w = glyph.width().max(1) as u16;
+                    let ctx = format!("{set:?} {cols}x{rows} {what}");
+                    assert_eq!(last - first + 1, w + 2, "{ctx}: one cell either side of the glyph, nothing more");
+                    // (The second cell of a wide glyph carries no colour of its own.)
+                    assert!(lit.len() as u16 + 1 >= w + 2, "{ctx}: the highlight has no gaps");
+                    assert_eq!(buffer[(first, y)].symbol(), " ", "{ctx}");
+                    assert_eq!(buffer[(first + 1, y)].symbol(), glyph, "{ctx}: the glyph is first inside the block");
+                    assert_eq!(buffer[(last, y)].symbol(), " ", "{ctx}");
+                }
             }
         }
     }

@@ -358,7 +358,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(KeyCode::Char('P'), Cmd::NowPlaying),
     bind(KeyCode::Char('S'), Cmd::Stations),
     bind(KeyCode::Char('G'), Cmd::Genres),
-    bind(KeyCode::Char('T'), Cmd::Settings),
+    bind(KeyCode::Char('O'), Cmd::Settings),
     bind(KeyCode::Char('A'), Cmd::About),
     bind(KeyCode::Char('F'), Cmd::Favorites),
     bind(KeyCode::Char('U'), Cmd::ThumbUp),
@@ -961,7 +961,7 @@ impl App {
         }
     }
 
-    /// Settings or About (menu entry, `T` or `A`): the page, with the keys
+    /// Settings or About (menu entry, `O` or `A`): the page, with the keys
     /// on it and its menu entry selected.
     fn show_page(&mut self, view: View) {
         self.view = view;
@@ -987,7 +987,7 @@ impl App {
         self.point_menu_at_view();
         if matches!(self.genres, GenresState::Idle | GenresState::Failed(_)) {
             if self.session != Session::LoggedIn {
-                self.status = "Log in first (Settings, Shift+T) to browse genres".into();
+                self.status = "Log in first (Settings, Shift+O) to browse genres".into();
                 return;
             }
             self.genres = GenresState::Loading;
@@ -1026,7 +1026,7 @@ impl App {
     /// `a` or the "Add station…" row: opens the search box.
     fn open_add_station(&mut self) {
         if self.session != Session::LoggedIn {
-            self.status = "Log in first (Settings, Shift+T) to add a station".into();
+            self.status = "Log in first (Settings, Shift+O) to add a station".into();
             return;
         }
         self.add_station = Some(StationSearch::new());
@@ -3551,7 +3551,7 @@ mod tests {
         let mut app = App::new(Config::default(), None, &[], true);
         app.on_key(shift('S'));
         assert_eq!((app.view, app.focus), (View::Stations, Focus::Content), "S is Stations");
-        app.on_key(shift('T'));
+        app.on_key(shift('O'));
         assert_eq!((app.view, app.focus, app.menu_selected()), (View::Settings, Focus::Content, MenuItem::Settings));
         app.on_key(shift('A'));
         assert_eq!((app.view, app.focus, app.menu_selected()), (View::About, Focus::Content, MenuItem::About));
@@ -3565,6 +3565,19 @@ mod tests {
         let theme = app.config.ui.theme.clone();
         app.on_key(key(KeyCode::Char('t')));
         assert_eq!(app.config.ui.theme, theme, "t no longer switches the theme: only Settings does");
+    }
+
+    #[test]
+    fn shift_o_opens_settings_and_shift_t_is_free() {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.on_key(shift('O'));
+        assert_eq!((app.view, app.focus, app.menu_selected()), (View::Settings, Focus::Content, MenuItem::Settings));
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(shift('P'));
+        let before = (app.view, app.focus);
+        app.on_key(shift('T'));
+        assert_eq!((app.view, app.focus), before, "Shift+T is unbound now");
+        assert!(!KEYMAP.iter().any(|b| b.code == KeyCode::Char('T')));
     }
 
     fn saving_app(name: &str) -> App {

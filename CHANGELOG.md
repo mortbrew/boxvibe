@@ -352,6 +352,10 @@ bound twice.
 
 - Typing in the editor's Add-a-seed box and pressing Enter already searched Pandora fine, but the box also asked Pandora for suggestions first, and Pandora answered "Service method not found (HTTP 404)" because the request went to `/api/v1/station/getSeedSuggestions`, a path Pandora doesn't have. That ugly line showed up as "Search failed: no suggestions (…)" above the search results. The request now goes to `/api/v1/search/getSeedSuggestions`, the path in the public list of Pandora's endpoints (boxvibe's own captures never recorded the site's real call, so this is a best guess), and if it fails for any reason the box says nothing and simply stays a search box. Search itself is unchanged. Any search that fails with a raw Pandora answer (an HTTP number, "not found") now reads "Couldn't search Pandora right now" in both the Add-a-seed box and the Add-station box; plain messages such as "offline" are kept. Tests cover the fake server refusing the old path, the quiet suggestions failure and the friendly line.
 
+#### Settings moves from Shift+T to Shift+O
+
+- **Settings is now `O` (Shift+o)**, to match tubevibe; it was `T` (Shift+t). `T` is free and does nothing. `A` still opens About, and the Shift+letter rule is unchanged. Everything that named the old key now says `Shift+O`: the bottom of Help ("Settings (Shift+O)"), the "GOING PLACES" row (`O A  Settings / About`), the README key table, and the "Log in first (Settings, Shift+O) to …" messages when you try Genres, Add station or the station editor logged out. A test checks that `O` opens Settings and `T` is unbound.
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

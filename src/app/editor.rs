@@ -180,7 +180,7 @@ impl App {
             return;
         }
         if self.session != Session::LoggedIn {
-            self.status = "Log in first (Settings, Shift+T) to edit a station".into();
+            self.status = "Log in first (Settings, Shift+O) to edit a station".into();
             return;
         }
         self.backend.send(Request::Seeds { station_id: station.id.clone() });

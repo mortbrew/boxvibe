@@ -2198,7 +2198,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("P", "Now Playing: the pane gets the keys"),
             ("S", "Stations: every station, Enter plays one"),
             ("G", "Genres: Pandora's genre stations, Enter adds and plays one"),
-            ("T A", "Settings / About"),
+            ("O A", "Settings / About"),
             ("F", "jump to FAVORITES in the menu"),
             ("Tab", "menu, Now Playing, Up Next, History (Shift+Tab: back)"),
             ("Esc", "back to the menu"),
@@ -2340,7 +2340,7 @@ fn draw_system_box(frame: &mut Frame, p: &Palette, lines: Vec<Line<'static>>, ar
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), box_area);
 }
 
-const HELP_FOOTER: &str = " Theme, account, animations, boot screen and more: Settings (Shift+T)";
+const HELP_FOOTER: &str = " Theme, account, animations, boot screen and more: Settings (Shift+O)";
 
 #[cfg(test)]
 mod tests {

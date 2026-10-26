@@ -153,7 +153,7 @@ Try it without an account (made-up stations, no network, no sound):
 | `P` (Shift+p) | Now Playing: back to the player with the keys on the Now Playing pane and the menu on NOW PLAYING |
 | `S` (Shift+s) | Stations: every station on the right, `Enter` plays one |
 | `G` (Shift+g) | Genres: Pandora's genre stations, `Enter` adds one and plays it |
-| `T` (Shift+t) / `A` (Shift+a) | Settings / About, with the menu on that entry |
+| `O` (Shift+o) / `A` (Shift+a) | Settings / About, with the menu on that entry |
 | `F` (Shift+f) | the menu, on the first of FAVORITES |
 | `f` | favorite / unfavorite the station (the menu's FAVORITES section) |
 | `a` | add a station: search artists and songs (on the Stations page; also the "Add station…" row) |

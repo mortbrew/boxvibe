@@ -23,6 +23,12 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
     app.demo_warm_up(3, Duration::from_secs(102));
     match screen {
         "help" => app.help = true,
+        // The System Check list for a missing Nerd Font and notify-send.
+        "system" => {
+            app.system_checked(&crate::deps::Facts { families: Some("DejaVu Sans\n".into()), ..Default::default() });
+        }
+        // The boot screen a little over half way (the logo has faded in).
+        "splash" => app.splash = std::time::Instant::now().checked_sub(Duration::from_millis(1000)),
         "settings" => {
             app.view = View::Settings;
             app.focus = Focus::Content;
@@ -30,6 +36,37 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
             app.settings_cursor =
                 crate::app::Setting::ALL.iter().position(|(_, s)| *s == crate::app::Setting::BorderStyle).unwrap_or(0);
             app.status = "Settings are saved to config.toml as you change them".into();
+        }
+        // The password popup: with a system keychain, and without one
+        // (the password lasts the session). Some letters are typed to show the mask.
+        "password" | "password-nokeychain" => {
+            app.config.pandora.username = "you@example.com".into();
+            app.keychain_state = if screen == "password" {
+                crate::app::KeychainState::NotSaved
+            } else {
+                crate::app::KeychainState::Unavailable
+            };
+            app.ask_password_for_snapshot("hunter2hunter2");
+        }
+        // `r` on a genre station: the popup that says why (and, ticked, the
+        // "Don't show this again" box checked). The bar says it too.
+        "genre-edit-popup" | "genre-edit-popup-ticked" => {
+            use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+            app.view = View::Stations;
+            app.focus = Focus::Content;
+            app.stations_cursor = app.stations.iter().position(|s| s.is_locked() && !s.is_shuffle).unwrap_or(0);
+            app.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+            if screen == "genre-edit-popup-ticked" {
+                app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+            }
+        }
+        // Settings → PLAYBACK → Good Vibes Only, Enter on it: the risk popup.
+        "good-vibes-off" => {
+            use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+            app.view = View::Settings;
+            app.focus = Focus::Content;
+            app.settings_cursor = crate::app::Setting::at(crate::app::Setting::GoodVibesOnly);
+            app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         }
         "about" | "about-restart" => {
             app.view = View::About;
@@ -50,6 +87,24 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
                     format!("{} boxvibe 0.4.0 available · see About", crate::icons::icons(app.config.ui.icons).update);
             }
         }
+        // The station editor (`e` on a station): seeds, the add box, the
+        // remove question, the thumbs history and its take-back question.
+        "seeds" | "seeds-add" | "seeds-remove" | "thumbs" | "thumbs-up" | "thumbs-delete" | "thumbs-down"
+        | "thumbs-down-delete" => editor_screen(&mut app, screen),
+        // An audio ad playing (the demo serves a pod on every third question),
+        // a few seconds in.
+        "ad" => {
+            use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+            app.config.player.good_vibes_only = true;
+            for _ in 0..9 {
+                if app.ad_view().is_some() {
+                    break;
+                }
+                app.on_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT));
+                app.settle(Duration::from_millis(100));
+            }
+            app.audio.seek_silent(Duration::from_secs(2));
+        }
         _ => {}
     }
     let mut terminal = Terminal::new(TestBackend::new(cols, rows))?;
@@ -57,6 +112,44 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
     let html = to_html(terminal.backend().buffer(), &app.palette);
     std::fs::write(out, html)?;
     Ok(())
+}
+
+/// Opens the Stations page and the editor on the first station that has one,
+/// then goes on to what `screen` shows.
+fn editor_screen(app: &mut App, screen: &str) {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let press = |app: &mut App, code: KeyCode| {
+        let mods =
+            if matches!(code, KeyCode::Char(c) if c.is_uppercase()) { KeyModifiers::SHIFT } else { KeyModifiers::NONE };
+        app.on_key(KeyEvent::new(code, mods));
+        app.settle(Duration::from_millis(60));
+    };
+    press(app, KeyCode::Char('S'));
+    for _ in 0..8 {
+        press(app, KeyCode::Char('e'));
+        if app.editor.is_some() {
+            break;
+        }
+        press(app, KeyCode::Char('j'));
+    }
+    match screen {
+        "seeds-add" => press(app, KeyCode::Char('a')),
+        "seeds-remove" => press(app, KeyCode::Char('x')),
+        // The Thumbs Up tab (`thumbs` is the same screen) and the Thumbs Down tab,
+        // each also with the take-back question open.
+        "thumbs" | "thumbs-up" | "thumbs-delete" | "thumbs-down" | "thumbs-down-delete" => {
+            press(app, KeyCode::Tab);
+            if screen.starts_with("thumbs-down") {
+                press(app, KeyCode::Tab);
+            }
+            press(app, KeyCode::Char('j'));
+            press(app, KeyCode::Char('j'));
+            if screen.ends_with("delete") {
+                press(app, KeyCode::Char('x'));
+            }
+        }
+        _ => {}
+    }
 }
 
 fn css(color: Color, fallback: Color) -> String {

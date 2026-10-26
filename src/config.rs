@@ -1,4 +1,9 @@
-//! User configuration, `~/.config/boxvibe/config.toml` (tubevibe's layout).
+//! User configuration, `~/.config/boxvibe/config.toml`.
+//!
+//! The tables are the Settings groups: `[boxvibe]`, `[account]`, `[playback]`
+//! and `[look]` (see [`LAYOUT`]). The 0.1–0.3 tables `[pandora]`, `[player]`
+//! and `[ui]` still load (the new place wins when a key is in both) and are
+//! emptied into the new tables the next time anything is saved.
 //!
 //! Nothing in this file can stop the app from starting. Every field has a
 //! default, so a missing or partial file is fine. Unknown keys and sections
@@ -8,9 +13,12 @@
 //! is moved aside to `config.toml.bad-<UTC time>` and the app starts with the
 //! defaults ([`Config::load`]); one that can't be read is left alone.
 //!
-//! Settings changed from the app are written back with [`set_value`], which
-//! keeps the user's comments and formatting. The file holds the Pandora
-//! password, so it is always written with mode 600.
+//! Settings changed from the app are written back with [`set_values`], which
+//! keeps the user's comments and formatting. The file is always written with
+//! mode 600. It never holds the Pandora password: that lives in the desktop
+//! keychain ([`crate::keychain`]). A password an older boxvibe left in the file
+//! (`[account]` or `[pandora]` `password`) is still read, once, so it can be
+//! moved to the keychain; [`forget_plaintext_password`] then deletes it.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -25,13 +33,48 @@ pub struct Config {
     pub ui: UiConfig,
 }
 
+/// A password. It prints as `<hidden>` in `{:?}` (so it can't end up in a log
+/// or a panic message by accident), and is never written to the config file.
+#[derive(Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self(text.into())
+    }
+
+    /// The text itself; only for sending it to Pandora or the keychain.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_empty() { "<empty>" } else { "<hidden>" })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct PandoraConfig {
-    /// The account's email, saved from Settings.
+    /// The account's email, saved from Settings (`[account] email_or_username`).
+    #[serde(rename = "email_or_username")]
     pub username: String,
-    /// Saved from Settings once a login works, in plain text (the file is mode 600).
-    pub password: String,
+    /// The password in use this session. Not a setting: it is read from the
+    /// keychain (or typed), and only a plaintext one left in the file by
+    /// boxvibe 0.4 betas is read from there, to be moved. Never written.
+    #[serde(skip_serializing)]
+    pub password: Secret,
     /// `high` (192 kbps MP3 where the plan has it, else 128) | `standard`
     /// (128 kbps MP3). Old `low` / `medium` values read as `standard`.
     pub audio_quality: String,
@@ -46,7 +89,7 @@ impl Default for PandoraConfig {
     fn default() -> Self {
         Self {
             username: String::new(),
-            password: String::new(),
+            password: Secret::default(),
             audio_quality: "high".into(),
             user_agent: String::new(),
             last_station: String::new(),
@@ -59,27 +102,44 @@ impl Default for PandoraConfig {
 pub struct PlayerConfig {
     /// 0–100.
     pub volume: u8,
+    /// Play Pandora's audio ads and report them like the website does (free
+    /// accounts get them). Off: no ad is asked for, so none plays.
+    pub good_vibes_only: bool,
 }
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self { volume: 70 }
+        Self { volume: 70, good_vibes_only: true }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct UiConfig {
-    /// `omarchy` follows the current Omarchy theme (Tokyo Night elsewhere);
-    /// or one of the built-in themes (`t` cycles them).
+    /// `omarchy` follows the current Omarchy theme, or one of the built-in
+    /// themes (changed in Settings). Not saved yet: `omarchy` on an Omarchy
+    /// system, else `tokyo-night`.
     pub theme: String,
     pub icons: IconSet,
     /// Song changes as a desktop notification (`notify-send`). boxvibe 0.1
     /// called it `notify`, which still reads.
-    #[serde(alias = "notify")]
+    #[serde(rename = "song_change_notifications", alias = "notify")]
     pub notifications: bool,
-    /// Ask GitHub, each time the app opens, whether there is a newer version.
+    /// Ask GitHub, each time the app opens, whether there is a newer version
+    /// (`[boxvibe] look_for_new_versions_on_startup`).
+    #[serde(rename = "look_for_new_versions_on_startup")]
     pub check_updates: bool,
+    /// Explain in a popup why a genre station can't be renamed or edited, and
+    /// what the logo and person icons mean (`[boxvibe] genre_edit_popup`).
+    /// Turned off by the popup's "Don't show this again" box.
+    pub genre_edit_popup: bool,
+    /// Show the boxvibe boot screen for a moment when the app opens
+    /// (`[look] boot_screen`; 0.4 betas called it `splash`, in `[boxvibe]`).
+    #[serde(rename = "boot_screen")]
+    pub splash: bool,
+    /// Motion in the interface (today: the boot screen's fade). Off: none
+    /// (the boot screen is skipped). `[look] animations`.
+    pub animations: bool,
     /// Start the station played last as soon as boxvibe opens (and has
     /// logged in). boxvibe 0.1's `[player] autoplay` reads as this.
     pub autoplay_last_station: bool,
@@ -87,14 +147,15 @@ pub struct UiConfig {
     pub border_style: BorderStyle,
     /// Columns of the left menu ([`MENU_WIDTH`]; never more than half the screen).
     pub menu_width: u16,
-    /// How Now Playing shows the cover: a real picture, coloured blocks, or
-    /// (`off`) the spectrum visualizer only.
+    /// How Now Playing shows the cover: a real picture, or `off`. (0.3's
+    /// `blocks` reads as `picture`.)
     pub album_art: AlbumArt,
     /// Makes the cover blocky on purpose (for fun): `hd` is full resolution.
     /// 0.3 betas called it `art_pixelation` (off … max), still read.
     #[serde(alias = "art_pixelation")]
     pub retro_mode: RetroMode,
     /// Recolours the cover with the current theme's colours (`off`: as is).
+    #[serde(rename = "tint_art_with_theme_colors")]
     pub art_tint: ArtTint,
     /// Stations starred with `f`, in the order starred: the menu's FAVORITES.
     pub favorites: Vec<Favorite>,
@@ -112,10 +173,13 @@ pub struct Favorite {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            theme: "omarchy".into(),
-            icons: IconSet::Emoji,
+            theme: crate::theme::default_name().into(),
+            icons: IconSet::Nerd,
             notifications: true,
             check_updates: true,
+            genre_edit_popup: true,
+            splash: true,
+            animations: true,
             autoplay_last_station: true,
             border_style: BorderStyle::Plain,
             menu_width: MENU_WIDTH.default,
@@ -211,17 +275,17 @@ impl BorderStyle {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AlbumArt {
-    /// The best the terminal can draw: sixel, kitty or iTerm2, else blocks.
+    /// The best the terminal can draw: sixel, kitty or iTerm2, else half
+    /// blocks. 0.3's `blocks` is this too (the retro modes took its place).
     #[default]
+    #[serde(alias = "blocks")]
     Picture,
-    /// Unicode half blocks, in any terminal.
-    Blocks,
-    /// No cover: the visualizer.
+    /// No cover: the space says so.
     Off,
 }
 
 impl AlbumArt {
-    pub const ALL: [Self; 3] = [Self::Picture, Self::Blocks, Self::Off];
+    pub const ALL: [Self; 2] = [Self::Picture, Self::Off];
 
     pub fn next(self) -> Self {
         let at = Self::ALL.iter().position(|a| *a == self).unwrap_or(0);
@@ -231,7 +295,6 @@ impl AlbumArt {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Picture => "picture",
-            Self::Blocks => "blocks",
             Self::Off => "off",
         }
     }
@@ -239,8 +302,7 @@ impl AlbumArt {
     pub fn label(self) -> &'static str {
         match self {
             Self::Picture => "Picture",
-            Self::Blocks => "Blocks",
-            Self::Off => "Off (visualizer)",
+            Self::Off => "Off",
         }
     }
 }
@@ -291,6 +353,8 @@ pub enum RetroMode {
     #[default]
     #[serde(rename = "hd", alias = "off")]
     Hd,
+    #[serde(rename = "64bit")]
+    Bit64,
     #[serde(rename = "32bit", alias = "extra_low", alias = "extra-low", alias = "extralow")]
     Bit32,
     #[serde(rename = "16bit", alias = "low")]
@@ -304,7 +368,7 @@ pub enum RetroMode {
 }
 
 impl RetroMode {
-    pub const ALL: [Self; 6] = [Self::Hd, Self::Bit32, Self::Bit16, Self::Bit8, Self::Bit4, Self::Bit2];
+    pub const ALL: [Self; 7] = [Self::Hd, Self::Bit64, Self::Bit32, Self::Bit16, Self::Bit8, Self::Bit4, Self::Bit2];
 
     pub fn next(self) -> Self {
         let at = Self::ALL.iter().position(|a| *a == self).unwrap_or(0);
@@ -315,6 +379,7 @@ impl RetroMode {
     pub fn grid(self) -> Option<u32> {
         match self {
             Self::Hd => None,
+            Self::Bit64 => Some(256),
             Self::Bit32 => Some(128),
             Self::Bit16 => Some(64),
             Self::Bit8 => Some(32),
@@ -326,6 +391,7 @@ impl RetroMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Hd => "hd",
+            Self::Bit64 => "64bit",
             Self::Bit32 => "32bit",
             Self::Bit16 => "16bit",
             Self::Bit8 => "8bit",
@@ -337,6 +403,7 @@ impl RetroMode {
     pub fn label(self) -> &'static str {
         match self {
             Self::Hd => "HD",
+            Self::Bit64 => "64-bit",
             Self::Bit32 => "32-bit",
             Self::Bit16 => "16-bit",
             Self::Bit8 => "8-bit",
@@ -350,9 +417,9 @@ impl RetroMode {
 #[serde(rename_all = "lowercase")]
 pub enum IconSet {
     /// Colour emoji.
-    #[default]
     Emoji,
     /// Needs a Nerd Font (Omarchy ships one).
+    #[default]
     Nerd,
     /// Plain Unicode, works with any font.
     Unicode,
@@ -361,9 +428,9 @@ pub enum IconSet {
 impl IconSet {
     pub fn next(self) -> Self {
         match self {
-            Self::Emoji => Self::Nerd,
-            Self::Nerd => Self::Unicode,
-            Self::Unicode => Self::Emoji,
+            Self::Nerd => Self::Emoji,
+            Self::Emoji => Self::Unicode,
+            Self::Unicode => Self::Nerd,
         }
     }
 
@@ -456,10 +523,13 @@ impl ConfigWarning {
     }
 }
 
-/// Keys an earlier boxvibe wrote that no longer do anything; a config with
-/// them still loads without a warning. `ui.now_playing_size` went when Up Next
+/// REMOVE AT 1.0. Keys an earlier boxvibe wrote that no longer do anything; a
+/// config with them still loads without a warning, and saving deletes them
+/// (and the old table, once it is empty). `ui.now_playing_size` went when Up Next
 /// and History became fixed at 10 songs (Now Playing takes the rest).
-const RETIRED_KEYS: &[&str] = &["ui.now_playing_size"];
+/// `boxvibe.dependency_check` was a 0.4 beta setting for a startup check that
+/// is now always the same list, with no switch.
+const RETIRED_KEYS: &[&str] = &["ui.now_playing_size", "boxvibe.dependency_check"];
 
 /// One `[section]`: each key is tried on its own, so an unknown or broken
 /// one is skipped (and reported) while the rest still apply.
@@ -479,11 +549,6 @@ fn section<T: serde::de::DeserializeOwned + Default>(
         let mut unknown = false;
         let tried: Result<T, toml::de::Error> = serde_ignored::deserialize(toml::Value::Table(one), |_| unknown = true);
         match tried {
-            Ok(_) if unknown && name == "pandora" && OLD_PANDORA_KEYS.contains(&key.as_str()) => {
-                warnings.push(ConfigWarning::Old(path))
-            }
-            // Settings boxvibe had once and dropped: read and ignored, quietly.
-            Ok(_) if unknown && RETIRED_KEYS.contains(&path.as_str()) => {}
             // A favorite with a key boxvibe doesn't know still counts.
             Ok(_) if unknown && path != "ui.favorites" => warnings.push(ConfigWarning::Unknown(path)),
             Ok(_) => {
@@ -499,6 +564,147 @@ fn section<T: serde::de::DeserializeOwned + Default>(
         warnings.push(ConfigWarning::BadValue { key: name.into(), error: e.message().trim().to_owned() });
         T::default()
     })
+}
+
+/// Where each setting lives: (table, key, the table 0.1–0.3 kept it in).
+/// The tables are Settings' groups: ACCOUNT, BOXVIBE, PLAYBACK and LOOK.
+/// The old tables still load, and are cleared out when anything is saved.
+pub const LAYOUT: &[(&str, &str, &str)] = &[
+    ("account", "email_or_username", "pandora"),
+    ("account", "user_agent", "pandora"),
+    ("boxvibe", "look_for_new_versions_on_startup", "ui"),
+    ("boxvibe", "genre_edit_popup", "ui"),
+    ("playback", "audio_quality", "pandora"),
+    ("playback", "volume", "player"),
+    ("playback", "good_vibes_only", "player"),
+    ("playback", "autoplay_last_station", "ui"),
+    ("playback", "last_station", "pandora"),
+    ("playback", "song_change_notifications", "ui"),
+    ("playback", "favorites", "ui"),
+    ("look", "theme", "ui"),
+    ("look", "icons", "ui"),
+    ("look", "border_style", "ui"),
+    ("look", "menu_width", "ui"),
+    ("look", "album_art", "ui"),
+    ("look", "retro_mode", "ui"),
+    ("look", "tint_art_with_theme_colors", "ui"),
+    ("look", "animations", "ui"),
+    ("look", "boot_screen", "ui"),
+];
+
+// REMOVE AT 1.0: the old-config migration is `OLD_NAMES`, `OLD_TABLES`, `age`,
+// the old-name branches of `gather`, `new_path`, `migrate` and the `alias`
+// attributes on the structs above. At 1.0 the file layout is final and all of
+// it goes (only the pre-1.0 betas ever wrote an old config).
+
+/// REMOVE AT 1.0. Names a setting had before: (old table, old key, table, key). Read when
+/// the setting is not there under its own name, and removed when it is saved.
+/// Oldest first: when a file has several, the later entry wins, and a name in
+/// the setting's own table or a table of [`LAYOUT`] beats all of these.
+const OLD_NAMES: &[(&str, &str, &str, &str)] = &[
+    ("player", "autoplay", "playback", "autoplay_last_station"),
+    ("ui", "art_pixelation", "look", "retro_mode"),
+    // Good Vibes Only was `good_guy` in the 0.4 betas, in [player] and then [playback].
+    ("player", "good_guy", "playback", "good_vibes_only"),
+    ("playback", "good_guy", "playback", "good_vibes_only"),
+    // Each of these is named as its Settings row now.
+    ("pandora", "username", "account", "email_or_username"),
+    ("account", "username", "account", "email_or_username"),
+    ("ui", "check_updates", "boxvibe", "look_for_new_versions_on_startup"),
+    ("boxvibe", "check_updates", "boxvibe", "look_for_new_versions_on_startup"),
+    ("ui", "notify", "playback", "song_change_notifications"),
+    ("ui", "notifications", "playback", "song_change_notifications"),
+    ("playback", "notifications", "playback", "song_change_notifications"),
+    ("ui", "art_tint", "look", "tint_art_with_theme_colors"),
+    ("look", "art_tint", "look", "tint_art_with_theme_colors"),
+    ("ui", "splash", "look", "boot_screen"),
+    ("boxvibe", "splash", "look", "boot_screen"),
+    ("look", "splash", "look", "boot_screen"),
+];
+
+/// How recent an old name is (later in [`OLD_NAMES`] is newer): 1 and up,
+/// always below [`OLD_TABLE`] and [`OWN_PLACE`].
+fn age(table: &str, key: &str) -> Option<u16> {
+    OLD_NAMES.iter().position(|(t, k, ..)| *t == table && *k == key).map(|i| i as u16 + 1)
+}
+
+/// Ranks of where a value was read from: its own table and key, then its old
+/// table under the same key, then the old names by [`age`].
+const OWN_PLACE: u16 = 1000;
+const OLD_TABLE: u16 = 500;
+
+/// REMOVE AT 1.0. The tables of the old layout.
+const OLD_TABLES: [&str; 3] = ["pandora", "player", "ui"];
+
+/// `ui.icons` → `look.icons`: how a setting is named in the file now.
+fn new_path(old: &str) -> String {
+    let Some((table, key)) = old.split_once('.') else { return old.to_owned() };
+    match LAYOUT.iter().find(|(_, k, t)| *t == table && *k == key) {
+        Some((new, ..)) => format!("{new}.{key}"),
+        None => old.to_owned(),
+    }
+}
+
+/// Reads the file's tables, in either layout, as the three tables the
+/// structs below are built from. A key in its new table beats the same key in
+/// an old one, which beats an old name of it. Keys nobody knows are reported.
+fn gather(table: toml::Table, warnings: &mut Vec<ConfigWarning>) -> toml::Table {
+    let mut internal: toml::Table =
+        OLD_TABLES.iter().map(|t| ((*t).to_owned(), toml::Value::Table(toml::Table::new()))).collect();
+    let mut rank: std::collections::HashMap<(&str, String), u16> = std::collections::HashMap::new();
+    let mut put = |internal: &mut toml::Table, old_table: &'static str, key: String, value: toml::Value, level: u16| {
+        if rank.get(&(old_table, key.clone())).is_some_and(|have| *have >= level) {
+            return;
+        }
+        if let Some(toml::Value::Table(t)) = internal.get_mut(old_table) {
+            t.insert(key.clone(), value);
+        }
+        rank.insert((old_table, key), level);
+    };
+    for (name, value) in table {
+        let is_new = LAYOUT.iter().any(|(t, ..)| *t == name);
+        if !is_new && !OLD_TABLES.contains(&name.as_str()) {
+            warnings.push(ConfigWarning::Unknown(name));
+            continue;
+        }
+        let toml::Value::Table(keys) = value else {
+            warnings.push(ConfigWarning::BadValue { key: name, error: "not a [section]".into() });
+            continue;
+        };
+        for (key, value) in keys {
+            let path = format!("{name}.{key}");
+            // A password an older boxvibe saved: read once, to move it to the keychain.
+            if key == "password" && (name == "account" || name == "pandora") {
+                put(&mut internal, "pandora", key, value, if name == "account" { OWN_PLACE } else { OLD_TABLE });
+                continue;
+            }
+            if is_new {
+                let old_name = OLD_NAMES.iter().find(|(t, k, ..)| *t == name && *k == key);
+                match (LAYOUT.iter().find(|(t, k, _)| *t == name && *k == key), old_name) {
+                    (Some((_, _, old)), _) => put(&mut internal, old, key, value, OWN_PLACE),
+                    // A setting that moved out of this table: still read from here.
+                    (None, Some((_, _, new, new_key))) => {
+                        let old =
+                            LAYOUT.iter().find(|(t, k, _)| t == new && k == new_key).map_or("ui", |(.., old)| *old);
+                        put(&mut internal, old, (*new_key).to_owned(), value, age(&name, &key).unwrap_or(1));
+                    }
+                    (None, None) if RETIRED_KEYS.contains(&path.as_str()) => {}
+                    (None, None) => warnings.push(ConfigWarning::Unknown(path)),
+                }
+            } else if LAYOUT.iter().any(|(_, k, t)| *t == name && *k == key) {
+                let old = OLD_TABLES.iter().find(|t| **t == name).copied().unwrap_or_default();
+                put(&mut internal, old, key, value, OLD_TABLE);
+            } else if let Some((_, _, new, new_key)) = OLD_NAMES.iter().find(|(t, k, ..)| *t == name && *k == key) {
+                let old = LAYOUT.iter().find(|(t, k, _)| t == new && k == new_key).map_or("ui", |(.., old)| *old);
+                put(&mut internal, old, (*new_key).to_owned(), value, age(&name, &key).unwrap_or(1));
+            } else if name == "pandora" && OLD_PANDORA_KEYS.contains(&key.as_str()) {
+                warnings.push(ConfigWarning::Old(path));
+            } else if !RETIRED_KEYS.contains(&path.as_str()) {
+                warnings.push(ConfigWarning::Unknown(path));
+            }
+        }
+    }
+    internal
 }
 
 /// `20261021T011500Z` for a moment, in UTC (no time zone database needed).
@@ -521,45 +727,31 @@ fn utc_stamp(at: std::time::SystemTime) -> String {
 impl Config {
     /// Reads a config and lists what was skipped; only invalid TOML fails.
     pub fn parse(text: &str) -> Result<(Self, Vec<ConfigWarning>), toml::de::Error> {
-        let mut table: toml::Table = toml::from_str(text)?;
-        // 0.1's `[player] autoplay` is now `[ui] autoplay_last_station` (which wins when both are there).
-        let old_autoplay = match table.get_mut("player") {
-            Some(toml::Value::Table(player)) => player.remove("autoplay"),
-            _ => None,
-        };
-        if let Some(value) = old_autoplay {
-            let ui = table.entry("ui").or_insert_with(|| toml::Value::Table(toml::Table::new()));
-            if let toml::Value::Table(ui) = ui {
-                ui.entry("autoplay_last_station").or_insert(value);
-            }
-        }
-        // Both the 0.1 name and the new one: the new one wins.
-        if let Some(toml::Value::Table(ui)) = table.get_mut("ui") {
-            if ui.contains_key("notifications") {
-                ui.remove("notify");
-            }
-            if ui.contains_key("retro_mode") {
-                ui.remove("art_pixelation");
-            }
-        }
+        let table: toml::Table = toml::from_str(text)?;
         let mut warnings = Vec::new();
+        let mut gathered = gather(table, &mut warnings);
         let mut c = Self::default();
-        for (name, value) in table {
-            let w = &mut warnings;
+        // Each setting is checked on its own; a bad one is named as the file names it now.
+        let mut checked = Vec::new();
+        for (name, value) in std::mem::take(&mut gathered) {
             match name.as_str() {
-                "pandora" => c.pandora = section(&name, value, w),
-                "player" => c.player = section(&name, value, w),
-                "ui" => c.ui = section(&name, value, w),
-                _ => w.push(ConfigWarning::Unknown(name)),
+                "pandora" => c.pandora = section(&name, value, &mut checked),
+                "player" => c.player = section(&name, value, &mut checked),
+                "ui" => c.ui = section(&name, value, &mut checked),
+                _ => {}
             }
         }
+        warnings.extend(checked.into_iter().map(|w| match w {
+            ConfigWarning::BadValue { key, error } => ConfigWarning::BadValue { key: new_path(&key), error },
+            other => other,
+        }));
         c.player.volume = c.player.volume.min(100);
         // Sizes out of range: said, and back to the default.
         {
             let (size, value) = (MENU_WIDTH, &mut c.ui.menu_width);
             if !size.contains(*value) {
                 warnings.push(ConfigWarning::BadValue {
-                    key: format!("ui.{}", size.key),
+                    key: format!("look.{}", size.key),
                     error: format!("{} is not between {} and {}", value, size.min, size.max),
                 });
                 *value = size.default;
@@ -630,8 +822,107 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-/// Sets `[table] key = value` for each entry in the file at `path`, creating
-/// file and table when missing and leaving everything else untouched.
+/// Moves every setting still in the 0.1–0.3 tables (`[pandora]`, `[player]`,
+/// `[ui]`) to its table in [`LAYOUT`], keeping its comments, then drops the old
+/// names and the old tables that are empty now. A key already in its new place
+/// wins, and keys boxvibe doesn't know stay where they are.
+fn migrate(doc: &mut toml_edit::DocumentMut) {
+    // REMOVE AT 1.0 (with `OLD_NAMES`): this whole function.
+    let moves = LAYOUT
+        .iter()
+        .map(|(new, key, old)| (*old, *key, *new, *key))
+        // Newest old name first, so it is the one that moves when there are several.
+        .chain(OLD_NAMES.iter().rev().copied())
+        .collect::<Vec<_>>();
+    for (old, old_key, new, key) in moves {
+        // Only ordinary [tables] are touched; anything odd is left alone.
+        if !doc.get(new).is_none_or(toml_edit::Item::is_table) {
+            continue;
+        }
+        let Some(taken) =
+            doc.get_mut(old).and_then(toml_edit::Item::as_table_mut).and_then(|t| t.remove_entry(old_key))
+        else {
+            continue;
+        };
+        let (name, item) = taken;
+        let Some(target) = doc.entry(new).or_insert_with(toml_edit::table).as_table_mut() else { continue };
+        if !target.contains_key(key) {
+            // A renamed key keeps the comment lines above it.
+            let mut new_name = toml_edit::Key::new(key);
+            *new_name.leaf_decor_mut() = name.leaf_decor().clone();
+            target.insert_formatted(&new_name, item);
+        }
+    }
+    // 0.3's `album_art = "blocks"` is `picture` now.
+    if let Some(art) = doc.get_mut("look").and_then(toml_edit::Item::as_table_mut).and_then(|t| t.get_mut("album_art"))
+        && art.as_str() == Some("blocks")
+        && let Some(old) = art.as_value()
+    {
+        let mut value = toml_edit::Value::from("picture");
+        *value.decor_mut() = old.decor().clone();
+        *art = toml_edit::Item::Value(value);
+    }
+    // Retired keys do nothing any more: they go from wherever they are, so an
+    // old table they were the last in can go too. Keys nobody knows stay.
+    for path in RETIRED_KEYS {
+        if let Some((table, key)) = path.split_once('.')
+            && let Some(t) = doc.get_mut(table).and_then(toml_edit::Item::as_table_mut)
+        {
+            t.remove(key);
+        }
+    }
+    if let Some(t) = doc.get_mut("pandora").and_then(toml_edit::Item::as_table_mut) {
+        for key in OLD_PANDORA_KEYS {
+            t.remove(key);
+        }
+    }
+    // An old table with nothing left goes; a comment above it (often the
+    // file's first line) is kept, above the table that is first now.
+    let mut comments = String::new();
+    for old in OLD_TABLES {
+        let Some(table) = doc.get(old).and_then(toml_edit::Item::as_table).filter(|t| t.is_empty()) else { continue };
+        let prefix = table.decor().prefix().and_then(toml_edit::RawString::as_str).unwrap_or_default();
+        comments.push_str(prefix.trim_start_matches('\n'));
+        doc.remove(old);
+    }
+    if !comments.trim().is_empty()
+        && let Some((_, first)) = doc.iter_mut().find(|(_, item)| item.is_table())
+        && let Some(first) = first.as_table_mut()
+    {
+        let own = first.decor().prefix().and_then(toml_edit::RawString::as_str).unwrap_or_default().to_owned();
+        first.decor_mut().set_prefix(format!("{comments}{own}"));
+    }
+}
+
+/// Deletes `password` from `[account]` and `[pandora]` in the file at `path`
+/// (what 0.4 betas saved there), keeping everything else. `Ok(true)` when
+/// there was one. Call it only once the keychain has the password.
+pub fn forget_plaintext_password(path: &Path) -> Result<bool, ConfigError> {
+    let error = |reason: String| ConfigError::Write { path: path.into(), reason };
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(error(e.to_string())),
+    };
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| error(e.to_string()))?;
+    let mut found = false;
+    for table in ["account", "pandora"] {
+        if let Some(t) = doc.get_mut(table).and_then(toml_edit::Item::as_table_mut) {
+            found |= t.remove("password").is_some();
+        }
+    }
+    if !found {
+        return Ok(false);
+    }
+    migrate(&mut doc);
+    write_private(path, &doc.to_string()).map_err(|e| error(e.to_string()))?;
+    Ok(true)
+}
+
+/// Sets `[table] key = value` for each entry in the file at `path` (the
+/// tables of [`LAYOUT`]), creating file and table when missing and leaving
+/// everything else, comments included, untouched. A file still in the old
+/// layout is moved to the new one first.
 pub fn set_values(path: &Path, values: &[(&str, &str, toml_edit::Value)]) -> Result<(), ConfigError> {
     let error = |reason: String| ConfigError::Write { path: path.into(), reason };
     let text = match std::fs::read_to_string(path) {
@@ -640,25 +931,27 @@ pub fn set_values(path: &Path, values: &[(&str, &str, toml_edit::Value)]) -> Res
         Err(e) => return Err(error(e.to_string())),
     };
     let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| error(e.to_string()))?;
+    migrate(&mut doc);
     for (table, key, value) in values {
+        // The password is never written to the file.
+        debug_assert!(*key != "password", "the password belongs in the keychain");
+        if *key == "password" {
+            continue;
+        }
+        debug_assert!(LAYOUT.iter().any(|(t, k, _)| t == table && k == key), "{table}.{key} is not in LAYOUT");
         let section = doc
             .entry(table)
             .or_insert_with(toml_edit::table)
             .as_table_mut()
             .ok_or_else(|| error(format!("`{table}` is not a table")))?;
-        section[*key] = toml_edit::Item::Value(value.clone());
+        let mut value = value.clone();
+        // The comment after the old value stays.
+        if let Some(old) = section.get(key).and_then(toml_edit::Item::as_value) {
+            *value.decor_mut() = old.decor().clone();
+        }
+        section[*key] = toml_edit::Item::Value(value);
     }
     write_private(path, &doc.to_string()).map_err(|e| error(e.to_string()))
-}
-
-/// Removes `[table] key` from the file at `path`, if it is there (an old
-/// name of a setting that was just saved under its new one).
-pub fn remove_value(path: &Path, table: &str, key: &str) -> Result<(), ConfigError> {
-    let error = |reason: String| ConfigError::Write { path: path.into(), reason };
-    let Ok(text) = std::fs::read_to_string(path) else { return Ok(()) };
-    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| error(e.to_string()))?;
-    let removed = doc.get_mut(table).and_then(|t| t.as_table_like_mut()).and_then(|t| t.remove(key)).is_some();
-    if removed { write_private(path, &doc.to_string()).map_err(|e| error(e.to_string())) } else { Ok(()) }
 }
 
 #[cfg(test)]
@@ -678,8 +971,9 @@ mod tests {
         let (c, w) = Config::parse("").unwrap();
         assert_eq!(c, Config::default());
         assert!(w.is_empty());
-        assert_eq!(c.ui.theme, "omarchy");
-        assert_eq!(c.ui.icons, IconSet::Emoji);
+        assert_eq!(c.ui.theme, crate::theme::default_name(), "Omarchy on Omarchy, Tokyo Night elsewhere");
+        assert_eq!(c.ui.icons, IconSet::Nerd, "a Nerd Font is the default");
+        assert_eq!(c.ui.album_art, AlbumArt::Picture);
         assert_eq!(c.player.volume, 70);
         assert_eq!(c.pandora.audio_quality, "high");
         assert!(!c.has_login());
@@ -705,7 +999,7 @@ mod tests {
     #[test]
     fn wrong_types_fall_back_to_their_default() {
         let (c, w) = Config::parse("[player]\nvolume = \"loud\"\nautoplay = false\n[ui]\nicons = \"fancy\"\n").unwrap();
-        assert_eq!((c.player.volume, c.ui.autoplay_last_station, c.ui.icons), (70, false, IconSet::Emoji));
+        assert_eq!((c.player.volume, c.ui.autoplay_last_station, c.ui.icons), (70, false, IconSet::Nerd));
         assert_eq!(w.len(), 2);
         let (c, _) = Config::parse("ui = 5\n").unwrap();
         assert_eq!(c, Config::default());
@@ -718,24 +1012,254 @@ mod tests {
         std::fs::write(&path, "# mine\n[ui]\ntheme = \"gruvbox\" # cosy\nfuture = 1\n").unwrap();
         set_values(
             &path,
-            &[
-                ("pandora", "username", "me@example.com".into()),
-                ("pandora", "password", "hunter2".into()),
-                ("ui", "icons", "unicode".into()),
-            ],
+            &[("account", "email_or_username", "me@example.com".into()), ("look", "icons", "unicode".into())],
         )
         .unwrap();
-        set_values(&path, &[("player", "volume", 55_i64.into())]).unwrap();
+        set_values(&path, &[("playback", "volume", 55_i64.into())]).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("# mine") && text.contains("# cosy") && text.contains("future = 1"), "{text}");
         let (c, _) = Config::load(&path);
-        assert!(c.has_login());
+        assert_eq!(c.pandora.username, "me@example.com");
+        assert!(!c.has_login(), "no password in the file");
+        assert!(!text.contains("password"), "{text}");
         assert_eq!((c.ui.theme.as_str(), c.ui.icons, c.player.volume), ("gruvbox", IconSet::Unicode, 55));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn good_guy_reads_as_good_vibes_only_and_saving_writes_only_the_new_name() {
+        assert!(Config::default().player.good_vibes_only);
+        // Every old place it lived in loads, without a warning.
+        for old in
+            ["[player]\ngood_guy = false\n", "[playback]\ngood_guy = false\n", "[playback]\ngood_vibes_only = false\n"]
+        {
+            let (c, w) = Config::parse(old).unwrap();
+            assert!(!c.player.good_vibes_only && w.is_empty(), "{old}: {w:?}");
+        }
+        // The new name beats the old one, wherever the old one is.
+        let (c, _) = Config::parse("[playback]\ngood_guy = false\ngood_vibes_only = true\n").unwrap();
+        assert!(c.player.good_vibes_only);
+        let (c, _) = Config::parse("[player]\ngood_guy = false\n[playback]\ngood_vibes_only = true\n").unwrap();
+        assert!(c.player.good_vibes_only);
+        // Saving anything moves it: the old key and the old table are gone, no key twice.
+        let path = temp_dir("good-guy-migrate").join("config.toml");
+        std::fs::write(&path, "[player]\n# keep me\ngood_guy = false # off\nvolume = 40\n").unwrap();
+        set_values(&path, &[("look", "icons", "unicode".into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("good_vibes_only = false # off") && !text.contains("good_guy"), "{text}");
+        assert!(text.contains("# keep me") && !text.contains("[player]") && text.contains("[playback]"), "{text}");
+        assert_eq!(text.matches("good_vibes_only").count(), 1, "{text}");
+        let (c, w) = Config::load(&path);
+        assert!(!c.player.good_vibes_only && c.player.volume == 40 && w.is_empty(), "{w:?}");
+        // Both names in one file: the new value stays, the old key goes.
+        std::fs::write(&path, "[playback]\ngood_guy = false\ngood_vibes_only = true\n").unwrap();
+        set_values(&path, &[("playback", "volume", 50_i64.into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("good_vibes_only = true") && !text.contains("good_guy"), "{text}");
+    }
+
+    #[test]
+    fn an_old_ui_file_with_good_guy_loads_saves_in_the_new_names_and_keeps_unknown_keys() {
+        let path = temp_dir("old-ui").join("config.toml");
+        let old = "# my settings\n[ui]\ntheme = \"gruvbox\" # cosy\nicons = \"emoji\"\nmystery = 1\n\
+                   [player]\ngood_guy = false\nvolume = 35\n[pandora]\nusername = \"me@example.com\"\n[extra]\nkeep = true\n";
+        std::fs::write(&path, old).unwrap();
+        let (c, w) = Config::load(&path);
+        assert_eq!((c.ui.theme.as_str(), c.ui.icons, c.player.volume), ("gruvbox", IconSet::Emoji, 35));
+        assert!(!c.player.good_vibes_only && c.pandora.username == "me@example.com");
+        assert!(w.iter().any(|x| matches!(x, ConfigWarning::Unknown(k) if k == "ui.mystery")), "{w:?}");
+        set_values(&path, &[("look", "animations", false.into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        // `[ui]` stays, holding only the key boxvibe does not know.
+        for gone in ["[player]", "[pandora]", "good_guy", "theme = \"gruvbox\"\nicons"] {
+            assert!(!text.contains(gone), "{gone} left in\n{text}");
+        }
+        for kept in
+            ["# my settings", "# cosy", "mystery = 1", "[extra]", "keep = true", "[look]", "[playback]", "[account]"]
+        {
+            assert!(text.contains(kept), "{kept} lost from\n{text}");
+        }
+        assert!(text.contains("good_vibes_only = false") && text.contains("animations = false"), "{text}");
+        assert_eq!(text.matches("[ui]").count(), 1, "{text}");
+        let (c, _) = Config::load(&path);
+        assert!(!c.player.good_vibes_only && c.ui.theme == "gruvbox" && !c.ui.animations);
+    }
+
+    /// (old table, old key, a non-default value, new table, new key, is that value read?)
+    type Renamed = (&'static str, &'static str, &'static str, &'static str, &'static str, fn(&Config) -> bool);
+    const RENAMED: &[Renamed] = &[
+        ("pandora", "username", "\"me@x.io\"", "account", "email_or_username", |c| c.pandora.username == "me@x.io"),
+        ("account", "username", "\"me@x.io\"", "account", "email_or_username", |c| c.pandora.username == "me@x.io"),
+        ("ui", "check_updates", "false", "boxvibe", "look_for_new_versions_on_startup", |c| !c.ui.check_updates),
+        ("boxvibe", "check_updates", "false", "boxvibe", "look_for_new_versions_on_startup", |c| !c.ui.check_updates),
+        ("ui", "look_for_new_versions_on_startup", "false", "boxvibe", "look_for_new_versions_on_startup", |c| {
+            !c.ui.check_updates
+        }),
+        ("ui", "notify", "false", "playback", "song_change_notifications", |c| !c.ui.notifications),
+        ("ui", "notifications", "false", "playback", "song_change_notifications", |c| !c.ui.notifications),
+        ("playback", "notifications", "false", "playback", "song_change_notifications", |c| !c.ui.notifications),
+        ("ui", "art_tint", "\"duotone\"", "look", "tint_art_with_theme_colors", |c| c.ui.art_tint == ArtTint::Duotone),
+        ("look", "art_tint", "\"duotone\"", "look", "tint_art_with_theme_colors", |c| {
+            c.ui.art_tint == ArtTint::Duotone
+        }),
+        ("ui", "splash", "false", "look", "boot_screen", |c| !c.ui.splash),
+        ("boxvibe", "splash", "false", "look", "boot_screen", |c| !c.ui.splash),
+        ("look", "splash", "false", "look", "boot_screen", |c| !c.ui.splash),
+        ("ui", "boot_screen", "false", "look", "boot_screen", |c| !c.ui.splash),
+    ];
+
+    #[test]
+    fn every_old_name_of_the_five_renamed_settings_still_loads() {
+        for (table, key, value, new_table, new_key, read) in RENAMED {
+            let (c, w) = Config::parse(&format!("[{table}]\n{key} = {value}\n")).unwrap();
+            assert!(read(&c) && w.is_empty(), "[{table}] {key}: {w:?}");
+            // And the new name, in its own table.
+            let (c, w) = Config::parse(&format!("[{new_table}]\n{new_key} = {value}\n")).unwrap();
+            assert!(read(&c) && w.is_empty(), "[{new_table}] {new_key}: {w:?}");
+        }
+        // The retired spellings in a table of their own kind are not "unknown" noise-free either way:
+        // a key nobody knows is still reported, next to the ones that load.
+        let (c, w) = Config::parse("[look]\nsplash = false\nsplosh = 1\n").unwrap();
+        assert!(!c.ui.splash && w.len() == 1, "{w:?}");
+    }
+
+    #[test]
+    fn the_new_name_wins_over_every_old_one_and_a_save_leaves_exactly_one_key() {
+        let path = temp_dir("five-renames").join("config.toml");
+        for (table, key, value, new_table, new_key, read) in RENAMED {
+            // The new name says the opposite of the old one (the default), wherever the old one is.
+            let default = Config::default();
+            assert!(!read(&default), "{key}: the test value must differ from the default");
+            let both = format!("[{table}]\n{key} = {value}\n[{new_table}]\n{new_key} = DEFAULT\n");
+            let default_value = match *new_key {
+                "email_or_username" => "\"\"",
+                "tint_art_with_theme_colors" => "\"off\"",
+                "look_for_new_versions_on_startup" | "song_change_notifications" | "boot_screen" => "true",
+                _ => unreachable!(),
+            };
+            let both = both.replace("DEFAULT", default_value);
+            if table == new_table {
+                // Same table: a file with the old and the new key side by side.
+                let same = format!("[{table}]\n{key} = {value}\n{new_key} = {default_value}\n");
+                let (c, _) = Config::parse(&same).unwrap();
+                assert!(!read(&c), "{same}");
+                std::fs::write(&path, &same).unwrap();
+            } else {
+                let (c, _) = Config::parse(&both).unwrap();
+                assert!(!read(&c), "{both}");
+                std::fs::write(&path, &both).unwrap();
+            }
+            set_values(&path, &[("look", "icons", "emoji".into())]).unwrap();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let lines: Vec<&str> = text.lines().map(str::trim).collect();
+            assert_eq!(lines.iter().filter(|l| l.starts_with(&format!("{new_key} ="))).count(), 1, "{text}");
+            assert!(
+                key == new_key || !lines.iter().any(|l| l.starts_with(&format!("{key} ="))),
+                "{key} is left in\n{text}"
+            );
+            assert!(!read(&Config::load(&path).0), "the new value stays: {text}");
+            // The old name alone: the next save renames it, with its comment and value.
+            std::fs::write(&path, format!("[{table}]\n# mine\n{key} = {value} # why\n")).unwrap();
+            set_values(&path, &[("look", "icons", "emoji".into())]).unwrap();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let doc: toml_edit::DocumentMut = text.parse().unwrap();
+            assert!(doc[*new_table][*new_key].is_value(), "{key} → {new_key}:\n{text}");
+            assert!(text.contains(&format!("# mine\n{new_key} = {value} # why")), "{text}");
+            assert!(read(&Config::load(&path).0), "{text}");
+            assert_eq!(text.matches(new_key).count(), 1, "{text}");
+            if table != new_table && doc.get(table).is_some() {
+                assert!(doc[*table].get(key).is_none(), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_old_file_with_all_five_old_names_migrates_keeping_comments_unknown_keys_and_mode() {
+        let path = temp_dir("five-full").join("config.toml");
+        let old = "# my config\n[pandora]\n# who I am\nusername = \"me@x.io\" # login\nsecret_extra = 1\n\
+                   [ui]\n# updates\ncheck_updates = false # no thanks\nnotify = false\nart_tint = \"palette\"\n\
+                   splash = false # quiet\nweird = true\n[boxvibe]\ngenre_edit_popup = false\n[extra]\nkeep = true\n";
+        std::fs::write(&path, old).unwrap();
+        let (c, w) = Config::load(&path);
+        assert!(c.pandora.username == "me@x.io" && !c.ui.check_updates && !c.ui.notifications && !c.ui.splash);
+        assert_eq!((c.ui.art_tint, c.ui.genre_edit_popup), (ArtTint::Palette, false));
+        assert!(w.iter().any(|x| matches!(x, ConfigWarning::Unknown(k) if k == "ui.weird")), "{w:?}");
+        set_values(&path, &[("playback", "volume", 42_i64.into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        for new in [
+            "email_or_username = \"me@x.io\" # login",
+            "look_for_new_versions_on_startup = false # no thanks",
+            "song_change_notifications = false",
+            "tint_art_with_theme_colors = \"palette\"",
+            "boot_screen = false # quiet",
+            "genre_edit_popup = false",
+            "# my config",
+            "# who I am",
+            "# updates",
+            "secret_extra = 1",
+            "weird = true",
+            "[extra]\nkeep = true",
+        ] {
+            assert!(text.contains(new), "{new} missing from\n{text}");
+        }
+        for gone in ["\nusername", "\ncheck_updates", "notify", "\nart_tint", "splash", "\nnotifications"] {
+            assert!(!text.contains(gone), "{gone} left in\n{text}");
+        }
+        let doc: toml_edit::DocumentMut = text.parse().unwrap();
+        assert!(doc.get("pandora").is_some_and(|t| t.as_table().is_some_and(|t| t.len() == 1)), "{text}");
+        let (c, w) = Config::load(&path);
+        assert!(c.pandora.username == "me@x.io" && !c.ui.check_updates && c.player.volume == 42);
+        assert_eq!(w.len(), 3, "the unknown keys and table are still reported: {w:?}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn a_file_with_only_the_retired_now_playing_size_loads_and_loses_the_ui_table_on_save() {
+        let path = temp_dir("retired-ui").join("config.toml");
+        std::fs::write(&path, "[ui]\nnow_playing_size = 23\n\n[account]\nemail_or_username = \"me@x.io\"\n").unwrap();
+        let (c, w) = Config::load(&path);
+        assert!(w.is_empty(), "no warning: {w:?}");
+        assert_eq!(c.ui.menu_width, Config::default().ui.menu_width, "it is not the menu width");
+        assert_eq!(c.pandora.username, "me@x.io");
+        set_values(&path, &[("playback", "volume", 60_i64.into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("[ui]") && !text.contains("now_playing_size"), "{text}");
+        assert!(text.contains("email_or_username = \"me@x.io\"") && text.contains("volume = 60"), "{text}");
+        assert_eq!(Config::load(&path).0.ui.menu_width, Config::default().ui.menu_width);
+    }
+
+    #[test]
+    fn retired_keys_go_on_save_but_unknown_keys_and_their_tables_stay() {
+        let path = temp_dir("retired-mixed").join("config.toml");
+        std::fs::write(
+            &path,
+            "# top\n[ui]\n# old\nnow_playing_size = \"big\"\nmy_note = 1\ntheme = \"nord\"\n\n[boxvibe]\ndependency_check = false\n\
+             mine = 2\n\n[pandora]\npartner = \"x\"\nrpc_host = \"y\"\n\n[player]\nvolume = 30\n\n[extra]\nkeep = true\n",
+        )
+        .unwrap();
+        set_values(&path, &[("look", "icons", "emoji".into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        for gone in ["now_playing_size", "dependency_check", "partner", "rpc_host", "[pandora]", "[player]"] {
+            assert!(!text.contains(gone), "{gone} left in\n{text}");
+        }
+        for kept in
+            ["# top", "[ui]\n", "my_note = 1", "mine = 2", "[extra]\nkeep = true", "theme = \"nord\"", "volume = 30"]
+        {
+            assert!(text.contains(kept) || text.contains(&kept.replace("[ui]\n", "[ui]")), "{kept} lost from\n{text}");
+        }
+        let doc: toml_edit::DocumentMut = text.parse().unwrap();
+        assert_eq!(doc["ui"].as_table().unwrap().len(), 1, "[ui] keeps only my_note: {text}");
+        // Saving again changes nothing more.
+        set_values(&path, &[("look", "icons", "emoji".into())]).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
     }
 
     #[test]
@@ -758,10 +1282,9 @@ mod tests {
         assert_eq!(c.ui.theme, "gruvbox", "the rest still applies");
         let path = temp_dir("notify").join("config.toml");
         std::fs::write(&path, "[ui]\nnotify = true # old\n").unwrap();
-        set_values(&path, &[("ui", "notifications", false.into())]).unwrap();
-        remove_value(&path, "ui", "notify").unwrap();
+        set_values(&path, &[("playback", "song_change_notifications", false.into())]).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("notifications = false") && !text.contains("notify ="), "{text}");
+        assert!(text.contains("song_change_notifications = false # old") && !text.contains("notify"), "{text}");
     }
 
     #[test]
@@ -796,7 +1319,11 @@ mod tests {
         let (c, w) = Config::parse("[ui]\nart_tint = \"duotone\"\n").unwrap();
         assert_eq!((c.ui.art_tint, w.len()), (ArtTint::Duotone, 0));
         let (c, w) = Config::parse("[ui]\nart_tint = \"sepia\"\nalbum_art = \"blocks\"\n").unwrap();
-        assert_eq!((c.ui.art_tint, c.ui.album_art, w.len()), (ArtTint::Off, AlbumArt::Blocks, 1));
+        assert_eq!((c.ui.art_tint, c.ui.album_art, w.len()), (ArtTint::Off, AlbumArt::Picture, 1));
+        assert!(
+            matches!(&w[0], ConfigWarning::BadValue { key, .. } if key == "look.tint_art_with_theme_colors"),
+            "{w:?}"
+        );
         let (c, _) = Config::parse("[ui]\nart_tint = 3\n").unwrap();
         assert_eq!(c.ui.art_tint, ArtTint::Off);
         assert!(ArtTint::ALL.iter().all(|a| {
@@ -810,16 +1337,29 @@ mod tests {
         let (c, w) = Config::parse("").unwrap();
         assert_eq!((c.ui.album_art, c.ui.retro_mode, w.len()), (AlbumArt::Picture, RetroMode::Hd, 0));
         let (c, w) = Config::parse("[ui]\nalbum_art = \"blocks\"\nretro_mode = \"4bit\"\n").unwrap();
-        assert_eq!((c.ui.album_art, c.ui.retro_mode, w.len()), (AlbumArt::Blocks, RetroMode::Bit4, 0));
+        assert_eq!((c.ui.album_art, c.ui.retro_mode, w.len()), (AlbumArt::Picture, RetroMode::Bit4, 0));
+        let (c, w) = Config::parse("[look]\nalbum_art = \"blocks\"\n").unwrap();
+        assert_eq!((c.ui.album_art, w.len()), (AlbumArt::Picture, 0), "0.3's blocks is Picture now");
+        assert_eq!(AlbumArt::ALL.map(AlbumArt::as_str), ["picture", "off"]);
+        assert_eq!(AlbumArt::Off.next(), AlbumArt::Picture);
         let (c, w) = Config::parse("[ui]\nalbum_art = \"hologram\"\nretro_mode = 7\n").unwrap();
         assert_eq!((c.ui.album_art, c.ui.retro_mode, w.len()), (AlbumArt::Picture, RetroMode::Hd, 2));
         assert!(RetroMode::ALL.iter().all(|a| {
             Config::parse(&format!("[ui]\nretro_mode = \"{}\"\n", a.as_str())).unwrap().0.ui.retro_mode == *a
         }));
         assert_eq!(RetroMode::Bit2.next(), RetroMode::Hd);
-        assert_eq!(RetroMode::Hd.next(), RetroMode::Bit32, "the mildest step first");
-        assert_eq!(RetroMode::ALL.map(RetroMode::grid), [None, Some(128), Some(64), Some(32), Some(16), Some(8)]);
-        assert_eq!(RetroMode::ALL.map(RetroMode::label), ["HD", "32-bit", "16-bit", "8-bit", "4-bit", "2-bit"]);
+        assert_eq!(RetroMode::Hd.next(), RetroMode::Bit64, "the mildest step first");
+        assert_eq!(RetroMode::Bit64.next(), RetroMode::Bit32);
+        assert_eq!(
+            RetroMode::ALL.map(RetroMode::grid),
+            [None, Some(256), Some(128), Some(64), Some(32), Some(16), Some(8)]
+        );
+        assert_eq!(
+            RetroMode::ALL.map(RetroMode::label),
+            ["HD", "64-bit", "32-bit", "16-bit", "8-bit", "4-bit", "2-bit"]
+        );
+        let (c, w) = Config::parse("[ui]\nretro_mode = \"64bit\"\n").unwrap();
+        assert_eq!((c.ui.retro_mode, w.len()), (RetroMode::Bit64, 0));
     }
 
     #[test]
@@ -913,7 +1453,7 @@ mod tests {
         assert!(ConfigWarning::summary(&w).unwrap().contains("old Pandora API"));
         assert_eq!(crate::pandora::Quality::parse(&c.pandora.audio_quality), crate::pandora::Quality::Standard);
         let (c, _) = Config::parse(junk[1]).unwrap();
-        assert_eq!((c.player.volume, c.ui.icons, c.ui.notifications), (70, IconSet::Emoji, true));
+        assert_eq!((c.player.volume, c.ui.icons, c.ui.notifications), (70, IconSet::Nerd, true));
     }
 
     #[test]
@@ -935,7 +1475,7 @@ mod tests {
         let (c, w) = Config::load(&path);
         assert_eq!((c, w.len()), (Config::default(), 1));
         // Saving still works afterwards.
-        set_values(&path, &[("ui", "theme", "gruvbox".into())]).unwrap();
+        set_values(&path, &[("look", "theme", "gruvbox".into())]).unwrap();
         assert_eq!(Config::load(&path).0.ui.theme, "gruvbox");
     }
 
@@ -951,10 +1491,267 @@ mod tests {
         assert!(path.is_dir(), "left alone");
     }
 
+    const OLD_FILE: &str = "# my settings\n[pandora]\nusername = \"me@example.com\" # login\npassword = \"hunter2\"\n\
+        audio_quality = \"standard\"\nlast_station = \"42\"\n\n[player]\nvolume = 55 # quiet\n\n[ui]\n\
+        theme = \"gruvbox\"\nicons = \"unicode\"\nborder_style = \"thick\"\nmenu_width = 30\n\
+        album_art = \"blocks\"\nretro_mode = \"16bit\"\nart_tint = \"duotone\"\nsplash = false\n\
+        check_updates = false\nautoplay_last_station = true\nnotifications = false\n\
+        favorites = [{ id = \"1\", name = \"Jazz\" }]\nfuture = 1\n";
+
+    #[test]
+    fn the_tables_are_the_settings_groups() {
+        let tables: Vec<&str> = LAYOUT.iter().map(|(t, ..)| *t).fold(Vec::new(), |mut all, t| {
+            if !all.contains(&t) {
+                all.push(t);
+            }
+            all
+        });
+        assert_eq!(tables, ["account", "boxvibe", "playback", "look"], "ACCOUNT, BOXVIBE, PLAYBACK, LOOK");
+    }
+
+    #[test]
+    fn the_old_layout_still_loads_with_no_warnings() {
+        let (old, w) = Config::parse(OLD_FILE).unwrap();
+        // Only the unknown `future` key is reported.
+        assert_eq!(w, [ConfigWarning::Unknown("ui.future".into())]);
+        assert_eq!(old.pandora.username, "me@example.com");
+        assert_eq!((old.player.volume, old.ui.theme.as_str(), old.ui.icons), (55, "gruvbox", IconSet::Unicode));
+        assert_eq!(
+            (old.ui.album_art, old.ui.retro_mode, old.ui.art_tint),
+            (AlbumArt::Picture, RetroMode::Bit16, ArtTint::Duotone)
+        );
+        assert!(!old.ui.splash && !old.ui.check_updates && old.ui.autoplay_last_station && !old.ui.notifications);
+        assert_eq!((old.ui.favorites.len(), old.pandora.last_station.as_str()), (1, "42"));
+        // Written the new way, it is the same configuration.
+        let new_text = "[boxvibe]\nsplash = false\ncheck_updates = false\n\n[account]\nusername = \"me@example.com\"\n\
+            password = \"hunter2\"\n\n[playback]\naudio_quality = \"standard\"\nlast_station = \"42\"\nvolume = 55\n\
+            autoplay_last_station = true\nnotifications = false\nfavorites = [{ id = \"1\", name = \"Jazz\" }]\n\n\
+            [look]\ntheme = \"gruvbox\"\nicons = \"unicode\"\nborder_style = \"thick\"\nmenu_width = 30\n\
+            album_art = \"picture\"\nretro_mode = \"16bit\"\nart_tint = \"duotone\"\n";
+        let (new, w) = Config::parse(new_text).unwrap();
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(new, old);
+    }
+
+    #[test]
+    fn a_setting_in_its_new_table_beats_the_old_one_and_old_names_read() {
+        let text = "[ui]\ntheme = \"gruvbox\"\nnotify = false\nart_pixelation = \"8bit\"\n[look]\ntheme = \"catppuccin\"\n\
+                    [pandora]\nvolume = 5\n[playback]\nvolume = 40\nnotifications = true\n[boxvibe]\nnonsense = 1\n";
+        let (c, w) = Config::parse(text).unwrap();
+        assert_eq!(c.ui.theme, "catppuccin", "[look] wins over [ui]");
+        assert_eq!(c.player.volume, 40, "[playback] wins over a stray old volume");
+        assert!(c.ui.notifications, "the new name wins over `notify`");
+        assert_eq!(c.ui.retro_mode, RetroMode::Bit8, "art_pixelation reads as retro_mode");
+        // `pandora.volume` is not a thing it ever had; `boxvibe.nonsense` is unknown.
+        assert!(w.contains(&ConfigWarning::Unknown("boxvibe.nonsense".into())), "{w:?}");
+        assert!(w.contains(&ConfigWarning::Unknown("pandora.volume".into())), "{w:?}");
+        // A bad value is named as the file names it, in either layout.
+        let (_, w) = Config::parse("[look]\nicons = \"fancy\"\n").unwrap();
+        assert!(matches!(&w[..], [ConfigWarning::BadValue { key, .. }] if key == "look.icons"), "{w:?}");
+        let (_, w) = Config::parse("[ui]\nicons = \"fancy\"\n[player]\nvolume = \"loud\"\n").unwrap();
+        let keys: Vec<&str> = w
+            .iter()
+            .filter_map(|w| if let ConfigWarning::BadValue { key, .. } = w { Some(key.as_str()) } else { None })
+            .collect();
+        assert!(keys.contains(&"look.icons") && keys.contains(&"playback.volume"), "{keys:?}");
+    }
+
+    #[test]
+    fn an_old_plaintext_password_is_read_once_and_then_deleted_on_request() {
+        for text in [
+            "[pandora]\nusername = \"me@example.com\"\npassword = \"hunter2\"\n",
+            "[account]\nusername = \"me@example.com\"\npassword = \"hunter2\" # old\n",
+        ] {
+            let (c, w) = Config::parse(text).unwrap();
+            assert!(w.is_empty(), "{w:?}");
+            assert_eq!(c.pandora.password.expose(), "hunter2");
+            assert!(c.has_login());
+        }
+        // [account] beats [pandora].
+        let (c, _) = Config::parse("[pandora]\npassword = \"old\"\n[account]\npassword = \"new\"\n").unwrap();
+        assert_eq!(c.pandora.password.expose(), "new");
+        // Saving anything else never writes it; deleting it keeps everything else.
+        let path = temp_dir("plain-password").join("config.toml");
+        std::fs::write(&path, "# mine\n[account]\nusername = \"me@example.com\" # who\npassword = \"hunter2\"\n[look]\ntheme = \"gruvbox\"\n")
+            .unwrap();
+        assert!(forget_plaintext_password(&path).unwrap());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("hunter2") && !text.contains("password"), "{text}");
+        assert!(text.contains("# mine") && text.contains("# who") && text.contains("gruvbox"), "{text}");
+        assert!(!forget_plaintext_password(&path).unwrap(), "nothing left to delete");
+        let (c, _) = Config::load(&path);
+        assert!(!c.has_login() && c.pandora.username == "me@example.com");
+        // A [pandora] table that only held the password goes with it.
+        std::fs::write(&path, "[pandora]\npassword = \"hunter2\"\n").unwrap();
+        assert!(forget_plaintext_password(&path).unwrap());
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("pandora"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn the_password_is_hidden_from_debug_output_and_never_serialized() {
+        let (c, _) = Config::parse("[account]\nusername = \"me@example.com\"\npassword = \"hunter2\"\n").unwrap();
+        let shown = format!("{c:?}");
+        assert!(
+            !shown.contains("hunter2") && shown.contains("<hidden>") && shown.contains("me@example.com"),
+            "{shown}"
+        );
+        assert_eq!(format!("{:?}", Secret::default()), "<empty>");
+        let text = toml::to_string(&c.pandora).unwrap();
+        assert!(!text.contains("hunter2") && !text.contains("password"), "{text}");
+    }
+
+    #[test]
+    fn saving_moves_an_old_file_to_the_new_layout_and_keeps_the_rest() {
+        let path = temp_dir("migrate").join("config.toml");
+        std::fs::write(&path, OLD_FILE).unwrap();
+        let before = Config::load(&path).0;
+        set_values(&path, &[("look", "theme", "catppuccin".into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let doc: toml_edit::DocumentMut = text.parse().unwrap();
+        // The old tables are gone, except for the one key nobody knows.
+        assert!(doc.get("player").is_none(), "{text}");
+        // (a saved password stays in [pandora] until the keychain has it: see forget_plaintext_password)
+        assert_eq!(doc["pandora"].as_table().unwrap().len(), 1, "{text}");
+        assert_eq!(doc["pandora"]["password"].as_str(), Some("hunter2"), "not lost by an unrelated save");
+        assert_eq!(doc["ui"].as_table().unwrap().len(), 1, "{text}");
+        assert_eq!(doc["ui"]["future"].as_integer(), Some(1));
+        // Every setting is in its place, with its comment and its value.
+        assert_eq!(doc["account"]["email_or_username"].as_str(), Some("me@example.com"));
+        assert_eq!(doc["playback"]["volume"].as_integer(), Some(55));
+        assert_eq!(doc["look"]["theme"].as_str(), Some("catppuccin"));
+        assert_eq!(doc["look"]["boot_screen"].as_bool(), Some(false), "the boot screen is under [look] now");
+        assert!(doc.get("boxvibe").and_then(|t| t.get("splash")).is_none() && !text.contains("splash"), "{text}");
+        assert_eq!(doc["boxvibe"]["look_for_new_versions_on_startup"].as_bool(), Some(false));
+        assert!(text.contains("# my settings") && text.contains("# login") && text.contains("# quiet"), "{text}");
+        assert!(text.contains("album_art = \"picture\"") && !text.contains("blocks"), "{text}");
+        // Nothing but the saved theme changed (and blocks, which is picture now).
+        let after = Config::load(&path).0;
+        assert_eq!(after.ui.theme, "catppuccin");
+        let mut want = before;
+        want.ui.theme = "catppuccin".into();
+        assert_eq!(after, want);
+        // Saving again is steady: no duplicates, no new tables.
+        set_values(&path, &[("playback", "volume", 60_i64.into())]).unwrap();
+        let again: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(again["playback"]["volume"].as_integer(), Some(60));
+        assert!(again.get("player").is_none());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn saving_removes_old_names_and_keeps_the_new_value() {
+        let path = temp_dir("migrate-names").join("config.toml");
+        std::fs::write(&path, "[player]\nautoplay = true\n[ui]\nnotify = false\nart_pixelation = \"4bit\"\n[look]\nretro_mode = \"2bit\"\n")
+            .unwrap();
+        set_values(&path, &[("playback", "autoplay_last_station", false.into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("autoplay =") && !text.contains("notify") && !text.contains("art_pixelation"), "{text}");
+        assert!(text.contains("autoplay_last_station = false"), "{text}");
+        assert!(text.contains("song_change_notifications = false"), "the value of `notify` moved: {text}");
+        assert!(text.contains("retro_mode = \"2bit\""), "the new key wins: {text}");
+        assert!(!text.contains("[ui]") && !text.contains("[player]"), "{text}");
+    }
+
+    #[test]
+    fn a_new_layout_file_is_saved_in_place_and_a_new_file_gets_the_new_tables() {
+        let path = temp_dir("fresh").join("config.toml");
+        set_values(&path, &[("look", "theme", "omarchy".into()), ("account", "email_or_username", "a@b.c".into())])
+            .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[look]") && text.contains("[account]") && !text.contains("[ui]"), "{text}");
+        assert!(!text.contains("[pandora]"), "an [account] section, not [pandora]: {text}");
+        let (c, w) = Config::load(&path);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!((c.ui.theme.as_str(), c.pandora.username.as_str()), ("omarchy", "a@b.c"));
+    }
+
+    #[test]
+    fn an_odd_old_table_is_left_alone_when_saving() {
+        let path = temp_dir("odd").join("config.toml");
+        std::fs::write(&path, "ui = 5\n").unwrap();
+        // `ui = 5` is not a table: nothing to move, and the new keys still save.
+        set_values(&path, &[("look", "theme", "gruvbox".into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("ui = 5") && text.contains("theme = \"gruvbox\""), "{text}");
+    }
+
     #[test]
     fn utc_stamps() {
         let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_792_544_100);
         assert_eq!(utc_stamp(at), "20261021T005500Z");
         assert_eq!(utc_stamp(std::time::UNIX_EPOCH), "19700101T000000Z");
+    }
+
+    #[test]
+    fn animations_default_on_and_load_tolerantly() {
+        let (c, w) = Config::parse("").unwrap();
+        assert!(c.ui.animations && w.is_empty());
+        let (c, _) = Config::parse("[look]\nanimations = false\n").unwrap();
+        assert!(!c.ui.animations);
+        let (c, w) = Config::parse("[look]\nanimations = \"sometimes\"\nicons = \"emoji\"\n").unwrap();
+        assert!(c.ui.animations, "a bad value keeps the default");
+        assert_eq!(c.ui.icons, IconSet::Emoji, "and the others still load");
+        assert_eq!(w.len(), 1, "{w:?}");
+    }
+
+    #[test]
+    fn the_boot_screen_moved_to_look_and_the_old_place_still_reads() {
+        let (c, w) = Config::parse("[boxvibe]\nsplash = false\n").unwrap();
+        assert!(!c.ui.splash && w.is_empty(), "{w:?}");
+        let (c, w) = Config::parse("[look]\nsplash = false\n").unwrap();
+        assert!(!c.ui.splash && w.is_empty(), "{w:?}");
+        // The new place wins over the old one, whichever comes first.
+        let (c, _) = Config::parse("[look]\nsplash = true\n[boxvibe]\nsplash = false\n").unwrap();
+        assert!(c.ui.splash);
+        let (c, _) = Config::parse("[boxvibe]\nsplash = false\n[look]\nsplash = true\n").unwrap();
+        assert!(c.ui.splash);
+        // A bad value is named by where it should be now.
+        let (c, w) = Config::parse("[boxvibe]\nsplash = \"never\"\n").unwrap();
+        assert!(c.ui.splash);
+        assert!(matches!(&w[..], [ConfigWarning::BadValue { key, .. }] if key == "look.boot_screen"), "{w:?}");
+    }
+
+    #[test]
+    fn saving_moves_a_boxvibe_splash_to_look_keeping_comments_and_unknown_keys() {
+        let path = temp_dir("splash-move").join("config.toml");
+        std::fs::write(
+            &path,
+            "# top\n[boxvibe]\ncheck_updates = false # no\nsplash = false # quiet start\nmystery = 1\n\n[look]\ntheme = \"nord\"\n",
+        )
+        .unwrap();
+        set_values(&path, &[("look", "icons", "emoji".into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let doc: toml_edit::DocumentMut = text.parse().unwrap();
+        assert_eq!(doc["look"]["boot_screen"].as_bool(), Some(false), "{text}");
+        assert!(doc["boxvibe"].as_table().unwrap().get("splash").is_none(), "{text}");
+        assert_eq!(doc["boxvibe"]["mystery"].as_integer(), Some(1), "unknown keys stay");
+        assert!(text.contains("# top") && text.contains("# no") && text.contains("# quiet start"), "{text}");
+        assert_eq!(text.matches("boot_screen").count(), 1, "{text}");
+        assert!(!text.contains("splash") && !text.contains("check_updates"), "{text}");
+        // Saved from the Settings entry: the new place is written, no stale copy comes back.
+        set_values(&path, &[("look", "boot_screen", true.into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("boot_screen").count(), 1, "{text}");
+        assert!(Config::load(&path).0.ui.splash);
+    }
+
+    #[test]
+    fn a_retired_dependency_check_key_loads_without_a_warning() {
+        let (c, w) = Config::parse("[boxvibe]\ndependency_check = false\ncheck_updates = false\n").unwrap();
+        assert!(w.is_empty(), "{w:?}");
+        assert!(!c.ui.check_updates, "the rest of the table still applies");
+        let (_, w) = Config::parse("[boxvibe]\ndependency_check = \"whatever\"\n").unwrap();
+        assert!(w.is_empty(), "{w:?}");
+        let (_, w) = Config::parse("[boxvibe]\nsomething_else = 1\n").unwrap();
+        assert_eq!(w.len(), 1, "other unknown keys still warn: {w:?}");
     }
 }

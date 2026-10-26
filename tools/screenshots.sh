@@ -22,6 +22,6 @@ shot gruvbox-main gruvbox emoji main
 shot gruvbox-settings gruvbox emoji settings
 shot gruvbox-about gruvbox emoji about
 shot gruvbox-about-restart gruvbox emoji about-restart
-printf '[ui]\nborder_style = "rounded"\n' > "$TMP/rounded.toml"
+printf '[look]\nborder_style = "rounded"\n' > "$TMP/rounded.toml"
 shot gruvbox-rounded gruvbox emoji main "$TMP/rounded.toml"
 rm -rf "$TMP"

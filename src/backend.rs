@@ -4,11 +4,16 @@
 //! (log in again on 401, take the stream over on `STREAM_VIOLATION`).
 //! `--demo` answers from [`crate::demo`] instead.
 
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
+use crate::ads::{self, Ad};
 use crate::demo;
-use crate::pandora::{self, Client, Error, Quality, Song, Station};
+use crate::keychain::Keychain;
+use crate::pandora::{
+    self, AdAsk, Client, Error, FeedbackPage, GenreCategory, Quality, SearchHit, Seed, Song, Station, StationDetails,
+};
 use crate::update::{self, Checked, Update};
 
 pub enum Request {
@@ -17,6 +22,61 @@ pub enum Request {
         password: String,
     },
     Stations,
+    /// Rename a station on the Pandora account.
+    RenameStation {
+        station_id: String,
+        name: String,
+    },
+    /// Remove a station from the Pandora account.
+    RemoveStation {
+        station_id: String,
+    },
+    /// Seeds and thumbs counts of a station (`current`: it is the one playing).
+    StationDetails {
+        station_id: String,
+        current: bool,
+    },
+    /// The seeds of a station (the seeds editor).
+    Seeds {
+        station_id: String,
+    },
+    /// Artists to suggest as seeds, near `seed_music_id` (a seed's `musicId`).
+    SeedSuggestions {
+        station_id: String,
+        seed_music_id: String,
+    },
+    /// Add the artist or song `seed_id` (`name` is for the message).
+    AddSeed {
+        station_id: String,
+        seed_id: String,
+        name: String,
+    },
+    RemoveSeed {
+        station_id: String,
+        seed_id: String,
+        name: String,
+    },
+    /// A page of the thumbs up (or down) you gave on a station, from `start`.
+    Feedback {
+        station_id: String,
+        positive: bool,
+        start: usize,
+    },
+    DeleteFeedback {
+        station_id: String,
+        feedback_id: String,
+        positive: bool,
+    },
+    /// Search Pandora for artists and songs to start a station from.
+    Search {
+        query: String,
+    },
+    /// Make a station from a search hit or a genre station (`pandora_id`).
+    CreateStation {
+        pandora_id: String,
+    },
+    /// Pandora's genre categories and their stations.
+    Genres,
     Playlist {
         station_id: String,
     },
@@ -26,6 +86,16 @@ pub enum Request {
     },
     Tired {
         track_token: String,
+    },
+    /// `getAdList`: a song ended (or was skipped); is an ad due?
+    AdList {
+        ask: AdAsk,
+    },
+    /// `registerAudioProgrammaticImpression`: an audio ad began to play.
+    AdImpression {
+        token: String,
+        request_meta: String,
+        station_id: String,
     },
     /// The song began playing (Pandora's `trackStarted`).
     Started {
@@ -53,6 +123,53 @@ pub enum Reply {
         wrong_password: bool,
     },
     Stations(Vec<Station>),
+    /// `name`: what Pandora now calls the station.
+    StationRenamed {
+        station_id: String,
+        name: String,
+    },
+    StationRemoved {
+        station_id: String,
+    },
+    StationDetails {
+        station_id: String,
+        details: StationDetails,
+    },
+    Seeds {
+        station_id: String,
+        seeds: Vec<Seed>,
+    },
+    SeedSuggestions {
+        station_id: String,
+        hits: Vec<SearchHit>,
+    },
+    SeedAdded {
+        station_id: String,
+        name: String,
+    },
+    SeedRemoved {
+        station_id: String,
+        name: String,
+    },
+    /// `start`: where the page began (0: the list starts over).
+    Feedback {
+        station_id: String,
+        positive: bool,
+        start: usize,
+        page: FeedbackPage,
+    },
+    FeedbackDeleted {
+        station_id: String,
+        positive: bool,
+    },
+    /// `query`: what was asked, so a late answer to an older query is ignored.
+    SearchResults {
+        query: String,
+        hits: Vec<SearchHit>,
+    },
+    /// A station Pandora just made (the account now has it).
+    StationCreated(Station),
+    Genres(Vec<GenreCategory>),
     Playlist {
         station_id: String,
         songs: Vec<Song>,
@@ -63,6 +180,11 @@ pub enum Reply {
     },
     Tired {
         track_token: String,
+    },
+    /// The ads due now (usually none), for the song that ended on `station_id`.
+    AdList {
+        station_id: String,
+        ads: Vec<Ad>,
     },
     /// Another device was streaming on the account; boxvibe took over.
     TookOver,
@@ -83,10 +205,34 @@ pub enum Reply {
         url: String,
         image: Option<image::DynamicImage>,
     },
+    /// An answer from the keychain (see [`Backend::keychain`]).
+    Keychain(KeychainReply),
     UpdateFound(Update),
     UpToDate,
     UpdateProgress(u8),
     SelfUpdated(Result<String, String>),
+}
+
+/// What the keychain said. The errors are only "it didn't work": the app tells
+/// the user [`crate::keychain::NO_KEYCHAIN`], not D-Bus details.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeychainReply {
+    /// The saved password (`None`: nothing saved for this account).
+    Loaded(Result<Option<String>, String>),
+    Saved(Result<(), String>),
+    /// `loud`: the user asked (Settings, Log out), so say how it went.
+    Forgotten {
+        result: Result<(), String>,
+        loud: bool,
+    },
+}
+
+/// One keychain job, run on its own thread (a locked keychain can wait for the
+/// user to unlock it, which must never freeze the interface).
+pub enum KeychainJob {
+    Load,
+    Save(String),
+    Forget { loud: bool },
 }
 
 pub struct Backend {
@@ -135,6 +281,24 @@ impl Backend {
         Self { api, audio, art, replies, tx }
     }
 
+    /// Runs `job` on the Pandora password of `account` in `keychain`; the
+    /// answer arrives as [`Reply::Keychain`].
+    pub fn keychain(&self, keychain: &Arc<dyn Keychain>, account: &str, job: KeychainJob) {
+        let (keychain, account, tx) = (Arc::clone(keychain), account.to_owned(), self.tx.clone());
+        thread::spawn(move || {
+            let reply = match job {
+                KeychainJob::Load => KeychainReply::Loaded(keychain.get(&account).map_err(|e| e.to_string())),
+                KeychainJob::Save(password) => {
+                    KeychainReply::Saved(keychain.set(&account, &password).map_err(|e| e.to_string()))
+                }
+                KeychainJob::Forget { loud } => {
+                    KeychainReply::Forgotten { result: keychain.forget(&account).map_err(|e| e.to_string()), loud }
+                }
+            };
+            let _ = tx.send(Reply::Keychain(reply));
+        });
+    }
+
     /// Asks GitHub for a newer release, quietly: no network or no news says nothing.
     pub fn check_update(&self) {
         let tx = self.tx.clone();
@@ -163,17 +327,87 @@ impl Backend {
 
 fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
     let mut round = 0;
+    let mut ads_asked = 0;
+    // The made-up account: renames and removals change this list only.
+    let mut stations = demo::stations();
+    let mut editing = demo::Editing::default();
     for request in requests {
         let reply = match request {
             Request::Login { .. } => Reply::LoggedIn { hifi: true },
-            Request::Stations => Reply::Stations(demo::stations()),
+            Request::Stations => Reply::Stations(stations.clone()),
+            Request::RenameStation { station_id, name } => {
+                match stations.iter_mut().find(|s| s.id == station_id && s.allow_rename) {
+                    Some(station) => {
+                        station.name = name.clone();
+                        Reply::StationRenamed { station_id, name }
+                    }
+                    None => Reply::Failed { what: "rename", message: "no such station".into() },
+                }
+            }
+            Request::RemoveStation { station_id } => {
+                match stations.iter().position(|s| s.id == station_id && s.allow_delete) {
+                    Some(at) => {
+                        stations.remove(at);
+                        Reply::StationRemoved { station_id }
+                    }
+                    None => Reply::Failed { what: "remove", message: "no such station".into() },
+                }
+            }
+            Request::StationDetails { station_id, .. } => {
+                Reply::StationDetails { details: editing.details(&station_id), station_id }
+            }
+            Request::Seeds { station_id } => Reply::Seeds { seeds: editing.seeds(&station_id).clone(), station_id },
+            Request::SeedSuggestions { station_id, .. } => {
+                Reply::SeedSuggestions { hits: editing.suggestions(&station_id), station_id }
+            }
+            Request::AddSeed { station_id, seed_id, .. } => match editing.add_seed(&station_id, &seed_id) {
+                Ok(name) => Reply::SeedAdded { station_id, name },
+                Err(message) => Reply::Failed { what: "add seed", message },
+            },
+            Request::RemoveSeed { station_id, seed_id, .. } => match editing.remove_seed(&station_id, &seed_id) {
+                Ok(name) => Reply::SeedRemoved { station_id, name },
+                Err(message) => Reply::Failed { what: "remove seed", message },
+            },
+            Request::Feedback { station_id, positive, start } => {
+                Reply::Feedback { page: editing.feedback(&station_id, positive, start), station_id, positive, start }
+            }
+            Request::DeleteFeedback { station_id, feedback_id, positive } => {
+                match editing.delete_feedback(&station_id, &feedback_id, positive) {
+                    Ok(()) => Reply::FeedbackDeleted { station_id, positive },
+                    Err(message) => Reply::Failed { what: "delete thumb", message },
+                }
+            }
+            Request::Search { query } => Reply::SearchResults { hits: demo::search(&query), query },
+            Request::CreateStation { pandora_id } => match demo::new_station(&pandora_id, stations.len()) {
+                Some(station) => {
+                    // Like Pandora: an existing one is not made twice; a new one comes after Shuffle.
+                    match stations.iter().find(|s| s.name == station.name) {
+                        Some(known) => Reply::StationCreated(known.clone()),
+                        None => {
+                            let at = usize::from(stations.first().is_some_and(|s| s.is_shuffle));
+                            stations.insert(at, station.clone());
+                            Reply::StationCreated(station)
+                        }
+                    }
+                }
+                None => Reply::Failed { what: "create station", message: "no such artist, song or genre".into() },
+            },
+            Request::Genres => Reply::Genres(demo::genres()),
             Request::Playlist { station_id } => {
                 round += 1;
                 Reply::Playlist { songs: demo::playlist(&station_id, round - 1), station_id }
             }
             Request::Rate { track_token, positive } => Reply::Rated { track_token, positive },
             Request::Tired { track_token } => Reply::Tired { track_token },
-            Request::Audio { .. } | Request::Art { .. } | Request::Quality(_) | Request::Started { .. } => continue,
+            Request::AdList { ask } => {
+                ads_asked += 1;
+                Reply::AdList { ads: demo::ads(ads_asked), station_id: ask.station_id }
+            }
+            Request::Audio { .. }
+            | Request::Art { .. }
+            | Request::Quality(_)
+            | Request::Started { .. }
+            | Request::AdImpression { .. } => continue,
         };
         if replies.send(reply).is_err() {
             break;
@@ -198,6 +432,63 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
             Request::Stations => {
                 run(&mut client, &login, &mut took_over, "stations", |c| c.stations().map(Reply::Stations))
             }
+            Request::RenameStation { station_id, name } => run(&mut client, &login, &mut took_over, "rename", |c| {
+                c.rename_station(&station_id, &name)
+                    .map(|name| Reply::StationRenamed { station_id: station_id.clone(), name })
+            }),
+            Request::RemoveStation { station_id } => run(&mut client, &login, &mut took_over, "remove", |c| {
+                c.remove_station(&station_id).map(|()| Reply::StationRemoved { station_id: station_id.clone() })
+            }),
+            Request::StationDetails { station_id, current } => {
+                run(&mut client, &login, &mut took_over, "details", |c| {
+                    c.station_details(&station_id, current)
+                        .map(|details| Reply::StationDetails { station_id: station_id.clone(), details })
+                })
+            }
+            Request::Seeds { station_id } => run(&mut client, &login, &mut took_over, "seeds", |c| {
+                c.seeds(&station_id).map(|seeds| Reply::Seeds { station_id: station_id.clone(), seeds })
+            }),
+            Request::SeedSuggestions { station_id, seed_music_id } => {
+                run(&mut client, &login, &mut took_over, "suggestions", |c| {
+                    c.seed_suggestions(&station_id, &seed_music_id)
+                        .map(|hits| Reply::SeedSuggestions { station_id: station_id.clone(), hits })
+                })
+            }
+            Request::AddSeed { station_id, seed_id, name } => {
+                run(&mut client, &login, &mut took_over, "add seed", |c| {
+                    c.add_seed(&station_id, &seed_id)
+                        .map(|()| Reply::SeedAdded { station_id: station_id.clone(), name: name.clone() })
+                })
+            }
+            Request::RemoveSeed { station_id, seed_id, name } => {
+                run(&mut client, &login, &mut took_over, "remove seed", |c| {
+                    c.remove_seed(&station_id, &seed_id)
+                        .map(|()| Reply::SeedRemoved { station_id: station_id.clone(), name: name.clone() })
+                })
+            }
+            Request::Feedback { station_id, positive, start } => {
+                run(&mut client, &login, &mut took_over, "thumbs history", |c| {
+                    c.station_feedback(&station_id, positive, start).map(|page| Reply::Feedback {
+                        station_id: station_id.clone(),
+                        positive,
+                        start,
+                        page,
+                    })
+                })
+            }
+            Request::DeleteFeedback { station_id, feedback_id, positive } => {
+                run(&mut client, &login, &mut took_over, "delete thumb", |c| {
+                    c.delete_feedback(&feedback_id, positive)
+                        .map(|()| Reply::FeedbackDeleted { station_id: station_id.clone(), positive })
+                })
+            }
+            Request::Search { query } => run(&mut client, &login, &mut took_over, "search", |c| {
+                c.search(&query).map(|hits| Reply::SearchResults { query: query.clone(), hits })
+            }),
+            Request::CreateStation { pandora_id } => run(&mut client, &login, &mut took_over, "create station", |c| {
+                c.create_station(&pandora_id).map(Reply::StationCreated)
+            }),
+            Request::Genres => run(&mut client, &login, &mut took_over, "genres", |c| c.genres().map(Reply::Genres)),
             Request::Playlist { station_id } => run(&mut client, &login, &mut took_over, "playlist", |c| {
                 c.fragment(&station_id).map(|songs| Reply::Playlist { station_id: station_id.clone(), songs })
             }),
@@ -208,6 +499,20 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
             Request::Tired { track_token } => run(&mut client, &login, &mut took_over, "tired", |c| {
                 c.add_tired(&track_token).map(|()| Reply::Tired { track_token: track_token.clone() })
             }),
+            Request::AdList { ask } => run(&mut client, &login, &mut took_over, "ads", |c| {
+                c.ad_list(&ask)
+                    .map(|v| Reply::AdList { station_id: ask.station_id.clone(), ads: ads::parse_ad_list(&v, true) })
+            }),
+            Request::AdImpression { token, request_meta, station_id } => {
+                // A report only: Pandora's answer is empty and a failure is not worth a message.
+                let _ = pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| {
+                    c.register_audio_impression(&token, &request_meta, &station_id)
+                });
+                if !took_over {
+                    continue;
+                }
+                Reply::TookOver
+            }
             Request::Started { track_token } => {
                 // A report only: a failure here is not worth a message.
                 let _ = pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| {

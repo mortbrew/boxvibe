@@ -1,19 +1,23 @@
 //! boxvibe: Pandora in the terminal.
 
+mod ads;
 mod app;
 mod art;
 mod audio;
 mod backend;
 mod config;
 mod demo;
+mod deps;
 mod desktop;
 mod icons;
+mod input;
+mod keychain;
 mod pandora;
 mod snapshot;
+mod splash;
 mod theme;
 mod ui;
 mod update;
-mod visualizer;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -43,7 +47,7 @@ struct Args {
     /// Draw one demo frame to an HTML file and exit (for screenshots).
     #[arg(long, hide = true, value_name = "FILE")]
     snapshot: Option<PathBuf>,
-    /// Snapshot screen: main, settings, about or help.
+    /// Snapshot screen: main, settings, password, password-nokeychain, genre-edit-popup, genre-edit-popup-ticked, good-vibes-off, about, help, system, seeds, seeds-add, seeds-remove, thumbs-up (or thumbs), thumbs-delete, thumbs-down, thumbs-down-delete or ad.
     #[arg(long, hide = true, default_value = "main")]
     screen: String,
     #[arg(long, hide = true, default_value_t = 120)]
@@ -78,6 +82,9 @@ fn main() -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     // Once, before any events are read: what pictures this terminal shows.
     app.art.set_graphics(art::detect());
+    app.begin_splash();
+    // What the system lacks (a Nerd Font...) is looked at in the background and listed when it is known.
+    app.start_system_check();
     let result = run(&mut terminal, &mut app);
     let restart = app.restart && result.is_ok();
     // Stop the sound and the backend before the new version takes over.
@@ -116,8 +123,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow::Result
             terminal.clear()?;
         }
         terminal.draw(|frame| ui::draw(frame, app))?;
-        // ~18 fps while the visualizer moves, 10 otherwise.
-        let frame_time = Duration::from_millis(if app.animating() { 55 } else { 100 });
+        // Faster while the boot screen moves, 10 fps otherwise.
+        let frame_time = Duration::from_millis(if app.splash.is_some() { 40 } else { 100 });
         let wait = frame_time.saturating_sub(last.elapsed());
         if event::poll(wait)? {
             match event::read()? {
@@ -138,7 +145,7 @@ fn edit_config(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow
     let Some(path) = app.config_path.clone() else { return Ok(()) };
     if !path.exists() {
         // Something to edit, private from the start.
-        config::set_values(&path, &[("ui", "theme", app.config.ui.theme.as_str().into())])?;
+        config::set_values(&path, &[("look", "theme", app.config.ui.theme.as_str().into())])?;
     }
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))

@@ -12,6 +12,22 @@
 //! login and request headers, the `csrftoken` fetch, the playlist fragment
 //! request and its audio format choice by account flag, the stream-takeover
 //! call, and skipping curator messages. See THIRD_PARTY.md.
+//!
+//! Renaming, removing and station details (`v1/station/updateStation` with
+//! `{stationId, name}`, `v1/station/removeStation` with `{stationId}`,
+//! `v1/station/getStationDetails` with `{stationId, isCurrentStation}`) are
+//! written from the community docs (which list the endpoints and show the
+//! details answer) and from what other web-API clients send (alexpreiss/
+//! pandora-app, libepimetheusKotlin, Panedora): no code was copied from them.
+//!
+//! Search (`v3/sod/search` with `{query, start, count, annotate, types}`; the
+//! answer is a `results` list of ids plus an `annotations` map), creating a
+//! station (`v1/station/createStation` with `{pandoraId, stationName}`) and the
+//! genre stations (`v1/music/genrecategories` with `{}`, then `v1/music/genres`
+//! with `{categoryToken}`) are written from the community docs (which show the
+//! `createStation` request and answer and the genre station ids) and from the
+//! requests and answers libepimetheusKotlin (GPL-3.0) sends and reads. Only
+//! those request and answer shapes were taken, as facts; no code was copied.
 
 use std::collections::HashSet;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -19,6 +35,19 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 pub const SITE: &str = "https://www.pandora.com";
+/// The web player version `getAdList` reports in `deviceProperties` (the
+/// website's own number when this was written).
+const AD_APP_VERSION: &str = "1.300.0";
+
+/// What `getAdList` is told about the song that just ended.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdAsk {
+    pub station_id: String,
+    pub track_token: String,
+    pub seconds_played: u32,
+    /// The listener skipped (or thumbed down) rather than the song ending.
+    pub user_initiated: bool,
+}
 /// A current desktop Firefox on Linux. Pandora's bot check answered Chrome-like
 /// agents with 403s in Music Assistant's testing; Firefox ones got through.
 /// `[pandora] user_agent` in config.toml overrides it.
@@ -38,6 +67,120 @@ pub struct Station {
     pub is_shared: bool,
     /// The largest station art there is (not drawn yet).
     pub art_url: String,
+    /// Pandora lets this station be renamed (`allowRename`; not Shuffle).
+    pub allow_rename: bool,
+    /// Pandora lets this station be removed (`allowDelete`; not Shuffle).
+    pub allow_delete: bool,
+    /// Pandora lets seeds be added and removed (`allowAddSeed`; not Shuffle or
+    /// a genre station).
+    pub allow_edit_seeds: bool,
+}
+
+impl Station {
+    /// Pandora won't let this station be renamed: its genre stations (and
+    /// Shuffle). The same test as the rename error, so the logo icon in the
+    /// lists and that message always agree.
+    pub fn is_locked(&self) -> bool {
+        !self.allow_rename
+    }
+}
+
+/// One of the seeds a station is built from (an artist, a song or a genre).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Seed {
+    /// `Artist`, `Song` or `Genre`.
+    pub kind: &'static str,
+    pub name: String,
+    /// `pandoraId` (`AR:…`, `TR:…`): what removing the seed takes. Empty
+    /// when the site did not send one (such a seed can't be removed here).
+    pub id: String,
+    /// `musicId` (`R…`): what the suggestions call takes.
+    pub music_id: String,
+}
+
+/// One thumb you gave (`v1/station/getStationFeedback`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Feedback {
+    /// `feedbackId`: what deleting it takes.
+    pub id: String,
+    pub positive: bool,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    /// `feedbackDateCreated`, as the site writes it.
+    pub date: String,
+}
+
+/// One page of the thumbs history.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FeedbackPage {
+    pub items: Vec<Feedback>,
+    /// `total`: how many thumbs of this kind the station has.
+    pub total: usize,
+}
+
+/// How many thumbs one page asks for.
+pub const FEEDBACK_PAGE: usize = 30;
+
+/// What a search hit is: only artists and songs can seed a station here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HitKind {
+    Artist,
+    Song,
+}
+
+impl HitKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Artist => "Artist",
+            Self::Song => "Song",
+        }
+    }
+}
+
+/// One `v3/sod/search` result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchHit {
+    /// `pandoraId` (`AR:…`, `CO:…`, `TR:…`): what `createStation` takes.
+    pub id: String,
+    pub kind: HitKind,
+    pub name: String,
+    /// A song's artist (empty for artists).
+    pub by: String,
+}
+
+/// A genre station Pandora offers (`v1/music/genres`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Genre {
+    /// `pandoraId` (`GE:…`): what `createStation` takes.
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+
+/// A genre category and its stations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenreCategory {
+    pub name: String,
+    pub genres: Vec<Genre>,
+}
+
+/// What `v1/station/getStationDetails` tells about a station. Everything
+/// the site did not send stays empty (or `None`) and is not shown.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StationDetails {
+    pub seeds: Vec<Seed>,
+    /// `positiveFeedbackCount`: thumbs up given on this station.
+    pub thumbs_up: Option<u32>,
+    /// `negativeFeedbackCount`: thumbs down given on this station.
+    pub thumbs_down: Option<u32>,
+    pub genres: Vec<String>,
+    /// `dateCreated`, as the site writes it.
+    pub created: String,
+    /// `lastPlayed`, as the site writes it.
+    pub last_played: String,
+    /// `creatorWebname`: whose station it is.
+    pub creator: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -236,13 +379,194 @@ pub fn parse_station(v: &Value) -> Option<Station> {
     if id.is_empty() {
         return None;
     }
+    let is_shuffle = v.get("isShuffle").and_then(Value::as_bool).unwrap_or(false);
     Some(Station {
         id,
         name: str_of(v, "name"),
-        is_shuffle: v.get("isShuffle").and_then(Value::as_bool).unwrap_or(false),
+        is_shuffle,
         is_shared: v.get("isShared").and_then(Value::as_bool).unwrap_or(false),
         art_url: largest_art(v.get("art")),
+        // The site says what it allows; Shuffle never allows either.
+        allow_rename: flag(v, "allowRename").unwrap_or(!is_shuffle),
+        allow_delete: flag(v, "allowDelete").unwrap_or(!is_shuffle),
+        // Not said: the same as renaming (genre stations allow neither).
+        allow_edit_seeds: flag(v, "allowAddSeed").unwrap_or(!is_shuffle && flag(v, "allowRename").unwrap_or(true)),
     })
+}
+
+fn flag(v: &Value, key: &str) -> Option<bool> {
+    v.get(key).and_then(Value::as_bool)
+}
+
+fn nested_text(item: &Value, path: &[&str]) -> String {
+    let mut at = item;
+    for key in path {
+        match at.get(key) {
+            Some(next) => at = next,
+            None => return String::new(),
+        }
+    }
+    at.as_str().unwrap_or_default().trim().to_owned()
+}
+
+/// The seeds of a `getStationDetails` or `getSeeds` answer (`seeds`). Each is
+/// read by its kind (`artist`, `song` or `genre` object); a seed of any other
+/// shape is skipped rather than guessed at.
+pub fn parse_seeds(v: &Value) -> Vec<Seed> {
+    v.get("seeds")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|seed| {
+            let artist = nested_text(seed, &["artist", "artistName"]);
+            let song = nested_text(seed, &["song", "songName"]);
+            let by = nested_text(seed, &["song", "artistSummary"]);
+            let genre = nested_text(seed, &["genre", "stationName"]);
+            let (kind, name) = if !artist.is_empty() {
+                ("Artist", artist)
+            } else if !song.is_empty() {
+                ("Song", if by.is_empty() { song } else { format!("{song} by {by}") })
+            } else if !genre.is_empty() {
+                ("Genre", genre)
+            } else {
+                return None;
+            };
+            Some(Seed { kind, name, id: str_of(seed, "pandoraId"), music_id: str_of(seed, "musicId") })
+        })
+        .collect()
+}
+
+/// `getSeedSuggestions`: a bare list of artists (`name`, `pandoraId`). Anything
+/// without both is skipped.
+pub fn parse_seed_suggestions(v: &Value) -> Vec<SearchHit> {
+    v.as_array()
+        .or_else(|| v.get("suggestions").and_then(Value::as_array))
+        .into_iter()
+        .flatten()
+        .filter_map(|s| {
+            let id = str_of(s, "pandoraId");
+            let name = str_of(s, "name").trim().to_owned();
+            (!id.is_empty() && !name.is_empty()).then_some(SearchHit {
+                id,
+                kind: HitKind::Artist,
+                name,
+                by: String::new(),
+            })
+        })
+        .collect()
+}
+
+/// `getStationFeedback`: `total` and the `feedback` list. Entries without an
+/// id are skipped (they could not be deleted).
+pub fn parse_feedback(v: &Value) -> FeedbackPage {
+    let items: Vec<Feedback> = v
+        .get("feedback")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|f| {
+            let id = str_of(f, "feedbackId");
+            if id.is_empty() {
+                return None;
+            }
+            Some(Feedback {
+                id,
+                positive: f.get("isPositive").and_then(Value::as_bool).unwrap_or(true),
+                title: str_of(f, "songTitle").trim().to_owned(),
+                artist: str_of(f, "artistName").trim().to_owned(),
+                album: str_of(f, "albumTitle").trim().to_owned(),
+                date: str_of(f, "feedbackDateCreated"),
+            })
+        })
+        .collect();
+    let total = v.get("total").and_then(Value::as_u64).map_or(items.len(), |t| t as usize);
+    FeedbackPage { items, total }
+}
+
+/// `v1/station/getStationDetails`: the seeds, thumbs counts and dates. Seeds
+/// are read by their kind (`artist`, `song` or `genre` object); a seed of any
+/// other shape is skipped rather than guessed at.
+pub fn parse_station_details(v: &Value) -> StationDetails {
+    let seeds = parse_seeds(v);
+    let count = |key: &str| v.get(key).and_then(Value::as_u64).map(|n| n.min(u64::from(u32::MAX)) as u32);
+    StationDetails {
+        seeds,
+        thumbs_up: count("positiveFeedbackCount"),
+        thumbs_down: count("negativeFeedbackCount"),
+        genres: v
+            .get("genre")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|g| g.as_str().map(str::to_owned))
+            .filter(|g| !g.is_empty())
+            .collect(),
+        created: nested_text(v, &["dateCreated"]),
+        last_played: nested_text(v, &["lastPlayed"]),
+        creator: nested_text(v, &["creatorWebname"]),
+    }
+}
+
+/// `v3/sod/search`: the `results` ids in order, each looked up in
+/// `annotations`. Artists (`AR`, `CO`) and songs (`TR`) are kept; albums,
+/// playlists, stations and anything unknown are skipped.
+pub fn parse_search(v: &Value) -> Vec<SearchHit> {
+    let notes = v.get("annotations");
+    v.get("results")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|id| {
+            let id = id.as_str()?;
+            let note = notes?.get(id)?;
+            let name = str_of(note, "name").trim().to_owned();
+            let own = str_of(note, "pandoraId");
+            let pandora_id = if own.is_empty() { id.to_owned() } else { own };
+            if name.is_empty() {
+                return None;
+            }
+            match pandora_id.get(..2)? {
+                "AR" | "CO" => Some(SearchHit { id: pandora_id, kind: HitKind::Artist, name, by: String::new() }),
+                "TR" => {
+                    let by = str_of(note, "artistName").trim().to_owned();
+                    Some(SearchHit { id: pandora_id, kind: HitKind::Song, name, by })
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// `v1/music/genrecategories`: `(name, categoryToken)` pairs.
+pub fn parse_genre_categories(v: &Value) -> Vec<(String, String)> {
+    v.get("categories")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            let token = str_of(c, "token");
+            let name = str_of(c, "name").trim().to_owned();
+            (!token.is_empty() && !name.is_empty()).then_some((name, token))
+        })
+        .collect()
+}
+
+/// `v1/music/genres`: the genre stations of one category.
+pub fn parse_genres(v: &Value) -> Vec<Genre> {
+    v.get("genres")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|g| {
+            let id = str_of(g, "pandoraId");
+            let name = str_of(g, "name").trim().to_owned();
+            (!id.is_empty() && !name.is_empty()).then(|| Genre {
+                id,
+                name,
+                description: str_of(g, "description").trim().to_owned(),
+            })
+        })
+        .collect()
 }
 
 /// One fragment track; `None` for ads, artist and curator messages and
@@ -393,6 +717,10 @@ impl Client {
         if status != 200 {
             return Err(classify(status, &text));
         }
+        // Some calls (removing a station) may answer 200 with nothing in the body.
+        if text.trim().is_empty() {
+            return Ok(json!({}));
+        }
         let v: Value = serde_json::from_str(&text).map_err(|_| Error::InvalidResponse)?;
         // Some failures come back as 200 with an error body.
         if v.get("errorCode").is_some() && v.get("errorString").is_some() {
@@ -454,6 +782,167 @@ impl Client {
         Ok(stations)
     }
 
+    /// `v1/station/updateStation`: renames a station. Returns the name the
+    /// site now has (the reply's `name`, else the one asked for).
+    pub fn rename_station(&mut self, station_id: &str, name: &str) -> Result<String, Error> {
+        let v = self.post("/api/v1/station/updateStation", &json!({ "stationId": station_id, "name": name }))?;
+        let said = str_of(&v, "name");
+        Ok(if said.is_empty() { name.to_owned() } else { said })
+    }
+
+    /// `v1/station/removeStation`: deletes a station from the account.
+    pub fn remove_station(&mut self, station_id: &str) -> Result<(), Error> {
+        self.post("/api/v1/station/removeStation", &json!({ "stationId": station_id })).map(|_| ())
+    }
+
+    /// `v1/station/getStationDetails`: seeds, thumbs counts and dates.
+    pub fn station_details(&mut self, station_id: &str, current: bool) -> Result<StationDetails, Error> {
+        let v = self.post(
+            "/api/v1/station/getStationDetails",
+            &json!({ "stationId": station_id, "isCurrentStation": current }),
+        )?;
+        Ok(parse_station_details(&v))
+    }
+
+    /// `v1/station/getSeeds`: the seeds of a station you made (newest first).
+    pub fn seeds(&mut self, station_id: &str) -> Result<Vec<Seed>, Error> {
+        let v = self.post("/api/v1/station/getSeeds", &json!({ "stationId": station_id }))?;
+        Ok(parse_seeds(&v))
+    }
+
+    /// `v1/search/getSeedSuggestions`: artists the site suggests adding,
+    /// near `seed_music_id` (a seed's `musicId`). The path is from the
+    /// public endpoint list (the old `v1/station/` one made Pandora answer
+    /// "Service method not found"); the site's own call was never captured,
+    /// so the body is the captured shape and a failure is silently "no
+    /// suggestions" (the editor shows nothing for it).
+    pub fn seed_suggestions(&mut self, station_id: &str, seed_music_id: &str) -> Result<Vec<SearchHit>, Error> {
+        let v = self.post(
+            "/api/v1/search/getSeedSuggestions",
+            &json!({ "stationId": station_id, "seedMusicId": seed_music_id, "maxResults": 10 }),
+        )?;
+        Ok(parse_seed_suggestions(&v))
+    }
+
+    /// Adds the artist or song `seed_id` (a `pandoraId`) to a station.
+    pub fn add_seed(&mut self, station_id: &str, seed_id: &str) -> Result<(), Error> {
+        self.seed_change(
+            "AddSeedToStationWeb",
+            "mutation AddSeedToStationWeb($stationId: String!, $seedId: String!) { addStationSeed(stationId: $stationId, seedId: $seedId) { status } }",
+            "addStationSeed",
+            station_id,
+            seed_id,
+        )
+    }
+
+    /// Removes the seed `seed_id` (a `pandoraId`) from a station.
+    pub fn remove_seed(&mut self, station_id: &str, seed_id: &str) -> Result<(), Error> {
+        self.seed_change(
+            "DeleteSeedFromStationWeb",
+            "mutation DeleteSeedFromStationWeb($stationId: String!, $seedId: String!) { removeStationSeed(stationId: $stationId, seedId: $seedId) { status } }",
+            "removeStationSeed",
+            station_id,
+            seed_id,
+        )
+    }
+
+    /// One of the site's GraphQL seed mutations. The site sends `variables`
+    /// as a JSON string, and the station as `ST:0:<id>`. Two paths were seen
+    /// for it, so the second is tried when the first is not found.
+    fn seed_change(
+        &mut self,
+        operation: &str,
+        query: &str,
+        field: &str,
+        station_id: &str,
+        seed_id: &str,
+    ) -> Result<(), Error> {
+        let variables = json!({ "stationId": format!("ST:0:{station_id}"), "seedId": seed_id }).to_string();
+        let body = json!({ "operationName": operation, "query": query, "variables": variables });
+        let v = match self.post("/api/v1/graphql", &body) {
+            Err(Error::Api { status: 404 | 405, .. }) => self.post("/api/v1/graphql/graphql", &body)?,
+            other => other?,
+        };
+        if let Some(message) = v.get("errors").and_then(Value::as_array).and_then(|e| e.first()) {
+            let message = str_of(message, "message");
+            return Err(Error::Api {
+                status: 200,
+                code: None,
+                kind: "GRAPHQL".into(),
+                message: if message.is_empty() { "Pandora refused the change".into() } else { message },
+            });
+        }
+        match v.pointer(&format!("/data/{field}/status")).and_then(Value::as_str) {
+            Some(status) if status.eq_ignore_ascii_case("ok") => Ok(()),
+            Some(status) => Err(Error::Api {
+                status: 200,
+                code: None,
+                kind: "GRAPHQL".into(),
+                message: format!("Pandora answered {status}"),
+            }),
+            None => Err(Error::InvalidResponse),
+        }
+    }
+
+    /// `v1/station/getStationFeedback`: a page of the thumbs up (or down)
+    /// you gave on a station, newest first, from `start`.
+    pub fn station_feedback(&mut self, station_id: &str, positive: bool, start: usize) -> Result<FeedbackPage, Error> {
+        let v = self.post(
+            "/api/v1/station/getStationFeedback",
+            &json!({ "pageSize": FEEDBACK_PAGE, "startIndex": start, "stationId": station_id, "positive": positive }),
+        )?;
+        Ok(parse_feedback(&v))
+    }
+
+    /// `v1/station/deleteFeedback`: takes one thumb back.
+    pub fn delete_feedback(&mut self, feedback_id: &str, positive: bool) -> Result<(), Error> {
+        self.post("/api/v1/station/deleteFeedback", &json!({ "feedbackId": feedback_id, "isPositive": positive }))?;
+        Ok(())
+    }
+
+    /// `v3/sod/search`: artists and songs matching `query`.
+    pub fn search(&mut self, query: &str) -> Result<Vec<SearchHit>, Error> {
+        let v = self.post(
+            "/api/v3/sod/search",
+            &json!({ "query": query, "start": 0, "count": 20, "annotate": true, "types": ["AR", "CO", "TR"] }),
+        )?;
+        Ok(parse_search(&v))
+    }
+
+    /// `v1/station/createStation`: a new station seeded by `pandora_id` (a
+    /// search hit or a genre station). Returns it as the account lists it.
+    pub fn create_station(&mut self, pandora_id: &str) -> Result<Station, Error> {
+        let v = self.post("/api/v1/station/createStation", &json!({ "pandoraId": pandora_id, "stationName": "" }))?;
+        parse_station(&v).ok_or(Error::InvalidResponse)
+    }
+
+    /// `v1/music/genrecategories`, then `v1/music/genres` for each category.
+    /// A category whose list fails is left out; the first error is returned
+    /// only when nothing could be listed.
+    pub fn genres(&mut self) -> Result<Vec<GenreCategory>, Error> {
+        let v = self.post("/api/v1/music/genrecategories", &json!({}))?;
+        let mut out = Vec::new();
+        let mut first_error = None;
+        for (name, token) in parse_genre_categories(&v) {
+            match self.post("/api/v1/music/genres", &json!({ "categoryToken": token })) {
+                Ok(v) => {
+                    let genres = parse_genres(&v);
+                    if !genres.is_empty() {
+                        out.push(GenreCategory { name, genres });
+                    }
+                }
+                Err(e) if e.is_auth_expired() => return Err(e),
+                Err(e) => {
+                    first_error.get_or_insert(e);
+                }
+            }
+        }
+        match (out.is_empty(), first_error) {
+            (true, Some(e)) => Err(e),
+            _ => Ok(out),
+        }
+    }
+
     /// `v1/playlist/getFragment`: the next few songs of `station_id`.
     pub fn fragment(&mut self, station_id: &str) -> Result<Vec<Song>, Error> {
         let start = !self.started.contains(station_id);
@@ -506,6 +995,56 @@ impl Client {
     /// account's other device and play here.
     pub fn take_over(&mut self) -> Result<(), Error> {
         self.post("/api/v1/station/playbackResumed", &json!({ "forceActive": true })).map(|_| ())
+    }
+
+    /// `v1/ad/getAdList`: what the site asks when a song ends or is skipped.
+    /// The answer is `{"ads": [...]}`, usually empty; read it with
+    /// [`crate::ads::parse_ad_list`].
+    pub fn ad_list(&mut self, ask: &AdAsk) -> Result<Value, Error> {
+        self.post(
+            "/api/v1/ad/getAdList",
+            &json!({
+                "videoAdIndex": 1,
+                "audioAdIndex": 1,
+                "nextTrackStationId": ask.station_id,
+                "secondsUntilAd": 0,
+                "currentTrackStationId": ask.station_id,
+                "currentTrackToken": ask.track_token,
+                "currentTrackType": "Track",
+                "adsWizzAdId": null,
+                "adBlockerEnabled": false,
+                "httpReferrer": "",
+                "currentTrackSecondsPlayed": ask.seconds_played,
+                "userInitiatedTrackEnd": ask.user_initiated,
+                "userInitiatedTrackEndActionType": if ask.user_initiated { "GLOBAL_SKIP_TRACK" } else { "" },
+                "secondsSinceDisplayAd": 0,
+                "skipForReplay": false,
+                "userTimedOut": false,
+                "currentTrackDeliveryType": null,
+                "nextTrackDeliveryType": null,
+                "deviceProperties": { "applicationVersion": AD_APP_VERSION },
+            }),
+        )
+    }
+
+    /// `v1/ad/registerAudioProgrammaticImpression`: tells Pandora an audio ad
+    /// began to play.
+    pub fn register_audio_impression(
+        &mut self,
+        ad_token: &str,
+        request_meta: &str,
+        station_id: &str,
+    ) -> Result<(), Error> {
+        self.post(
+            "/api/v1/ad/registerAudioProgrammaticImpression",
+            &json!({
+                "adRequestMetaData": request_meta,
+                "adToken": ad_token,
+                "stationId": station_id,
+                "httpReferrer": "",
+            }),
+        )
+        .map(|_| ())
     }
 
     /// Downloads a song's audio (a few MB) to decode it.

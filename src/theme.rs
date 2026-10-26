@@ -1,7 +1,8 @@
-//! Colours. Like tubevibe, boxvibe follows the current Omarchy theme by
-//! default (`theme = "omarchy"`, Tokyo Night when not on Omarchy) and
-//! recolours itself when `omarchy theme set` swaps it. It also has built-in
-//! themes, which `t` cycles and `[ui] theme` remembers.
+//! Colours. On an Omarchy system boxvibe starts out following the current
+//! Omarchy theme (`theme = "omarchy"`) and recolours itself when `omarchy
+//! theme set` swaps it; anywhere else it starts on Tokyo Night
+//! ([`default_name`]). It also has built-in themes, which Settings → LOOK →
+//! Theme cycles and `[look] theme` remembers.
 //!
 //! Omarchy keeps the theme in use in `~/.local/state/omarchy/current/theme`
 //! (Omarchy 4) or `~/.config/omarchy/current/theme` (before). Its
@@ -200,6 +201,34 @@ pub fn built_in(name: &str) -> Option<Palette> {
     BUILT_IN.iter().find(|(n, ..)| *n == name).map(|(.., p)| *p)
 }
 
+/// Whether this looks like an Omarchy system: one of its folders is in the
+/// user's config, data or state directory, or one of its commands is on the PATH.
+fn looks_like_omarchy(folders: &[PathBuf], path: Option<&std::ffi::OsStr>) -> bool {
+    folders.iter().any(|d| d.is_dir())
+        || path.is_some_and(|path| {
+            std::env::split_paths(path)
+                .any(|dir| ["omarchy", "omarchy-theme-set"].iter().any(|command| dir.join(command).is_file()))
+        })
+}
+
+/// Is this an Omarchy system?
+pub fn is_omarchy() -> bool {
+    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let Some(home) = var("HOME") else { return false };
+    let folders = [
+        var("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config")).join("omarchy"),
+        var("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local/share")).join("omarchy"),
+        var("XDG_STATE_HOME").unwrap_or_else(|| home.join(".local/state")).join("omarchy"),
+    ];
+    looks_like_omarchy(&folders, std::env::var_os("PATH").as_deref())
+}
+
+/// The theme used until one is saved: `omarchy` (follow the system) on an
+/// Omarchy system, `tokyo-night` anywhere else.
+pub fn default_name() -> &'static str {
+    if is_omarchy() { "omarchy" } else { "tokyo-night" }
+}
+
 // --- Omarchy theme files (ported from tubevibe's theme.rs) ---
 
 type Rgb = (u8, u8, u8);
@@ -387,6 +416,34 @@ mod tests {
         assert_eq!(next("nope"), "omarchy");
         assert_eq!(names().count(), 9);
         assert_eq!(label("gruvbox"), "Gruvbox");
+    }
+
+    #[test]
+    fn an_omarchy_system_is_told_by_its_folders_or_commands() {
+        let dir = crate::config::temp_dir("omarchy-detect");
+        let nothing: [PathBuf; 2] = [dir.join("config/omarchy"), dir.join("data/omarchy")];
+        assert!(!looks_like_omarchy(&nothing, None));
+        let empty_path = std::env::join_paths([dir.join("bin")]).unwrap();
+        assert!(!looks_like_omarchy(&nothing, Some(&empty_path)));
+        // A folder of Omarchy's, in any of the places.
+        std::fs::create_dir_all(dir.join("data/omarchy")).unwrap();
+        assert!(looks_like_omarchy(&nothing, None));
+        std::fs::remove_dir_all(dir.join("data")).unwrap();
+        assert!(!looks_like_omarchy(&nothing, None));
+        // Or one of its commands.
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::write(dir.join("bin/omarchy-theme-set"), "#!/bin/sh\n").unwrap();
+        assert!(looks_like_omarchy(&nothing, Some(&empty_path)));
+        std::fs::remove_file(dir.join("bin/omarchy-theme-set")).unwrap();
+        std::fs::write(dir.join("bin/omarchy"), "#!/bin/sh\n").unwrap();
+        assert!(looks_like_omarchy(&nothing, Some(&empty_path)));
+    }
+
+    #[test]
+    fn the_default_theme_exists_and_the_names_are_known() {
+        assert!(names().any(|n| n == default_name()), "{}", default_name());
+        assert!(matches!(default_name(), "omarchy" | "tokyo-night"));
+        assert!(built_in("tokyo-night").is_some());
     }
 
     #[test]

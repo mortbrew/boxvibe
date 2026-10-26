@@ -301,6 +301,175 @@ fn a_blocked_login_says_so() {
     assert!(err.to_string().contains("bot check"));
 }
 
+#[test]
+fn stations_say_whether_they_can_be_renamed_or_removed() {
+    let made =
+        parse_station(&json!({ "stationId": "1", "name": "Mine", "allowRename": true, "allowDelete": true })).unwrap();
+    assert!(made.allow_rename && made.allow_delete);
+    let genre = parse_station(&json!({ "stationId": "2", "name": "Chill", "allowRename": false, "allowDelete": true }))
+        .unwrap();
+    assert!(!genre.allow_rename && genre.allow_delete);
+    // Nothing said: allowed, except for Shuffle, which Pandora never lets go.
+    let plain = parse_station(&json!({ "stationId": "3", "name": "Jazz" })).unwrap();
+    assert!(plain.allow_rename && plain.allow_delete);
+    let shuffle = parse_station(&json!({ "stationId": "4", "name": "Shuffle", "isShuffle": true })).unwrap();
+    assert!(!shuffle.allow_rename && !shuffle.allow_delete);
+}
+
+#[test]
+fn station_details_read_seeds_thumbs_and_dates() {
+    let v = json!({
+        "seeds": [
+            { "musicId": "R1", "artist": { "artistName": "Tee Grizzley" } },
+            { "musicId": "S1", "song": { "songName": "Midnight City", "artistSummary": "M83" } },
+            { "musicId": "G1", "genre": { "stationName": "Chill Out" } },
+            { "musicId": "?", "mystery": {} }
+        ],
+        "positiveFeedbackCount": 12, "negativeFeedbackCount": 3,
+        "genre": ["Rap / Hip-Hop", ""], "dateCreated": "2017-12-04T16:26:05.041-08:00",
+        "lastPlayed": "2017-12-05T10:00:00.000-08:00", "creatorWebname": "toby"
+    });
+    let d = parse_station_details(&v);
+    let seeds: Vec<(&str, &str)> = d.seeds.iter().map(|s| (s.kind, s.name.as_str())).collect();
+    assert_eq!(seeds, [("Artist", "Tee Grizzley"), ("Song", "Midnight City by M83"), ("Genre", "Chill Out")]);
+    assert_eq!((d.thumbs_up, d.thumbs_down), (Some(12), Some(3)));
+    assert_eq!(d.genres, ["Rap / Hip-Hop"]);
+    assert_eq!((d.created.as_str(), d.creator.as_str()), ("2017-12-04T16:26:05.041-08:00", "toby"));
+    // An answer with nothing in it shows nothing, rather than made-up zeros.
+    assert_eq!(parse_station_details(&json!({})), StationDetails::default());
+}
+
+#[test]
+fn renaming_removing_and_details_send_what_the_site_expects() {
+    let (base, seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        "/api/v1/station/updateStation" => (200, json!({ "stationId": "9", "name": "Jazz Radio" }).to_string()),
+        // The site may say nothing at all when a station is gone.
+        "/api/v1/station/removeStation" => (200, String::new()),
+        "/api/v1/station/getStationDetails" => {
+            (200, json!({ "seeds": [], "positiveFeedbackCount": 4, "negativeFeedbackCount": 1 }).to_string())
+        }
+        _ => (200, "{}".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    assert_eq!(c.rename_station("9", "Jazz").unwrap(), "Jazz Radio", "the name the site now has");
+    c.remove_station("9").unwrap();
+    let d = c.station_details("9", true).unwrap();
+    assert_eq!((d.thumbs_up, d.thumbs_down), (Some(4), Some(1)));
+    let seen = seen.lock().unwrap();
+    let body = |end: &str| seen.iter().find(|s| s.path.ends_with(end)).unwrap().body.clone();
+    assert_eq!(body("updateStation"), json!({ "stationId": "9", "name": "Jazz" }));
+    assert_eq!(body("removeStation"), json!({ "stationId": "9" }));
+    assert_eq!(body("getStationDetails"), json!({ "stationId": "9", "isCurrentStation": true }));
+}
+
+fn search_answer() -> Value {
+    json!({
+        "results": ["AR:1", "TR:2", "AL:3", "CO:4", "PL:5", "AR:gone", "TR:6"],
+        "annotations": {
+            "AR:1": { "name": " Tee Grizzley ", "pandoraId": "AR:1", "trackCount": 9, "icon": {} },
+            "TR:2": { "name": "Slow Hands", "artistName": "Niall Horan", "pandoraId": "TR:2" },
+            "AL:3": { "name": "An album", "pandoraId": "AL:3" },
+            "CO:4": { "name": "A Composer", "pandoraId": "CO:4" },
+            "PL:5": { "name": "A playlist", "pandoraId": "PL:5" },
+            "TR:6": { "name": "", "pandoraId": "TR:6" }
+        }
+    })
+}
+
+#[test]
+fn search_keeps_artists_and_songs_in_order_and_ignores_the_rest() {
+    let hits = parse_search(&search_answer());
+    let got: Vec<(HitKind, &str, &str, &str)> =
+        hits.iter().map(|h| (h.kind, h.id.as_str(), h.name.as_str(), h.by.as_str())).collect();
+    assert_eq!(
+        got,
+        vec![
+            (HitKind::Artist, "AR:1", "Tee Grizzley", ""),
+            (HitKind::Song, "TR:2", "Slow Hands", "Niall Horan"),
+            (HitKind::Artist, "CO:4", "A Composer", ""),
+        ]
+    );
+    assert!(parse_search(&json!({})).is_empty());
+    assert!(parse_search(&json!({ "results": ["AR:1"] })).is_empty(), "no annotations");
+    assert!(parse_search(&json!({ "results": "nope", "annotations": 4 })).is_empty());
+}
+
+#[test]
+fn genres_parse_tolerantly() {
+    let cats = parse_genre_categories(&json!({ "categories": [
+        { "name": " Rock ", "token": "rock", "art": [] }, { "name": "No token" }, { "token": "x" } ] }));
+    assert_eq!(cats, vec![("Rock".to_owned(), "rock".to_owned())]);
+    let genres = parse_genres(&json!({ "genres": [
+        { "name": "Classic Rock ", "token": "classic-rock", "musicId": "G1", "pandoraId": "GE:1",
+          "description": " Big guitars. ", "listenerCount": 5, "unknown": [1] },
+        { "name": "No id" }, { "pandoraId": "GE:9" } ] }));
+    assert_eq!(
+        genres,
+        vec![Genre { id: "GE:1".into(), name: "Classic Rock".into(), description: "Big guitars.".into() }]
+    );
+    assert!(parse_genres(&json!({ "genres": 3 })).is_empty());
+}
+
+#[test]
+fn searching_creating_and_genres_send_what_the_site_expects() {
+    let (base, seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        "/api/v3/sod/search" => (200, search_answer().to_string()),
+        "/api/v1/station/createStation" => (
+            200,
+            json!({ "stationId": "3815", "pandoraId": "ST:0:3815", "name": "Tee Grizzley Radio",
+                    "allowRename": true, "allowDelete": true, "isShuffle": false })
+            .to_string(),
+        ),
+        "/api/v1/music/genrecategories" => (
+            200,
+            json!({ "categories": [ { "name": "Rock", "token": "rock" }, { "name": "Empty", "token": "none" },
+                                    { "name": "Broken", "token": "bad" } ] })
+            .to_string(),
+        ),
+        "/api/v1/music/genres" => match r.body["categoryToken"].as_str() {
+            Some("rock") => (200, json!({ "genres": [ { "name": "Classic Rock", "pandoraId": "GE:1" } ] }).to_string()),
+            Some("bad") => (500, json!({ "errorCode": 0, "errorString": "INTERNAL" }).to_string()),
+            _ => (200, json!({ "genres": [] }).to_string()),
+        },
+        _ => (200, "{}".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    assert_eq!(c.search("tee").unwrap().len(), 3);
+    let made = c.create_station("AR:1").unwrap();
+    assert_eq!((made.id.as_str(), made.name.as_str()), ("3815", "Tee Grizzley Radio"));
+    let cats = c.genres().unwrap();
+    assert_eq!(cats.len(), 1, "empty and failing categories are left out");
+    assert_eq!((cats[0].name.as_str(), cats[0].genres[0].id.as_str()), ("Rock", "GE:1"));
+    let seen = seen.lock().unwrap();
+    let body = |end: &str| seen.iter().find(|s| s.path.ends_with(end)).unwrap().body.clone();
+    assert_eq!(
+        body("sod/search"),
+        json!({ "query": "tee", "start": 0, "count": 20, "annotate": true, "types": ["AR", "CO", "TR"] })
+    );
+    assert_eq!(body("createStation"), json!({ "pandoraId": "AR:1", "stationName": "" }));
+    assert_eq!(body("genrecategories"), json!({}));
+}
+
+#[test]
+fn creating_a_station_needs_an_answer_that_names_it_and_all_genres_failing_is_an_error() {
+    let (base, _) = fake_pandora(Box::new(|r| match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        "/api/v1/music/genrecategories" => {
+            (200, json!({ "categories": [ { "name": "A", "token": "a" } ] }).to_string())
+        }
+        "/api/v1/music/genres" => (500, json!({ "errorCode": 0, "errorString": "INTERNAL" }).to_string()),
+        _ => (200, "{}".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    assert_eq!(c.create_station("AR:1"), Err(Error::InvalidResponse));
+    assert!(c.genres().is_err());
+}
+
 /// `cargo test live_site -- --ignored`: the real www.pandora.com hands out a
 /// csrftoken to boxvibe's HEAD (no login, nothing else sent).
 #[test]
@@ -308,4 +477,270 @@ fn a_blocked_login_says_so() {
 fn live_site_hands_out_a_csrftoken() {
     let token = Client::new("").site_csrf().expect("no csrftoken cookie from www.pandora.com");
     assert!(token.len() >= 8 && token.chars().all(|ch| ch.is_ascii_alphanumeric()), "{token}");
+}
+
+// --- Seeds and thumbs history ---
+
+#[test]
+fn seeds_keep_their_ids_and_flags_say_whether_they_can_be_edited() {
+    let v = json!({ "seeds": [
+        { "pandoraId": "AR:1", "musicId": "R1", "artist": { "artistName": "M83" } },
+        { "pandoraId": "TR:2", "musicId": "S2", "song": { "songName": "Kids", "artistSummary": "MGMT" } },
+    ] });
+    let seeds = parse_seeds(&v);
+    assert_eq!((seeds[0].id.as_str(), seeds[0].music_id.as_str()), ("AR:1", "R1"));
+    assert_eq!(seeds[1].name, "Kids by MGMT");
+    // allowAddSeed says it; without it, a station you can rename can be edited too.
+    let station = |extra: Value| {
+        let mut v = json!({ "stationId": "1", "name": "X", "allowRename": true, "allowDelete": true });
+        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        parse_station(&v).unwrap().allow_edit_seeds
+    };
+    assert!(station(json!({})));
+    assert!(!station(json!({ "allowAddSeed": false })));
+    assert!(station(json!({ "allowAddSeed": true, "allowRename": false })));
+    assert!(!station(json!({ "allowRename": false })), "genre stations are locked");
+}
+
+#[test]
+fn seed_suggestions_and_feedback_pages_parse_tolerantly() {
+    let hits = parse_seed_suggestions(&json!([{ "name": "MGMT", "pandoraId": "AR:9" }, { "name": "No id" }]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!((hits[0].id.as_str(), hits[0].kind), ("AR:9", HitKind::Artist));
+    let page = parse_feedback(&json!({ "total": 3, "feedback": [
+        { "feedbackId": "f1", "isPositive": true, "songTitle": " Kids ", "artistName": "MGMT",
+          "albumTitle": "Oracular", "feedbackDateCreated": "2026-10-01T10:00:00.000-04:00" },
+        { "songTitle": "No id: can't be deleted" },
+    ] }));
+    assert_eq!(page.total, 3);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!((page.items[0].title.as_str(), page.items[0].id.as_str()), ("Kids", "f1"));
+    assert_eq!(parse_feedback(&json!({})), FeedbackPage::default());
+}
+
+#[test]
+fn seed_and_thumb_calls_send_what_the_site_expects() {
+    let (base, seen) = fake_pandora(Box::new(|r| {
+        match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        "/api/v1/station/getSeeds" => {
+            (200, json!({ "seeds": [{ "pandoraId": "AR:1", "artist": { "artistName": "M83" } }] }).to_string())
+        }
+        "/api/v1/search/getSeedSuggestions" => (200, json!([{ "name": "MGMT", "pandoraId": "AR:9" }]).to_string()),
+        // Pandora's answer to a path it doesn't have (what the old suggestions path got).
+        "/api/v1/station/getSeedSuggestions" => {
+            (404, json!({ "errorCode": 0, "errorString": "NOT_FOUND", "message": "Service method not found" }).to_string())
+        }
+        // The first graphql path is unknown to this fake: the second works.
+        "/api/v1/graphql" => (404, json!({ "errorCode": 0, "errorString": "NOT_FOUND" }).to_string()),
+        "/api/v1/graphql/graphql" => {
+            let field = if r.body["operationName"] == "AddSeedToStationWeb" { "addStationSeed" } else { "removeStationSeed" };
+            (200, json!({ "data": { field: { "status": "OK" } } }).to_string())
+        }
+        "/api/v1/station/getStationFeedback" => (
+            200,
+            json!({ "total": 31, "feedback": [{ "feedbackId": "f1", "isPositive": r.body["positive"], "songTitle": "Kids" }] })
+                .to_string(),
+        ),
+        _ => (200, "{}".into()),
+    }
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    assert_eq!(c.seeds("9").unwrap().len(), 1);
+    assert_eq!(c.seed_suggestions("9", "R1").unwrap()[0].name, "MGMT");
+    c.add_seed("9", "AR:9").unwrap();
+    c.remove_seed("9", "AR:1").unwrap();
+    let up = c.station_feedback("9", true, 0).unwrap();
+    let down = c.station_feedback("9", false, 30).unwrap();
+    assert_eq!((up.total, up.items[0].positive, down.items[0].positive), (31, true, false));
+    c.delete_feedback("f1", true).unwrap();
+    let seen = seen.lock().unwrap();
+    let all = |end: &str| seen.iter().filter(|s| s.path.ends_with(end)).map(|s| s.body.clone()).collect::<Vec<_>>();
+    assert_eq!(all("getSeeds")[0], json!({ "stationId": "9" }));
+    assert_eq!(all("getSeedSuggestions")[0]["stationId"], "9");
+    // Each change tried the first graphql path, then the second (the site had two).
+    let graphql: Vec<&str> = seen.iter().filter(|s| s.path.contains("graphql")).map(|s| s.path.as_str()).collect();
+    assert_eq!(graphql, ["/api/v1/graphql", "/api/v1/graphql/graphql", "/api/v1/graphql", "/api/v1/graphql/graphql"]);
+    let add = &all("graphql/graphql")[0];
+    assert_eq!(add["operationName"], "AddSeedToStationWeb");
+    assert!(add["query"].as_str().unwrap().contains("addStationSeed"));
+    // The site wants the variables as a string, and the station as ST:0:<id>.
+    let vars: Value = serde_json::from_str(add["variables"].as_str().unwrap()).unwrap();
+    assert_eq!(vars, json!({ "stationId": "ST:0:9", "seedId": "AR:9" }));
+    let remove = &all("graphql/graphql")[1];
+    assert_eq!(remove["operationName"], "DeleteSeedFromStationWeb");
+    let vars: Value = serde_json::from_str(remove["variables"].as_str().unwrap()).unwrap();
+    assert_eq!(vars, json!({ "stationId": "ST:0:9", "seedId": "AR:1" }));
+    assert_eq!(
+        all("getStationFeedback"),
+        [
+            json!({ "pageSize": 30, "startIndex": 0, "stationId": "9", "positive": true }),
+            json!({ "pageSize": 30, "startIndex": 30, "stationId": "9", "positive": false }),
+        ]
+    );
+    assert_eq!(all("deleteFeedback")[0], json!({ "feedbackId": "f1", "isPositive": true }));
+}
+
+#[test]
+fn a_refused_seed_change_is_an_error_not_a_success() {
+    let answers = Arc::new(Mutex::new(vec![
+        json!({ "errors": [{ "message": "Seed is already in the station" }] }),
+        json!({ "data": { "addStationSeed": { "status": "FAILED" } } }),
+        json!({ "data": null }),
+    ]));
+    let (base, _) = fake_pandora(Box::new(move |r| match r.path.as_str() {
+        "/api/v1/graphql" => (200, answers.lock().unwrap().remove(0).to_string()),
+        "/api/v1/auth/login" => login_ok("tok"),
+        _ => (200, "{}".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    let first = c.add_seed("9", "AR:1").unwrap_err().to_string();
+    assert!(first.contains("already in the station"), "{first}");
+    let second = c.add_seed("9", "AR:1").unwrap_err().to_string();
+    assert!(second.contains("FAILED"), "{second}");
+    assert!(c.add_seed("9", "AR:1").is_err(), "an answer with no status is not OK");
+}
+
+/// A two-ad pod whose report links point back at the fake server (`host`).
+fn fake_pod(host: &str) -> Value {
+    let ad = |n: u32, length: f64| {
+        let url = |what: &str, query: &str| format!("http://{host}/haymaker/{what}/{n}{query}");
+        json!({
+            "adToken": format!("pod:1/2/{n}"), "adRequestMetaData": format!("meta-{n}"),
+            "adType": "AUDIO_AD", "adLength": length,
+            "audioUrlMap": { "mediumQuality": format!("http://{host}/audio/{n}.mp4") },
+            "adVerificationData": [{ "vendor": "pandora-monocle", "parameters": format!("m={n}") }],
+            "vastTrackingEvents": [
+                { "eventType": "IMPRESSION", "urls": [url("imp", "?ts=[TIMESTAMP]")] },
+                { "eventType": "AUDIO_START", "urls": [url("start", "?ps=[PLAYERSTATE]&ph=[ADPLAYHEAD]")] },
+                { "eventType": "AUDIO_FIRST_QUARTILE", "urls": [url("q1", "?ph=[ADPLAYHEAD]&uri=[ASSETURI]")] },
+                { "eventType": "AUDIO_MIDPOINT", "urls": [url("mid", "?ph=[ADPLAYHEAD]")] },
+                { "eventType": "AUDIO_THIRD_QUARTILE", "urls": [url("q3", "?ph=[ADPLAYHEAD]")] },
+                { "eventType": "AUDIO_COMPLETE", "urls": [url("done", "?ph=[ADPLAYHEAD]")] },
+            ],
+        })
+    };
+    json!({ "ads": [ad(1, 8.0), ad(2, 4.0)] })
+}
+
+#[test]
+fn a_two_ad_pod_is_asked_played_and_reported_in_the_websites_order() {
+    use crate::ads::{Action, Break, Tracker, parse_ad_list};
+    use std::time::{Duration, SystemTime};
+    let (base, seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        "/api/v1/ad/getAdList" => (200, fake_pod(r.header("Host").unwrap()).to_string()),
+        _ => (200, "{}".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    let ask = AdAsk { station_id: "st9".into(), track_token: "trk".into(), seconds_played: 31, user_initiated: true };
+    let answer = c.ad_list(&ask).unwrap();
+    let ads = parse_ad_list(&answer, false);
+    assert_eq!(ads.len(), 2);
+
+    // Play both ads the way the app does, sending every report in order.
+    let tracker = Tracker::new(true, false, "boxvibe-test");
+    let mut brk = Break::new(ads, "st9");
+    let now = SystemTime::now();
+    let send = |c: &mut Client, actions: Vec<Action>| {
+        for action in actions {
+            match action {
+                Action::Track { urls, .. } => tracker.fire(urls).unwrap().join().unwrap(),
+                Action::Register { token, request_meta, station_id } => {
+                    c.register_audio_impression(&token, &request_meta, &station_id).unwrap()
+                }
+            }
+        }
+    };
+    while !brk.done() {
+        send(&mut c, brk.start(now));
+        let length = brk.ad().unwrap().length;
+        for part in [0.25, 0.5, 0.75] {
+            send(&mut c, brk.progress(Duration::from_secs_f64(length * part), now));
+        }
+        send(&mut c, brk.finish(now));
+    }
+
+    let seen = seen.lock().unwrap();
+    let calls: Vec<String> = seen
+        .iter()
+        .map(|s| s.path.clone())
+        .filter(|p| p.starts_with("/api/v1/ad") || p.starts_with("/haymaker"))
+        .collect();
+    let q = |p: &str| calls.iter().position(|c| c.starts_with(p)).unwrap_or_else(|| panic!("{p} missing in {calls:?}"));
+    assert_eq!(calls[0], "/api/v1/ad/getAdList");
+    let order = [
+        "/haymaker/imp/1?ts=",
+        "/haymaker/te/other_ad_interaction?m=1",
+        "/haymaker/start/1?ps=foreground&ph=00:00:00.000",
+        "/api/v1/ad/registerAudioProgrammaticImpression",
+        "/haymaker/q1/1?ph=00:00:02.000&uri=http%3A%2F%2F127.0.0.1%3A",
+        "/haymaker/mid/1?ph=00:00:04.000",
+        "/haymaker/q3/1?ph=00:00:06.000",
+        "/haymaker/done/1?ph=00:00:08.000",
+        "/haymaker/imp/2?ts=",
+        "/haymaker/te/other_ad_interaction?m=2",
+        "/haymaker/start/2",
+        "/api/v1/ad/registerAudioProgrammaticImpression",
+        "/haymaker/q1/2?ph=00:00:01.000",
+        "/haymaker/mid/2?ph=00:00:02.000",
+        "/haymaker/q3/2?ph=00:00:03.000",
+        "/haymaker/done/2?ph=00:00:04.000",
+    ];
+    let mut at = 0;
+    for step in order {
+        let found = calls[at..]
+            .iter()
+            .position(|c| c.starts_with(step))
+            .unwrap_or_else(|| panic!("{step} not after #{at} in {calls:?}"));
+        at += found + 1;
+    }
+    assert!(q("/haymaker/imp/1") < q("/haymaker/imp/2"));
+    assert_eq!(calls.len(), 1 + order.len(), "{calls:?}");
+    // The timestamp is a filled-in ISO date, no macro left behind.
+    assert!(calls.iter().all(|c| !c.contains('[') && !c.contains("%5B")), "{calls:?}");
+    let imp = &calls[q("/haymaker/imp/1")];
+    assert!(imp.contains("ts=20") && imp.ends_with('Z'), "{imp}");
+    // What the site's player sent for the ask and the registration.
+    let ask_body = &seen.iter().find(|s| s.path.ends_with("getAdList")).unwrap().body;
+    assert_eq!(ask_body["currentTrackStationId"], "st9");
+    assert_eq!(ask_body["currentTrackToken"], "trk");
+    assert_eq!(ask_body["currentTrackSecondsPlayed"], 31);
+    assert_eq!(ask_body["userInitiatedTrackEnd"], true);
+    assert!(ask_body.get("uid").is_none());
+    let reg = &seen.iter().find(|s| s.path.ends_with("registerAudioProgrammaticImpression")).unwrap();
+    assert_eq!(reg.method, "POST");
+    assert_eq!(reg.header("X-AuthToken"), Some("tok"));
+    assert_eq!(
+        reg.body,
+        json!({ "adRequestMetaData": "meta-1", "adToken": "pod:1/2/1", "stationId": "st9", "httpReferrer": "" })
+    );
+    // Reports to the tracking hosts carry no Pandora login.
+    let imp_request = seen.iter().find(|s| s.path.starts_with("/haymaker/imp/1")).unwrap();
+    assert_eq!(imp_request.header("X-AuthToken"), None);
+    assert_eq!(imp_request.header("User-Agent"), Some("boxvibe-test"));
+}
+
+#[test]
+fn an_empty_or_odd_ad_answer_means_no_ads_and_a_refusal_is_an_error() {
+    use crate::ads::parse_ad_list;
+    let mut answers = vec![json!({ "ads": [] }).to_string(), "{}".into(), "[]".into()].into_iter();
+    let (base, _) = fake_pandora(Box::new(move |r| match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        "/api/v1/ad/getAdList" => match answers.next() {
+            Some(a) => (200, a),
+            None => (500, r#"{"errorCode":0,"errorString":"INTERNAL"}"#.into()),
+        },
+        _ => (200, "{}".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    let ask = AdAsk { station_id: "s".into(), track_token: "t".into(), seconds_played: 0, user_initiated: false };
+    for _ in 0..3 {
+        assert!(parse_ad_list(&c.ad_list(&ask).unwrap(), true).is_empty());
+    }
+    assert!(c.ad_list(&ask).is_err());
 }

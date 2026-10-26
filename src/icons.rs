@@ -1,14 +1,23 @@
-//! The three icon sets (`i` cycles them, `[ui] icons` remembers), like tubevibe's.
+//! The three icon sets (`i` cycles them, `[look] icons` remembers), like tubevibe's. The boxvibe logo ignores the choice: it is always the Nerd Font box.
 
 use crate::config::IconSet;
 
+/// The boxvibe logo (the Nerd Font box): the same in every icon set, so the
+/// menu's frame, About and the boot screen always look alike.
+pub const LOGO: &str = "\u{f1b2}";
+
 pub struct Icons {
-    pub logo: &'static str,
     pub station: &'static str,
+    /// The Genres page.
+    pub genre: &'static str,
     pub shuffle: &'static str,
     pub shared: &'static str,
     /// A favorite station.
     pub favorite: &'static str,
+    /// Right after the star of a Pandora genre station (one you can't rename): the boxvibe logo.
+    pub genre_station: &'static str,
+    /// Right after the star of a station you made yourself: a little person.
+    pub own_station: &'static str,
     pub play: &'static str,
     pub pause: &'static str,
     pub skip: &'static str,
@@ -16,7 +25,6 @@ pub struct Icons {
     pub down: &'static str,
     /// Neither thumb.
     pub unrated: &'static str,
-    pub title: &'static str,
     pub volume: &'static str,
     pub muted: &'static str,
     pub sleep: &'static str,
@@ -28,15 +36,17 @@ pub struct Icons {
     pub update: &'static str,
     pub ok: &'static str,
     /// One per [`crate::app::Setting::ALL`] row.
-    pub setting: [&'static str; 18],
+    pub setting: [&'static str; 22],
 }
 
 const EMOJI: Icons = Icons {
-    logo: "📦",
     station: "📻",
+    genre: "🎼",
     shuffle: "🔀",
     shared: "👥",
     favorite: "⭐",
+    genre_station: LOGO,
+    own_station: "👤",
     // One cell each, like tubevibe: emoji play/pause signs differ per terminal.
     play: "▶",
     pause: "‖",
@@ -44,7 +54,6 @@ const EMOJI: Icons = Icons {
     up: "👍",
     down: "👎",
     unrated: "·",
-    title: "🎵",
     volume: "🔊",
     muted: "🔇",
     sleep: "😴",
@@ -56,23 +65,25 @@ const EMOJI: Icons = Icons {
     update: "⬆",
     ok: "✅",
     setting: [
-        "🆕", "📝", "📌", "👤", "🔑", "🔓", "🚪", "🎧", "🔊", "🎶", "🔔", "🎨", "😀", "🔲", "📐", "💿", "👾", "🌈",
+        "👤", "🔑", "🔓", "🚪", "🆕", "💬", "📝", "📌", "🎧", "🔊", "🎶", "🔔", "📢", "🎨", "😀", "🔲", "📐", "💿",
+        "👾", "🌈", "✨", "🚀",
     ],
 };
 
 const NERD: Icons = Icons {
-    logo: "\u{f1b2}",
     station: "\u{f0439}",
+    genre: "\u{f001}",
     shuffle: "\u{f074}",
     shared: "\u{f0c0}",
     favorite: "\u{f005}",
+    genre_station: LOGO,
+    own_station: "\u{f007}",
     play: "\u{f04b}",
     pause: "\u{f04c}",
     skip: "\u{f051}",
     up: "\u{f164}",
     down: "\u{f165}",
     unrated: "\u{f087}",
-    title: "\u{f001}",
     volume: "\u{f028}",
     muted: "\u{f026}",
     sleep: "\u{f186}",
@@ -84,24 +95,27 @@ const NERD: Icons = Icons {
     update: "\u{f0aa}",
     ok: "\u{f058}",
     setting: [
-        "\u{f0aa}", "\u{f044}", "\u{f0c9}", "\u{f007}", "\u{f084}", "\u{f09c}", "\u{f08b}", "\u{f025}", "\u{f028}",
-        "\u{f04b}", "\u{f0f3}", "\u{f1fc}", "\u{f118}", "\u{f0c8}", "\u{f07e}", "\u{f03e}", "\u{f00a}", "\u{f53f}",
+        "\u{f007}", "\u{f084}", "\u{f09c}", "\u{f08b}", "\u{f0aa}", "\u{f075}", "\u{f044}", "\u{f0c9}", "\u{f025}",
+        "\u{f028}", "\u{f04b}", "\u{f0f3}", "\u{f0a1}", "\u{f1fc}", "\u{f118}", "\u{f0c8}", "\u{f07e}", "\u{f03e}",
+        "\u{f00a}", "\u{f53f}", "\u{f0d0}", "\u{f135}",
     ],
 };
 
 const UNICODE: Icons = Icons {
-    logo: "▣",
     station: "◉",
+    genre: "♬",
     shuffle: "⇄",
     shared: "⚇",
     favorite: "★",
+    // The logo is the Nerd Font box in every set; the person is a plain smiley.
+    genre_station: LOGO,
+    own_station: "☺",
     play: "▶",
     pause: "‖",
     skip: "»",
     up: "▲",
     down: "▼",
     unrated: "·",
-    title: "♪",
     volume: "◖",
     muted: "✕",
     sleep: "☾",
@@ -112,7 +126,9 @@ const UNICODE: Icons = Icons {
     quit: "⏻",
     update: "↑",
     ok: "✔",
-    setting: ["↑", "✎", "☰", "@", "*", "→", "⏻", "♫", "◖", "▶", "♪", "◐", "☺", "▢", "↔", "▦", "▩", "◑"],
+    setting: [
+        "@", "*", "→", "⏻", "↑", "!", "✎", "☰", "♫", "◖", "▶", "♪", "♡", "◐", "☺", "▢", "↔", "▦", "▩", "◑", "✦", "◈",
+    ],
 };
 
 pub fn icons(set: IconSet) -> &'static Icons {

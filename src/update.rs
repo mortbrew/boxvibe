@@ -1,5 +1,5 @@
 //! Is there a newer release? Like tubevibe: asks GitHub each time the app
-//! opens (in the background, `[ui] check_updates`) and, when there is one,
+//! opens (in the background, `[boxvibe] look_for_new_versions_on_startup`) and, when there is one,
 //! says how to get it on this machine. Where the release archive fits and the
 //! program's folder is writable, About's Update Now button downloads it and
 //! puts the new program in place of the running one ([`install`]).
@@ -50,7 +50,7 @@ impl Replace {
             Self::Ready(_) => None,
             Self::FromSource => Some("Built from source: run git pull && cargo build --release"),
             Self::Cargo => Some("Installed with cargo install: reinstall it the same way"),
-            Self::Package => Some("Installed from a package: update the package"),
+            Self::Package => Some("Installed through a package manager: update it there, not from GitHub"),
             Self::ReadOnly => Some("boxvibe's folder isn't writable"),
             Self::NoAsset => Some("No download for this system"),
         }
@@ -92,7 +92,8 @@ pub fn check() -> Checked {
     let Ok(Some((tag, assets))) = fetch_latest() else { return Checked::Unknown };
     let current = current_version();
     let exe = running_exe();
-    match update_for(&current, &tag, &assets, &exe.display().to_string(), OS, ARCH) {
+    let exe_path = exe.display().to_string();
+    match update_for(&current, &tag, &assets, &exe_path, Packaged::detect(&exe_path), OS, ARCH) {
         Some(mut update) => {
             if matches!(update.replace, Replace::Ready(_)) && !exe.parent().is_some_and(writable) {
                 update.replace = Replace::ReadOnly;
@@ -192,12 +193,59 @@ pub fn is_package(exe: &str) -> bool {
     MANAGED.iter().any(|dir| exe.starts_with(dir))
 }
 
-pub fn replace_for(exe: &str, os: &str, arch: &str, assets: &[String], tag: &str) -> Replace {
+/// How a package manager owns this copy of boxvibe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Packaged {
+    /// Not from a package: the tarball, cargo or a checkout.
+    No,
+    /// pacman owns the file (an AUR or Arch package).
+    Pacman,
+    /// Some other package manager's folder (`/usr/bin`, the Nix store…).
+    Other,
+}
+
+impl Packaged {
+    /// Asks the system: `pacman -Qo <exe>` succeeds when pacman owns the
+    /// file; failing that, a path a package manager uses. Any trouble
+    /// running pacman (not installed, no permission) counts as "no".
+    pub fn detect(exe: &str) -> Self {
+        if pacman_owns(exe) {
+            Self::Pacman
+        } else if is_package(exe) {
+            Self::Other
+        } else {
+            Self::No
+        }
+    }
+
+    /// What to tell the user to run instead of the download.
+    fn advice(self) -> Option<&'static str> {
+        match self {
+            Self::No => None,
+            Self::Pacman => Some("sudo pacman -Syu · or your AUR helper (for example: yay -Syu)"),
+            Self::Other => Some("Use the package manager you installed it with"),
+        }
+    }
+}
+
+/// `pacman -Qo <exe>`: true only when it runs and says pacman owns the file.
+fn pacman_owns(exe: &str) -> bool {
+    use std::process::{Command, Stdio};
+    Command::new("pacman")
+        .args(["-Qo", "--", exe])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+pub fn replace_for(exe: &str, packaged: Packaged, os: &str, arch: &str, assets: &[String], tag: &str) -> Replace {
     if is_dev_build(exe) {
         Replace::FromSource
     } else if from_cargo(exe) {
         Replace::Cargo
-    } else if is_package(exe) {
+    } else if packaged != Packaged::No {
         Replace::Package
     } else {
         match tarball(os, arch).filter(|name| assets.iter().any(|a| a == name)) {
@@ -208,13 +256,23 @@ pub fn replace_for(exe: &str, os: &str, arch: &str, assets: &[String], tag: &str
 }
 
 /// The update for a machine running `current` from `exe`, when `tag` is newer.
-pub fn update_for(current: &str, tag: &str, assets: &[String], exe: &str, os: &str, arch: &str) -> Option<Update> {
+pub fn update_for(
+    current: &str,
+    tag: &str,
+    assets: &[String],
+    exe: &str,
+    packaged: Packaged,
+    os: &str,
+    arch: &str,
+) -> Option<Update> {
     if version(tag)? <= version(current)? {
         return None;
     }
     let cargo = format!("cargo install --locked --git {REPO} --tag {tag}");
     let checkout = exe.strip_suffix("/target/release/boxvibe");
-    let how = if from_cargo(exe) {
+    let how = if let Some(advice) = packaged.advice().filter(|_| !is_dev_build(exe) && !from_cargo(exe)) {
+        advice.to_owned()
+    } else if from_cargo(exe) {
         cargo
     } else if let Some(dir) = checkout {
         format!("cd {dir} && git pull && git checkout {tag} && cargo build --release")
@@ -228,7 +286,7 @@ pub fn update_for(current: &str, tag: &str, assets: &[String], exe: &str, os: &s
             None => cargo,
         }
     };
-    let replace = replace_for(exe, os, arch, assets, tag);
+    let replace = replace_for(exe, packaged, os, arch, assets, tag);
     Some(Update { version: tag.trim_start_matches('v').to_owned(), how, replace })
 }
 
@@ -335,16 +393,16 @@ mod tests {
     #[test]
     fn only_newer_versions_count() {
         let exe = "/home/t/.local/bin/boxvibe";
-        assert!(update_for("0.1.0", "v0.2.0", &assets(), exe, "linux", "x86_64").is_some());
-        assert!(update_for("0.2.0", "v0.2.0", &assets(), exe, "linux", "x86_64").is_none());
-        assert!(update_for("0.3.0", "v0.2.0", &assets(), exe, "linux", "x86_64").is_none());
-        assert!(update_for("0.1.0", "nightly", &assets(), exe, "linux", "x86_64").is_none());
+        assert!(update_for("0.1.0", "v0.2.0", &assets(), exe, Packaged::No, "linux", "x86_64").is_some());
+        assert!(update_for("0.2.0", "v0.2.0", &assets(), exe, Packaged::No, "linux", "x86_64").is_none());
+        assert!(update_for("0.3.0", "v0.2.0", &assets(), exe, Packaged::No, "linux", "x86_64").is_none());
+        assert!(update_for("0.1.0", "nightly", &assets(), exe, Packaged::No, "linux", "x86_64").is_none());
         assert_eq!(version("v1.2"), Some((1, 2, 0)));
     }
 
     #[test]
     fn the_update_matches_how_it_was_installed() {
-        let u = |exe: &str| update_for("0.1.0", "v0.2.0", &assets(), exe, "linux", "x86_64").unwrap();
+        let u = |exe: &str| update_for("0.1.0", "v0.2.0", &assets(), exe, Packaged::No, "linux", "x86_64").unwrap();
         let local = u("/home/t/.local/bin/boxvibe");
         assert_eq!(local.replace, Replace::Ready(format!("{DOWNLOAD}/v0.2.0/boxvibe-x86_64-linux.tar.gz")));
         assert!(local.how.contains("tar xz -C /home/t/.local/bin"), "{}", local.how);
@@ -352,10 +410,41 @@ mod tests {
         assert_eq!(built.replace, Replace::FromSource);
         assert_eq!(built.how, "cd /home/t/src/boxvibe && git pull && git checkout v0.2.0 && cargo build --release");
         assert_eq!(u("/home/t/.cargo/bin/boxvibe").replace, Replace::Cargo);
-        assert_eq!(u("/usr/bin/boxvibe").replace, Replace::Package);
-        let arm = update_for("0.1.0", "v0.2.0", &assets(), "/opt/b/boxvibe", "linux", "riscv64").unwrap();
+        // A path a package manager uses, by path alone (no pacman asked in a test).
+        assert!(is_package("/usr/bin/boxvibe") && !is_package("/usr/local/bin/boxvibe"));
+        let arm = update_for("0.1.0", "v0.2.0", &assets(), "/opt/b/boxvibe", Packaged::No, "linux", "riscv64").unwrap();
         assert_eq!(arm.replace, Replace::NoAsset);
         assert!(arm.how.starts_with("cargo install"));
+    }
+
+    #[test]
+    fn a_packaged_install_still_hears_of_the_update_but_is_sent_to_its_package_manager() {
+        let u = |exe: &str, packaged| update_for("0.3.0", "v0.4.0", &assets(), exe, packaged, "linux", "x86_64");
+        // pacman owns it: the update is announced, the download is not offered.
+        let arch = u("/usr/bin/boxvibe", Packaged::Pacman).expect("still says an update exists");
+        assert_eq!(arch.version, "0.4.0");
+        assert_eq!(arch.replace, Replace::Package);
+        assert!(arch.how.contains("pacman") && arch.how.contains("AUR"), "{}", arch.how);
+        assert!(!arch.how.contains("curl"), "no GitHub download for a package: {}", arch.how);
+        assert!(Replace::Package.why_not().is_some_and(|w| w.contains("package manager")));
+        // Even an exe path outside the usual folders is a package when pacman owns it.
+        assert_eq!(u("/opt/boxvibe/boxvibe", Packaged::Pacman).unwrap().replace, Replace::Package);
+        // Another package manager: the same, with generic advice.
+        let nix = u("/nix/store/abc-boxvibe/bin/boxvibe", Packaged::Other).unwrap();
+        assert_eq!(nix.replace, Replace::Package);
+        assert!(nix.how.contains("package manager"), "{}", nix.how);
+        // A manual install behaves as before.
+        let manual = u("/home/t/.local/bin/boxvibe", Packaged::No).unwrap();
+        assert!(matches!(manual.replace, Replace::Ready(_)));
+        assert!(manual.how.contains("curl"), "{}", manual.how);
+        // A build from source or cargo install is never a package, even if pacman were asked.
+        assert_eq!(u("/home/t/src/boxvibe/target/release/boxvibe", Packaged::No).unwrap().replace, Replace::FromSource);
+    }
+
+    #[test]
+    fn detect_is_no_for_a_path_no_package_manager_owns() {
+        let exe = std::env::temp_dir().join("boxvibe-not-packaged").join("boxvibe");
+        assert_eq!(Packaged::detect(&exe.display().to_string()), Packaged::No);
     }
 
     #[test]

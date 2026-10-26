@@ -523,8 +523,9 @@ impl ConfigWarning {
     }
 }
 
-/// Keys an earlier boxvibe wrote that no longer do anything; a config with
-/// them still loads without a warning. `ui.now_playing_size` went when Up Next
+/// REMOVE AT 1.0. Keys an earlier boxvibe wrote that no longer do anything; a
+/// config with them still loads without a warning, and saving deletes them
+/// (and the old table, once it is empty). `ui.now_playing_size` went when Up Next
 /// and History became fixed at 10 songs (Now Playing takes the rest).
 /// `boxvibe.dependency_check` was a 0.4 beta setting for a startup check that
 /// is now always the same list, with no switch.
@@ -860,6 +861,20 @@ fn migrate(doc: &mut toml_edit::DocumentMut) {
         let mut value = toml_edit::Value::from("picture");
         *value.decor_mut() = old.decor().clone();
         *art = toml_edit::Item::Value(value);
+    }
+    // Retired keys do nothing any more: they go from wherever they are, so an
+    // old table they were the last in can go too. Keys nobody knows stay.
+    for path in RETIRED_KEYS {
+        if let Some((table, key)) = path.split_once('.')
+            && let Some(t) = doc.get_mut(table).and_then(toml_edit::Item::as_table_mut)
+        {
+            t.remove(key);
+        }
+    }
+    if let Some(t) = doc.get_mut("pandora").and_then(toml_edit::Item::as_table_mut) {
+        for key in OLD_PANDORA_KEYS {
+            t.remove(key);
+        }
     }
     // An old table with nothing left goes; a comment above it (often the
     // file's first line) is kept, above the table that is first now.
@@ -1204,6 +1219,47 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn a_file_with_only_the_retired_now_playing_size_loads_and_loses_the_ui_table_on_save() {
+        let path = temp_dir("retired-ui").join("config.toml");
+        std::fs::write(&path, "[ui]\nnow_playing_size = 23\n\n[account]\nemail_or_username = \"me@x.io\"\n").unwrap();
+        let (c, w) = Config::load(&path);
+        assert!(w.is_empty(), "no warning: {w:?}");
+        assert_eq!(c.ui.menu_width, Config::default().ui.menu_width, "it is not the menu width");
+        assert_eq!(c.pandora.username, "me@x.io");
+        set_values(&path, &[("playback", "volume", 60_i64.into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("[ui]") && !text.contains("now_playing_size"), "{text}");
+        assert!(text.contains("email_or_username = \"me@x.io\"") && text.contains("volume = 60"), "{text}");
+        assert_eq!(Config::load(&path).0.ui.menu_width, Config::default().ui.menu_width);
+    }
+
+    #[test]
+    fn retired_keys_go_on_save_but_unknown_keys_and_their_tables_stay() {
+        let path = temp_dir("retired-mixed").join("config.toml");
+        std::fs::write(
+            &path,
+            "# top\n[ui]\n# old\nnow_playing_size = \"big\"\nmy_note = 1\ntheme = \"nord\"\n\n[boxvibe]\ndependency_check = false\n\
+             mine = 2\n\n[pandora]\npartner = \"x\"\nrpc_host = \"y\"\n\n[player]\nvolume = 30\n\n[extra]\nkeep = true\n",
+        )
+        .unwrap();
+        set_values(&path, &[("look", "icons", "emoji".into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        for gone in ["now_playing_size", "dependency_check", "partner", "rpc_host", "[pandora]", "[player]"] {
+            assert!(!text.contains(gone), "{gone} left in\n{text}");
+        }
+        for kept in
+            ["# top", "[ui]\n", "my_note = 1", "mine = 2", "[extra]\nkeep = true", "theme = \"nord\"", "volume = 30"]
+        {
+            assert!(text.contains(kept) || text.contains(&kept.replace("[ui]\n", "[ui]")), "{kept} lost from\n{text}");
+        }
+        let doc: toml_edit::DocumentMut = text.parse().unwrap();
+        assert_eq!(doc["ui"].as_table().unwrap().len(), 1, "[ui] keeps only my_note: {text}");
+        // Saving again changes nothing more.
+        set_values(&path, &[("look", "icons", "emoji".into())]).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
     }
 
     #[test]

@@ -89,7 +89,8 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
         }
         // The station editor (`e` on a station): seeds, the add box, the
         // remove question, the thumbs history and its take-back question.
-        "seeds" | "seeds-add" | "seeds-remove" | "thumbs" | "thumbs-delete" => editor_screen(&mut app, screen),
+        "seeds" | "seeds-add" | "seeds-remove" | "thumbs" | "thumbs-up" | "thumbs-delete" | "thumbs-down"
+        | "thumbs-down-delete" => editor_screen(&mut app, screen),
         // An audio ad playing (the demo serves a pod on every third question),
         // a few seconds in.
         "ad" => {
@@ -134,11 +135,16 @@ fn editor_screen(app: &mut App, screen: &str) {
     match screen {
         "seeds-add" => press(app, KeyCode::Char('a')),
         "seeds-remove" => press(app, KeyCode::Char('x')),
-        "thumbs" | "thumbs-delete" => {
+        // The Thumbs Up tab (`thumbs` is the same screen) and the Thumbs Down tab,
+        // each also with the take-back question open.
+        "thumbs" | "thumbs-up" | "thumbs-delete" | "thumbs-down" | "thumbs-down-delete" => {
             press(app, KeyCode::Tab);
+            if screen.starts_with("thumbs-down") {
+                press(app, KeyCode::Tab);
+            }
             press(app, KeyCode::Char('j'));
             press(app, KeyCode::Char('j'));
-            if screen == "thumbs-delete" {
+            if screen.ends_with("delete") {
                 press(app, KeyCode::Char('x'));
             }
         }

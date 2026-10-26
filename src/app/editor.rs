@@ -1,17 +1,45 @@
 //! The station editor (`e`): the seeds a station is built from (add with
 //! `a`, remove with `x`) and the thumbs you gave on it (take one back with
-//! `x`). It is a popup with two tabs, Seeds and Thumbs. Everything it shows
+//! `x`). It is a popup with three tabs: Seeds, Thumbs Up and Thumbs Down. Everything it shows
 //! comes from Pandora; every change asks first and refreshes the list from
 //! Pandora when it is done.
 
 use super::*;
 use crate::pandora::{Feedback, Seed};
 
-/// The editor's tabs (Tab / Shift+Tab or ← / → switch).
+/// The editor's tabs (Tab / Shift+Tab or → / ← switch, in this order, round).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorTab {
     Seeds,
-    Thumbs,
+    ThumbsUp,
+    ThumbsDown,
+}
+
+impl EditorTab {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Seeds => Self::ThumbsUp,
+            Self::ThumbsUp => Self::ThumbsDown,
+            Self::ThumbsDown => Self::Seeds,
+        }
+    }
+
+    pub fn previous(self) -> Self {
+        match self {
+            Self::Seeds => Self::ThumbsDown,
+            Self::ThumbsUp => Self::Seeds,
+            Self::ThumbsDown => Self::ThumbsUp,
+        }
+    }
+
+    /// The thumbs list this tab shows: up (`true`) or down; none for Seeds.
+    pub fn thumbs(self) -> Option<bool> {
+        match self {
+            Self::Seeds => None,
+            Self::ThumbsUp => Some(true),
+            Self::ThumbsDown => Some(false),
+        }
+    }
 }
 
 /// Something Pandora is giving us.
@@ -81,8 +109,6 @@ pub struct Editor {
     /// The counts Pandora gives for the station (the list totals say it too once loaded).
     pub thumbs_up: Option<u32>,
     pub thumbs_down: Option<u32>,
-    /// Which list the Thumbs tab shows: thumbs up (`true`) or down.
-    pub positive: bool,
     pub up: ThumbList,
     pub down: ThumbList,
     pub add: Option<SeedAdd>,
@@ -167,7 +193,6 @@ impl App {
             seed_cursor: 0,
             thumbs_up: None,
             thumbs_down: None,
-            positive: true,
             up: ThumbList::new(),
             down: ThumbList::new(),
             add: None,
@@ -196,11 +221,12 @@ impl App {
         self.backend.send(Request::Feedback { station_id: ed.station.id.clone(), positive, start });
     }
 
-    /// The Thumbs tab was opened (or its list switched): the first page, once.
+    /// A thumbs tab was opened: the first page of its list, once.
     fn ensure_thumbs(&mut self) {
         let Some(ed) = &self.editor else { return };
-        if ed.list(ed.positive).state == FeedState::Idle {
-            let positive = ed.positive;
+        if let Some(positive) = ed.tab.thumbs()
+            && ed.list(positive).state == FeedState::Idle
+        {
             self.ask_thumbs(positive, 0);
         }
     }
@@ -224,21 +250,19 @@ impl App {
                 self.status = format!("Closed the editor for “{}”", ed.station.name);
                 self.editor = None;
             }
-            KeyCode::Tab | KeyCode::Right | KeyCode::BackTab | KeyCode::Left => {
-                ed.tab = if ed.tab == EditorTab::Seeds { EditorTab::Thumbs } else { EditorTab::Seeds };
-                if ed.tab == EditorTab::Thumbs {
-                    self.ensure_thumbs();
-                }
+            KeyCode::Tab | KeyCode::Right => {
+                ed.tab = ed.tab.next();
+                self.ensure_thumbs();
+            }
+            KeyCode::BackTab | KeyCode::Left => {
+                ed.tab = ed.tab.previous();
+                self.ensure_thumbs();
             }
             KeyCode::Char('j') | KeyCode::Down => self.editor_move(1),
             KeyCode::Char('k') | KeyCode::Up => self.editor_move(-1),
             KeyCode::Char('a') if ed.tab == EditorTab::Seeds => self.open_seed_add(),
             KeyCode::Char('x') if ed.tab == EditorTab::Seeds => self.ask_remove_seed(),
             KeyCode::Char('x') => self.ask_delete_thumb(),
-            KeyCode::Char('t') if ed.tab == EditorTab::Thumbs => {
-                ed.positive = !ed.positive;
-                self.ensure_thumbs();
-            }
             _ => {}
         }
     }
@@ -250,8 +274,8 @@ impl App {
                 let len = ed.seed_list().len();
                 ed.seed_cursor = step(ed.seed_cursor, len, by);
             }
-            EditorTab::Thumbs => {
-                let positive = ed.positive;
+            EditorTab::ThumbsUp | EditorTab::ThumbsDown => {
+                let positive = ed.tab == EditorTab::ThumbsUp;
                 let list = ed.list_mut(positive);
                 let len = list.items.len();
                 let last = len.saturating_sub(1);
@@ -387,7 +411,8 @@ impl App {
 
     fn ask_delete_thumb(&mut self) {
         let Some(ed) = self.editor.as_mut() else { return };
-        let list = ed.list(ed.positive);
+        let Some(positive) = ed.tab.thumbs() else { return };
+        let list = ed.list(positive);
         match list.items.get(list.cursor.min(list.items.len().saturating_sub(1))).cloned() {
             Some(f) => ed.confirm = Some(EditorConfirm::DeleteThumb(f)),
             None => self.status = "No thumb to take back".into(),
@@ -604,16 +629,32 @@ mod tests {
     }
 
     #[test]
-    fn esc_closes_and_tab_and_arrows_switch_the_tabs() {
+    fn esc_closes_and_tab_and_arrows_switch_the_three_tabs_round() {
         let mut app = editing();
+        let tab = |app: &App| app.editor.as_ref().unwrap().tab;
+        // Tab: Seeds → Thumbs Up → Thumbs Down → Seeds.
         press(&mut app, KeyCode::Tab);
-        assert_eq!(app.editor.as_ref().unwrap().tab, EditorTab::Thumbs);
+        assert_eq!(tab(&app), EditorTab::ThumbsUp);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(tab(&app), EditorTab::ThumbsDown);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(tab(&app), EditorTab::Seeds);
+        // Shift+Tab goes the other way round.
         press(&mut app, KeyCode::BackTab);
-        assert_eq!(app.editor.as_ref().unwrap().tab, EditorTab::Seeds);
+        assert_eq!(tab(&app), EditorTab::ThumbsDown);
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(tab(&app), EditorTab::ThumbsUp);
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(tab(&app), EditorTab::Seeds);
+        // → is Tab and ← is Shift+Tab.
         press(&mut app, KeyCode::Right);
-        assert_eq!(app.editor.as_ref().unwrap().tab, EditorTab::Thumbs);
+        assert_eq!(tab(&app), EditorTab::ThumbsUp);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(tab(&app), EditorTab::ThumbsDown);
         press(&mut app, KeyCode::Left);
-        assert_eq!(app.editor.as_ref().unwrap().tab, EditorTab::Seeds);
+        assert_eq!(tab(&app), EditorTab::ThumbsUp);
+        press(&mut app, KeyCode::Left);
+        assert_eq!(tab(&app), EditorTab::Seeds);
         // The keys of the page behind it do nothing while it is open.
         chr(&mut app, 'N');
         assert!(app.editor.is_some());
@@ -700,12 +741,15 @@ mod tests {
     }
 
     #[test]
-    fn the_thumbs_tab_pages_through_the_list_and_t_switches_to_thumbs_down() {
+    fn each_thumbs_tab_loads_its_own_list_when_first_opened_and_pages_through_it() {
         let mut app = editing();
         press(&mut app, KeyCode::Tab);
         let ed = app.editor.as_ref().unwrap();
         assert_eq!((ed.up.items.len(), ed.up.total), (FEEDBACK_PAGE, 37));
-        assert!(ed.positive && ed.down.state == FeedState::Idle, "the other list waits until asked for");
+        assert!(
+            ed.tab == EditorTab::ThumbsUp && ed.down.state == FeedState::Idle,
+            "the other list waits until asked for"
+        );
         // Walking down past the end of the loaded page fetches the next one.
         for _ in 0..FEEDBACK_PAGE + 2 {
             chr(&mut app, 'j');
@@ -718,13 +762,32 @@ mod tests {
             chr(&mut app, 'j');
         }
         assert_eq!(app.editor.as_ref().unwrap().up.items.len(), 37);
+        // The next tab is the thumbs down list, loaded now, not before.
+        press(&mut app, KeyCode::Tab);
+        app.settle(WAIT);
+        let ed = app.editor.as_ref().unwrap();
+        assert_eq!(ed.tab, EditorTab::ThumbsDown);
+        assert_eq!(ed.down.total, ed.down.items.len());
+        assert!(!ed.down.items.is_empty() && ed.down.items.iter().all(|f| !f.positive));
+        // Back on the thumbs up tab, the list is kept (not asked for again).
+        press(&mut app, KeyCode::BackTab);
+        let ed = app.editor.as_ref().unwrap();
+        assert_eq!((ed.tab, ed.up.items.len()), (EditorTab::ThumbsUp, 37));
+    }
+
+    #[test]
+    fn t_no_longer_flips_anything() {
+        let mut app = editing();
+        chr(&mut app, 't');
+        assert_eq!(app.editor.as_ref().unwrap().tab, EditorTab::Seeds);
+        press(&mut app, KeyCode::Tab);
         chr(&mut app, 't');
         let ed = app.editor.as_ref().unwrap();
-        assert!(!ed.positive);
-        assert_eq!(ed.down.total, ed.down.items.len());
-        assert!(ed.down.items.iter().all(|f| !f.positive));
+        assert_eq!(ed.tab, EditorTab::ThumbsUp);
+        assert_eq!(ed.down.state, FeedState::Idle, "t did not open the thumbs down list");
+        press(&mut app, KeyCode::Tab);
         chr(&mut app, 't');
-        assert!(app.editor.as_ref().unwrap().positive);
+        assert_eq!(app.editor.as_ref().unwrap().tab, EditorTab::ThumbsDown);
     }
 
     #[test]
@@ -746,12 +809,22 @@ mod tests {
         assert_eq!(ed.up.total, 36);
         assert!(!ed.up.items.iter().any(|f| f.id == gone.id));
         assert_eq!(ed.thumbs_up, Some(36), "the count in the tab comes from the refreshed details");
-        // The thumbs-down question says the song may play again.
-        chr(&mut app, 't');
+        // On the thumbs down tab the question says the song may play again; y takes it back.
+        press(&mut app, KeyCode::Tab);
+        app.settle(WAIT);
+        let before = app.editor.as_ref().unwrap().down.total;
+        assert!(before > 0);
+        let gone = app.editor.as_ref().unwrap().down.items[0].clone();
         chr(&mut app, 'x');
         let ed = app.editor.as_ref().unwrap();
         let question = ed.confirm.as_ref().unwrap().question(&ed.station.name);
         assert!(question.contains("thumbs down") && question.contains("can play again"), "{question}");
+        chr(&mut app, 'y');
+        app.settle(WAIT);
+        let ed = app.editor.as_ref().unwrap();
+        assert_eq!(ed.down.total, before - 1);
+        assert!(!ed.down.items.iter().any(|f| f.id == gone.id));
+        assert_eq!(ed.up.total, 36, "the other list is untouched");
     }
 
     #[test]

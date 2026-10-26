@@ -344,6 +344,10 @@ bound twice.
 - The popup wraps to the window and, on a short or narrow terminal, drops its blank rows and its first paragraph before the risk notice, which is never cut while there is room for it. The key bar shows "Enter Turn Off Anyway · Esc Keep On".
 - Snapshot: `--screen good-vibes-off`. Tests cover the popup, Esc, Enter + save, no popup when turning it on, and small terminals.
 
+#### The station editor: Thumbs Up and Thumbs Down are their own tabs
+
+- The `e` editor now has three tabs instead of two: **Seeds (n)**, **👍 Thumbs Up n** and **👎 Thumbs Down n** (the icons come from your icon set; on a narrow terminal the titles shrink to the icon and the count). `Tab` / `Shift+Tab` (or `←` `→`) go round Seeds → Thumbs Up → Thumbs Down → Seeds. The `t` key that flipped between up and down is gone, along with its hints. Each list keeps its column heads, paging and `x` to take a thumb back (it asks first), and each loads the first time you open its tab. The key bar, Help and README say the same, and the `thumbs` snapshot screen still works (it shows Thumbs Up) beside the new `thumbs-up`, `thumbs-down` and `thumbs-down-delete`.
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

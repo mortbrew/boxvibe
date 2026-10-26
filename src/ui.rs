@@ -1151,14 +1151,14 @@ const EDITOR_SEEDS_INTRO: [&str; 2] = [
     "The station plays music like these artists, songs and genres.",
     "a adds one to steer it · x removes one to stop leaning that way",
 ];
-/// The Thumbs tab's column heads: the song and artist, and the day it was thumbed.
+/// The thumbs tabs' column heads: the song and artist, and the day it was thumbed.
 const EDITOR_THUMBS_SONG: &str = "Song · Artist";
 const EDITOR_THUMBS_DATE: &str = "Thumbed on";
 /// List-area rows (see `draw_editor`) from which the Seeds intro / Thumbs heads show.
 const EDITOR_INTRO_FROM: usize = 8;
 const EDITOR_HEADS_FROM: usize = 5;
 
-/// `e`: the station editor, a popup with the Seeds and Thumbs tabs.
+/// `e`: the station editor, a popup with the Seeds, Thumbs Up and Thumbs Down tabs.
 fn draw_editor(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, ed: &Editor) {
     let width = 76.min(screen.width.saturating_sub(2)).max(screen.width.min(24));
     let inner_w = usize::from(width.saturating_sub(2));
@@ -1172,12 +1172,31 @@ fn draw_editor(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, ed: &Ed
         _ => "Seeds".to_owned(),
     };
     let count = |positive: bool| ed.count(positive).map_or(String::new(), |n| format!(" {n}"));
-    let thumbs_label = format!("Thumbs {}{} {}{}", ic.up, count(true), ic.down, count(false));
-    let seeds_on = ed.tab == EditorTab::Seeds;
+    // Three tabs: Seeds, then the thumbs up and the thumbs down lists, each with its
+    // icon and count. A narrow popup shortens the two thumbs titles to the icon and count.
+    let thumbs_titles = |long: bool| {
+        let name = |up: bool| match (long, up) {
+            (true, true) => " Thumbs Up",
+            (true, false) => " Thumbs Down",
+            (false, _) => "",
+        };
+        (format!("{}{}{}", ic.up, name(true), count(true)), format!("{}{}{}", ic.down, name(false), count(false)))
+    };
+    let mut titles = thumbs_titles(true);
+    if safe_width(&seeds_label) + safe_width(&titles.0) + safe_width(&titles.1) + 12 > inner_w {
+        titles = thumbs_titles(false);
+    }
     let mut lines = vec![
         Line::from(""),
-        Line::from(vec![Span::raw(" "), tab(seeds_label, seeds_on), Span::raw("  "), tab(thumbs_label, !seeds_on)])
-            .left_aligned(),
+        Line::from(vec![
+            Span::raw(" "),
+            tab(seeds_label, ed.tab == EditorTab::Seeds),
+            Span::raw("  "),
+            tab(titles.0, ed.tab == EditorTab::ThumbsUp),
+            Span::raw("  "),
+            tab(titles.1, ed.tab == EditorTab::ThumbsDown),
+        ])
+        .left_aligned(),
         Line::from(""),
     ];
     let row = |text: String, selected: bool| {
@@ -1195,8 +1214,8 @@ fn draw_editor(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, ed: &Ed
     };
     let mut footer = String::new();
     let hint;
-    if seeds_on {
-        hint = "a = add · x = remove · Tab = Thumbs · Esc = close";
+    if ed.tab == EditorTab::Seeds {
+        hint = "a = add · x = remove · Tab = Thumbs Up · Esc = close";
         // What a seed is, in two dim lines; a short screen goes without.
         let intro = rows_room >= EDITOR_INTRO_FROM;
         if intro {
@@ -1217,13 +1236,17 @@ fn draw_editor(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, ed: &Ed
             }
         }
     } else {
-        hint = "x = take back · t = up/down · Tab = Seeds · Esc = close";
-        let list = ed.list(ed.positive);
-        let arrow = if ed.positive { ic.up } else { ic.down };
+        let positive = ed.tab == EditorTab::ThumbsUp;
+        hint = if positive {
+            "x = take back · Tab = Thumbs Down · Esc = close"
+        } else {
+            "x = take back · Tab = Seeds · Esc = close"
+        };
+        let list = ed.list(positive);
+        let arrow = if positive { ic.up } else { ic.down };
         lines.push(note(format!(
-            "{arrow} {} · press t to see {}",
-            if ed.positive { "Songs you gave a thumbs up" } else { "Songs you gave a thumbs down" },
-            if ed.positive { "thumbs down" } else { "thumbs up" }
+            "{arrow} {}",
+            if positive { "Songs you gave a thumbs up" } else { "Songs you gave a thumbs down" }
         )));
         // Column heads over the rows: the song on the left, the day you thumbed it on the right.
         let heads = rows_room >= EDITOR_HEADS_FROM;
@@ -2076,12 +2099,16 @@ fn editor_key_caps(ed: &Editor) -> Vec<(&'static str, &'static str)> {
         keys.extend([("Esc", "Cancel"), ("Ctrl+c", "Quit")]);
         return keys;
     }
-    let mut keys = vec![("j/k ↑↓", "Move"), ("Tab", if ed.tab == EditorTab::Seeds { "Thumbs" } else { "Seeds" })];
+    // Tab goes round Seeds → Thumbs Up → Thumbs Down; the bar names where it goes next.
+    let next = match ed.tab {
+        EditorTab::Seeds => "Thumbs Up",
+        EditorTab::ThumbsUp => "Thumbs Down",
+        EditorTab::ThumbsDown => "Seeds",
+    };
+    let mut keys = vec![("j/k ↑↓", "Move"), ("Tab", next)];
     match ed.tab {
         EditorTab::Seeds => keys.extend([("a", "Add Seed"), ("x", "Remove")]),
-        EditorTab::Thumbs => {
-            keys.extend([("t", if ed.positive { "Show Down" } else { "Show Up" }), ("x", "Take Back")])
-        }
+        EditorTab::ThumbsUp | EditorTab::ThumbsDown => keys.push(("x", "Take Back")),
     }
     keys.push(("Esc", "Close"));
     keys
@@ -2147,9 +2174,12 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("r x", "rename / delete the selected station (x asks first; on Now Playing r and e use the playing one)"),
             ("a", "add a station: search artists and songs (Stations page)"),
             ("v", "details: a song, or a station's seeds and thumbs"),
-            ("e", "edit the station: Tab switches Seeds / Thumbs, Esc closes (removing asks first)"),
+            (
+                "e",
+                "edit the station: Tab / Shift+Tab switch Seeds / Thumbs Up / Thumbs Down, Esc closes (removing asks first)",
+            ),
             ("", "Seeds: the artists, songs and genres it plays music like; a adds one, x removes one (one stays)"),
-            ("", "Thumbs: songs you rated and the day you thumbed each; t switches up / down, x takes one back"),
+            ("", "Thumbs Up / Down: songs you rated and the day you thumbed each, one list each; x takes one back"),
             ("j k ↑ ↓", "move in the list"),
             ("Enter", "play the station · open Settings / About"),
         ],
@@ -2578,7 +2608,7 @@ mod tests {
         app.settle(std::time::Duration::from_millis(300));
         let lines = screen(&app, 120, 40).0;
         let text = lines.join("\n");
-        assert!(text.contains("Songs you gave a thumbs up · press t to see thumbs down"), "{text}");
+        assert!(text.contains("Songs you gave a thumbs up") && !text.contains("press t"), "{text}");
         let head = lines.iter().find(|l| l.contains(EDITOR_THUMBS_SONG)).expect("the header row");
         assert!(head.contains(EDITOR_THUMBS_DATE), "{head}");
         // The header's last cell is the same column as every date's last cell.
@@ -2594,12 +2624,64 @@ mod tests {
             assert_eq!(l[..at].chars().count() + 10, want, "date ends under the header: {l}");
         }
         // The thumbs-down side says so, and the header is dropped on a short screen.
-        app.on_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         app.settle(std::time::Duration::from_millis(300));
         let down = screen(&app, 120, 40).0.join("\n");
-        assert!(down.contains("Songs you gave a thumbs down · press t to see thumbs up"), "{down}");
+        assert!(down.contains("Songs you gave a thumbs down") && !down.contains("press t"), "{down}");
+        assert!(down.contains(EDITOR_THUMBS_SONG) && down.contains(EDITOR_THUMBS_DATE), "{down}");
         let short = screen(&app, 120, 16).0.join("\n");
         assert!(!short.contains(EDITOR_THUMBS_DATE) && short.contains("Songs you gave"), "{short}");
+    }
+
+    /// The editor's tab row and its key bar, as drawn.
+    fn editor_tab_row(app: &App, cols: u16, rows: u16) -> String {
+        let lines = screen(app, cols, rows).0;
+        let at = lines.iter().position(|l| l.contains("Edit station")).expect("the editor");
+        lines[at + 2].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn the_editor_has_three_tabs_with_the_thumb_icons_and_counts_in_their_titles() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let press = |app: &mut App, code| {
+            app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+            app.settle(std::time::Duration::from_millis(300));
+        };
+        let mut app = editor_demo();
+        let icons = crate::icons::icons(app.config.ui.icons);
+        let (up, down) = (icons.up, icons.down);
+        // Wide: names and counts (the counts are in before a tab is opened).
+        let ed = app.editor.as_ref().unwrap();
+        let (seeds, ups, downs) = (ed.seed_list().len(), ed.count(true).unwrap(), ed.count(false).unwrap());
+        let row = editor_tab_row(&app, 120, 40);
+        assert!(row.contains(&format!("Seeds ({seeds}) {up} Thumbs Up {ups} {down} Thumbs Down {downs}")), "{row}");
+        // Narrow: just the icon and the count, still three tabs.
+        let row = editor_tab_row(&app, 50, 30);
+        assert!(
+            row.contains(&format!("{up} {ups}")) && row.contains(&format!("{down} {downs}")) && !row.contains("Thumbs"),
+            "{row}"
+        );
+        // The hints name the tab Tab goes to, and `t` is gone from them.
+        let bar = key_bar_line(&app, 120);
+        assert!(bar.contains("Tab  Thumbs Up") && bar.contains("a  Add Seed"), "{bar}");
+        let text = screen(&app, 120, 40).0.join("\n");
+        assert!(text.contains("Tab = Thumbs Up") && !text.contains("t = up/down"), "{text}");
+        press(&mut app, KeyCode::Tab);
+        let bar = key_bar_line(&app, 120);
+        assert!(bar.contains("Tab  Thumbs Down") && bar.contains("x  Take Back"), "{bar}");
+        assert!(!bar.contains("Show Down") && !bar.contains("t  "), "{bar}");
+        let text = screen(&app, 120, 40).0.join("\n");
+        assert!(text.contains("x = take back · Tab = Thumbs Down") && !text.contains("t = up/down"), "{text}");
+        press(&mut app, KeyCode::Tab);
+        let bar = key_bar_line(&app, 120);
+        assert!(bar.contains("Tab  Seeds") && bar.contains("x  Take Back"), "{bar}");
+        let text = screen(&app, 120, 40).0.join("\n");
+        assert!(text.contains("x = take back · Tab = Seeds"), "{text}");
+        // Once a list is loaded its total is the count in the title.
+        let row = editor_tab_row(&app, 120, 40);
+        assert!(row.contains(&format!("{down} Thumbs Down {downs}")), "{row}");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.editor.as_ref().unwrap().tab, crate::app::EditorTab::Seeds);
     }
 
     #[test]
@@ -2609,7 +2691,7 @@ mod tests {
         app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         app.settle(std::time::Duration::from_millis(300));
         let ed = app.editor.as_mut().unwrap();
-        let list = if ed.positive { &mut ed.up } else { &mut ed.down };
+        let list = &mut ed.up;
         list.items[0].date = String::new();
         list.items[1].date = "not a date".to_owned();
         let text = screen(&app, 120, 40).0.join("\n");
@@ -2623,7 +2705,11 @@ mod tests {
             app.help = true;
             let text = screen(&app, cols, rows).0.join("\n");
             assert!(text.contains("Seeds: the artists, songs and genres it plays music like"), "{cols}x{rows}\n{text}");
-            assert!(text.contains("Thumbs: songs you rated and the day you thumbed each"), "{cols}x{rows}\n{text}");
+            assert!(
+                text.contains("Thumbs Up / Down: songs you rated and the day you thumbed each"),
+                "{cols}x{rows}\n{text}"
+            );
+            assert!(!text.contains("t switches"), "{cols}x{rows}\n{text}");
         }
     }
 

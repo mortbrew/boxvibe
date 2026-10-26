@@ -261,8 +261,8 @@ A cover that fails to download is tried again after 2, 6 and 15 seconds, and aga
 Covers download in the background and are kept in memory and in
 `~/.cache/boxvibe/art` (`$XDG_CACHE_HOME`), at most 50 MB, oldest dropped
 first. While a cover loads the box says "Loading cover art…"; when a song has
-none, or with Album art Off, it says "No cover art" in the space the cover would
-fill.
+none (or its cover could not be downloaded) it says "No cover art", and with Album
+art Off (Shift+`C`) it says "Cover art off", in the space the cover would fill.
 
 ## Updating
 

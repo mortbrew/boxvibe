@@ -1420,7 +1420,14 @@ fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) -> Rect {
     let loading = app.config.ui.album_art == AlbumArt::Picture
         && !song.cover_art_url.is_empty()
         && matches!(app.art.status(&song.cover_art_url), Cover::Loading);
-    let message = if loading { "Loading cover art…" } else { "No cover art" };
+    // Off by choice (Shift+C) says so; a song with no cover, or one that failed, says there is none.
+    let message = if app.config.ui.album_art == AlbumArt::Off {
+        "Cover art off"
+    } else if loading {
+        "Loading cover art…"
+    } else {
+        "No cover art"
+    };
     let line = Rect { y: inner.y + inner.height / 2, height: 1, ..inner };
     frame.render_widget(
         Paragraph::new(Span::styled(message, Style::new().fg(p.muted).add_modifier(Modifier::DIM)))
@@ -3077,12 +3084,33 @@ mod tests {
     }
 
     #[test]
-    fn with_album_art_off_the_space_says_there_is_no_cover_art() {
+    fn with_album_art_off_the_space_says_cover_art_off() {
         let mut app = demo();
         app.config.ui.album_art = crate::config::AlbumArt::Off;
-        assert_only_message(&app, "No cover art");
+        assert_only_message(&app, "Cover art off");
         // Playing music changes nothing: there is no visualizer to fall back on.
+        assert_only_message(&app, "Cover art off");
+        // Off by choice wins over a song that has no cover anyway.
+        if let Some(song) = app.now.as_mut() {
+            song.cover_art_url.clear();
+        }
+        assert_only_message(&app, "Cover art off");
+        // Turning it back on says "No cover art" for that song.
+        app.config.ui.album_art = crate::config::AlbumArt::Picture;
         assert_only_message(&app, "No cover art");
+    }
+
+    #[test]
+    fn shift_c_flips_between_the_picture_and_cover_art_off() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = demo();
+        app.config.ui.album_art = crate::config::AlbumArt::Picture;
+        app.on_key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT));
+        assert_eq!(app.config.ui.album_art, crate::config::AlbumArt::Off);
+        assert_only_message(&app, "Cover art off");
+        app.on_key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT));
+        assert_eq!(app.config.ui.album_art, crate::config::AlbumArt::Picture);
+        assert!(!screen(&app, 120, 36).0.join("\n").contains("Cover art off"));
     }
 
     #[test]
@@ -3101,9 +3129,9 @@ mod tests {
         let url = app.now.as_ref().map(|s| s.cover_art_url.clone()).unwrap();
         assert!(app.art.want(&url), "the download starts");
         assert_only_message(&app, "Loading cover art…");
-        // Art off while one downloads: nothing is coming, so it says no cover art.
+        // Art off while one downloads: nothing is coming, and the space says art is off.
         app.config.ui.album_art = crate::config::AlbumArt::Off;
-        assert_only_message(&app, "No cover art");
+        assert_only_message(&app, "Cover art off");
         // A cover that has been given up on (every try failed).
         app.config.ui.album_art = crate::config::AlbumArt::Picture;
         let mut gone = crate::art::Art::default();

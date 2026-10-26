@@ -315,6 +315,12 @@ bound twice.
 - The Seeds tab opens with a two-line note on what seeds are and what `a` and `x` do (dropped on a
   short terminal); Help explains the same under the editor key
 
+#### Cover art off says so
+
+- With album art turned off (Shift+C, or Settings → Album art) the empty cover space now says "Cover art off"
+  instead of "No cover art"; "No cover art" stays for a song with no cover or one that could not be loaded
+  (and "Loading cover art…" while one downloads). The Settings description and the README say the same
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

@@ -252,7 +252,7 @@ impl Setting {
                 "The menu's width, 20 to 40 columns (never more than half the screen). Also { and }. Saved as [look] menu_width."
             }
             Self::AlbumArt => {
-                "Picture: the real cover (sixel, kitty, iTerm2, or half blocks in other terminals); Off: no cover. Also Shift+C. Saved as [look] album_art."
+                "Picture: the real cover (sixel, kitty, iTerm2, or half blocks in other terminals); Off: no cover, and the space says Cover art off. Also Shift+C. Saved as [look] album_art."
             }
             Self::ArtTint => {
                 "Recolors the album art using your current theme's color scheme. Duotone: theme background to yellow; Palette: only theme colors. Also Shift+H. Saved as [look] art_tint."

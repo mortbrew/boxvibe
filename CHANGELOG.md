@@ -360,6 +360,11 @@ bound twice.
 
 - The config file's tables already carry the Settings group names in lowercase (`[account]`, `[boxvibe]`, `[playback]`, `[look]`; the old `[ui]`, `[player]` and `[pandora]` tables are read and emptied on the next save). This pass checked every Settings row against its key and renamed the one that had drifted: **Good Vibes Only** is saved as `good_vibes_only` under `[playback]`, not `good_guy`. A file with `good_guy` (in `[playback]`, or in the old `[player]`) still loads, the next save writes `good_vibes_only` with its comment and removes `good_guy`, and the two are never written side by side (if both are there, the new one wins). The Settings description says "Saved as [playback] good_vibes_only.", the README config reference and `tools/screenshots.sh` (which wrote an old `[ui]` table) use the new names, and tests cover an old `[ui]` + `good_guy` file loading, saving in the new names, and keeping its comments and unknown keys.
 
+#### All config keys match their Settings row names
+
+- Every config key is now the Settings row's label in lower case with underscores, so the file reads like the app. Five keys were renamed: **Email or username** `username` → `email_or_username` (`[account]`), **Look for new versions on startup** `check_updates` → `look_for_new_versions_on_startup` (`[boxvibe]`), **Song change notifications** `notifications` → `song_change_notifications` (`[playback]`), **Tint art with theme colors** `art_tint` → `tint_art_with_theme_colors` (`[look]`) and **Boot screen** `splash` → `boot_screen` (`[look]`). The old names, in every table they ever lived in (`[pandora]`, `[ui]`, `[boxvibe]`, `[look]`, `[playback]`, plus `notify`), still load; the next save writes only the new name (keeping the comment above and beside it, and the file's private mode), removes the old key, and the new name wins if a file has both. Unknown keys are kept. The "Saved as [section] key." line of each Settings row, the README config reference and `tools/screenshots.sh` use the new names; tests cover each old name loading, the new name winning, a save leaving exactly one key, and an old file migrating whole.
+- Dev note: the old-name migration (old tables and old key names) is slated for removal at 1.0; it is marked `REMOVE AT 1.0` in `src/config.rs`.
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

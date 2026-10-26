@@ -186,13 +186,14 @@ boxvibe from starting: one that is not valid TOML is moved to
 `config.toml.bad-<UTC time>` and boxvibe starts with the defaults and says so.
 
 ```toml
-# The tables are the Settings groups: ACCOUNT, BOXVIBE, PLAYBACK and LOOK.
+# The tables are the Settings groups (ACCOUNT, BOXVIBE, PLAYBACK and LOOK) and each
+# key is the Settings row's label in lower case, with underscores.
 [account]
-username = "you@example.com"   # saved from Settings → Email or username
+email_or_username = "you@example.com"   # Settings → Email or username
 user_agent = ""                # empty: boxvibe's default (a desktop Firefox); see below
 
 [boxvibe]
-check_updates = true           # look for a new release on GitHub at startup
+look_for_new_versions_on_startup = true   # Settings → Look for new versions on startup: ask GitHub for a new release
 genre_edit_popup = true        # true: renaming or editing a genre station opens a popup that says why; its
                                # "Don't show this again" box (or Settings → Genre station edit popup) sets false
 
@@ -200,7 +201,7 @@ genre_edit_popup = true        # true: renaming or editing a genre station opens
 audio_quality = "high"         # high: MP3 192 kbps if your plan has it (Plus, Premium), else 128
                                # standard: MP3 128 kbps (old low / medium values mean standard)
 volume = 70                    # 0–100
-notifications = true           # a desktop notification when the song changes (Settings toggles it)
+song_change_notifications = true   # Settings → Song change notifications: a desktop notification when the song changes (Settings toggles it)
 autoplay_last_station = true   # start the station played last when boxvibe opens
 good_vibes_only = true         # Settings → Good Vibes Only: play Pandora's audio ads and report them, like the website does; false skips ads (Settings toggles it)
 last_station = ""              # the station to start on, kept by the app
@@ -215,20 +216,27 @@ border_style = "plain"         # plain | rounded | thick | double | none
 menu_width = 30                # the menu, in columns: 20–40, step 2 (at most half the screen); also { and }
 album_art = "picture"          # picture | off
 retro_mode = "hd"              # hd | 64bit | 32bit | 16bit | 8bit | 4bit | 2bit (full / 256 / 128 / 64 / 32 / 16 / 8 px, blocky on purpose)
-art_tint = "off"               # off | duotone | palette: recolour the cover with the theme's colours
+tint_art_with_theme_colors = "off"   # Settings → Tint art with theme colors: off | duotone | palette: recolour the cover with the theme's colours
 animations = true              # false: no motion (the 2 second boot screen is skipped); Settings → LOOK → Animations
-splash = true                  # the 2 second boxvibe boot screen (any key skips it); was [boxvibe] splash in the 0.4 betas
+boot_screen = true             # Settings → Boot screen: the 2 second boxvibe boot screen (any key skips it)
 ```
 
 The 0.1–0.3 files had `[pandora]`, `[player]` and `[ui]` tables. They still
 load, and the next time the app saves something it moves each key into its
-group above (comments and the rest of the file stay). The boot screen's `splash`
-key moved from `[boxvibe]` to `[look]`: the old place still reads, and the next save
-writes the new one and removes the old. The same goes for `good_guy`, now `good_vibes_only` (the name of the Settings row); the old key is removed on the next save, never kept beside the new one. Settings → each setting's
+group above (comments, also the ones above a key, and the rest of the file stay).
+Some keys were renamed to match their Settings row, and the old names still read too:
+`username` is now `email_or_username`, `check_updates` is `look_for_new_versions_on_startup`,
+`notify` and `notifications` are `song_change_notifications`, `art_tint` is
+`tint_art_with_theme_colors`, `splash` (in `[boxvibe]` or `[look]`) is `boot_screen`
+and `good_guy` is `good_vibes_only`. The next save writes the new name and removes the
+old one, never both (if a file has both, the new one wins). Keys boxvibe doesn't know are
+kept and skipped with a warning. Settings → each setting's
 description in the box below the list says where it is saved.
 
+*Dev note: this old-name migration (the old tables and old key names) is slated for removal at 1.0; it lives in `src/config.rs`, marked `REMOVE AT 1.0`.*
+
 `--theme NAME` and `--icons SET` change them for one run without saving.
-A bad `album_art`, `retro_mode` or `art_tint` value is ignored with a warning (picture / hd / off).
+A bad `album_art`, `retro_mode` or `tint_art_with_theme_colors` value is ignored with a warning (picture / hd / off).
 The old `album_art = "blocks"` reads as `picture` (half blocks are what Picture uses when the terminal has no graphics).
 The 0.3 betas' `art_pixelation` key (off / extra_low / low / medium / high / max) still reads as `retro_mode`.
 
@@ -266,7 +274,7 @@ art Off (Shift+`C`) it says "Cover art off", in the space the cover would fill.
 
 ## Updating
 
-The same way tubevibe does it. At startup (unless `check_updates = false`)
+The same way tubevibe does it. At startup (unless `look_for_new_versions_on_startup = false`)
 boxvibe asks GitHub, in the background, for the latest release of
 `mortbrew/boxvibe` (`api.github.com/repos/mortbrew/boxvibe/releases/latest`)
 and compares its tag with its own version. If it is newer, the header says

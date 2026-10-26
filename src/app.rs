@@ -193,14 +193,14 @@ impl Setting {
     #[cfg(test)]
     fn saved_as(self) -> Option<(&'static str, &'static str)> {
         match self {
-            Self::CheckUpdates => Some(("boxvibe", "check_updates")),
+            Self::CheckUpdates => Some(("boxvibe", "look_for_new_versions_on_startup")),
             Self::GenrePopup => Some(("boxvibe", "genre_edit_popup")),
-            Self::Splash => Some(("look", "splash")),
-            Self::Email => Some(("account", "username")),
+            Self::Splash => Some(("look", "boot_screen")),
+            Self::Email => Some(("account", "email_or_username")),
             Self::Quality => Some(("playback", "audio_quality")),
             Self::Volume => Some(("playback", "volume")),
             Self::Autoplay => Some(("playback", "autoplay_last_station")),
-            Self::Notify => Some(("playback", "notifications")),
+            Self::Notify => Some(("playback", "song_change_notifications")),
             Self::GoodVibesOnly => Some(("playback", "good_vibes_only")),
             Self::Theme => Some(("look", "theme")),
             Self::Icons => Some(("look", "icons")),
@@ -208,7 +208,7 @@ impl Setting {
             Self::MenuWidth => Some(("look", "menu_width")),
             Self::AlbumArt => Some(("look", "album_art")),
             Self::RetroMode => Some(("look", "retro_mode")),
-            Self::ArtTint => Some(("look", "art_tint")),
+            Self::ArtTint => Some(("look", "tint_art_with_theme_colors")),
             Self::Animations => Some(("look", "animations")),
             Self::Password | Self::LogIn | Self::LogOut | Self::EditFile | Self::MenuEntry => None,
         }
@@ -218,7 +218,7 @@ impl Setting {
     /// in config.toml ends with where ("Saved as [look] theme.").
     pub fn about(self) -> &'static str {
         match self {
-            Self::Email => "What you log in to pandora.com with. Enter types it. Saved as [account] username.",
+            Self::Email => "What you log in to pandora.com with. Enter types it. Saved as [account] email_or_username.",
             Self::Password => {
                 "Kept in your desktop keychain (GNOME Keyring, KeePassXC…), never in config.toml. Enter forgets it: you type it again next start."
             }
@@ -234,7 +234,7 @@ impl Setting {
                 "When boxvibe opens and logs in, the station you played last starts by itself. Saved as [playback] autoplay_last_station."
             }
             Self::Notify => {
-                "A desktop notification (notify-send, mako on Omarchy) for every new song. Saved as [playback] notifications."
+                "A desktop notification (notify-send, mako on Omarchy) for every new song. Saved as [playback] song_change_notifications."
             }
             Self::GoodVibesOnly => {
                 "Play Pandora's audio ads and report them, like the website does. Off skips ads, which could break Pandora's terms: asks first. Saved as [playback] good_vibes_only."
@@ -255,7 +255,7 @@ impl Setting {
                 "Picture: the real cover (sixel, kitty, iTerm2, or half blocks in other terminals); Off: no cover, and the space says Cover art off. Also Shift+C. Saved as [look] album_art."
             }
             Self::ArtTint => {
-                "Recolors the album art using your current theme's color scheme. Duotone: theme background to yellow; Palette: only theme colors. Also Shift+H. Saved as [look] art_tint."
+                "Recolors the album art using your current theme's color scheme. Duotone: theme background to yellow; Palette: only theme colors. Also Shift+H. Saved as [look] tint_art_with_theme_colors."
             }
             Self::RetroMode => {
                 "Makes the cover blocky on purpose, like an old console: 64-bit (256 pixels across), 32-bit (128), 16-bit (64), 8-bit (32), 4-bit (16), 2-bit (8), or HD for the full picture. Also Shift+R. Saved as [look] retro_mode."
@@ -264,13 +264,13 @@ impl Setting {
                 "On: the boot screen fades in. Off: no motion anywhere, so the boot screen is skipped (the song progress and clock still update). Saved as [look] animations."
             }
             Self::CheckUpdates => {
-                "Asks GitHub when boxvibe opens; About shows the new version and Update Now. Saved as [boxvibe] check_updates."
+                "Asks GitHub when boxvibe opens; About shows the new version and Update Now. Saved as [boxvibe] look_for_new_versions_on_startup."
             }
             Self::GenrePopup => {
                 "On: trying to rename or edit a genre station opens a popup that says why and what the logo and person icons mean (the message in the bottom bar always shows too). Its checkbox turns this Off. Saved as [boxvibe] genre_edit_popup."
             }
             Self::Splash => {
-                "A two-second boxvibe logo screen when it opens; any key skips it (Animations off skips it too). Saved as [look] splash."
+                "A two-second boxvibe logo screen when it opens; any key skips it (Animations off skips it too). Saved as [look] boot_screen."
             }
             Self::EditFile => "Opens config.toml in $EDITOR; boxvibe reads it again when you close it.",
             Self::MenuEntry => {
@@ -855,7 +855,7 @@ impl App {
         }
     }
 
-    /// The boot screen starts (main calls this once, if `[look] splash` and `[look] animations` are on).
+    /// The boot screen starts (main calls this once, if `[look] boot_screen` and `[look] animations` are on).
     pub fn begin_splash(&mut self) {
         self.splash = (self.config.ui.splash && self.config.ui.animations).then(Instant::now);
     }
@@ -1247,7 +1247,7 @@ impl App {
                 self.session = Session::LoggedIn;
                 if !self.demo {
                     let email = self.config.pandora.username.clone();
-                    self.save(&[("account", "username", email.as_str().into())]);
+                    self.save(&[("account", "email_or_username", email.as_str().into())]);
                     // The password goes to the keychain, now that Pandora has taken it.
                     if self.password_unsaved {
                         self.password_unsaved = false;
@@ -1892,7 +1892,7 @@ impl App {
             Setting::Notify => {
                 let on = !self.config.ui.notifications;
                 self.config.ui.notifications = on;
-                self.save(&[("playback", "notifications", on.into())]);
+                self.save(&[("playback", "song_change_notifications", on.into())]);
                 self.status = format!("Song change notifications {}", if on { "on" } else { "off" });
             }
             // Turning it off asks first (the risk popup); turning it on needs no question.
@@ -1921,7 +1921,7 @@ impl App {
             Setting::RetroMode => self.next_retro_mode(),
             Setting::CheckUpdates => {
                 self.config.ui.check_updates = !self.config.ui.check_updates;
-                self.save(&[("boxvibe", "check_updates", self.config.ui.check_updates.into())]);
+                self.save(&[("boxvibe", "look_for_new_versions_on_startup", self.config.ui.check_updates.into())]);
             }
             Setting::GenrePopup => {
                 let on = !self.config.ui.genre_edit_popup;
@@ -1938,7 +1938,7 @@ impl App {
             Setting::Splash => {
                 let on = !self.config.ui.splash;
                 self.config.ui.splash = on;
-                self.save(&[("look", "splash", on.into())]);
+                self.save(&[("look", "boot_screen", on.into())]);
                 self.status = format!("Boot screen: {}", if on { "on" } else { "off" });
             }
             Setting::EditFile => {
@@ -2040,7 +2040,7 @@ impl App {
                             self.keychain_state = KeychainState::Unknown;
                         }
                         self.config.pandora.username = email.clone();
-                        self.save(&[("account", "username", email.as_str().into())]);
+                        self.save(&[("account", "email_or_username", email.as_str().into())]);
                         // Then the password, like a login form.
                         if self.config.pandora.password.is_empty() {
                             self.open_prompt(Prompt::Password);
@@ -2499,7 +2499,7 @@ impl App {
         let next = self.config.ui.art_tint.next();
         self.config.ui.art_tint = next;
         self.art.forget_shown();
-        self.save(&[("look", "art_tint", next.as_str().into())]);
+        self.save(&[("look", "tint_art_with_theme_colors", next.as_str().into())]);
         self.status = format!("Tint art with theme colors: {}", next.label());
     }
 
@@ -3638,6 +3638,10 @@ mod tests {
         let text = saved(&app);
         assert!(!text.contains("hunter2") && !text.contains("password"), "{text}");
         assert!(text.contains("# mine") && text.contains("# who") && text.contains("emoji"), "{text}");
+        assert!(
+            text.contains("email_or_username = \"me@example.com\" # who") && !text.contains("\nusername ="),
+            "{text}"
+        );
         assert!(app.status.contains("moved from config.toml to the keychain"), "{}", app.status);
         assert_eq!(app.keychain_state, KeychainState::Saved);
         assert_eq!(app.setting_value(Setting::Password), "•••••••• in your keychain");
@@ -3667,7 +3671,7 @@ mod tests {
     #[test]
     fn with_no_keychain_the_old_password_stays_in_the_file_and_in_memory() {
         let k = MemoryKeychain::missing();
-        let file = "[account]\nusername = \"me@example.com\"\npassword = \"hunter2\"\n";
+        let file = "[account]\nemail_or_username = \"me@example.com\"\npassword = \"hunter2\"\n";
         let app = account_app("kc-legacy-missing", file, &k);
         assert_eq!(app.session, Session::LoggedIn);
         assert_eq!(app.status, NO_KEYCHAIN);
@@ -3679,7 +3683,7 @@ mod tests {
     fn the_usual_start_logs_in_with_the_keychain_and_the_file_never_has_a_password() {
         let k = MemoryKeychain::new();
         k.set(MAIL, "hunter2").unwrap();
-        let file = "[account]\nusername = \"me@example.com\"\n";
+        let file = "[account]\nemail_or_username = \"me@example.com\"\n";
         let app = account_app("kc-usual", file, &k);
         assert_eq!(app.session, Session::LoggedIn);
         assert_eq!(app.config.pandora.password.expose(), "hunter2");
@@ -3691,7 +3695,7 @@ mod tests {
     #[test]
     fn no_saved_password_asks_for_it_then_keeps_it_in_the_keychain_after_pandora_accepts() {
         let k = MemoryKeychain::new();
-        let mut app = account_app("kc-ask", "[account]\nusername = \"me@example.com\"\n", &k);
+        let mut app = account_app("kc-ask", "[account]\nemail_or_username = \"me@example.com\"\n", &k);
         assert_eq!(app.prompt, Some(Prompt::Password), "asked, like a login form");
         assert_eq!(app.keychain_state, KeychainState::NotSaved);
         assert_eq!(app.session, Session::LoggedOut);
@@ -3706,7 +3710,7 @@ mod tests {
     #[test]
     fn a_password_pandora_never_accepted_is_never_saved() {
         let k = MemoryKeychain::new();
-        let mut app = account_app("kc-never", "[account]\nusername = \"me@example.com\"\n", &k);
+        let mut app = account_app("kc-never", "[account]\nemail_or_username = \"me@example.com\"\n", &k);
         app.on_key(key(KeyCode::Char('x')));
         app.on_key(key(KeyCode::Enter));
         // Typed, but the answer is a no before the demo worker's yes arrives.
@@ -3720,7 +3724,7 @@ mod tests {
     #[test]
     fn no_keychain_means_a_session_password_a_clear_message_and_nothing_on_disk() {
         let k = MemoryKeychain::missing();
-        let file = "[account]\nusername = \"me@example.com\"\n";
+        let file = "[account]\nemail_or_username = \"me@example.com\"\n";
         let mut app = account_app("kc-missing", file, &k);
         assert_eq!(app.prompt, Some(Prompt::Password));
         assert_eq!(app.status, NO_KEYCHAIN, "told at start");
@@ -3740,7 +3744,7 @@ mod tests {
     fn forgetting_the_saved_password_empties_the_keychain_and_says_so() {
         let k = MemoryKeychain::new();
         k.set(MAIL, "hunter2").unwrap();
-        let mut app = account_app("kc-forget", "[account]\nusername = \"me@example.com\"\n", &k);
+        let mut app = account_app("kc-forget", "[account]\nemail_or_username = \"me@example.com\"\n", &k);
         app.view = View::Settings;
         app.focus = Focus::Content;
         app.settings_cursor = Setting::at(Setting::Password);
@@ -3751,15 +3755,18 @@ mod tests {
         assert_eq!(app.setting_value(Setting::Password), "not saved");
         assert!(app.prompt.is_none(), "Enter forgets, it doesn't ask");
         // The next start asks.
-        let again = account_app("kc-forget", "[account]\nusername = \"me@example.com\"\n", &k);
+        let again = account_app("kc-forget", "[account]\nemail_or_username = \"me@example.com\"\n", &k);
         assert_eq!(again.prompt, Some(Prompt::Password));
     }
 
     #[test]
     fn forgetting_also_removes_a_password_still_in_the_file() {
         let k = MemoryKeychain::missing();
-        let mut app =
-            account_app("kc-forget-file", "[account]\nusername = \"me@example.com\"\npassword = \"hunter2\"\n", &k);
+        let mut app = account_app(
+            "kc-forget-file",
+            "[account]\nemail_or_username = \"me@example.com\"\npassword = \"hunter2\"\n",
+            &k,
+        );
         app.settings_cursor = Setting::at(Setting::Password);
         app.view = View::Settings;
         app.focus = Focus::Content;
@@ -3771,7 +3778,7 @@ mod tests {
     fn logging_out_removes_the_password_from_the_keychain() {
         let k = MemoryKeychain::new();
         k.set(MAIL, "hunter2").unwrap();
-        let mut app = account_app("kc-logout", "[account]\nusername = \"me@example.com\"\n", &k);
+        let mut app = account_app("kc-logout", "[account]\nemail_or_username = \"me@example.com\"\n", &k);
         assert_eq!(app.session, Session::LoggedIn);
         app.log_out();
         app.settle(WAIT);
@@ -3787,7 +3794,7 @@ mod tests {
     fn another_email_does_not_borrow_the_old_password() {
         let k = MemoryKeychain::new();
         k.set(MAIL, "hunter2").unwrap();
-        let mut app = account_app("kc-switch", "[account]\nusername = \"me@example.com\"\n", &k);
+        let mut app = account_app("kc-switch", "[account]\nemail_or_username = \"me@example.com\"\n", &k);
         app.view = View::Settings;
         app.open_prompt(Prompt::Email);
         enter_text(&mut app, "other@example.com");
@@ -3799,10 +3806,10 @@ mod tests {
     fn editing_config_toml_keeps_the_password_in_use() {
         let k = MemoryKeychain::new();
         k.set(MAIL, "hunter2").unwrap();
-        let mut app = account_app("kc-reload", "[account]\nusername = \"me@example.com\"\n", &k);
+        let mut app = account_app("kc-reload", "[account]\nemail_or_username = \"me@example.com\"\n", &k);
         std::fs::write(
             app.config_path.as_ref().unwrap(),
-            "[account]\nusername = \"me@example.com\"\n[look]\nicons = \"emoji\"\n",
+            "[account]\nemail_or_username = \"me@example.com\"\n[look]\nicons = \"emoji\"\n",
         )
         .unwrap();
         app.reload_config();
@@ -3877,7 +3884,7 @@ mod tests {
             app.on_key(key(KeyCode::Char(c)));
         }
         app.on_key(key(KeyCode::Enter));
-        assert!(saved(&app).contains("[account]") && saved(&app).contains("username = \"me@example.com\""));
+        assert!(saved(&app).contains("[account]") && saved(&app).contains("email_or_username = \"me@example.com\""));
         // Volume: Shift+→ anywhere.
         let mut app = saving_app("saved-volume");
         app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
@@ -3927,7 +3934,10 @@ mod tests {
         app.on_key(shift('H'));
         assert_eq!(app.config.ui.art_tint, tint.next());
         let file = saved(&app);
-        assert!(file.contains("album_art") && file.contains("retro_mode") && file.contains("art_tint"), "{file}");
+        assert!(
+            file.contains("album_art") && file.contains("retro_mode") && file.contains("tint_art_with_theme_colors"),
+            "{file}"
+        );
         // The retro levels go all the way round, 64-bit included.
         let mut seen = vec![app.config.ui.retro_mode];
         for _ in 0..crate::config::RetroMode::ALL.len() {
@@ -4415,9 +4425,12 @@ mod tests {
         app.on_key(key(KeyCode::Enter));
         assert!(!app.config.ui.splash);
         let text = saved(&app);
-        assert!(text.contains("[look]") && text.contains("splash = false"), "{text}");
-        assert_eq!(text.matches("splash").count(), 1, "the stale [boxvibe] key is gone: {text}");
-        assert!(text.contains("check_updates = false"), "the rest stays: {text}");
-        assert!(Setting::Splash.about().contains("Saved as [look] splash."));
+        assert!(text.contains("[look]") && text.contains("boot_screen = false"), "{text}");
+        assert!(!text.contains("splash"), "the old name is gone: {text}");
+        assert!(
+            text.contains("look_for_new_versions_on_startup = false") && !text.contains("check_updates"),
+            "the rest stays, renamed: {text}"
+        );
+        assert!(Setting::Splash.about().contains("Saved as [look] boot_screen."));
     }
 }

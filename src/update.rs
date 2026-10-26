@@ -1,5 +1,5 @@
 //! Is there a newer release? Like tubevibe: asks GitHub each time the app
-//! opens (in the background, `[boxvibe] check_updates`) and, when there is one,
+//! opens (in the background, `[boxvibe] look_for_new_versions_on_startup`) and, when there is one,
 //! says how to get it on this machine. Where the release archive fits and the
 //! program's folder is writable, About's Update Now button downloads it and
 //! puts the new program in place of the running one ([`install`]).

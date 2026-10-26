@@ -112,7 +112,7 @@ pub enum Setting {
     Volume,
     Autoplay,
     Notify,
-    GoodGuy,
+    GoodVibesOnly,
     Theme,
     Icons,
     BorderStyle,
@@ -143,7 +143,7 @@ impl Setting {
         ("PLAYBACK", Self::Volume),
         ("PLAYBACK", Self::Autoplay),
         ("PLAYBACK", Self::Notify),
-        ("PLAYBACK", Self::GoodGuy),
+        ("PLAYBACK", Self::GoodVibesOnly),
         ("LOOK", Self::Theme),
         ("LOOK", Self::Icons),
         ("LOOK", Self::BorderStyle),
@@ -170,7 +170,7 @@ impl Setting {
             Self::Volume => "Volume",
             Self::Autoplay => "Autoplay last station on open",
             Self::Notify => "Song change notifications",
-            Self::GoodGuy => "Good Vibes Only",
+            Self::GoodVibesOnly => "Good Vibes Only",
             Self::Theme => "Theme",
             Self::Icons => "Icons",
             Self::BorderStyle => "Border style",
@@ -201,7 +201,7 @@ impl Setting {
             Self::Volume => Some(("playback", "volume")),
             Self::Autoplay => Some(("playback", "autoplay_last_station")),
             Self::Notify => Some(("playback", "notifications")),
-            Self::GoodGuy => Some(("playback", "good_guy")),
+            Self::GoodVibesOnly => Some(("playback", "good_vibes_only")),
             Self::Theme => Some(("look", "theme")),
             Self::Icons => Some(("look", "icons")),
             Self::BorderStyle => Some(("look", "border_style")),
@@ -236,8 +236,8 @@ impl Setting {
             Self::Notify => {
                 "A desktop notification (notify-send, mako on Omarchy) for every new song. Saved as [playback] notifications."
             }
-            Self::GoodGuy => {
-                "Play Pandora's audio ads and report them, like the website does. Off skips ads, which could break Pandora's terms: asks first. Saved as [playback] good_guy."
+            Self::GoodVibesOnly => {
+                "Play Pandora's audio ads and report them, like the website does. Off skips ads, which could break Pandora's terms: asks first. Saved as [playback] good_vibes_only."
             }
             Self::Theme => {
                 "Omarchy follows your current Omarchy theme; or pick a built-in one. The theme is only changed here. Saved as [look] theme."
@@ -1829,7 +1829,7 @@ impl App {
             Setting::Volume => format!("{}%", self.config.player.volume),
             Setting::Autoplay => on(self.config.ui.autoplay_last_station),
             Setting::Notify => on(self.config.ui.notifications),
-            Setting::GoodGuy => on(self.config.player.good_guy),
+            Setting::GoodVibesOnly => on(self.config.player.good_vibes_only),
             Setting::Theme => theme::label(&self.config.ui.theme),
             Setting::Icons => crate::icons::label(self.config.ui.icons).into(),
             Setting::BorderStyle => self.config.ui.border_style.label().into(),
@@ -1896,10 +1896,10 @@ impl App {
                 self.status = format!("Song change notifications {}", if on { "on" } else { "off" });
             }
             // Turning it off asks first (the risk popup); turning it on needs no question.
-            Setting::GoodGuy if self.config.player.good_guy => self.confirm_good_vibes_off = true,
-            Setting::GoodGuy => {
-                self.config.player.good_guy = true;
-                self.save(&[("playback", "good_guy", true.into())]);
+            Setting::GoodVibesOnly if self.config.player.good_vibes_only => self.confirm_good_vibes_off = true,
+            Setting::GoodVibesOnly => {
+                self.config.player.good_vibes_only = true;
+                self.save(&[("playback", "good_vibes_only", true.into())]);
                 self.status = "Good Vibes Only on: Pandora's audio ads play".into();
             }
             Setting::Theme => self.next_theme(),
@@ -2277,8 +2277,8 @@ impl App {
         match key.code {
             KeyCode::Enter => {
                 self.confirm_good_vibes_off = false;
-                self.config.player.good_guy = false;
-                self.save(&[("playback", "good_guy", false.into())]);
+                self.config.player.good_vibes_only = false;
+                self.save(&[("playback", "good_vibes_only", false.into())]);
                 self.status = "Good Vibes Only off: no ads".into();
             }
             KeyCode::Esc => {
@@ -2796,7 +2796,7 @@ mod tests {
     fn demo() -> App {
         // Ads have their own tests: here a skip goes straight to the next song.
         let mut config = Config::default();
-        config.player.good_guy = false;
+        config.player.good_vibes_only = false;
         let mut app = App::new(config, None, &[], true);
         app.demo_warm_up(2, Duration::ZERO);
         app
@@ -2806,7 +2806,7 @@ mod tests {
     fn ad_demo() -> App {
         let mut app = App::new(Config::default(), None, &[], true);
         app.settle(Duration::from_millis(300));
-        assert!(app.now.is_some() && app.config.player.good_guy);
+        assert!(app.now.is_some() && app.config.player.good_vibes_only);
         app
     }
 
@@ -3284,8 +3284,8 @@ mod tests {
     }
 
     #[test]
-    fn good_guy_is_on_by_default_and_its_toggle_is_saved() {
-        assert!(Config::default().player.good_guy);
+    fn good_vibes_only_is_on_by_default_and_its_toggle_is_saved() {
+        assert!(Config::default().player.good_vibes_only);
         let path = crate::config::temp_dir("good-guy").join("config.toml");
         let mut config = Config::default();
         config.ui.check_updates = false;
@@ -3293,27 +3293,30 @@ mod tests {
         app.prompt = None;
         app.view = View::Settings;
         app.focus = Focus::Content;
-        app.settings_cursor = Setting::at(Setting::GoodGuy);
-        assert_eq!(Setting::GoodGuy.label(), "Good Vibes Only");
-        assert_eq!(app.setting_value(Setting::GoodGuy), "on");
+        app.settings_cursor = Setting::at(Setting::GoodVibesOnly);
+        assert_eq!(Setting::GoodVibesOnly.label(), "Good Vibes Only");
+        assert_eq!(app.setting_value(Setting::GoodVibesOnly), "on");
         // Turning it off asks first; nothing changes or is saved until Enter.
         app.on_key(key(KeyCode::Enter));
         assert!(app.confirm_good_vibes_off && app.overlay_open());
-        assert_eq!(app.setting_value(Setting::GoodGuy), "on");
-        assert!(!std::fs::read_to_string(&path).unwrap_or_default().contains("good_guy"));
+        assert_eq!(app.setting_value(Setting::GoodVibesOnly), "on");
+        assert!(!std::fs::read_to_string(&path).unwrap_or_default().contains("good_vibes_only"));
         app.on_key(key(KeyCode::Enter));
         assert!(!app.confirm_good_vibes_off);
-        assert_eq!(app.setting_value(Setting::GoodGuy), "off");
+        assert_eq!(app.setting_value(Setting::GoodVibesOnly), "off");
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("[playback]") && text.contains("good_guy = false"), "{text}");
-        assert!(!Config::load(&path).0.player.good_guy);
-        assert!(Setting::GoodGuy.about().contains("good_guy") && Setting::GoodGuy.about().contains("Saved"));
+        assert!(text.contains("[playback]") && text.contains("good_vibes_only = false"), "{text}");
+        assert!(!Config::load(&path).0.player.good_vibes_only);
+        assert!(
+            Setting::GoodVibesOnly.about().contains("good_vibes_only")
+                && Setting::GoodVibesOnly.about().contains("Saved")
+        );
         // Turning it back on needs no question and is saved at once.
         app.on_key(key(KeyCode::Enter));
         assert!(!app.confirm_good_vibes_off, "no popup for turning it on");
-        assert_eq!(app.setting_value(Setting::GoodGuy), "on");
-        assert!(std::fs::read_to_string(&path).unwrap().contains("good_guy = true"));
-        assert!(Config::load(&path).0.player.good_guy);
+        assert_eq!(app.setting_value(Setting::GoodVibesOnly), "on");
+        assert!(std::fs::read_to_string(&path).unwrap().contains("good_vibes_only = true"));
+        assert!(Config::load(&path).0.player.good_vibes_only);
     }
 
     #[test]
@@ -3325,17 +3328,17 @@ mod tests {
         app.prompt = None;
         app.view = View::Settings;
         app.focus = Focus::Content;
-        app.settings_cursor = Setting::at(Setting::GoodGuy);
+        app.settings_cursor = Setting::at(Setting::GoodVibesOnly);
         app.on_key(key(KeyCode::Enter));
         assert!(app.confirm_good_vibes_off);
         for code in [KeyCode::Char('y'), KeyCode::Char(' '), KeyCode::Down, KeyCode::Char('q')] {
             app.on_key(key(code));
-            assert!(app.confirm_good_vibes_off && app.config.player.good_guy, "{code:?}");
+            assert!(app.confirm_good_vibes_off && app.config.player.good_vibes_only, "{code:?}");
         }
         app.on_key(key(KeyCode::Esc));
-        assert!(!app.confirm_good_vibes_off && app.config.player.good_guy);
-        assert_eq!(app.setting_value(Setting::GoodGuy), "on");
-        assert!(!std::fs::read_to_string(&path).unwrap_or_default().contains("good_guy"), "nothing saved");
+        assert!(!app.confirm_good_vibes_off && app.config.player.good_vibes_only);
+        assert_eq!(app.setting_value(Setting::GoodVibesOnly), "on");
+        assert!(!std::fs::read_to_string(&path).unwrap_or_default().contains("good_vibes_only"), "nothing saved");
     }
 
     /// Skips until the demo's third answer, a pod of two ads.
@@ -3387,9 +3390,9 @@ mod tests {
     }
 
     #[test]
-    fn with_good_guy_off_no_ad_is_asked_for_and_the_next_song_starts_at_once() {
+    fn with_good_vibes_only_off_no_ad_is_asked_for_and_the_next_song_starts_at_once() {
         let mut config = Config::default();
-        config.player.good_guy = false;
+        config.player.good_vibes_only = false;
         let mut app = App::new(config, None, &[], true);
         app.settle(Duration::from_millis(300));
         let first = app.now.as_ref().unwrap().track_token.clone();
@@ -3859,7 +3862,7 @@ mod tests {
             app.focus = Focus::Content;
             app.settings_cursor = Setting::at(setting);
             app.on_key(key(KeyCode::Enter));
-            if setting == Setting::GoodGuy {
+            if setting == Setting::GoodVibesOnly {
                 // Turning it off asks first; Enter says yes.
                 app.on_key(key(KeyCode::Enter));
             }

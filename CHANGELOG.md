@@ -356,6 +356,10 @@ bound twice.
 
 - **Settings is now `O` (Shift+o)**, to match tubevibe; it was `T` (Shift+t). `T` is free and does nothing. `A` still opens About, and the Shift+letter rule is unchanged. Everything that named the old key now says `Shift+O`: the bottom of Help ("Settings (Shift+O)"), the "GOING PLACES" row (`O A  Settings / About`), the README key table, and the "Log in first (Settings, Shift+O) to …" messages when you try Genres, Add station or the station editor logged out. A test checks that `O` opens Settings and `T` is unbound.
 
+#### Config names match Settings: good_guy is now good_vibes_only
+
+- The config file's tables already carry the Settings group names in lowercase (`[account]`, `[boxvibe]`, `[playback]`, `[look]`; the old `[ui]`, `[player]` and `[pandora]` tables are read and emptied on the next save). This pass checked every Settings row against its key and renamed the one that had drifted: **Good Vibes Only** is saved as `good_vibes_only` under `[playback]`, not `good_guy`. A file with `good_guy` (in `[playback]`, or in the old `[player]`) still loads, the next save writes `good_vibes_only` with its comment and removes `good_guy`, and the two are never written side by side (if both are there, the new one wins). The Settings description says "Saved as [playback] good_vibes_only.", the README config reference and `tools/screenshots.sh` (which wrote an old `[ui]` table) use the new names, and tests cover an old `[ui]` + `good_guy` file loading, saving in the new names, and keeping its comments and unknown keys.
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

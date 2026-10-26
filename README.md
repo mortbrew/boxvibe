@@ -70,7 +70,7 @@ work right now drawn as key caps at the bottom.
 - **Make a station by searching** (`a` on the Stations page, or the "Add station…" row): type an artist or song, `Enter` searches, pick one with `j` / `k`, `Enter` makes the station and plays it
 - **Edit a station's seeds and see its thumbs history** (`e` on a Stations or Favorites row): a popup with three tabs, **Seeds (n)**, **👍 Thumbs Up n** and **👎 Thumbs Down n** (the icons follow your icon set, and the names shrink to icon and count on a narrow terminal), cycled with `Tab` / `Shift+Tab` (or `←` `→`); `Esc` closes. In Seeds, `a` adds an artist or song (suggestions show while the box is empty, typing searches, `Enter` adds) and `x` removes one after asking; the last seed can't be removed. A two-line note at the top of Seeds explains what seeds are (the artists, songs and genres a station plays music like; adding one steers it, removing one stops it leaning that way), and drops out on a short terminal. In each thumbs tab, a heading says which list you are looking at, column heads (**Song · Artist** and **Thumbed on**) sit over the rows, and each song shows the day you thumbed it (blank if Pandora gave none); each list loads when you first open its tab, loads more as you reach its end, and `x` takes a thumb back after asking. Pandora's genre stations and Shuffle can't be edited and say so
 - **Genres** (`G`, Shift+g, or Genres in the menu): Pandora's genre stations under their categories; `Enter` adds one to your stations and plays it. The list loads once per session
-- **Good Vibes Only** (Settings → PLAYBACK, on by default): when a song ends or you skip, boxvibe asks Pandora for an ad, as the website does, and plays any audio ad in Now Playing ("Advertisement", with a countdown; no skip or thumbs, `p` still pauses, nothing goes into History). It reports each ad the way the website's player does, so advertisers are paid and your account looks like any other listener's. Most plans (Plus, Premium) get none. Off, boxvibe never asks and skips ads like before. Turning it off (Enter on the row) opens a yellow risk popup first: *skipping Pandora's ads could violate Pandora's terms of service; use at your own risk, neither boxvibe nor its creator is responsible if Pandora limits or bans your account*. `Enter` turns it off anyway (and saves it), `Esc` keeps it on; turning it back on asks nothing. The config key is still `good_guy`
+- **Good Vibes Only** (Settings → PLAYBACK, on by default): when a song ends or you skip, boxvibe asks Pandora for an ad, as the website does, and plays any audio ad in Now Playing ("Advertisement", with a countdown; no skip or thumbs, `p` still pauses, nothing goes into History). It reports each ad the way the website's player does, so advertisers are paid and your account looks like any other listener's. Most plans (Plus, Premium) get none. Off, boxvibe never asks and skips ads like before. Turning it off (Enter on the row) opens a yellow risk popup first: *skipping Pandora's ads could violate Pandora's terms of service; use at your own risk, neither boxvibe nor its creator is responsible if Pandora limits or bans your account*. `Enter` turns it off anyway (and saves it), `Esc` keeps it on; turning it back on asks nothing. The config key is `good_vibes_only` (the 0.4 betas called it `good_guy`; it still reads, and the next save renames it)
 - **Song change notifications** with `notify-send` (mako on Omarchy)
 - Whatever you change in the app (theme, icons, volume, last station) is
   saved to `config.toml` right away, keeping your comments
@@ -202,7 +202,7 @@ audio_quality = "high"         # high: MP3 192 kbps if your plan has it (Plus, P
 volume = 70                    # 0–100
 notifications = true           # a desktop notification when the song changes (Settings toggles it)
 autoplay_last_station = true   # start the station played last when boxvibe opens
-good_guy = true                # play Pandora's audio ads and report them, like the website does; false skips ads (Settings toggles it)
+good_vibes_only = true         # Settings → Good Vibes Only: play Pandora's audio ads and report them, like the website does; false skips ads (Settings toggles it)
 last_station = ""              # the station to start on, kept by the app
 favorites = []                 # starred stations, { id = "…", name = "…" }, set with f
 
@@ -224,7 +224,7 @@ The 0.1–0.3 files had `[pandora]`, `[player]` and `[ui]` tables. They still
 load, and the next time the app saves something it moves each key into its
 group above (comments and the rest of the file stay). The boot screen's `splash`
 key moved from `[boxvibe]` to `[look]`: the old place still reads, and the next save
-writes the new one and removes the old. Settings → each setting's
+writes the new one and removes the old. The same goes for `good_guy`, now `good_vibes_only` (the name of the Settings row); the old key is removed on the next save, never kept beside the new one. Settings → each setting's
 description in the box below the list says where it is saved.
 
 `--theme NAME` and `--icons SET` change them for one run without saving.

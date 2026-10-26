@@ -2988,13 +2988,13 @@ mod tests {
         let mut app = demo();
         app.view = View::Settings;
         app.focus = crate::app::Focus::Content;
-        app.settings_cursor = crate::app::Setting::at(crate::app::Setting::GoodGuy);
+        app.settings_cursor = crate::app::Setting::at(crate::app::Setting::GoodVibesOnly);
         // The row and its description use the new name.
         let text = screen(&app, 120, 40).0.join("\n");
         assert!(text.contains("Good Vibes Only") && !text.contains("Good Guy"), "{text}");
         assert!(good_vibes_popup_words(&app, 120, 40).is_none(), "no popup yet");
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(app.confirm_good_vibes_off && app.overlay_open() && app.config.player.good_guy);
+        assert!(app.confirm_good_vibes_off && app.overlay_open() && app.config.player.good_vibes_only);
         let text = screen(&app, 120, 40).0.join("\n");
         assert!(text.contains("Turn off Good Vibes Only?") && text.contains("Enter = turn it off anyway"), "{text}");
         assert!(text.contains("Esc = keep it on") && !text.contains("http"), "{text}");
@@ -3013,7 +3013,7 @@ mod tests {
         }
         // Esc leaves it on, closes the popup; Enter in a second round turns it off.
         app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(!app.confirm_good_vibes_off && app.config.player.good_guy);
+        assert!(!app.confirm_good_vibes_off && app.config.player.good_vibes_only);
         assert!(!screen(&app, 120, 40).0.join("\n").contains("Turn off Good Vibes Only?"));
     }
 

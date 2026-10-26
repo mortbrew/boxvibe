@@ -65,7 +65,7 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
             use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
             app.view = View::Settings;
             app.focus = Focus::Content;
-            app.settings_cursor = crate::app::Setting::at(crate::app::Setting::GoodGuy);
+            app.settings_cursor = crate::app::Setting::at(crate::app::Setting::GoodVibesOnly);
             app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         }
         "about" | "about-restart" => {
@@ -95,7 +95,7 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
         // a few seconds in.
         "ad" => {
             use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-            app.config.player.good_guy = true;
+            app.config.player.good_vibes_only = true;
             for _ in 0..9 {
                 if app.ad_view().is_some() {
                     break;

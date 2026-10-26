@@ -96,7 +96,7 @@ impl App {
     fn ad_ask(&self, how: End) -> Option<AdAsk> {
         let song = self.now.as_ref()?;
         let can_play = self.demo || self.audio.has_device();
-        (self.config.player.good_guy
+        (self.config.player.good_vibes_only
             && can_play
             && self.session == Session::LoggedIn
             && !self.ad_break()

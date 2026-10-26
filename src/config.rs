@@ -103,12 +103,12 @@ pub struct PlayerConfig {
     pub volume: u8,
     /// Play Pandora's audio ads and report them like the website does (free
     /// accounts get them). Off: no ad is asked for, so none plays.
-    pub good_guy: bool,
+    pub good_vibes_only: bool,
 }
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self { volume: 70, good_guy: true }
+        Self { volume: 70, good_vibes_only: true }
     }
 }
 
@@ -570,7 +570,7 @@ pub const LAYOUT: &[(&str, &str, &str)] = &[
     ("boxvibe", "genre_edit_popup", "ui"),
     ("playback", "audio_quality", "pandora"),
     ("playback", "volume", "player"),
-    ("playback", "good_guy", "player"),
+    ("playback", "good_vibes_only", "player"),
     ("playback", "autoplay_last_station", "ui"),
     ("playback", "last_station", "pandora"),
     ("playback", "notifications", "ui"),
@@ -593,6 +593,9 @@ const OLD_NAMES: &[(&str, &str, &str, &str)] = &[
     ("ui", "notify", "playback", "notifications"),
     ("ui", "art_pixelation", "look", "retro_mode"),
     ("boxvibe", "splash", "look", "splash"),
+    // Good Vibes Only was `good_guy` in the 0.4 betas, in [player] and then [playback].
+    ("player", "good_guy", "playback", "good_vibes_only"),
+    ("playback", "good_guy", "playback", "good_vibes_only"),
 ];
 
 /// The tables of the old layout.
@@ -807,11 +810,10 @@ fn migrate(doc: &mut toml_edit::DocumentMut) {
         let (name, item) = taken;
         let Some(target) = doc.entry(new).or_insert_with(toml_edit::table).as_table_mut() else { continue };
         if !target.contains_key(key) {
-            if key == old_key {
-                target.insert_formatted(&name, item);
-            } else {
-                target.insert(key, item);
-            }
+            // A renamed key keeps the comment lines above it.
+            let mut new_name = toml_edit::Key::new(key);
+            *new_name.leaf_decor_mut() = name.leaf_decor().clone();
+            target.insert_formatted(&new_name, item);
         }
     }
     // 0.3's `album_art = "blocks"` is `picture` now.
@@ -972,6 +974,65 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn good_guy_reads_as_good_vibes_only_and_saving_writes_only_the_new_name() {
+        assert!(Config::default().player.good_vibes_only);
+        // Every old place it lived in loads, without a warning.
+        for old in
+            ["[player]\ngood_guy = false\n", "[playback]\ngood_guy = false\n", "[playback]\ngood_vibes_only = false\n"]
+        {
+            let (c, w) = Config::parse(old).unwrap();
+            assert!(!c.player.good_vibes_only && w.is_empty(), "{old}: {w:?}");
+        }
+        // The new name beats the old one, wherever the old one is.
+        let (c, _) = Config::parse("[playback]\ngood_guy = false\ngood_vibes_only = true\n").unwrap();
+        assert!(c.player.good_vibes_only);
+        let (c, _) = Config::parse("[player]\ngood_guy = false\n[playback]\ngood_vibes_only = true\n").unwrap();
+        assert!(c.player.good_vibes_only);
+        // Saving anything moves it: the old key and the old table are gone, no key twice.
+        let path = temp_dir("good-guy-migrate").join("config.toml");
+        std::fs::write(&path, "[player]\n# keep me\ngood_guy = false # off\nvolume = 40\n").unwrap();
+        set_values(&path, &[("look", "icons", "unicode".into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("good_vibes_only = false # off") && !text.contains("good_guy"), "{text}");
+        assert!(text.contains("# keep me") && !text.contains("[player]") && text.contains("[playback]"), "{text}");
+        assert_eq!(text.matches("good_vibes_only").count(), 1, "{text}");
+        let (c, w) = Config::load(&path);
+        assert!(!c.player.good_vibes_only && c.player.volume == 40 && w.is_empty(), "{w:?}");
+        // Both names in one file: the new value stays, the old key goes.
+        std::fs::write(&path, "[playback]\ngood_guy = false\ngood_vibes_only = true\n").unwrap();
+        set_values(&path, &[("playback", "volume", 50_i64.into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("good_vibes_only = true") && !text.contains("good_guy"), "{text}");
+    }
+
+    #[test]
+    fn an_old_ui_file_with_good_guy_loads_saves_in_the_new_names_and_keeps_unknown_keys() {
+        let path = temp_dir("old-ui").join("config.toml");
+        let old = "# my settings\n[ui]\ntheme = \"gruvbox\" # cosy\nicons = \"emoji\"\nmystery = 1\n\
+                   [player]\ngood_guy = false\nvolume = 35\n[pandora]\nusername = \"me@example.com\"\n[extra]\nkeep = true\n";
+        std::fs::write(&path, old).unwrap();
+        let (c, w) = Config::load(&path);
+        assert_eq!((c.ui.theme.as_str(), c.ui.icons, c.player.volume), ("gruvbox", IconSet::Emoji, 35));
+        assert!(!c.player.good_vibes_only && c.pandora.username == "me@example.com");
+        assert!(w.iter().any(|x| matches!(x, ConfigWarning::Unknown(k) if k == "ui.mystery")), "{w:?}");
+        set_values(&path, &[("look", "animations", false.into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        // `[ui]` stays, holding only the key boxvibe does not know.
+        for gone in ["[player]", "[pandora]", "good_guy", "theme = \"gruvbox\"\nicons"] {
+            assert!(!text.contains(gone), "{gone} left in\n{text}");
+        }
+        for kept in
+            ["# my settings", "# cosy", "mystery = 1", "[extra]", "keep = true", "[look]", "[playback]", "[account]"]
+        {
+            assert!(text.contains(kept), "{kept} lost from\n{text}");
+        }
+        assert!(text.contains("good_vibes_only = false") && text.contains("animations = false"), "{text}");
+        assert_eq!(text.matches("[ui]").count(), 1, "{text}");
+        let (c, _) = Config::load(&path);
+        assert!(!c.player.good_vibes_only && c.ui.theme == "gruvbox" && !c.ui.animations);
     }
 
     #[test]

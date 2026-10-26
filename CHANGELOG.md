@@ -307,6 +307,14 @@ bound twice.
   row too), `favorites_in_the_menu_line_up_and_the_add_row_sits_over_the_radio_icons`,
   `a_narrow_stations_list_cuts_the_names_and_keeps_the_icons`
 
+#### Station editor explained
+
+- The Thumbs tab now has column heads ("Song · Artist" and "Thumbed on") and a clearer heading
+  ("Songs you gave a thumbs up · press t to see thumbs down"); the date is the day you gave that thumb
+  (blank when Pandora sent none)
+- The Seeds tab opens with a two-line note on what seeds are and what `a` and `x` do (dropped on a
+  short terminal); Help explains the same under the editor key
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

@@ -1080,6 +1080,18 @@ fn day_of(stamp: &str) -> &str {
     if day.len() == 10 && ok { day } else { "" }
 }
 
+/// The two dim lines at the top of the editor's Seeds tab.
+const EDITOR_SEEDS_INTRO: [&str; 2] = [
+    "The station plays music like these artists, songs and genres.",
+    "a adds one to steer it · x removes one to stop leaning that way",
+];
+/// The Thumbs tab's column heads: the song and artist, and the day it was thumbed.
+const EDITOR_THUMBS_SONG: &str = "Song · Artist";
+const EDITOR_THUMBS_DATE: &str = "Thumbed on";
+/// List-area rows (see `draw_editor`) from which the Seeds intro / Thumbs heads show.
+const EDITOR_INTRO_FROM: usize = 8;
+const EDITOR_HEADS_FROM: usize = 5;
+
 /// `e`: the station editor, a popup with the Seeds and Thumbs tabs.
 fn draw_editor(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, ed: &Editor) {
     let width = 76.min(screen.width.saturating_sub(2)).max(screen.width.min(24));
@@ -1110,22 +1122,29 @@ fn draw_editor(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, ed: &Ed
         Line::from(Span::styled(format!(" {}", fit(&text, inner_w - 1)), Style::new().fg(p.muted))).left_aligned()
     };
     // The visible window of a list, scrolled to keep the cursor in view.
-    let window = |len: usize, cursor: usize| {
+    let window = |len: usize, cursor: usize, room: usize| {
         let at = cursor.min(len.saturating_sub(1));
-        let start = at.saturating_sub(rows_room - 1).min(len.saturating_sub(rows_room));
+        let start = at.saturating_sub(room - 1).min(len.saturating_sub(room));
         (start, at)
     };
     let mut footer = String::new();
     let hint;
     if seeds_on {
         hint = "a = add · x = remove · Tab = Thumbs · Esc = close";
+        // What a seed is, in two dim lines; a short screen goes without.
+        let intro = rows_room >= EDITOR_INTRO_FROM;
+        if intro {
+            lines.push(note(EDITOR_SEEDS_INTRO[0].to_owned()));
+            lines.push(note(EDITOR_SEEDS_INTRO[1].to_owned()));
+        }
+        let room = rows_room - if intro { 2 } else { 0 };
         match &ed.seeds {
             Loaded::Loading => lines.push(note(format!("{} Loading the seeds…", ic.loading))),
             Loaded::Failed(e) => lines.push(note(format!("Couldn't load the seeds: {}", clean(e)))),
             Loaded::Ready(seeds) if seeds.is_empty() => lines.push(note("This station has no seeds".to_owned())),
             Loaded::Ready(seeds) => {
-                let (start, at) = window(seeds.len(), ed.seed_cursor);
-                for (i, seed) in seeds.iter().enumerate().skip(start).take(rows_room) {
+                let (start, at) = window(seeds.len(), ed.seed_cursor, room);
+                for (i, seed) in seeds.iter().enumerate().skip(start).take(room) {
                     lines.push(row(format!(" {}{}", pad(seed.kind, 8), clean(&seed.name)), i == at));
                 }
                 footer = format!("{} of {}", at + 1, seeds.len());
@@ -1134,11 +1153,22 @@ fn draw_editor(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, ed: &Ed
     } else {
         hint = "x = take back · t = up/down · Tab = Seeds · Esc = close";
         let list = ed.list(ed.positive);
-        let (arrow, which) = if ed.positive { (ic.up, "Thumbs up") } else { (ic.down, "Thumbs down") };
+        let arrow = if ed.positive { ic.up } else { ic.down };
         lines.push(note(format!(
-            "{arrow} {which} · t shows the {}",
+            "{arrow} {} · press t to see {}",
+            if ed.positive { "Songs you gave a thumbs up" } else { "Songs you gave a thumbs down" },
             if ed.positive { "thumbs down" } else { "thumbs up" }
         )));
+        // Column heads over the rows: the song on the left, the day you thumbed it on the right.
+        let heads = rows_room >= EDITOR_HEADS_FROM;
+        if heads {
+            let left = format!(" {} {}", " ".repeat(arrow.width()), EDITOR_THUMBS_SONG);
+            let right = EDITOR_THUMBS_DATE;
+            // The dates end two cells short of the right border (see the rows below).
+            let gap = inner_w.saturating_sub(left.width() + right.width() + 3);
+            lines.push(note(format!("{left}{}{right}", " ".repeat(gap))));
+        }
+        let room = rows_room - 1 - usize::from(heads);
         match &list.state {
             FeedState::Idle | FeedState::Loading if list.items.is_empty() => {
                 lines.push(note(format!("{} Loading…", ic.loading)));
@@ -1148,8 +1178,8 @@ fn draw_editor(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, ed: &Ed
             }
             _ if list.items.is_empty() => lines.push(note("No thumbs here yet".to_owned())),
             state => {
-                let (start, at) = window(list.items.len(), list.cursor);
-                for (i, f) in list.items.iter().enumerate().skip(start).take(rows_room) {
+                let (start, at) = window(list.items.len(), list.cursor, room);
+                for (i, f) in list.items.iter().enumerate().skip(start).take(room) {
                     let by = if f.artist.is_empty() { String::new() } else { format!(" · {}", clean(&f.artist)) };
                     let date = day_of(&f.date);
                     let text = format!(" {} {}{by}", if f.positive { ic.up } else { ic.down }, clean(&f.title));
@@ -2005,11 +2035,12 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
         &[
             ("l b", "like / bad the selected row (Now Playing: its song)"),
             ("f", "star / unstar the selected station"),
-            ("r", "rename the selected station (a genre station says why; the icons are explained below)"),
-            ("x", "delete the selected station from Pandora (asks first)"),
+            ("r x", "rename / delete the selected station (delete asks first; a genre station says why)"),
             ("a", "add a station: search artists and songs (Stations page)"),
             ("v", "details: a song, or a station's seeds and thumbs"),
-            ("e", "edit seeds / thumbs history: Tab switches, a add, x remove, t up / down (asks first)"),
+            ("e", "edit the station: Tab switches Seeds / Thumbs, Esc closes (removing asks first)"),
+            ("", "Seeds: the artists, songs and genres it plays music like; a adds one, x removes one (one stays)"),
+            ("", "Thumbs: songs you rated and the day you thumbed each; t switches up / down, x takes one back"),
             ("j k ↑ ↓", "move in the list"),
             ("Enter", "play the station · open Settings / About"),
         ],
@@ -2047,10 +2078,16 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     for (name, keys) in HELP {
         lines.push(Line::from(Span::styled(format!(" {name}"), Style::new().fg(p.orange).bold())));
         for (key, what) in keys {
+            // A row with no key goes on explaining the one above it.
+            let pill = if key.is_empty() {
+                Span::raw("  ")
+            } else {
+                Span::styled(format!(" {key} "), Style::new().fg(p.background).bg(p.fg).bold())
+            };
             lines.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled(format!(" {key} "), Style::new().fg(p.background).bg(p.fg).bold()),
-                Span::raw(" ".repeat(key_w - key.width() + 2)),
+                pill,
+                Span::raw(" ".repeat(if key.is_empty() { key_w + 2 } else { key_w - key.width() + 2 })),
                 Span::styled((*what).to_owned(), Style::new().fg(p.fg)),
             ]));
         }
@@ -2241,6 +2278,90 @@ mod tests {
                 (rest.starts_with(name) && buffer[(x, y)].symbol() == &name[..1]).then_some(x)
             })
         })
+    }
+
+    /// A demo app with the station editor open on M83 Radio, on the Seeds tab.
+    fn editor_demo() -> App {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = demo();
+        app.view = View::Stations;
+        app.focus = crate::app::Focus::Content;
+        app.stations_cursor = app.stations.iter().position(|s| s.name == "M83 Radio").unwrap();
+        app.on_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        app.settle(std::time::Duration::from_millis(300));
+        assert!(app.editor.is_some());
+        app
+    }
+
+    #[test]
+    fn the_seeds_tab_says_what_seeds_are_and_a_short_screen_goes_without() {
+        let app = editor_demo();
+        let tall = screen(&app, 120, 40).0.join("\n");
+        for line in EDITOR_SEEDS_INTRO {
+            assert!(tall.contains(line), "intro line {line:?}\n{tall}");
+        }
+        assert!(tall.contains("Seeds (") && tall.contains("1 of "), "the list is still there\n{tall}");
+        // The two lines are dim and never longer than the popup is wide.
+        assert!(EDITOR_SEEDS_INTRO.iter().all(|l| l.width() <= 74), "fits the 76-cell popup");
+        let short = screen(&app, 120, 18).0.join("\n");
+        assert!(!short.contains("plays music like") && short.contains("Seeds ("), "dropped when short\n{short}");
+    }
+
+    #[test]
+    fn the_thumbs_tab_has_column_heads_and_dates_that_line_up_under_thumbed_on() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = editor_demo();
+        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.settle(std::time::Duration::from_millis(300));
+        let lines = screen(&app, 120, 40).0;
+        let text = lines.join("\n");
+        assert!(text.contains("Songs you gave a thumbs up · press t to see thumbs down"), "{text}");
+        let head = lines.iter().find(|l| l.contains(EDITOR_THUMBS_SONG)).expect("the header row");
+        assert!(head.contains(EDITOR_THUMBS_DATE), "{head}");
+        // The header's last cell is the same column as every date's last cell.
+        let end_of = |l: &str, word: &str| {
+            let at = l.find(word).unwrap() + word.len();
+            l[..at].chars().count()
+        };
+        let want = end_of(head, EDITOR_THUMBS_DATE);
+        let dates: Vec<&String> = lines.iter().filter(|l| l.contains("2026-10-")).collect();
+        assert!(dates.len() >= 3, "{text}");
+        for l in dates {
+            let at = l.find("2026-10-").unwrap();
+            assert_eq!(l[..at].chars().count() + 10, want, "date ends under the header: {l}");
+        }
+        // The thumbs-down side says so, and the header is dropped on a short screen.
+        app.on_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+        app.settle(std::time::Duration::from_millis(300));
+        let down = screen(&app, 120, 40).0.join("\n");
+        assert!(down.contains("Songs you gave a thumbs down · press t to see thumbs up"), "{down}");
+        let short = screen(&app, 120, 16).0.join("\n");
+        assert!(!short.contains(EDITOR_THUMBS_DATE) && short.contains("Songs you gave"), "{short}");
+    }
+
+    #[test]
+    fn a_thumb_without_a_date_shows_a_blank_not_junk() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = editor_demo();
+        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.settle(std::time::Duration::from_millis(300));
+        let ed = app.editor.as_mut().unwrap();
+        let list = if ed.positive { &mut ed.up } else { &mut ed.down };
+        list.items[0].date = String::new();
+        list.items[1].date = "not a date".to_owned();
+        let text = screen(&app, 120, 40).0.join("\n");
+        assert!(!text.contains("not a date") && !text.contains("None"), "{text}");
+    }
+
+    #[test]
+    fn help_explains_seeds_and_thumbs_under_the_editor() {
+        for (cols, rows) in [(255u16, 70u16), (160, 40)] {
+            let mut app = demo();
+            app.help = true;
+            let text = screen(&app, cols, rows).0.join("\n");
+            assert!(text.contains("Seeds: the artists, songs and genres it plays music like"), "{cols}x{rows}\n{text}");
+            assert!(text.contains("Thumbs: songs you rated and the day you thumbed each"), "{cols}x{rows}\n{text}");
+        }
     }
 
     #[test]

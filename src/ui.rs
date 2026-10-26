@@ -1905,6 +1905,16 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         }
         keys.push(("v", "Details"));
     };
+    // Now Playing (its pane, or its menu entry): r and e on the playing station, never x.
+    let playing_keys = |keys: &mut Vec<(&'static str, &'static str)>| {
+        let Some(station) = app.playing_station_in_reach() else { return };
+        if station.allow_rename {
+            keys.push(("r", "Rename"));
+        }
+        if station.allow_edit_seeds {
+            keys.push(("e", "Edit"));
+        }
+    };
     match (app.focus, app.view) {
         (Focus::Menu, _) if matches!(app.menu_selected(), MenuItem::Favorite(_)) => {
             if app.station_in_reach().is_some() {
@@ -1914,15 +1924,24 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
                 keys.push(("f", "Unfavorite"));
             }
         }
-        (Focus::Menu, View::Player) => keys.extend([("Enter", "Open"), ("Tab", "Now Playing")]),
+        (Focus::Menu, View::Player) => {
+            keys.push(("Enter", "Open"));
+            playing_keys(&mut keys);
+            keys.push(("Tab", "Now Playing"));
+        }
         (Focus::Content, View::Player) if app.pane == Pane::NowPlaying => {
             keys.push(("Tab", "Up Next"));
+            playing_keys(&mut keys);
             if app.now.is_some() {
                 keys.push(("v", "Details"));
             }
             keys.push(("Esc", "Menu"));
         }
-        (Focus::Menu, _) => keys.extend([("Enter", "Open"), ("Tab", "Page")]),
+        (Focus::Menu, _) => {
+            keys.push(("Enter", "Open"));
+            playing_keys(&mut keys);
+            keys.push(("Tab", "Page"));
+        }
         (Focus::Content, View::Player) => {
             keys.push(("Tab", if app.pane == Pane::UpNext { "History" } else { "Menu" }));
             if row_here {
@@ -2042,7 +2061,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
         &[
             ("l b", "like / bad the selected row (Now Playing: its song)"),
             ("f", "star / unstar the selected station"),
-            ("r x", "rename / delete the selected station (delete asks first; a genre station says why)"),
+            ("r x", "rename / delete the selected station (x asks first; on Now Playing r and e use the playing one)"),
             ("a", "add a station: search artists and songs (Stations page)"),
             ("v", "details: a song, or a station's seeds and thumbs"),
             ("e", "edit the station: Tab switches Seeds / Thumbs, Esc closes (removing asks first)"),
@@ -2298,6 +2317,117 @@ mod tests {
         app.settle(std::time::Duration::from_millis(300));
         assert!(app.editor.is_some());
         app
+    }
+
+    /// A demo app on Now Playing, playing the station called `name`, with the
+    /// keys on the Now Playing pane (`menu` false) or the menu on NOW PLAYING.
+    fn playing_demo(name: &str, menu: bool) -> App {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = demo();
+        app.settle(std::time::Duration::from_millis(300));
+        app.current_station = app.stations.iter().find(|s| s.name == name).map(|s| s.id.clone());
+        assert!(app.current_station.is_some(), "{name}");
+        app.on_key(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT));
+        if menu {
+            app.focus = crate::app::Focus::Menu;
+            app.menu_cursor = 0;
+            assert_eq!(app.menu_selected(), MenuItem::NowPlaying);
+        }
+        app
+    }
+
+    fn press(app: &mut App, key: char) {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        app.on_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn r_and_e_work_on_now_playing_for_your_own_station_and_x_does_not() {
+        for menu in [false, true] {
+            let mut app = playing_demo("M83 Radio", menu);
+            let keys: Vec<&str> = key_caps(&app).iter().map(|(k, _)| *k).collect();
+            assert!(keys.contains(&"r") && keys.contains(&"e") && !keys.contains(&"x"), "menu={menu}: {keys:?}");
+            press(&mut app, 'r');
+            let rename = app.rename.take().expect("the rename box opens");
+            assert_eq!(rename.station.name, "M83 Radio");
+            press(&mut app, 'e');
+            app.settle(std::time::Duration::from_millis(300));
+            let ed = app.editor.take().expect("the editor opens");
+            assert_eq!(ed.station.name, "M83 Radio");
+            // Delete stays refused here, with its old message.
+            press(&mut app, 'x');
+            assert!(app.confirm_delete.is_none() && app.genre_notice.is_none());
+            assert!(app.status.starts_with("x deletes works on a station"), "{}", app.status);
+        }
+    }
+
+    #[test]
+    fn closing_the_editor_or_the_rename_box_leaves_the_keys_on_now_playing() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = playing_demo("M83 Radio", false);
+        for key in ['r', 'e'] {
+            press(&mut app, key);
+            app.settle(std::time::Duration::from_millis(300));
+            app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            assert!(app.rename.is_none() && app.editor.is_none(), "{key}: closed");
+            assert_eq!((app.view, app.focus, app.pane), (View::Player, crate::app::Focus::Content, Pane::NowPlaying));
+        }
+    }
+
+    #[test]
+    fn renaming_the_playing_station_changes_its_title_in_now_playing() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = playing_demo("M83 Radio", false);
+        assert!(screen(&app, 120, 36).0.join("\n").contains("M83 Radio"));
+        press(&mut app, 'r');
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        for c in "Night Drive".chars() {
+            press(&mut app, c);
+        }
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.settle(std::time::Duration::from_millis(500));
+        assert_eq!(app.station_name(), Some("Night Drive"));
+        let text = screen(&app, 120, 36).0.join("\n");
+        assert!(text.contains("Night Drive") && !text.contains("M83 Radio"), "{text}");
+        assert_eq!((app.view, app.focus, app.pane), (View::Player, crate::app::Focus::Content, Pane::NowPlaying));
+    }
+
+    #[test]
+    fn on_now_playing_a_genre_station_gets_the_popup_and_shuffle_just_the_message() {
+        for menu in [false, true] {
+            for key in ['r', 'e'] {
+                let mut app = playing_demo("Today's Hits", menu);
+                let keys: Vec<&str> = key_caps(&app).iter().map(|(k, _)| *k).collect();
+                assert!(!keys.contains(&"r") && !keys.contains(&"e"), "not hinted for a genre station: {keys:?}");
+                press(&mut app, key);
+                assert!(app.rename.is_none() && app.editor.is_none());
+                let notice = app.genre_notice.as_ref().expect("the genre popup");
+                assert_eq!(notice.station, "Today's Hits");
+                assert!(app.status.contains("Pandora doesn't let you"), "{}", app.status);
+                // "Don't show this again" is honoured here as well.
+                let mut app = playing_demo("Today's Hits", menu);
+                app.config.ui.genre_edit_popup = false;
+                press(&mut app, key);
+                assert!(app.genre_notice.is_none() && app.status.contains("Pandora doesn't let you"));
+
+                let mut app = playing_demo("Shuffle", menu);
+                press(&mut app, key);
+                assert!(app.rename.is_none() && app.editor.is_none() && app.genre_notice.is_none());
+                assert!(app.status.contains("Pandora doesn't let you"), "{}", app.status);
+            }
+        }
+    }
+
+    #[test]
+    fn r_and_e_still_do_nothing_on_up_next_and_history() {
+        let mut app = playing_demo("M83 Radio", false);
+        for pane in [Pane::UpNext, Pane::History] {
+            app.pane = pane;
+            for key in ['r', 'e'] {
+                press(&mut app, key);
+                assert!(app.rename.is_none() && app.editor.is_none(), "{pane:?} {key}");
+            }
+        }
     }
 
     #[test]

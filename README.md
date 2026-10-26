@@ -157,11 +157,11 @@ Try it without an account (made-up stations, no network, no sound):
 | `F` (Shift+f) | the menu, on the first of FAVORITES |
 | `f` | favorite / unfavorite the station (the menu's FAVORITES section) |
 | `a` | add a station: search artists and songs (on the Stations page; also the "Add station…" row) |
-| `r` | rename the selected station (Stations, or a favorite's station); asks for the name |
+| `r` | rename the selected station (Stations, or a favorite's station), or the playing station when Now Playing has the keys or the menu is on NOW PLAYING; asks for the name |
 | | The icon right after a station's star (before its name): the boxvibe logo (`\uf1b2`, in every icon set) is a Pandora genre station, which can't be renamed; a little person (`👤` emoji, `\uf007` Nerd Font, `☺` plain set) is a station you made. Shuffle has neither, and neither shows on the Genres page |
 | | Trying `r`, `e` (or `x`, where Pandora blocks it) on a genre station says why in the bottom bar, and, until you turn it off, in a **popup** that explains the problem and what the logo (genre station) and person (your own station) icons mean. It has a "Don't show this again" box: `Space` (or `x`) ticks it, `Enter` closes (and saves the box as the setting Off), `Esc` closes without saving. It comes back any time in Settings → BOXVIBE → **Genre station edit popup** (`[boxvibe] genre_edit_popup`). The same icons are explained under STATION ICONS in the help (`?`) |
-| `x` | delete the selected station from your Pandora account; asks first (`y` = delete, any other key keeps it) |
-| `e` | edit the station's seeds and look at its thumbs history (Stations, or a favorite's station). In the editor: `Tab` switches Seeds / Thumbs, `a` adds a seed, `x` removes a seed or takes back a thumb (asks first), `t` flips thumbs up / down, `Esc` closes. Help (`?`) explains seeds and the thumbs dates under this key |
+| `x` | delete the selected station from your Pandora account; asks first (`y` = delete, any other key keeps it). Not on Now Playing: open Stations first |
+| `e` | edit the station's seeds and look at its thumbs history (Stations, a favorite's station, or the playing station from Now Playing, like `r`). In the editor: `Tab` switches Seeds / Thumbs, `a` adds a seed, `x` removes a seed or takes back a thumb (asks first), `t` flips thumbs up / down, `Esc` closes. Help (`?`) explains seeds and the thumbs dates under this key |
 | `v` | details: a song, or a station's seeds, thumbs up / down counts, genres and dates |
 | `C` `R` `H` (Shift) | album art: picture / off · Retro level · tint; saved |
 | `{` `}` | menu narrower / wider |

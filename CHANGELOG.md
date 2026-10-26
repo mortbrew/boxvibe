@@ -321,6 +321,16 @@ bound twice.
   instead of "No cover art"; "No cover art" stays for a song with no cover or one that could not be loaded
   (and "Loading cover art…" while one downloads). The Settings description and the README say the same
 
+#### Rename and edit from Now Playing
+
+- `r` (rename) and `e` (station editor) now work on Now Playing, on the station that is playing, both with
+  the keys on the Now Playing pane and with the menu on NOW PLAYING; the key bar lists `r Rename` and
+  `e Edit` there (and drops them for a station Pandora won't let you change)
+- Pandora's rules carry over: a genre station gets the same popup and message, Shuffle gets the message;
+  `x` (delete) still only works on a station in Stations or a favorite, with its old message
+- Renaming the playing station updates the name shown in Now Playing; closing the editor or the rename box
+  leaves the keys on Now Playing. Help and the README say the same
+
 ## 0.3.0 (2026-10-23)
 
 ### Now Playing polish (`now-playing-polish`)

@@ -2191,6 +2191,22 @@ impl App {
         }
     }
 
+    /// The playing station, where Now Playing has the keys or the menu is on
+    /// its NOW PLAYING entry: what `r` and `e` act on there (not `x`).
+    pub fn playing_station_in_reach(&self) -> Option<Station> {
+        let here = match self.focus {
+            Focus::Content => self.view == View::Player && self.pane == Pane::NowPlaying,
+            Focus::Menu => self.menu_selected() == MenuItem::NowPlaying,
+        };
+        let id = self.current_station.as_deref().filter(|_| here)?;
+        self.stations.iter().find(|s| s.id == id).cloned()
+    }
+
+    /// The station `r` and `e` change: the one in reach, or else the playing one.
+    pub fn station_to_change(&self) -> Option<(Station, bool)> {
+        self.station_in_reach().or_else(|| self.playing_station_in_reach().map(|s| (s, false)))
+    }
+
     /// The reason `r` / `x` / `v` have nothing to act on here.
     fn no_station_here(&mut self, what: &str) {
         self.status = match (self.focus, self.menu_selected()) {
@@ -2202,9 +2218,9 @@ impl App {
         };
     }
 
-    /// `r`: asks for a new name for the selected station.
+    /// `r`: asks for a new name for the selected station (or the playing one, on Now Playing).
     fn ask_rename(&mut self) {
-        let Some((station, favorite)) = self.station_in_reach() else {
+        let Some((station, favorite)) = self.station_to_change() else {
             return self.no_station_here("r renames");
         };
         if !station.allow_rename {

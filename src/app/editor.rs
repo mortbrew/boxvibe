@@ -143,9 +143,9 @@ impl EditorConfirm {
 }
 
 impl App {
-    /// `e`: the editor for the selected station (Stations, or a favorite).
+    /// `e`: the editor for the selected station (Stations, a favorite, or the playing station on Now Playing).
     pub(super) fn open_editor(&mut self) {
-        let Some((station, favorite)) = self.station_in_reach() else {
+        let Some((station, favorite)) = self.station_to_change() else {
             return self.no_station_here("e edits");
         };
         if !station.allow_edit_seeds {

@@ -84,6 +84,12 @@ pub enum Request {
         track_token: String,
         positive: bool,
     },
+    /// Takes back a song's thumb (the same thumb pressed again).
+    ClearThumb {
+        track_token: String,
+        feedback_id: String,
+        positive: bool,
+    },
     Tired {
         track_token: String,
     },
@@ -177,6 +183,10 @@ pub enum Reply {
     Rated {
         track_token: String,
         positive: bool,
+        feedback_id: String,
+    },
+    ThumbCleared {
+        track_token: String,
     },
     Tired {
         track_token: String,
@@ -397,7 +407,10 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
                 round += 1;
                 Reply::Playlist { songs: demo::playlist(&station_id, round - 1), station_id }
             }
-            Request::Rate { track_token, positive } => Reply::Rated { track_token, positive },
+            Request::Rate { track_token, positive } => {
+                Reply::Rated { feedback_id: format!("demo-fb-{track_token}"), track_token, positive }
+            }
+            Request::ClearThumb { track_token, .. } => Reply::ThumbCleared { track_token },
             Request::Tired { track_token } => Reply::Tired { track_token },
             Request::AdList { ask } => {
                 ads_asked += 1;
@@ -493,9 +506,18 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                 c.fragment(&station_id).map(|songs| Reply::Playlist { station_id: station_id.clone(), songs })
             }),
             Request::Rate { track_token, positive } => run(&mut client, &login, &mut took_over, "thumbs", |c| {
-                c.add_feedback(&track_token, positive)
-                    .map(|()| Reply::Rated { track_token: track_token.clone(), positive })
+                c.add_feedback(&track_token, positive).map(|feedback_id| Reply::Rated {
+                    track_token: track_token.clone(),
+                    positive,
+                    feedback_id,
+                })
             }),
+            Request::ClearThumb { track_token, feedback_id, positive } => {
+                run(&mut client, &login, &mut took_over, "clear thumb", |c| {
+                    c.delete_feedback(&feedback_id, positive)
+                        .map(|()| Reply::ThumbCleared { track_token: track_token.clone() })
+                })
+            }
             Request::Tired { track_token } => run(&mut client, &login, &mut took_over, "tired", |c| {
                 c.add_tired(&track_token).map(|()| Reply::Tired { track_token: track_token.clone() })
             }),

@@ -2313,7 +2313,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
         &[
             ("space p", "play / pause"),
             ("N Z", "skip to the next song · tired of this song (a month off)"),
-            ("U D", "thumbs up / down the playing song (down skips it)"),
+            ("U D", "thumbs up / down the playing song (down skips it) · the same thumb again takes it back"),
             ("Shift ← →", "volume down / up (saved)"),
             ("I", "pin the selected or playing song (menu: Pinned; Enter opens its Pandora page, x unpins)"),
             ("B", "sleep timer: 15, 30, 60, 90 min, end of this song, off (fades out, then pauses)"),
@@ -2322,7 +2322,10 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
     (
         "THE PANE YOU ARE IN",
         &[
-            ("l b", "like / bad the selected row (Now Playing: its song)"),
+            (
+                "l b",
+                "like / bad the selected row (Now Playing: its song) · Up Next b waits for its turn, b again cancels",
+            ),
             ("f", "star / unstar the selected station"),
             ("r x", "rename / delete the selected station (x asks first; on Now Playing r and e use the playing one)"),
             ("a", "add a station: search artists and songs (Stations page)"),

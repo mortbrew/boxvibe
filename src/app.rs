@@ -685,6 +685,8 @@ pub struct App {
     /// Where they are kept (`None`: in the demo, only in memory).
     pub pins_path: Option<PathBuf>,
     pub pinned_cursor: usize,
+    /// Up Next songs disliked with b: sent, and skipped, when their turn comes.
+    pub held_dislikes: std::collections::HashSet<String>,
     /// The "genre stations can't be changed" popup, while it is open.
     pub genre_notice: Option<GenreNotice>,
     /// Good Vibes Only was turned off in Settings: the risk popup asks first
@@ -804,6 +806,7 @@ impl App {
             pins_path: if demo { None } else { crate::pinned::default_path() },
             pins: Vec::new(),
             pinned_cursor: 0,
+            held_dislikes: Default::default(),
             genre_notice: None,
             confirm_good_vibes: None,
             rename: None,
@@ -1514,11 +1517,21 @@ impl App {
                     self.prefetch();
                 }
             }
-            Reply::Rated { track_token, positive } => {
+            Reply::Rated { track_token, positive, feedback_id } => {
+                if let Some(song) = self.song_mut(&track_token) {
+                    song.feedback_id = feedback_id;
+                }
                 let ic = crate::icons::icons(self.config.ui.icons);
                 let what = if positive { format!("{} Liked", ic.up) } else { format!("{} Disliked", ic.down) };
                 let title = self.find_song(&track_token).map(|s| s.title.clone()).unwrap_or_default();
                 self.status = format!("{what}: {title}");
+            }
+            Reply::ThumbCleared { track_token } => {
+                let title = self.song_mut(&track_token).map(|s| {
+                    s.feedback_id.clear();
+                    s.title.clone()
+                });
+                self.status = format!("Thumb taken back: {}", title.unwrap_or_default());
             }
             Reply::TookOver => {
                 self.status = "Pandora was playing on another device with this account: boxvibe took over".into();
@@ -1613,6 +1626,10 @@ impl App {
                 self.self_update = Progress::Failed(error);
             }
         }
+    }
+
+    fn song_mut(&mut self, token: &str) -> Option<&mut Song> {
+        self.now.iter_mut().chain(self.history.iter_mut()).chain(self.queue.iter_mut()).find(|s| s.track_token == token)
     }
 
     fn find_song(&self, token: &str) -> Option<&Song> {
@@ -1824,6 +1841,17 @@ impl App {
 
     /// Starts the next song of the queue (or asks for more).
     fn next_song(&mut self) {
+        // Dislikes held on Up Next rows count now, at their turn: sent, and skipped.
+        while let Some(front) = self.queue.front()
+            && self.held_dislikes.contains(&front.track_token)
+        {
+            let Some(song) = self.queue.pop_front() else { break };
+            self.held_dislikes.remove(&song.track_token);
+            self.backend.send(Request::Rate { track_token: song.track_token.clone(), positive: false });
+            self.status = format!("Disliked and skipped: {}", song.title);
+            self.audio_cache.remove(&song.track_token);
+            self.push_history(song);
+        }
         let Some(song) = self.queue.pop_front() else {
             self.request_more();
             return;
@@ -2794,6 +2822,10 @@ impl App {
             self.status = "Pandora can't rate this song (no track token)".into();
             return;
         }
+        if song.rating == (if positive { Rating::Up } else { Rating::Down }) {
+            let token = song.track_token.clone();
+            return self.clear_thumb(&token);
+        }
         song.rating = if positive { Rating::Up } else { Rating::Down };
         let request = Request::Rate { track_token: song.track_token.clone(), positive };
         self.backend.send(request);
@@ -2829,15 +2861,45 @@ impl App {
             self.status = format!("Pandora can't rate “{}” (no track token)", song.title);
             return;
         }
-        song.rating = if positive { Rating::Up } else { Rating::Down };
-        self.backend.send(Request::Rate { track_token: song.track_token.clone(), positive });
-        // A thumbs down on a song still to come drops it, as skipping would.
-        if !positive && pane == Pane::UpNext {
-            let Some(gone) = self.queue.remove(at) else { return };
-            self.requested.remove(&gone.track_token);
-            self.audio_cache.remove(&gone.track_token);
-            self.status = format!("Disliked and dropped from Up Next: {}", gone.title);
+        let token = song.track_token.clone();
+        let wanted = if positive { Rating::Up } else { Rating::Down };
+        // An Up Next dislike is held here until the song's turn: b again cancels it.
+        if self.held_dislikes.contains(&token) {
+            self.held_dislikes.remove(&token);
+            song.rating = Rating::None;
+            if !positive {
+                self.status = format!("Dislike cancelled: {} stays in Up Next", song.title);
+                return;
+            }
+        } else if song.rating == wanted {
+            return self.clear_thumb(&token);
         }
+        if !positive && pane == Pane::UpNext {
+            song.rating = Rating::Down;
+            self.status = format!("Disliked: {} is skipped at its turn (b again cancels)", song.title);
+            self.held_dislikes.insert(token);
+            return;
+        }
+        song.rating = wanted;
+        self.backend.send(Request::Rate { track_token: token, positive });
+    }
+
+    /// The same thumb pressed again: Pandora takes it back (deleteFeedback).
+    fn clear_thumb(&mut self, token: &str) {
+        let Some(song) = self.song_mut(token) else { return };
+        if song.feedback_id.is_empty() {
+            self.status = format!(
+                "Pandora didn't say which thumb to take back for “{}” yet (e on its station lists your thumbs)",
+                song.title
+            );
+            return;
+        }
+        let positive = song.rating == Rating::Up;
+        song.rating = Rating::None;
+        let request =
+            Request::ClearThumb { track_token: token.into(), feedback_id: song.feedback_id.clone(), positive };
+        self.status = format!("Taking back the thumb on “{}”…", song.title);
+        self.backend.send(request);
     }
 
     fn tired(&mut self) {
@@ -3375,6 +3437,45 @@ mod tests {
     }
 
     #[test]
+    fn the_same_thumb_again_takes_it_back() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::NowPlaying;
+        app.on_key(key(KeyCode::Char('l')));
+        app.settle(Duration::from_millis(150));
+        assert_eq!(app.now.as_ref().unwrap().rating, Rating::Up);
+        assert!(!app.now.as_ref().unwrap().feedback_id.is_empty(), "Pandora's feedbackId is kept");
+        app.on_key(key(KeyCode::Char('l')));
+        assert_eq!(app.now.as_ref().unwrap().rating, Rating::None);
+        app.settle(Duration::from_millis(150));
+        assert!(app.status.starts_with("Thumb taken back"), "{}", app.status);
+        // Without a feedbackId it says why and changes nothing.
+        app.now.as_mut().unwrap().rating = Rating::Up;
+        app.on_key(key(KeyCode::Char('l')));
+        assert_eq!(app.now.as_ref().unwrap().rating, Rating::Up);
+        assert!(app.status.contains("didn't say which thumb"), "{}", app.status);
+    }
+
+    #[test]
+    fn an_up_next_dislike_waits_for_its_turn_and_b_again_cancels_it() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::UpNext;
+        let first = app.queue[0].track_token.clone();
+        app.on_key(key(KeyCode::Char('b')));
+        app.on_key(key(KeyCode::Char('b')));
+        assert_eq!(app.queue[0].rating, Rating::None, "b again cancels");
+        assert!(app.held_dislikes.is_empty());
+        app.on_key(key(KeyCode::Char('b')));
+        let second = app.queue[1].track_token.clone();
+        app.on_key(shift('N'));
+        app.settle(Duration::from_millis(150));
+        assert_eq!(app.now.as_ref().unwrap().track_token, second, "the held song is skipped at its turn");
+        assert!(app.history.iter().any(|s| s.track_token == first && s.rating == Rating::Down));
+        assert!(app.held_dislikes.is_empty());
+    }
+
+    #[test]
     fn l_and_b_rate_what_the_pane_has() {
         let mut app = demo();
         app.focus = Focus::Content;
@@ -3386,15 +3487,15 @@ mod tests {
         assert_eq!(app.history[1].rating, Rating::Down);
         assert_eq!(app.now.as_ref().unwrap().rating, Rating::None);
         assert_eq!(app.now.as_ref().unwrap().track_token, playing, "rating a row doesn't skip");
-        // Up Next: l likes the highlighted song in place; b drops it.
+        // Up Next: l likes the highlighted song in place; b holds a dislike for its turn.
         app.pane = Pane::UpNext;
         let token = app.queue[0].track_token.clone();
         app.on_key(key(KeyCode::Char('l')));
         assert_eq!((app.queue[0].track_token.as_str(), app.queue[0].rating), (token.as_str(), Rating::Up));
         let n = app.queue.len();
         app.on_key(key(KeyCode::Char('b')));
-        assert_eq!(app.queue.len(), n - 1);
-        assert!(app.status.starts_with("Disliked and dropped from Up Next"), "{}", app.status);
+        assert_eq!((app.queue.len(), app.queue[0].rating), (n, Rating::Down));
+        assert!(app.status.contains("b again cancels"), "{}", app.status);
         // Now Playing focused: the current song.
         app.pane = Pane::NowPlaying;
         app.on_key(key(KeyCode::Char('l')));

@@ -143,9 +143,9 @@ Try it without an account (made-up stations, no network, no sound):
 |---|---|
 | `space` `p` | play / pause |
 | `N` (Shift+n) | skip to the next song, from any pane |
-| `U` `D` (Shift) | thumbs up / down the playing song, from any pane (down skips it) |
+| `U` `D` (Shift) | thumbs up / down the playing song, from any pane (down skips it); the same thumb again takes it back |
 | `Z` (Shift+z) | tired of this song, from any pane: Pandora keeps it off your stations for a month, and the next song starts |
-| `l` `b` | like / bad the selected row in Up Next or History, or the song when Now Playing has the keys |
+| `l` `b` | like / bad the selected row in Up Next or History, or the song when Now Playing has the keys. The same thumb again takes it back. `b` on an Up Next row is held until the song's turn (then sent and skipped); `b` again cancels it |
 | `Shift+←` `Shift+→` | volume down / up |
 | `j` `k` `↑` `↓` | move (wraps around the ends) |
 | `Enter` | play the station · open Settings / About · change a setting · Update Now |

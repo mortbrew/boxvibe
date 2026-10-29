@@ -94,6 +94,7 @@ pub fn playlist(station_id: &str, round: usize) -> Vec<Song> {
                 length,
                 gain: 0.0,
                 rating: if n == 0 { Rating::Up } else { Rating::None },
+                feedback_id: if n == 0 { format!("demo-fb-{round}-{i}") } else { String::new() },
             }
         })
         .collect()

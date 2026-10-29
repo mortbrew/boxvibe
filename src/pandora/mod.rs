@@ -221,6 +221,9 @@ pub struct Song {
     /// `fileGain`, dB.
     pub gain: f32,
     pub rating: Rating,
+    /// The `feedbackId` of this song's thumb, once Pandora has said it
+    /// (addFeedback's answer, or the track's own): what clearing it takes.
+    pub feedback_id: String,
 }
 
 /// `[pandora] audio_quality`.
@@ -613,7 +616,17 @@ pub fn parse_track(v: &Value, station_id: &str) -> Option<Song> {
             Some(r) if r < 0 => Rating::Down,
             _ => Rating::None,
         },
+        feedback_id: id_of(v, "feedbackId"),
     })
+}
+
+/// A string or number field as text (empty when missing).
+fn id_of(v: &Value, key: &str) -> String {
+    match v.get(key) {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Number(n)) => n.to_string(),
+        _ => String::new(),
+    }
 }
 
 /// The `csrftoken` value in a `Set-Cookie` header, if it is that cookie.
@@ -975,9 +988,10 @@ impl Client {
     }
 
     /// `v1/station/addFeedback`: thumbs up (`positive`) or down.
-    pub fn add_feedback(&mut self, track_token: &str, positive: bool) -> Result<(), Error> {
+    /// Returns the thumb's `feedbackId` (empty if Pandora sent none).
+    pub fn add_feedback(&mut self, track_token: &str, positive: bool) -> Result<String, Error> {
         self.post("/api/v1/station/addFeedback", &json!({ "trackToken": track_token, "isPositive": positive }))
-            .map(|_| ())
+            .map(|v| id_of(&v, "feedbackId"))
     }
 
     /// `v1/listener/addTiredSong`: off every station for a month.

@@ -15,6 +15,12 @@
 - Now Playing: three blank columns inside its left and right borders (one on a card narrower than 40 columns), so the cover and text don't touch the frame.
 - Album art: a cover still missing after the quick retries is tried again about every 60 seconds while its song is playing or next. Failures are logged to `~/.cache/boxvibe/art.log` (time, cover address without its query string, reason), never to the terminal.
 - Good Vibes Only is now **On / Muted / Off** (Enter on the row steps through them). Muted plays and reports ads exactly as On, at volume 0, and gives your volume back when the ad ends, fails, or you quit; a volume change during the ad is what comes back. Picking Muted shows a short gray-area notice first, like Off. `[playback] good_vibes_only` takes `true`, `"muted"` or `false`.
+
+### Batch 2
+
+- Thumbs: pressing the same thumb again (`U`/`D`, `l`/`b`) takes it back (Pandora's deleteFeedback, using the `feedbackId` addFeedback returns). A thumb boxvibe has no `feedbackId` for says so; `e` on the station can still take it back.
+- Up Next: `b` no longer drops the row at once. The dislike is held (the row shows thumbs down) and sent when the song's turn comes, which skips it into History; `b` again cancels it, `l` turns it into a like.
+
 ## 0.4.0 (2026-10-24)
 
 ### Keys (breaking: please read)

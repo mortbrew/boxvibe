@@ -576,6 +576,7 @@ fn audio_worker(requests: Receiver<Request>, replies: Sender<Reply>, user_agent:
 fn art_worker(requests: Receiver<Request>, replies: Sender<Reply>, demo: bool, user_agent: &str) {
     let client = Client::new(user_agent);
     let dir = if demo { None } else { crate::art::cache_dir() };
+    let log = if demo { None } else { crate::art::log_path() };
     for request in requests {
         let Request::Art { url } = request else { continue };
         let image = if demo {
@@ -583,17 +584,27 @@ fn art_worker(requests: Receiver<Request>, replies: Sender<Reply>, demo: bool, u
         } else {
             let file = dir.as_ref().map(|d| crate::art::cache_path(d, &url));
             let cached = file.as_ref().and_then(|f| std::fs::read(f).ok()).and_then(|b| crate::art::decode(&b));
-            cached.or_else(|| {
-                let bytes = client.fetch_art(&url).ok()?;
-                let image = crate::art::decode(&bytes)?;
+            let fetched = || -> Result<image::DynamicImage, String> {
+                let bytes = client.fetch_art(&url).map_err(|e| format!("download failed: {e}"))?;
+                let image = crate::art::decode(&bytes)
+                    .ok_or_else(|| format!("not a picture boxvibe can read ({} bytes)", bytes.len()))?;
                 if let (Some(d), Some(f)) = (&dir, &file)
                     && std::fs::create_dir_all(d).is_ok()
                     && std::fs::write(f, &bytes).is_ok()
                 {
                     crate::art::trim_cache(d, crate::art::DISK_CAP);
                 }
-                Some(image)
-            })
+                Ok(image)
+            };
+            match cached.map(Ok).unwrap_or_else(fetched) {
+                Ok(image) => Some(image),
+                Err(why) => {
+                    if let Some(log) = &log {
+                        crate::art::log_failure(log, &url, &why);
+                    }
+                    None
+                }
+            }
         };
         if replies.send(Reply::Art { url, image }).is_err() {
             break;

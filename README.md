@@ -269,7 +269,7 @@ cleanly, when the popup closes. Everything behind a popup, the cover's half
 blocks included, is dimmed so the popup stands out. The status bar shows "Logged In As: <email>" at
 its right, and left of it the sleep timer when one runs (☾ 14:59) and the look in short (theme · Art Picture · Retro level · Tint …). When the bar is narrow the look goes first (tint, Retro, art, theme), then the timer.
 
-A cover that fails to download is tried again after 2, 6 and 15 seconds, and again when it is needed (a popup closes, the song changes).
+A cover that fails to download is tried again after 2, 6 and 15 seconds, then about every 60 seconds while its song is playing or next, and right away when it is needed again (a popup closes, the song changes). Why it failed goes to `~/.cache/boxvibe/art.log` (never the terminal; past 256 KB it moves to `art.log.old`).
 
 Covers download in the background and are kept in memory and in
 `~/.cache/boxvibe/art` (`$XDG_CACHE_HOME`), at most 50 MB, oldest dropped

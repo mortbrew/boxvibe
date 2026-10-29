@@ -13,6 +13,7 @@
 - Help: N and Z, Tab and Esc, and C, R and H share lines to make room.
 - Genre stations: `e` now opens their thumbs (Thumbs Up / Thumbs Down tabs, no Seeds tab), so you can see and take back thumbs on them; the key bar shows `e Thumbs`. If Pandora refuses, the bottom bar says so kindly. (Needs a live check: Pandora may not allow it on genre stations.)
 - Now Playing: three blank columns inside its left and right borders (one on a card narrower than 40 columns), so the cover and text don't touch the frame.
+- Album art: a cover still missing after the quick retries is tried again about every 60 seconds while its song is playing or next. Failures are logged to `~/.cache/boxvibe/art.log` (time, cover address without its query string, reason), never to the terminal.
 - Good Vibes Only is now **On / Muted / Off** (Enter on the row steps through them). Muted plays and reports ads exactly as On, at volume 0, and gives your volume back when the ad ends, fails, or you quit; a volume change during the ad is what comes back. Picking Muted shows a short gray-area notice first, like Off. `[playback] good_vibes_only` takes `true`, `"muted"` or `false`.
 ## 0.4.0 (2026-10-24)
 

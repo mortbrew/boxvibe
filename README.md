@@ -165,6 +165,7 @@ Try it without an account (made-up stations, no network, no sound):
 | `e` | edit the station's seeds and look at its thumbs history (Stations, a favorite's station, or the playing station from Now Playing, like `r`). In the editor: `Tab` / `Shift+Tab` cycle Seeds / Thumbs Up / Thumbs Down, `a` adds a seed, `x` removes a seed or takes back a thumb (asks first), `Esc` closes. Help (`?`) explains seeds and the thumbs dates under this key |
 | `v` | details: a song, or a station's seeds, thumbs up / down counts, genres and dates |
 | `C` `R` `H` (Shift) | album art: picture / off · Retro level · tint; saved |
+| `B` (Shift) | sleep timer: each press steps 15, 30, 60, 90 minutes, end of this song, off (cancel). The sound fades out over the last 10 seconds and then pauses; `p` plays on. Time left shows in the status bar (☾ 14:59). Not saved |
 | `{` `}` | menu narrower / wider (saved). Not listed in the bottom key bar, which keeps its room for keys that act on the selection |
 | `?` | every key |
 | `Q` (Shift+q) / `Ctrl+c` | quit (asks first: `y` = yes, any other key = no) / quit now |
@@ -263,7 +264,7 @@ The cover has no frame around it. While Help or the quit box is open, a
 terminal picture is held back (it would draw over the popup) and sent again,
 cleanly, when the popup closes. Everything behind a popup, the cover's half
 blocks included, is dimmed so the popup stands out. The status bar shows "Logged In As: <email>" at
-its right.
+its right, and left of it the sleep timer when one runs (☾ 14:59) and the look in short (theme · Art Picture · Retro level · Tint …). When the bar is narrow the look goes first (tint, Retro, art, theme), then the timer.
 
 A cover that fails to download is tried again after 2, 6 and 15 seconds, and again when it is needed (a popup closes, the song changes).
 

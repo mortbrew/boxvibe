@@ -44,6 +44,8 @@ pub struct Audio {
     gain_db: f32,
     /// Silent whatever the volume (an ad under Good Vibes Only: Muted).
     muted: bool,
+    /// 1.0, or less while the sleep timer fades out.
+    fade: f32,
     /// What the sound device plays at (the songs are resampled to it).
     rate: Option<u32>,
     /// Why there is no sound, when there is none.
@@ -74,6 +76,7 @@ impl Audio {
             volume,
             gain_db: 0.0,
             muted: false,
+            fade: 1.0,
             rate,
             problem,
         }
@@ -130,7 +133,13 @@ impl Audio {
 
     /// The amplitude the player is set to now.
     pub fn level(&self) -> f32 {
-        if self.muted { 0.0 } else { level(self.volume, self.gain_db) }
+        if self.muted { 0.0 } else { level(self.volume, self.gain_db) * self.fade }
+    }
+
+    /// The sleep timer's fade: 1.0 is the volume as set, 0.0 silence.
+    pub fn set_fade(&mut self, fade: f32) {
+        self.fade = fade.clamp(0.0, 1.0);
+        self.apply();
     }
 
     fn apply(&self) {

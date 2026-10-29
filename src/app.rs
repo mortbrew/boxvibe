@@ -289,6 +289,30 @@ pub enum Pane {
     History,
 }
 
+/// The sleep timer's lengths, in minutes, in the order `B` steps through.
+pub const SLEEP_STEPS: [u64; 4] = [15, 30, 60, 90];
+/// The sleep timer turns the sound down over this long before it pauses.
+pub const SLEEP_FADE: Duration = Duration::from_secs(10);
+
+/// A sleep timer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sleep {
+    /// This many minutes from this moment.
+    Minutes(u64, Instant),
+    /// When the playing song ends.
+    EndOfSong,
+}
+
+/// "14:59", or "1:29:59" from an hour up.
+pub fn clock_text(d: Duration) -> String {
+    let s = d.as_secs();
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
+}
+
 /// What a key can do. [`KEYMAP`] says which key does which; the context
 /// (which pane has the keys) is each command's own business.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -331,6 +355,8 @@ pub enum Cmd {
     ArtType,
     Retro,
     Tint,
+    /// The sleep timer: 15, 30, 60, 90 minutes, end of this song, off.
+    Sleep,
 }
 
 /// One key and what it does. Shift+letters are the capital letters;
@@ -367,6 +393,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(KeyCode::Char('C'), Cmd::ArtType),
     bind(KeyCode::Char('R'), Cmd::Retro),
     bind(KeyCode::Char('H'), Cmd::Tint),
+    bind(KeyCode::Char('B'), Cmd::Sleep),
     Binding { code: KeyCode::Right, shift: true, cmd: Cmd::VolumeUp },
     Binding { code: KeyCode::Left, shift: true, cmd: Cmd::VolumeDown },
     bind(KeyCode::Char('{'), Cmd::MenuNarrower),
@@ -615,6 +642,10 @@ pub struct App {
     pub history: Vec<Song>,
     pub status: String,
     pub help: bool,
+    /// The sleep timer (`B`), when one is set.
+    pub sleep: Option<Sleep>,
+    /// The sleep timer ran out at a song's end: pause what starts next.
+    sleep_pause_next: bool,
     /// The boot screen: when it began (`None` once it is over or switched off).
     pub splash: Option<Instant>,
     /// What boxvibe needs from the system and whether it is there (`None`:
@@ -734,6 +765,8 @@ impl App {
             history: Vec::new(),
             status: String::new(),
             help: false,
+            sleep: None,
+            sleep_pause_next: false,
             splash: None,
             system: None,
             system_open: false,
@@ -1204,7 +1237,13 @@ impl App {
             self.system_look = None;
             self.system_checked(&facts);
         }
+        self.sleep_tick();
         if self.now.as_ref().is_some_and(|s| self.audio.finished(s.length)) {
+            if self.sleep == Some(Sleep::EndOfSong) {
+                self.sleep = None;
+                self.sleep_pause_next = true;
+                self.audio.set_fade(0.0);
+            }
             self.end_song(End::Played);
         }
         self.ad_tick();
@@ -2165,6 +2204,7 @@ impl App {
             Cmd::ArtType => self.next_album_art(),
             Cmd::Retro => self.next_retro_mode(),
             Cmd::Tint => self.next_art_tint(),
+            Cmd::Sleep => self.next_sleep(),
         }
     }
 
@@ -2532,6 +2572,62 @@ impl App {
         self.status = format!("Icons: {}", crate::icons::label(next));
     }
 
+    /// `B`: off → 15 → 30 → 60 → 90 minutes → end of this song → off.
+    fn next_sleep(&mut self) {
+        let next = match self.sleep {
+            None => Some(Sleep::Minutes(SLEEP_STEPS[0], Instant::now())),
+            Some(Sleep::Minutes(m, _)) => match SLEEP_STEPS.iter().position(|s| *s == m) {
+                Some(i) if i + 1 < SLEEP_STEPS.len() => Some(Sleep::Minutes(SLEEP_STEPS[i + 1], Instant::now())),
+                _ => Some(Sleep::EndOfSong),
+            },
+            Some(Sleep::EndOfSong) => None,
+        };
+        self.sleep = next;
+        self.sleep_pause_next = false;
+        self.audio.set_fade(1.0);
+        self.status = match next {
+            Some(Sleep::Minutes(m, _)) => {
+                format!("Sleep timer: {m} minutes, then a fade out and pause (B: more / off)")
+            }
+            Some(Sleep::EndOfSong) => "Sleep timer: at the end of this song (B: off)".into(),
+            None => "Sleep timer off".into(),
+        };
+    }
+
+    /// How long until the sleep timer pauses (`None`: no timer, or "end of
+    /// song" with no song playing).
+    pub fn sleep_left(&self) -> Option<Duration> {
+        match self.sleep? {
+            Sleep::Minutes(m, from) => Some(Duration::from_secs(m * 60).saturating_sub(from.elapsed())),
+            Sleep::EndOfSong => {
+                let song = self.now.as_ref()?;
+                Some(Duration::from_secs(u64::from(song.length)).saturating_sub(self.audio.position()))
+            }
+        }
+    }
+
+    /// Every frame: fade out over the last [`SLEEP_FADE`], then pause.
+    fn sleep_tick(&mut self) {
+        if self.sleep_pause_next && self.audio.is_active() {
+            if !self.audio.is_paused() {
+                self.audio.toggle_pause();
+            }
+            self.sleep_pause_next = false;
+            self.audio.set_fade(1.0);
+            self.status = "Sleep timer: paused at the end of the song. p plays on".into();
+        }
+        let Some(left) = self.sleep_left() else { return };
+        self.audio.set_fade(left.as_secs_f32() / SLEEP_FADE.as_secs_f32());
+        if left.is_zero() && matches!(self.sleep, Some(Sleep::Minutes(..))) {
+            self.sleep = None;
+            if !self.audio.is_paused() {
+                self.audio.toggle_pause();
+            }
+            self.audio.set_fade(1.0);
+            self.status = "Sleep timer: paused. p plays on".into();
+        }
+    }
+
     fn change_volume(&mut self, by: i16) {
         let volume = (i16::from(self.config.player.volume) + by).clamp(0, 100) as u8;
         self.config.player.volume = volume;
@@ -2822,6 +2918,69 @@ mod tests {
         app.settle(Duration::from_millis(300));
         assert!(app.now.is_some() && app.config.player.good_vibes_only == GoodVibes::On);
         app
+    }
+
+    #[test]
+    fn b_steps_the_sleep_timer_and_it_fades_out_then_pauses() {
+        let mut app = ad_demo();
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            app.on_key(shift('B'));
+            seen.push(match app.sleep {
+                Some(Sleep::Minutes(m, _)) => m.to_string(),
+                Some(Sleep::EndOfSong) => "end".into(),
+                None => "off".into(),
+            });
+        }
+        assert_eq!(seen, ["15", "30", "60", "90", "end", "off"]);
+        assert!(app.status.contains("off"), "{}", app.status);
+        // 5 seconds left: half way down the fade.
+        let full = app.audio.level();
+        app.sleep = Some(Sleep::Minutes(15, Instant::now() - Duration::from_secs(15 * 60 - 5)));
+        app.tick();
+        let half = app.audio.level() / full;
+        assert!((0.4..=0.55).contains(&half), "{half}");
+        assert!(!app.audio.is_paused());
+        // Time's up: paused, the volume as it was, the timer gone.
+        app.sleep = Some(Sleep::Minutes(15, Instant::now() - Duration::from_secs(15 * 60 + 1)));
+        app.tick();
+        assert!(app.audio.is_paused() && app.sleep.is_none());
+        assert_eq!(app.audio.level(), full);
+        app.on_key(key(KeyCode::Char('p')));
+        assert!(!app.audio.is_paused(), "p plays on");
+        assert_eq!(clock_text(Duration::from_secs(14 * 60 + 59)), "14:59");
+        assert_eq!(clock_text(Duration::from_secs(90 * 60)), "1:30:00");
+    }
+
+    #[test]
+    fn sleep_at_the_end_of_the_song_pauses_the_next_one_at_once() {
+        let mut app = App::new(
+            Config {
+                player: crate::config::PlayerConfig { good_vibes_only: GoodVibes::Off, ..Default::default() },
+                ..Default::default()
+            },
+            None,
+            &[],
+            true,
+        );
+        app.settle(Duration::from_millis(300));
+        let first = app.now.as_ref().unwrap().track_token.clone();
+        let length = app.now.as_ref().unwrap().length;
+        app.sleep = Some(Sleep::EndOfSong);
+        app.audio.seek_silent(Duration::from_secs(u64::from(length) - 3));
+        app.tick();
+        assert!(app.audio.level() < 0.5 * level_at(&app), "fading in the last seconds");
+        app.audio.seek_silent(Duration::from_secs(u64::from(length) + 1));
+        app.tick();
+        app.settle(Duration::from_millis(300));
+        app.tick();
+        assert!(app.now.as_ref().is_some_and(|s| s.track_token != first), "the next song is there");
+        assert!(app.audio.is_paused() && app.sleep.is_none(), "{}", app.status);
+        assert_eq!(app.audio.level(), level_at(&app));
+    }
+
+    fn level_at(app: &App) -> f32 {
+        crate::audio::level(app.config.player.volume, app.now.as_ref().map_or(0.0, |s| s.gain))
     }
 
     #[test]

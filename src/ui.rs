@@ -497,21 +497,71 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette;
     let color = if app.status.starts_with('⚠') { p.yellow } else { p.fg };
     frame.render_widget(Block::new().bg(p.highlight), area);
-    // The account gets at most half the bar, and never less than the status.
+    // The right side (sleep timer, look, account) gets at most half the bar,
+    // and never less than the status.
     let room = (area.width / 2).saturating_sub(3) as usize;
     let account = account_label(app, room);
-    let want = account.as_ref().map_or(0, |a| safe_width(a) as u16 + 3);
+    let used = |extra: &[String]| -> usize {
+        let parts = extra.iter().map(|s| safe_width(s) + 3).sum::<usize>();
+        parts + account.as_ref().map_or(0, |a| safe_width(a))
+    };
+    // The look labels go first (from the last) when the bar is narrow, then the timer.
+    let mut extra: Vec<String> = sleep_label(app).into_iter().chain(look_labels(app)).collect();
+    while !extra.is_empty() && used(&extra) > room {
+        extra.pop();
+    }
+    let extra_w = extra.iter().map(|s| safe_width(s) + 3).sum::<usize>();
+    let want = match &account {
+        Some(a) => extra_w + safe_width(a) + 3,
+        None if extra.is_empty() => 0,
+        None => extra_w,
+    } as u16;
     let right_w = want.min(area.width / 2);
     let [left, right] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(right_w)]).areas(area);
     let status = fit(&format!(" {}", app.status), left.width.saturating_sub(1) as usize);
     frame.render_widget(Paragraph::new(Span::styled(status, Style::new().fg(color))), left);
-    if let Some(account) = account
-        && right.width > 2
-    {
-        // tubevibe's colour for its account: the palette's `blue` (Gruvbox's aqua).
-        let text = format!("{} ", fit(&account, right.width as usize - 2));
-        frame.render_widget(Paragraph::new(text).fg(p.blue).alignment(Alignment::Right), right);
+    if right.width <= 2 {
+        return;
     }
+    let mut spans = Vec::new();
+    for (i, label) in extra.iter().enumerate() {
+        let color = if i == 0 && app.sleep.is_some() { p.yellow } else { p.muted };
+        spans.push(Span::styled(label.clone(), Style::new().fg(color)));
+        spans.push(Span::styled(" · ", Style::new().fg(p.muted)));
+    }
+    match &account {
+        // tubevibe's colour for its account: the palette's `blue` (Gruvbox's aqua).
+        Some(account) => {
+            let room = (right.width as usize - 2).saturating_sub(extra_w);
+            spans.push(Span::styled(fit(account, room), Style::new().fg(p.blue)));
+        }
+        None => {
+            spans.pop();
+        }
+    }
+    spans.push(Span::raw(" "));
+    frame.render_widget(Paragraph::new(Line::from(spans)).alignment(Alignment::Right), right);
+}
+
+/// "☾ 14:59" (or "☾ end of song") while the sleep timer runs.
+fn sleep_label(app: &App) -> Option<String> {
+    match app.sleep? {
+        crate::app::Sleep::Minutes(..) => app.sleep_left().map(|d| format!("☾ {}", crate::app::clock_text(d))),
+        crate::app::Sleep::EndOfSong => Some("☾ end of song".into()),
+    }
+}
+
+/// The look in a few words, in the order they are dropped last to first:
+/// theme, album art, retro mode, tint.
+fn look_labels(app: &App) -> Vec<String> {
+    let ui = &app.config.ui;
+    let theme = if ui.theme == "omarchy" { "Omarchy".to_owned() } else { crate::theme::label(&ui.theme) };
+    vec![
+        theme,
+        format!("Art {}", ui.album_art.label()),
+        ui.retro_mode.label().to_owned(),
+        format!("Tint {}", ui.art_tint.label()),
+    ]
 }
 
 /// "Logged In As: me@example.com" while logged in; nothing otherwise. When
@@ -2046,6 +2096,7 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
             if app.now.is_some() {
                 keys.push(("v", "Details"));
             }
+            keys.push(("B", if app.sleep.is_some() { "Sleep (next / off)" } else { "Sleep" }));
             keys.push(("Esc", "Menu"));
         }
         (Focus::Menu, _) => {
@@ -2179,10 +2230,10 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
         "PLAYING (any pane)",
         &[
             ("space p", "play / pause"),
-            ("N", "skip to the next song"),
+            ("N Z", "skip to the next song · tired of this song (a month off)"),
             ("U D", "thumbs up / down the playing song (down skips it)"),
-            ("Z", "tired of this song (a month off)"),
             ("Shift ← →", "volume down / up (saved)"),
+            ("B", "sleep timer: 15, 30, 60, 90 min, end of this song, off (fades out, then pauses)"),
         ],
     ),
     (
@@ -2211,8 +2262,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("G", "Genres: Pandora's genre stations, Enter adds and plays one"),
             ("O A", "Settings / About"),
             ("F", "jump to FAVORITES in the menu"),
-            ("Tab", "menu, Now Playing, Up Next, History (Shift+Tab: back)"),
-            ("Esc", "back to the menu"),
+            ("Tab Esc", "menu, Now Playing, Up Next, History (Shift+Tab: back) · Esc: back to the menu"),
         ],
     ),
     (
@@ -3922,6 +3972,34 @@ mod tests {
         app.session = Session::LoggedOut;
         let (lines, _) = screen(&app, 120, 36);
         assert!(!lines[34].contains("toby@"), "{}", lines[34]);
+    }
+
+    #[test]
+    fn the_status_bar_shows_the_look_and_the_sleep_timer_left_of_the_account_and_drops_the_look_first() {
+        let mut app = demo();
+        app.config.ui.icons = crate::config::IconSet::Unicode;
+        app.config.pandora.username = "toby@example.com".into();
+        app.config.ui.theme = "gruvbox".into();
+        app.config.ui.album_art = AlbumArt::Picture;
+        app.config.ui.retro_mode = crate::config::RetroMode::Bit8;
+        app.config.ui.art_tint = crate::config::ArtTint::Duotone;
+        app.session = Session::LoggedIn;
+        app.status = "hi".into();
+        let bar = screen(&app, 200, 36).0[34].clone();
+        assert!(
+            bar.trim_end().ends_with("Gruvbox · Art Picture · 8-bit · Tint Duotone · Logged In As: toby@example.com"),
+            "{bar}"
+        );
+        app.sleep = Some(crate::app::Sleep::Minutes(15, std::time::Instant::now()));
+        let bar = screen(&app, 200, 36).0[34].clone();
+        assert!(bar.contains("☾ 15:00 · Gruvbox") || bar.contains("☾ 14:59 · Gruvbox"), "{bar}");
+        // Narrower: the tint goes first, then the rest of the look; the timer stays.
+        let bar = screen(&app, 150, 36).0[34].clone();
+        assert!(bar.contains("☾ 1") && bar.contains("Logged In As") && !bar.contains("Tint"), "{bar}");
+        let bar = screen(&app, 96, 36).0[34].clone();
+        assert!(bar.contains("☾ 1") && !bar.contains("Gruvbox") && bar.contains("toby@example.com"), "{bar}");
+        app.sleep = Some(crate::app::Sleep::EndOfSong);
+        assert!(screen(&app, 200, 36).0[34].contains("☾ end of song"));
     }
 
     #[test]

@@ -187,7 +187,7 @@ impl App {
         if let AdPhase::Playing(play) = &mut self.ad {
             play.waiting = None;
         }
-        if let Err(e) = self.audio.start(data.filter(|d| !d.is_empty())) {
+        if let Err(e) = self.audio.start(data.filter(|d| !d.is_empty()), 0.0, false) {
             return self.ad_give_up(&e);
         }
         let AdPhase::Playing(play) = &mut self.ad else { return };

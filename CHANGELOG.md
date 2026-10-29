@@ -4,6 +4,8 @@
 
 ### Batch 1
 
+- Audio: each song now plays at Pandora's own loudness correction (`fileGain`) combined with your volume, as the website does, capped so a song Pandora turns up can never clip.
+- Audio: smoother sound, especially on Bluetooth (AirPods). Songs are resampled to the sound device's rate with a windowed-sinc filter instead of rodio's straight-line interpolation (Pandora's AAC decodes at 22 kHz, so every song was being upsampled the rough way), samples are kept inside full scale, and the output buffer is larger (4096 frames) so Bluetooth is less likely to run dry.
 ## 0.4.0 (2026-10-24)
 
 ### Keys (breaking: please read)

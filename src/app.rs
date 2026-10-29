@@ -1725,7 +1725,7 @@ impl App {
 
     fn play_now(&mut self, data: Option<Vec<u8>>) {
         let data = data.filter(|d| !d.is_empty());
-        match self.audio.start(data) {
+        match self.audio.start(data, self.now.as_ref().map_or(0.0, |s| s.gain), false) {
             Ok(()) => {
                 // Pandora counts plays (and skips) from this report, like the website.
                 if let Some(song) = &self.now {

@@ -62,6 +62,7 @@ work right now drawn as key caps at the bottom.
 - **Gapless-ish playback**: the next song downloads while this one plays.
   MP3 and AAC (MP4) are decoded in Rust ([symphonia](https://github.com/pdeljanov/Symphonia)
   through [rodio](https://github.com/RustAudio/rodio)), no ffmpeg or mpv needed
+- **Even loudness**: Pandora's per-song loudness correction (`fileGain`) is applied with your volume, never pushed past full scale. Songs are resampled to your sound device's rate with a windowed-sinc filter (Pandora's AAC decodes at 22 kHz) and played through a roomy buffer, which keeps Bluetooth headphones free of crackle
 - **Themes** (Settings): *Omarchy* (follows your current Omarchy theme, live, and
   is Tokyo Night elsewhere, and what a first run starts on) plus Tokyo Night, Gruvbox, Catppuccin, Catppuccin
   Latte, Rosé Pine Dawn, Nord, Everforest and Kanagawa

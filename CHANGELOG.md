@@ -11,6 +11,7 @@
 - Pinned songs: Shift+I pins the selected song (Up Next, History) or the playing one. A **Pinned** entry in the menu (under Genres, above FAVORITES) lists them newest first; Enter opens the song's Pandora page in the browser, `x` unpins after asking. They are kept in `~/.local/share/boxvibe/pinned.toml`, not the config: title, artist, album, cover link, Pandora page and the day pinned (no audio). The key bar shows `I Pin` wherever a song plays.
 - Settings → LOOK: **Favorites in menu** and **Pinned in menu** (both On) hide those menu entries without losing anything (`[look] favorites_in_menu`, `[look] pinned_in_menu`).
 - Help: N and Z, Tab and Esc, and C, R and H share lines to make room.
+- Genre stations: `e` now opens their thumbs (Thumbs Up / Thumbs Down tabs, no Seeds tab), so you can see and take back thumbs on them; the key bar shows `e Thumbs`. If Pandora refuses, the bottom bar says so kindly. (Needs a live check: Pandora may not allow it on genre stations.)
 - Good Vibes Only is now **On / Muted / Off** (Enter on the row steps through them). Muted plays and reports ads exactly as On, at volume 0, and gives your volume back when the ad ends, fails, or you quit; a volume change during the ad is what comes back. Picking Muted shows a short gray-area notice first, like Off. `[playback] good_vibes_only` takes `true`, `"muted"` or `false`.
 ## 0.4.0 (2026-10-24)
 

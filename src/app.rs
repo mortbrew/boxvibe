@@ -3474,9 +3474,8 @@ mod tests {
 
     #[test]
     fn a_genre_station_that_cant_be_changed_gets_a_popup_and_the_bar_message() {
-        for (key_pressed, what, bar) in
-            [('r', "renamed", "doesn't let you rename"), ('e', "edited", "doesn't let you edit the seeds")]
         {
+            let (key_pressed, what, bar) = ('r', "renamed", "doesn't let you rename");
             let mut app = on_station(Config::default(), None, genre);
             assert!(app.config.ui.genre_edit_popup, "on by default");
             app.on_key(key(KeyCode::Char(key_pressed)));
@@ -3490,6 +3489,10 @@ mod tests {
             app.on_key(key(KeyCode::Esc));
             assert!(app.genre_notice.is_none() && app.status.contains(bar), "{}", app.status);
         }
+        // `e` opens its thumbs instead (no popup).
+        let mut app = on_station(Config::default(), None, genre);
+        app.on_key(key(KeyCode::Char('e')));
+        assert!(app.genre_notice.is_none() && app.editor.as_ref().is_some_and(|e| e.thumbs_only));
         // Deleting a genre station Pandora does allow deleting asks as before.
         let mut app = on_station(Config::default(), None, genre);
         app.on_key(key(KeyCode::Char('x')));
@@ -3519,7 +3522,8 @@ mod tests {
     fn with_the_popup_off_only_the_bar_says_it() {
         let mut config = Config::default();
         config.ui.genre_edit_popup = false;
-        for key_pressed in ['r', 'e'] {
+        {
+            let key_pressed = 'r';
             let mut app = on_station(config.clone(), None, genre);
             app.on_key(key(KeyCode::Char(key_pressed)));
             assert!(app.genre_notice.is_none() && !app.overlay_open());

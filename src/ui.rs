@@ -937,7 +937,7 @@ fn draw_genre_notice(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, n
     }
     lines.push(Line::raw(""));
     let meanings = [
-        (ic.genre_station, p.accent, "Genre station: made by Pandora. It can't be renamed or edited."),
+        (ic.genre_station, p.accent, "Genre station: made by Pandora. Not renamed or edited; e shows your thumbs."),
         (ic.own_station, p.green, "Your own station: you made it. You can rename, edit and delete it."),
     ];
     for (glyph, color, text) in meanings {
@@ -1311,19 +1311,17 @@ fn draw_editor(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, ed: &Ed
     if safe_width(&seeds_label) + safe_width(&titles.0) + safe_width(&titles.1) + 12 > inner_w {
         titles = thumbs_titles(false);
     }
-    let mut lines = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::raw(" "),
-            tab(seeds_label, ed.tab == EditorTab::Seeds),
-            Span::raw("  "),
-            tab(titles.0, ed.tab == EditorTab::ThumbsUp),
-            Span::raw("  "),
-            tab(titles.1, ed.tab == EditorTab::ThumbsDown),
-        ])
-        .left_aligned(),
-        Line::from(""),
-    ];
+    // A genre station has no Seeds tab: Pandora keeps those.
+    let mut tabs = vec![Span::raw(" ")];
+    if !ed.thumbs_only {
+        tabs.extend([tab(seeds_label, ed.tab == EditorTab::Seeds), Span::raw("  ")]);
+    }
+    tabs.extend([
+        tab(titles.0, ed.tab == EditorTab::ThumbsUp),
+        Span::raw("  "),
+        tab(titles.1, ed.tab == EditorTab::ThumbsDown),
+    ]);
+    let mut lines = vec![Line::from(""), Line::from(tabs).left_aligned(), Line::from("")];
     let row = |text: String, selected: bool| {
         let style = if selected { selection(p, true) } else { Style::new().fg(p.fg) };
         Line::from(Span::styled(pad(&fit(&text, inner_w), inner_w), style)).left_aligned()
@@ -1365,7 +1363,11 @@ fn draw_editor(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, ed: &Ed
         hint = if positive {
             "x = take back · Tab = Thumbs Down · Esc = close"
         } else {
-            "x = take back · Tab = Seeds · Esc = close"
+            if ed.thumbs_only {
+                "x = take back · Tab = Thumbs Up · Esc = close"
+            } else {
+                "x = take back · Tab = Seeds · Esc = close"
+            }
         };
         let list = ed.list(positive);
         let arrow = if positive { ic.up } else { ic.down };
@@ -2124,6 +2126,9 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         }
         if station.allow_edit_seeds {
             keys.push(("e", "Edit"));
+        } else if station.is_locked() && !station.is_shuffle {
+            // A genre station: e shows (and takes back) your thumbs on it.
+            keys.push(("e", "Thumbs"));
         }
         keys.push(("v", "Details"));
     };
@@ -2135,6 +2140,8 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         }
         if station.allow_edit_seeds {
             keys.push(("e", "Edit"));
+        } else if station.is_locked() && !station.is_shuffle {
+            keys.push(("e", "Thumbs"));
         }
     };
     match (app.focus, app.view) {
@@ -2243,6 +2250,7 @@ fn editor_key_caps(ed: &Editor) -> Vec<(&'static str, &'static str)> {
     let next = match ed.tab {
         EditorTab::Seeds => "Thumbs Up",
         EditorTab::ThumbsUp => "Thumbs Down",
+        EditorTab::ThumbsDown if ed.thumbs_only => "Thumbs Up",
         EditorTab::ThumbsDown => "Seeds",
     };
     let mut keys = vec![("j/k ↑↓", "Move"), ("Tab", next)];
@@ -2317,7 +2325,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("v", "details: a song, or a station's seeds and thumbs"),
             (
                 "e",
-                "edit the station: Tab / Shift+Tab switch Seeds / Thumbs Up / Thumbs Down, Esc closes (removing asks first)",
+                "edit the station: Tab / Shift+Tab switch Seeds / Thumbs Up / Thumbs Down, Esc closes (genre: thumbs only)",
             ),
             ("", "Seeds: the artists, songs and genres it plays music like; a adds one, x removes one (one stays)"),
             ("", "Thumbs Up / Down: songs you rated and the day you thumbed each, one list each; x takes one back"),
@@ -2649,10 +2657,12 @@ mod tests {
     #[test]
     fn on_now_playing_a_genre_station_gets_the_popup_and_shuffle_just_the_message() {
         for menu in [false, true] {
-            for key in ['r', 'e'] {
+            {
+                let key = 'r';
                 let mut app = playing_demo("Today's Hits", menu);
                 let keys: Vec<&str> = key_caps(&app).iter().map(|(k, _)| *k).collect();
-                assert!(!keys.contains(&"r") && !keys.contains(&"e"), "not hinted for a genre station: {keys:?}");
+                assert!(!keys.contains(&"r"), "not hinted for a genre station: {keys:?}");
+                assert!(keys.contains(&"e"), "e shows a genre station's thumbs: {keys:?}");
                 press(&mut app, key);
                 assert!(app.rename.is_none() && app.editor.is_none());
                 let notice = app.genre_notice.as_ref().expect("the genre popup");
@@ -2779,6 +2789,20 @@ mod tests {
         let lines = screen(app, cols, rows).0;
         let at = lines.iter().position(|l| l.contains("Edit station")).expect("the editor");
         lines[at + 2].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn a_genre_station_editor_shows_only_the_two_thumbs_tabs() {
+        let mut app = editor_demo();
+        let ed = app.editor.as_mut().unwrap();
+        ed.thumbs_only = true;
+        ed.tab = EditorTab::ThumbsDown;
+        let row = editor_tab_row(&app, 120, 40);
+        assert!(!row.contains("Seeds") && row.contains("Thumbs Up") && row.contains("Thumbs Down"), "{row}");
+        let bar = key_bar_line(&app, 120);
+        assert!(bar.contains("Tab  Thumbs Up") && !bar.contains("Add Seed"), "{bar}");
+        let text = screen(&app, 120, 40).0.join("\n");
+        assert!(text.contains("x = take back · Tab = Thumbs Up"), "{text}");
     }
 
     #[test]
@@ -3588,7 +3612,8 @@ mod tests {
             let caps = keys(&app);
             assert_eq!(caps.contains(&"r"), s.allow_rename, "r on {}", s.name);
             assert_eq!(caps.contains(&"x"), s.allow_delete, "x on {}", s.name);
-            assert_eq!(caps.contains(&"e"), s.allow_edit_seeds, "e on {}", s.name);
+            let thumbs = s.is_locked() && !s.is_shuffle;
+            assert_eq!(caps.contains(&"e"), s.allow_edit_seeds || thumbs, "e on {}", s.name);
         }
         // No stations yet: nothing to play, favorite, rename, delete or show.
         app.stations.clear();

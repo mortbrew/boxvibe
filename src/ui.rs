@@ -88,6 +88,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         View::Player => draw_player(frame, app, ic, right),
         View::Stations => draw_stations(frame, app, ic, right),
         View::Genres => draw_genres(frame, app, ic, right),
+        View::Pinned => draw_pinned(frame, app, ic, right),
         View::Settings => draw_settings(frame, app, ic, right),
         View::About => draw_about(frame, app, ic, right),
     }
@@ -110,6 +111,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     if let Some(station) = &app.confirm_delete {
         draw_confirm_delete(frame, &p, area, station);
+    }
+    if let Some(pin) = app.confirm_unpin.and_then(|at| app.pins.get(at)) {
+        let question = format!("Unpin “{}” by {}?", clean(&pin.title), clean(&pin.artist));
+        draw_box(frame, &p, area, &BoxText { title: " Unpin song ", ..BoxText::confirm(&question) });
     }
     if let Some(rename) = &app.rename {
         draw_rename(frame, &p, area, rename);
@@ -621,9 +626,10 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let now_h = if app.has_now_playing() { 2 } else { 0 };
+    let pinned = app.config.ui.pinned_in_menu;
     let [now_area, stations_row, favs_area, _, rule, app_area] = Layout::vertical([
         Constraint::Length(now_h),
-        Constraint::Length(2),
+        Constraint::Length(2 + u16::from(pinned)),
         Constraint::Fill(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -640,6 +646,7 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
                 | (MenuItem::NowPlaying, View::Player)
                 | (MenuItem::Stations, View::Stations)
                 | (MenuItem::Genres, View::Genres)
+                | (MenuItem::Pinned, View::Pinned)
         )
     };
     let row_style = |item: MenuItem| {
@@ -664,9 +671,15 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     }
     let count = if app.stations.is_empty() { String::new() } else { format!(" ({})", app.stations.len()) };
     let mut lines = Vec::new();
-    for (item, icon, label) in
-        [(MenuItem::Stations, ic.station, format!("Stations{count}")), (MenuItem::Genres, ic.genre, "Genres".into())]
-    {
+    let mut top = vec![
+        (MenuItem::Stations, ic.station, format!("Stations{count}")),
+        (MenuItem::Genres, ic.genre, "Genres".into()),
+    ];
+    if pinned {
+        let n = if app.pins.is_empty() { String::new() } else { format!(" ({})", app.pins.len()) };
+        top.push((MenuItem::Pinned, ic.pin, format!("Pinned{n}")));
+    }
+    for (item, icon, label) in top {
         let mut style = Style::new().fg(p.fg);
         if let Some(sel) = row_style(item) {
             style = style.patch(sel);
@@ -677,7 +690,7 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     frame.render_widget(Paragraph::new(lines), stations_row);
     // FAVORITES, like tubevibe's tabs: only once a station is starred.
     let favorites = &app.config.ui.favorites;
-    if !favorites.is_empty() && favs_area.height > 1 {
+    if app.config.ui.favorites_in_menu && !favorites.is_empty() && favs_area.height > 1 {
         let [gap, head, list_area] =
             Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(favs_area);
         frame.render_widget(inset_rule(&p, gap.width), gap);
@@ -731,6 +744,50 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         lines.push(Line::from(pad(&text, app_area.width as usize)).style(style));
     }
     frame.render_widget(Paragraph::new(lines), app_area);
+}
+
+// --- Pinned ---
+
+/// The songs Shift+I pinned, newest first: title, artist · album, the day.
+fn draw_pinned(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
+    let p = app.palette;
+    let focused = app.focus == Focus::Content;
+    let count = if app.pins.is_empty() { String::new() } else { format!(" ({})", app.pins.len()) };
+    let block = panel(title(format!("{} Pinned{count}", ic.pin), &p), &p, focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if app.pins.is_empty() {
+        let text = " Nothing pinned yet. Shift+I pins the selected or playing song: its title, artist, album, cover and Pandora page (never the audio).";
+        frame.render_widget(Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: false }).fg(p.muted), inner);
+        return;
+    }
+    let width = inner.width as usize;
+    let items: Vec<ListItem> = app
+        .pins
+        .iter()
+        .map(|pin| {
+            let head = format!(" {} ", icon_cell(ic.pin));
+            let date = format!("  {} ", pin.pinned);
+            let by = if pin.album.is_empty() {
+                clean(&pin.artist)
+            } else {
+                format!("{} · {}", clean(&pin.artist), clean(&pin.album))
+            };
+            let room = width.saturating_sub(safe_width(&head) + safe_width(&date));
+            let name = truncate(&clean(&pin.title), room);
+            let rest = truncate(&format!("  {by}"), room.saturating_sub(safe_width(&name)));
+            let gap = room.saturating_sub(safe_width(&name) + safe_width(&rest));
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{head}{name}"), Style::new().fg(p.fg).bold()),
+                Span::styled(rest, Style::new().fg(p.muted)),
+                Span::raw(" ".repeat(gap)),
+                Span::styled(date, Style::new().fg(p.muted)),
+            ]))
+        })
+        .collect();
+    let list = List::new(items).highlight_style(selection(&p, focused));
+    let mut state = ListState::default().with_selected(Some(app.pinned_cursor.min(app.pins.len() - 1)));
+    frame.render_stateful_widget(list, inner, &mut state);
 }
 
 // --- Stations ---
@@ -1986,6 +2043,9 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.confirm_delete.is_some() {
         return vec![("y", "Yes, Delete"), ("Other Key", "No")];
     }
+    if app.confirm_unpin.is_some() {
+        return vec![("y", "Yes, Unpin"), ("Other Key", "No")];
+    }
     if let Some(mode) = app.confirm_good_vibes {
         let yes = if mode == GoodVibes::Muted { "Mute Anyway" } else { "Turn Off Anyway" };
         return vec![("Enter", yes), ("Esc", "Keep As Is"), ("Ctrl+c", "Quit")];
@@ -2044,6 +2104,7 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     let mut keys = Vec::new();
     // Rows to move over: not on Now Playing (one song) or About (text).
     let nothing_to_move = app.view == View::About
+        || app.view == View::Pinned && app.focus == Focus::Content && app.pins.len() < 2
         || in_songs && app.pane == Pane::NowPlaying
         || app.view == View::Genres && app.focus == Focus::Content && app.genre_rows().is_empty();
     if !nothing_to_move {
@@ -2130,6 +2191,15 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
             }
             keys.push(("Esc", "Menu"));
         }
+        (Focus::Content, View::Pinned) => {
+            if let Some(pin) = app.pins.get(app.pinned_cursor) {
+                if !pin.link.is_empty() {
+                    keys.push(("Enter", "Open Page"));
+                }
+                keys.push(("x", "Unpin"));
+            }
+            keys.push(("Esc", "Menu"));
+        }
         (Focus::Content, View::About) => {
             if app.update_button_ready() {
                 keys.push(("Enter", if app.restart_ready() { "Restart Now" } else { "Update Now" }));
@@ -2142,7 +2212,7 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     }
     // Pause, skip and thumbs act on the playing song: only once there is one.
     if app.now.is_some() {
-        keys.extend([("space", pause), ("N", "Skip"), ("U/D", "Thumbs")]);
+        keys.extend([("space", pause), ("N", "Skip"), ("U/D", "Thumbs"), ("I", "Pin")]);
     }
     // l and b rate the selected row: Up Next and History only (Now Playing has U/D).
     if in_songs && row_here {
@@ -2233,6 +2303,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("N Z", "skip to the next song · tired of this song (a month off)"),
             ("U D", "thumbs up / down the playing song (down skips it)"),
             ("Shift ← →", "volume down / up (saved)"),
+            ("I", "pin the selected or playing song (menu: Pinned; Enter opens its Pandora page, x unpins)"),
             ("B", "sleep timer: 15, 30, 60, 90 min, end of this song, off (fades out, then pauses)"),
         ],
     ),
@@ -2268,9 +2339,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
     (
         "LOOK AND BOXVIBE",
         &[
-            ("C", "album art: picture / off (saved)"),
-            ("R", "retro level: HD, 64-bit … 2-bit (saved)"),
-            ("H", "tint: off / duotone / palette (saved)"),
+            ("C R H", "album art picture / off · retro HD, 64-bit … 2-bit · tint off / duotone / palette (saved)"),
             ("{ }", "menu narrower / wider (saved)"),
             ("?", "this help"),
             ("Q Ctrl+c", "quit (asks first) / quit now"),
@@ -3384,10 +3453,34 @@ mod tests {
     }
 
     #[test]
+    fn the_pinned_page_lists_the_pins_and_the_menu_has_its_entry() {
+        let mut app = demo();
+        let (lines, _) = screen(&app, 140, 40);
+        assert!(lines.iter().any(|l| l.contains("Pinned")), "the menu entry, shown by default");
+        assert!(key_caps(&app).iter().any(|(k, v)| *k == "I" && *v == "Pin"));
+        app.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('I'),
+            crossterm::event::KeyModifiers::SHIFT,
+        ));
+        let title = app.pins[0].title.clone();
+        app.view = View::Pinned;
+        app.focus = Focus::Content;
+        let (lines, _) = screen(&app, 140, 40);
+        let all = lines.join("\n");
+        assert!(all.contains("Pinned (1)") && all.contains(&title) && all.contains(&app.pins[0].pinned), "{all}");
+        assert!(key_caps(&app).iter().any(|(k, v)| *k == "x" && *v == "Unpin"));
+        app.config.ui.pinned_in_menu = false;
+        app.view = View::Player;
+        app.status.clear();
+        let (lines, _) = screen(&app, 140, 40);
+        assert!(!lines.iter().any(|l| l.contains("Pinned")), "hidden");
+    }
+
+    #[test]
     fn the_key_bar_leaves_out_theme_and_icons_and_t_does_nothing() {
         let mut app = demo();
         let caps = key_caps(&app);
-        assert!(!caps.iter().any(|(k, _)| matches!(*k, "t" | "i" | "T" | "I")), "{caps:?}");
+        assert!(!caps.iter().any(|(k, _)| matches!(*k, "t" | "i" | "T")), "{caps:?}");
         let theme = app.config.ui.theme.clone();
         app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('t')));
         assert_eq!(app.config.ui.theme, theme, "t no longer switches the theme");

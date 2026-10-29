@@ -217,6 +217,10 @@ pub struct UiConfig {
     /// Motion in the interface (today: the boot screen's fade). Off: none
     /// (the boot screen is skipped). `[look] animations`.
     pub animations: bool,
+    /// The menu lists FAVORITES (`[look] favorites_in_menu`; `f` still stars).
+    pub favorites_in_menu: bool,
+    /// The menu has a "Pinned" entry (`[look] pinned_in_menu`; Shift+I still pins).
+    pub pinned_in_menu: bool,
     /// Start the station played last as soon as boxvibe opens (and has
     /// logged in). boxvibe 0.1's `[player] autoplay` reads as this.
     pub autoplay_last_station: bool,
@@ -257,6 +261,8 @@ impl Default for UiConfig {
             genre_edit_popup: true,
             splash: true,
             animations: true,
+            favorites_in_menu: true,
+            pinned_in_menu: true,
             autoplay_last_station: true,
             border_style: BorderStyle::Plain,
             menu_width: MENU_WIDTH.default,
@@ -662,6 +668,8 @@ pub const LAYOUT: &[(&str, &str, &str)] = &[
     ("look", "icons", "ui"),
     ("look", "border_style", "ui"),
     ("look", "menu_width", "ui"),
+    ("look", "favorites_in_menu", "ui"),
+    ("look", "pinned_in_menu", "ui"),
     ("look", "album_art", "ui"),
     ("look", "retro_mode", "ui"),
     ("look", "tint_art_with_theme_colors", "ui"),
@@ -1788,6 +1796,18 @@ mod tests {
         let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_792_544_100);
         assert_eq!(utc_stamp(at), "20261021T005500Z");
         assert_eq!(utc_stamp(std::time::UNIX_EPOCH), "19700101T000000Z");
+    }
+
+    #[test]
+    fn the_menu_toggles_default_on_and_save_under_look() {
+        let (c, w) = Config::parse("").unwrap();
+        assert!(c.ui.favorites_in_menu && c.ui.pinned_in_menu && w.is_empty());
+        let (c, w) = Config::parse("[look]\nfavorites_in_menu = false\npinned_in_menu = false\n").unwrap();
+        assert!(!c.ui.favorites_in_menu && !c.ui.pinned_in_menu && w.is_empty(), "{w:?}");
+        let path = temp_dir("menu-toggles").join("config.toml");
+        set_values(&path, &[("look", "pinned_in_menu", false.into())]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[look]") && text.contains("pinned_in_menu = false"), "{text}");
     }
 
     #[test]

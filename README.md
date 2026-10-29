@@ -157,6 +157,7 @@ Try it without an account (made-up stations, no network, no sound):
 | `O` (Shift+o) / `A` (Shift+a) | Settings / About, with the menu on that entry |
 | `F` (Shift+f) | the menu, on the first of FAVORITES |
 | `f` | favorite / unfavorite the station (the menu's FAVORITES section) |
+| `I` (Shift+i) | pin the selected song (Up Next, History) or the playing one. The menu's **Pinned** page lists them newest first (title, artist · album, the day pinned); Enter opens the song's Pandora page, `x` unpins (asks first). Kept in `~/.local/share/boxvibe/pinned.toml`: title, artist, album, cover link, Pandora page and date, never any audio |
 | `a` | add a station: search artists and songs (on the Stations page; also the "Add station…" row) |
 | `r` | rename the selected station (Stations, or a favorite's station), or the playing station when Now Playing has the keys or the menu is on NOW PLAYING; asks for the name |
 | | The icon right after a station's star (before its name): the boxvibe logo (`\uf1b2`, in every icon set) is a Pandora genre station, which can't be renamed; a little person (`👤` emoji, `\uf007` Nerd Font, `☺` plain set) is a station you made. Shuffle has neither, and neither shows on the Genres page |
@@ -216,6 +217,8 @@ theme = "omarchy"              # omarchy | tokyo-night | gruvbox | catppuccin | 
 icons = "nerd"                 # nerd | emoji | unicode
 border_style = "plain"         # plain | rounded | thick | double | none
 menu_width = 30                # the menu, in columns: 20–40, step 2 (at most half the screen); also { and }
+favorites_in_menu = true       # Settings → Favorites in menu: false hides FAVORITES from the menu (kept; f still stars)
+pinned_in_menu = true          # Settings → Pinned in menu: false hides the Pinned entry (Shift+I still pins)
 album_art = "picture"          # picture | off
 retro_mode = "hd"              # hd | 64bit | 32bit | 16bit | 8bit | 4bit | 2bit (full / 256 / 128 / 64 / 32 / 16 / 8 px, blocky on purpose)
 tint_art_with_theme_colors = "off"   # Settings → Tint art with theme colors: off | duotone | palette: recolour the cover with the theme's colours

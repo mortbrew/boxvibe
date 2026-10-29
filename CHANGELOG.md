@@ -8,7 +8,9 @@
 - Audio: smoother sound, especially on Bluetooth (AirPods). Songs are resampled to the sound device's rate with a windowed-sinc filter instead of rodio's straight-line interpolation (Pandora's AAC decodes at 22 kHz, so every song was being upsampled the rough way), samples are kept inside full scale, and the output buffer is larger (4096 frames) so Bluetooth is less likely to run dry.
 - Sleep timer: Shift+B steps 15, 30, 60, 90 minutes, end of this song, and off (cancel). The sound fades out over the last 10 seconds, then pauses (`p` plays on). The time left shows in the status bar. The key bar shows `B Sleep` on Now Playing; Help lists it.
 - Status bar: left of "Logged In As", short labels for the theme, album art, Retro mode and tint (dropped first, from the tint back, when the bar is narrow).
-- Help: N and Z, and Tab and Esc, share a line to make room.
+- Pinned songs: Shift+I pins the selected song (Up Next, History) or the playing one. A **Pinned** entry in the menu (under Genres, above FAVORITES) lists them newest first; Enter opens the song's Pandora page in the browser, `x` unpins after asking. They are kept in `~/.local/share/boxvibe/pinned.toml`, not the config: title, artist, album, cover link, Pandora page and the day pinned (no audio). The key bar shows `I Pin` wherever a song plays.
+- Settings → LOOK: **Favorites in menu** and **Pinned in menu** (both On) hide those menu entries without losing anything (`[look] favorites_in_menu`, `[look] pinned_in_menu`).
+- Help: N and Z, Tab and Esc, and C, R and H share lines to make room.
 - Good Vibes Only is now **On / Muted / Off** (Enter on the row steps through them). Muted plays and reports ads exactly as On, at volume 0, and gives your volume back when the ad ends, fails, or you quit; a volume change during the ad is what comes back. Picking Muted shows a short gray-area notice first, like Off. `[playback] good_vibes_only` takes `true`, `"muted"` or `false`.
 ## 0.4.0 (2026-10-24)
 

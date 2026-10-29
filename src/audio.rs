@@ -127,6 +127,7 @@ impl Audio {
         self.apply();
     }
 
+    #[cfg(test)]
     pub fn is_muted(&self) -> bool {
         self.muted
     }

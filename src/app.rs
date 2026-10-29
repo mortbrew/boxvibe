@@ -50,6 +50,8 @@ pub enum View {
     Stations,
     /// Pandora's genre stations, to add one (`Enter`).
     Genres,
+    /// Songs pinned with Shift+I.
+    Pinned,
     Settings,
     About,
 }
@@ -70,6 +72,8 @@ pub enum MenuItem {
     Stations,
     /// Opens Pandora's genre stations on the right.
     Genres,
+    /// The songs pinned with Shift+I (hidden by `[look] pinned_in_menu`).
+    Pinned,
     /// A starred station, by its index in `[playback] favorites`.
     Favorite(usize),
     Settings,
@@ -117,6 +121,8 @@ pub enum Setting {
     Icons,
     BorderStyle,
     MenuWidth,
+    FavoritesInMenu,
+    PinnedInMenu,
     AlbumArt,
     RetroMode,
     ArtTint,
@@ -130,7 +136,7 @@ pub enum Setting {
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 22] = [
+    pub const ALL: [(&'static str, Self); 24] = [
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
@@ -148,6 +154,8 @@ impl Setting {
         ("LOOK", Self::Icons),
         ("LOOK", Self::BorderStyle),
         ("LOOK", Self::MenuWidth),
+        ("LOOK", Self::FavoritesInMenu),
+        ("LOOK", Self::PinnedInMenu),
         ("LOOK", Self::AlbumArt),
         ("LOOK", Self::RetroMode),
         ("LOOK", Self::ArtTint),
@@ -175,6 +183,8 @@ impl Setting {
             Self::Icons => "Icons",
             Self::BorderStyle => "Border style",
             Self::MenuWidth => "Menu width",
+            Self::FavoritesInMenu => "Favorites in menu",
+            Self::PinnedInMenu => "Pinned in menu",
             Self::AlbumArt => "Album art",
             Self::RetroMode => "Retro mode",
             Self::ArtTint => "Tint art with theme colors",
@@ -206,6 +216,8 @@ impl Setting {
             Self::Icons => Some(("look", "icons")),
             Self::BorderStyle => Some(("look", "border_style")),
             Self::MenuWidth => Some(("look", "menu_width")),
+            Self::FavoritesInMenu => Some(("look", "favorites_in_menu")),
+            Self::PinnedInMenu => Some(("look", "pinned_in_menu")),
             Self::AlbumArt => Some(("look", "album_art")),
             Self::RetroMode => Some(("look", "retro_mode")),
             Self::ArtTint => Some(("look", "tint_art_with_theme_colors")),
@@ -259,6 +271,12 @@ impl Setting {
             }
             Self::RetroMode => {
                 "Makes the cover blocky on purpose, like an old console: 64-bit (256 pixels across), 32-bit (128), 16-bit (64), 8-bit (32), 4-bit (16), 2-bit (8), or HD for the full picture. Also Shift+R. Saved as [look] retro_mode."
+            }
+            Self::FavoritesInMenu => {
+                "On: the menu lists FAVORITES (Shift+F jumps there). Off: they are hidden from the menu, but kept, and f still stars a station. Saved as [look] favorites_in_menu."
+            }
+            Self::PinnedInMenu => {
+                "On: the menu has a Pinned entry with the songs Shift+I pinned. Off: the entry is hidden; Shift+I still pins and the list is kept. Saved as [look] pinned_in_menu."
             }
             Self::Animations => {
                 "On: the boot screen fades in. Off: no motion anywhere, so the boot screen is skipped (the song progress and clock still update). Saved as [look] animations."
@@ -357,6 +375,8 @@ pub enum Cmd {
     Tint,
     /// The sleep timer: 15, 30, 60, 90 minutes, end of this song, off.
     Sleep,
+    /// Pin the selected or playing song.
+    Pin,
 }
 
 /// One key and what it does. Shift+letters are the capital letters;
@@ -394,6 +414,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(KeyCode::Char('R'), Cmd::Retro),
     bind(KeyCode::Char('H'), Cmd::Tint),
     bind(KeyCode::Char('B'), Cmd::Sleep),
+    bind(KeyCode::Char('I'), Cmd::Pin),
     Binding { code: KeyCode::Right, shift: true, cmd: Cmd::VolumeUp },
     Binding { code: KeyCode::Left, shift: true, cmd: Cmd::VolumeDown },
     bind(KeyCode::Char('{'), Cmd::MenuNarrower),
@@ -657,6 +678,13 @@ pub struct App {
     system_look: Option<std::sync::mpsc::Receiver<crate::deps::Facts>>,
     /// `x` asked "Delete this station?": y does, any other key doesn't.
     pub confirm_delete: Option<StationRef>,
+    /// `x` on the Pinned page asked "Unpin this song?" (the pin's index).
+    pub confirm_unpin: Option<usize>,
+    /// Songs pinned with Shift+I, newest first.
+    pub pins: Vec<crate::pinned::Pin>,
+    /// Where they are kept (`None`: in the demo, only in memory).
+    pub pins_path: Option<PathBuf>,
+    pub pinned_cursor: usize,
     /// The "genre stations can't be changed" popup, while it is open.
     pub genre_notice: Option<GenreNotice>,
     /// Good Vibes Only was turned off in Settings: the risk popup asks first
@@ -772,6 +800,10 @@ impl App {
             system_open: false,
             system_look: None,
             confirm_delete: None,
+            confirm_unpin: None,
+            pins_path: if demo { None } else { crate::pinned::default_path() },
+            pins: Vec::new(),
+            pinned_cursor: 0,
             genre_notice: None,
             confirm_good_vibes: None,
             rename: None,
@@ -937,7 +969,11 @@ impl App {
         let top = self.has_now_playing().then_some(MenuItem::NowPlaying);
         top.into_iter()
             .chain([MenuItem::Stations, MenuItem::Genres])
-            .chain((0..self.config.ui.favorites.len()).map(MenuItem::Favorite))
+            .chain(self.config.ui.pinned_in_menu.then_some(MenuItem::Pinned))
+            .chain(
+                (0..if self.config.ui.favorites_in_menu { self.config.ui.favorites.len() } else { 0 })
+                    .map(MenuItem::Favorite),
+            )
             .chain([MenuItem::Settings, MenuItem::About, MenuItem::Quit])
             .collect()
     }
@@ -952,6 +988,7 @@ impl App {
             MenuItem::NowPlaying => self.show_now_playing(),
             MenuItem::Stations => self.show_stations(),
             MenuItem::Genres => self.show_genres(),
+            MenuItem::Pinned => self.show_page(View::Pinned),
             MenuItem::Favorite(i) => {
                 let Some(fav) = self.config.ui.favorites.get(i).cloned() else { return };
                 match self.stations.iter().position(|s| s.id == fav.id) {
@@ -990,6 +1027,9 @@ impl App {
             Some(at) => {
                 self.menu_cursor = at;
                 self.focus = Focus::Menu;
+            }
+            None if !self.config.ui.favorites_in_menu => {
+                self.status = "Favorites are hidden from the menu (Settings: Favorites in menu)".into()
             }
             None => self.status = "No favorites yet: f on a station stars it".into(),
         }
@@ -1208,6 +1248,71 @@ impl App {
         self.save(&[("playback", "favorites", toml_edit::Value::Array(list))]);
     }
 
+    /// Shift+I: pins the selected song (Up Next, History) or else the playing one.
+    fn pin(&mut self) {
+        let song = match (self.in_songs(), self.pane) {
+            (true, Pane::UpNext) => self.queue.get(self.next_index()),
+            (true, Pane::History) => self.history.get(self.history_index()),
+            _ => None,
+        }
+        .or(self.now.as_ref())
+        .cloned();
+        let Some(song) = song else {
+            self.status = "No song to pin: pick a station first".into();
+            return;
+        };
+        if song.title.is_empty() {
+            self.status = "Ads can't be pinned".into();
+            return;
+        }
+        if self.pins.iter().any(|p| p.same(&song)) {
+            self.status = format!("“{}” is already pinned", song.title);
+            return;
+        }
+        self.pins.insert(0, crate::pinned::Pin::of(&song, &crate::pinned::today()));
+        self.pinned_cursor = 0;
+        self.save_pins();
+        let where_ = if self.config.ui.pinned_in_menu { "the menu's Pinned" } else { "pinned.toml" };
+        self.status = format!("Pinned “{}” by {} (see {where_})", song.title, song.artist);
+    }
+
+    fn save_pins(&mut self) {
+        if let Some(path) = &self.pins_path
+            && let Err(e) = crate::pinned::save(path, &self.pins)
+        {
+            self.status = format!("Couldn't save the pins to {}: {e}", path.display());
+        }
+    }
+
+    /// Reads the pins from disk (main calls it once; the demo keeps none).
+    pub fn load_pins(&mut self) {
+        if let Some(path) = &self.pins_path {
+            self.pins = crate::pinned::load(path);
+        }
+    }
+
+    /// Enter on the Pinned page: the song's Pandora page in the browser.
+    fn open_pin(&mut self) {
+        let Some(pin) = self.pins.get(self.pinned_cursor) else {
+            self.status = "Nothing pinned yet: Shift+I pins the selected or playing song".into();
+            return;
+        };
+        if pin.link.is_empty() {
+            self.status = format!("Pandora gave no page for “{}”", pin.title);
+            return;
+        }
+        let link = pin.link.clone();
+        if !self.demo {
+            let _ = std::process::Command::new("xdg-open")
+                .arg(&link)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+        self.status = format!("Opening {link}");
+    }
+
     /// The menu entry of what the right side shows.
     fn point_menu_at_view(&mut self) {
         let items = self.menu_items();
@@ -1216,6 +1321,7 @@ impl App {
             View::About => Some(MenuItem::About),
             View::Stations => Some(MenuItem::Stations),
             View::Genres => Some(MenuItem::Genres),
+            View::Pinned => Some(MenuItem::Pinned),
             View::Player if self.has_now_playing() => Some(MenuItem::NowPlaying),
             View::Player => None,
         };
@@ -1820,6 +1926,7 @@ impl App {
             || self.system_open
             || self.confirm_quit
             || self.confirm_delete.is_some()
+            || self.confirm_unpin.is_some()
             || self.genre_notice.is_some()
             || self.confirm_good_vibes.is_some()
             || self.rename.is_some()
@@ -1881,6 +1988,8 @@ impl App {
             Setting::RetroMode => self.config.ui.retro_mode.label().into(),
             Setting::ArtTint => self.config.ui.art_tint.label().into(),
             Setting::Animations => on(self.config.ui.animations),
+            Setting::FavoritesInMenu => on(self.config.ui.favorites_in_menu),
+            Setting::PinnedInMenu => on(self.config.ui.pinned_in_menu),
             Setting::CheckUpdates => on(self.config.ui.check_updates),
             Setting::GenrePopup => on(self.config.ui.genre_edit_popup),
             Setting::Splash => on(self.config.ui.splash),
@@ -1967,6 +2076,18 @@ impl App {
                 self.config.ui.genre_edit_popup = on;
                 self.save(&[("boxvibe", "genre_edit_popup", on.into())]);
                 self.status = format!("Genre station edit popup: {}", if on { "on" } else { "off" });
+            }
+            Setting::FavoritesInMenu => {
+                let on = !self.config.ui.favorites_in_menu;
+                self.config.ui.favorites_in_menu = on;
+                self.save(&[("look", "favorites_in_menu", on.into())]);
+                self.status = format!("Favorites in menu: {}", if on { "on" } else { "off (kept; f still stars)" });
+            }
+            Setting::PinnedInMenu => {
+                let on = !self.config.ui.pinned_in_menu;
+                self.config.ui.pinned_in_menu = on;
+                self.save(&[("look", "pinned_in_menu", on.into())]);
+                self.status = format!("Pinned in menu: {}", if on { "on" } else { "off (kept; Shift+I still pins)" });
             }
             Setting::Animations => {
                 let on = !self.config.ui.animations;
@@ -2122,6 +2243,18 @@ impl App {
             self.quit = matches!(key.code, KeyCode::Char('y' | 'Y'));
             return;
         }
+        if let Some(at) = self.confirm_unpin.take() {
+            // y unpins; any other key is no.
+            if matches!(key.code, KeyCode::Char('y' | 'Y')) && at < self.pins.len() {
+                let pin = self.pins.remove(at);
+                self.pinned_cursor = self.pinned_cursor.min(self.pins.len().saturating_sub(1));
+                self.save_pins();
+                self.status = format!("Unpinned “{}”", pin.title);
+            } else {
+                self.status = "Kept the pin".into();
+            }
+            return;
+        }
         if let Some(station) = self.confirm_delete.take() {
             // y deletes; any other key is no, like the quit box.
             if matches!(key.code, KeyCode::Char('y' | 'Y')) {
@@ -2205,6 +2338,7 @@ impl App {
             Cmd::Retro => self.next_retro_mode(),
             Cmd::Tint => self.next_art_tint(),
             Cmd::Sleep => self.next_sleep(),
+            Cmd::Pin => self.pin(),
         }
     }
 
@@ -2369,6 +2503,14 @@ impl App {
 
     /// `x`: asks before deleting the selected station from the account.
     fn ask_delete(&mut self) {
+        if self.focus == Focus::Content && self.view == View::Pinned {
+            if self.pins.is_empty() {
+                self.status = "Nothing pinned yet: Shift+I pins the selected or playing song".into();
+            } else {
+                self.confirm_unpin = Some(self.pinned_cursor.min(self.pins.len() - 1));
+            }
+            return;
+        }
         let Some((station, favorite)) = self.station_in_reach() else {
             return self.no_station_here("x deletes");
         };
@@ -2495,6 +2637,7 @@ impl App {
                 self.tune(self.stations_index());
             }
             (Focus::Content, View::Genres) => self.add_genre_station(),
+            (Focus::Content, View::Pinned) => self.open_pin(),
             (Focus::Content, View::Player) => {}
         }
     }
@@ -2518,6 +2661,7 @@ impl App {
                 self.genres_cursor = clamp(self.genres_index(), self.genre_rows().len().max(1))
             }
             (Focus::Content, View::About) => {}
+            (Focus::Content, View::Pinned) => self.pinned_cursor = clamp(self.pinned_cursor, self.pins.len().max(1)),
         }
     }
 
@@ -3032,8 +3176,8 @@ mod tests {
         let app = demo();
         let items = app.menu_items();
         assert_eq!(items[0], MenuItem::NowPlaying, "a station plays: NOW PLAYING on top");
-        assert_eq!((items[1], items[2]), (MenuItem::Stations, MenuItem::Genres));
-        assert_eq!(items.len(), 6, "no favorites yet: no FAVORITES entries");
+        assert_eq!((items[1], items[2], items[3]), (MenuItem::Stations, MenuItem::Genres, MenuItem::Pinned));
+        assert_eq!(items.len(), 7, "no favorites yet: no FAVORITES entries");
         assert_eq!(&items[items.len() - 3..], [MenuItem::Settings, MenuItem::About, MenuItem::Quit]);
     }
 
@@ -3041,7 +3185,7 @@ mod tests {
     fn enter_on_settings_and_about_opens_them() {
         let mut app = demo();
         app.focus = Focus::Menu;
-        app.menu_cursor = 3;
+        app.menu_cursor = 4;
         app.on_key(key(KeyCode::Enter));
         assert_eq!((app.view, app.focus), (View::Settings, Focus::Content));
         app.on_key(key(KeyCode::Esc));
@@ -3119,6 +3263,7 @@ mod tests {
             [
                 MenuItem::Stations,
                 MenuItem::Genres,
+                MenuItem::Pinned,
                 MenuItem::Favorite(0),
                 MenuItem::Settings,
                 MenuItem::About,
@@ -3134,6 +3279,8 @@ mod tests {
         app.on_key(key(KeyCode::Esc));
         app.on_key(key(KeyCode::Char('j')));
         assert_eq!(app.menu_selected(), MenuItem::Genres);
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(app.menu_selected(), MenuItem::Pinned);
         app.on_key(key(KeyCode::Char('j')));
         assert_eq!(app.menu_selected(), MenuItem::Favorite(0));
         app.on_key(key(KeyCode::Enter));
@@ -3784,6 +3931,76 @@ mod tests {
         app.on_key(shift('T'));
         assert_eq!((app.view, app.focus), before, "Shift+T is unbound now");
         assert!(!KEYMAP.iter().any(|b| b.code == KeyCode::Char('T')));
+    }
+
+    #[test]
+    fn shift_i_pins_the_playing_or_selected_song_and_x_unpins_after_asking() {
+        let mut app = demo();
+        let dir = crate::config::temp_dir("pins-app");
+        app.pins_path = Some(dir.join("pinned.toml"));
+        let playing = app.now.clone().unwrap();
+        app.on_key(shift('I'));
+        assert_eq!(app.pins.len(), 1);
+        assert_eq!(
+            (app.pins[0].title.as_str(), app.pins[0].artist.as_str()),
+            (playing.title.as_str(), playing.artist.as_str())
+        );
+        assert_eq!(app.pins[0].link, playing.detail_url);
+        assert_eq!(app.pins[0].pinned.len(), 10);
+        app.on_key(shift('I'));
+        assert_eq!(app.pins.len(), 1, "already pinned: {}", app.status);
+        // The selected Up Next row, when Up Next has the keys.
+        app.view = View::Player;
+        app.focus = Focus::Content;
+        app.pane = Pane::UpNext;
+        let next = app.queue[app.next_index()].clone();
+        app.on_key(shift('I'));
+        assert_eq!(app.pins[0].title, next.title, "newest first");
+        let on_disk = crate::pinned::load(app.pins_path.as_ref().unwrap());
+        assert_eq!(on_disk, app.pins, "kept on disk, not in the config");
+        // The menu's Pinned entry opens the page; x asks, n keeps, y unpins.
+        app.focus = Focus::Menu;
+        app.menu_cursor = app.menu_items().iter().position(|m| *m == MenuItem::Pinned).unwrap();
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!((app.view, app.focus), (View::Pinned, Focus::Content));
+        app.on_key(key(KeyCode::Char('x')));
+        assert_eq!(app.confirm_unpin, Some(0));
+        app.on_key(key(KeyCode::Char('n')));
+        assert_eq!(app.pins.len(), 2);
+        app.on_key(key(KeyCode::Char('j')));
+        app.on_key(key(KeyCode::Char('x')));
+        app.on_key(key(KeyCode::Char('y')));
+        assert_eq!(app.pins.len(), 1);
+        assert_eq!(app.pins[0].title, next.title);
+        assert_eq!(crate::pinned::load(app.pins_path.as_ref().unwrap()).len(), 1);
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.status.contains("no page"), "the demo songs have no page: {}", app.status);
+        app.pins[0].link = "https://www.pandora.com/artist/x".into();
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.status, "Opening https://www.pandora.com/artist/x", "the demo opens nothing");
+    }
+
+    #[test]
+    fn the_settings_hide_favorites_and_pinned_from_the_menu() {
+        let mut app = saving_app("menu-entries");
+        app.config.ui.favorites.push(crate::config::Favorite { id: "x".into(), name: "X".into() });
+        assert!(app.menu_items().contains(&MenuItem::Pinned) && app.menu_items().contains(&MenuItem::Favorite(0)));
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        for (setting, key_name) in
+            [(Setting::FavoritesInMenu, "favorites_in_menu"), (Setting::PinnedInMenu, "pinned_in_menu")]
+        {
+            app.settings_cursor = Setting::at(setting);
+            assert_eq!(app.setting_value(setting), "on");
+            app.on_key(key(KeyCode::Enter));
+            assert_eq!(app.setting_value(setting), "off");
+            assert!(saved(&app).contains(&format!("{key_name} = false")), "{}", saved(&app));
+        }
+        let items = app.menu_items();
+        assert!(!items.contains(&MenuItem::Pinned) && !items.iter().any(|m| matches!(m, MenuItem::Favorite(_))));
+        assert_eq!(app.config.ui.favorites.len(), 1, "hidden, not dropped");
+        app.on_key(shift('F'));
+        assert!(app.status.contains("hidden"), "{}", app.status);
     }
 
     fn saving_app(name: &str) -> App {

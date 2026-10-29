@@ -14,6 +14,8 @@ pub struct Icons {
     pub shared: &'static str,
     /// A favorite station.
     pub favorite: &'static str,
+    /// A pinned song (Shift+I) and the Pinned page.
+    pub pin: &'static str,
     /// Right after the star of a Pandora genre station (one you can't rename): the boxvibe logo.
     pub genre_station: &'static str,
     /// Right after the star of a station you made yourself: a little person.
@@ -36,7 +38,7 @@ pub struct Icons {
     pub update: &'static str,
     pub ok: &'static str,
     /// One per [`crate::app::Setting::ALL`] row.
-    pub setting: [&'static str; 22],
+    pub setting: [&'static str; 24],
 }
 
 const EMOJI: Icons = Icons {
@@ -45,6 +47,7 @@ const EMOJI: Icons = Icons {
     shuffle: "🔀",
     shared: "👥",
     favorite: "⭐",
+    pin: "📌",
     genre_station: LOGO,
     own_station: "👤",
     // One cell each, like tubevibe: emoji play/pause signs differ per terminal.
@@ -65,8 +68,8 @@ const EMOJI: Icons = Icons {
     update: "⬆",
     ok: "✅",
     setting: [
-        "👤", "🔑", "🔓", "🚪", "🆕", "💬", "📝", "📌", "🎧", "🔊", "🎶", "🔔", "📢", "🎨", "😀", "🔲", "📐", "💿",
-        "👾", "🌈", "✨", "🚀",
+        "👤", "🔑", "🔓", "🚪", "🆕", "💬", "📝", "📌", "🎧", "🔊", "🎶", "🔔", "📢", "🎨", "😀", "🔲", "📐", "⭐",
+        "📌", "💿", "👾", "🌈", "✨", "🚀",
     ],
 };
 
@@ -76,6 +79,7 @@ const NERD: Icons = Icons {
     shuffle: "\u{f074}",
     shared: "\u{f0c0}",
     favorite: "\u{f005}",
+    pin: "\u{f08d}",
     genre_station: LOGO,
     own_station: "\u{f007}",
     play: "\u{f04b}",
@@ -96,8 +100,8 @@ const NERD: Icons = Icons {
     ok: "\u{f058}",
     setting: [
         "\u{f007}", "\u{f084}", "\u{f09c}", "\u{f08b}", "\u{f0aa}", "\u{f075}", "\u{f044}", "\u{f0c9}", "\u{f025}",
-        "\u{f028}", "\u{f04b}", "\u{f0f3}", "\u{f0a1}", "\u{f1fc}", "\u{f118}", "\u{f0c8}", "\u{f07e}", "\u{f03e}",
-        "\u{f00a}", "\u{f53f}", "\u{f0d0}", "\u{f135}",
+        "\u{f028}", "\u{f04b}", "\u{f0f3}", "\u{f0a1}", "\u{f1fc}", "\u{f118}", "\u{f0c8}", "\u{f07e}", "\u{f005}",
+        "\u{f08d}", "\u{f03e}", "\u{f00a}", "\u{f53f}", "\u{f0d0}", "\u{f135}",
     ],
 };
 
@@ -107,6 +111,7 @@ const UNICODE: Icons = Icons {
     shuffle: "⇄",
     shared: "⚇",
     favorite: "★",
+    pin: "⚑",
     // The logo is the Nerd Font box in every set; the person is a plain smiley.
     genre_station: LOGO,
     own_station: "☺",
@@ -127,7 +132,8 @@ const UNICODE: Icons = Icons {
     update: "↑",
     ok: "✔",
     setting: [
-        "@", "*", "→", "⏻", "↑", "!", "✎", "☰", "♫", "◖", "▶", "♪", "♡", "◐", "☺", "▢", "↔", "▦", "▩", "◑", "✦", "◈",
+        "@", "*", "→", "⏻", "↑", "!", "✎", "☰", "♫", "◖", "▶", "♪", "♡", "◐", "☺", "▢", "↔", "★", "⚑", "▦", "▩", "◑",
+        "✦", "◈",
     ],
 };
 

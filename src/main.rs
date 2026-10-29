@@ -13,6 +13,7 @@ mod icons;
 mod input;
 mod keychain;
 mod pandora;
+mod pinned;
 mod snapshot;
 mod splash;
 mod theme;
@@ -79,6 +80,7 @@ fn main() -> anyhow::Result<()> {
     let demo = args.demo;
     // Open the sound device before the screen switches, so ALSA's warnings can't scribble on it.
     let mut app = App::new(config, path, &warnings, demo);
+    app.load_pins();
     let mut terminal = ratatui::init();
     // Once, before any events are read: what pictures this terminal shows.
     app.art.set_graphics(art::detect());

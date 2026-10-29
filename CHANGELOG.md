@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+### Batch 1
+
 ## 0.4.0 (2026-10-24)
 
 ### Keys (breaking: please read)

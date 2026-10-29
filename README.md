@@ -57,7 +57,9 @@ work right now drawn as key caps at the bottom.
   History; `l` / `b` rate the selected row (or the playing song from Now Playing)
 - **Settings** (account first, then audio quality, volume, autoplay, song change
   notifications, theme, icons, border style, menu width, update check, the genre station edit popup, edit `config.toml` in `$EDITOR`, app menu entry) and **About**
-  (links, version, and the update button) below the stations
+  (links, version, and the update button) below the stations. Between them,
+  **Notifications** lists what the bottom bar said this session, newest first,
+  with how long ago (the last 200; `j`/`k` scroll)
 - **Updates itself** from GitHub releases: see [Updating](#updating)
 - **Gapless-ish playback**: the next song downloads while this one plays.
   MP3 and AAC (MP4) are decoded in Rust ([symphonia](https://github.com/pdeljanov/Symphonia)

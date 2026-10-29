@@ -16,6 +16,7 @@ pub struct Icons {
     pub favorite: &'static str,
     /// A pinned song (Shift+I) and the Pinned page.
     pub pin: &'static str,
+    pub bell: &'static str,
     /// Right after the star of a Pandora genre station (one you can't rename): the boxvibe logo.
     pub genre_station: &'static str,
     /// Right after the star of a station you made yourself: a little person.
@@ -48,6 +49,7 @@ const EMOJI: Icons = Icons {
     shared: "👥",
     favorite: "⭐",
     pin: "📌",
+    bell: "🔔",
     genre_station: LOGO,
     own_station: "👤",
     // One cell each, like tubevibe: emoji play/pause signs differ per terminal.
@@ -80,6 +82,7 @@ const NERD: Icons = Icons {
     shared: "\u{f0c0}",
     favorite: "\u{f005}",
     pin: "\u{f08d}",
+    bell: "\u{f0f3}",
     genre_station: LOGO,
     own_station: "\u{f007}",
     play: "\u{f04b}",
@@ -112,6 +115,7 @@ const UNICODE: Icons = Icons {
     shared: "⚇",
     favorite: "★",
     pin: "⚑",
+    bell: "!",
     // The logo is the Nerd Font box in every set; the person is a plain smiley.
     genre_station: LOGO,
     own_station: "☺",

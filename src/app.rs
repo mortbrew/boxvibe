@@ -53,6 +53,8 @@ pub enum View {
     /// Songs pinned with Shift+I.
     Pinned,
     Settings,
+    /// What the bottom bar said, newest first.
+    Notifications,
     About,
 }
 
@@ -77,6 +79,8 @@ pub enum MenuItem {
     /// A starred station, by its index in `[playback] favorites`.
     Favorite(usize),
     Settings,
+    /// What the bottom bar said lately.
+    Notifications,
     About,
     Quit,
 }
@@ -631,6 +635,9 @@ impl Details {
     }
 }
 
+/// How many bottom-bar messages the Notifications page keeps.
+pub const NOTES_KEPT: usize = 200;
+
 pub struct App {
     pub config: Config,
     pub config_path: Option<PathBuf>,
@@ -687,6 +694,10 @@ pub struct App {
     pub pinned_cursor: usize,
     /// Up Next songs disliked with b: sent, and skipped, when their turn comes.
     pub held_dislikes: std::collections::HashSet<String>,
+    /// Bottom-bar messages, newest first (at most `NOTES_KEPT`).
+    pub notes: VecDeque<(Instant, String)>,
+    pub notes_cursor: usize,
+    last_status: String,
     /// The "genre stations can't be changed" popup, while it is open.
     pub genre_notice: Option<GenreNotice>,
     /// Good Vibes Only was turned off in Settings: the risk popup asks first
@@ -807,6 +818,9 @@ impl App {
             pins: Vec::new(),
             pinned_cursor: 0,
             held_dislikes: Default::default(),
+            notes: VecDeque::new(),
+            notes_cursor: 0,
+            last_status: String::new(),
             genre_notice: None,
             confirm_good_vibes: None,
             rename: None,
@@ -977,7 +991,7 @@ impl App {
                 (0..if self.config.ui.favorites_in_menu { self.config.ui.favorites.len() } else { 0 })
                     .map(MenuItem::Favorite),
             )
-            .chain([MenuItem::Settings, MenuItem::About, MenuItem::Quit])
+            .chain([MenuItem::Settings, MenuItem::Notifications, MenuItem::About, MenuItem::Quit])
             .collect()
     }
 
@@ -1005,6 +1019,7 @@ impl App {
             }
             MenuItem::Settings => self.show_page(View::Settings),
             MenuItem::About => self.show_page(View::About),
+            MenuItem::Notifications => self.show_page(View::Notifications),
             MenuItem::Quit => self.quit = true,
         }
     }
@@ -1316,12 +1331,29 @@ impl App {
         self.status = format!("Opening {link}");
     }
 
+    /// Keeps each new bottom-bar message for the Notifications page.
+    pub fn note_status(&mut self) {
+        if self.status == self.last_status {
+            return;
+        }
+        self.last_status.clone_from(&self.status);
+        if self.status.trim().is_empty() || self.notes.front().is_some_and(|(_, s)| *s == self.status) {
+            return;
+        }
+        self.notes.push_front((Instant::now(), self.status.clone()));
+        self.notes.truncate(NOTES_KEPT);
+        if self.notes_cursor > 0 {
+            self.notes_cursor = (self.notes_cursor + 1).min(NOTES_KEPT - 1);
+        }
+    }
+
     /// The menu entry of what the right side shows.
     fn point_menu_at_view(&mut self) {
         let items = self.menu_items();
         let want = match self.view {
             View::Settings => Some(MenuItem::Settings),
             View::About => Some(MenuItem::About),
+            View::Notifications => Some(MenuItem::Notifications),
             View::Stations => Some(MenuItem::Stations),
             View::Genres => Some(MenuItem::Genres),
             View::Pinned => Some(MenuItem::Pinned),
@@ -1339,9 +1371,11 @@ impl App {
         if self.splash.is_some_and(|t| t.elapsed() >= SPLASH) {
             self.splash = None;
         }
+        self.note_status();
         while let Ok(reply) = self.backend.replies.try_recv() {
             self.on_reply(reply);
         }
+        self.note_status();
         if let Some(facts) = self.system_look.as_ref().and_then(|r| r.try_recv().ok()) {
             self.system_look = None;
             self.system_checked(&facts);
@@ -2666,6 +2700,7 @@ impl App {
             }
             (Focus::Content, View::Genres) => self.add_genre_station(),
             (Focus::Content, View::Pinned) => self.open_pin(),
+            (Focus::Content, View::Notifications) => {}
             (Focus::Content, View::Player) => {}
         }
     }
@@ -2689,6 +2724,9 @@ impl App {
                 self.genres_cursor = clamp(self.genres_index(), self.genre_rows().len().max(1))
             }
             (Focus::Content, View::About) => {}
+            (Focus::Content, View::Notifications) => {
+                self.notes_cursor = clamp(self.notes_cursor, self.notes.len().max(1))
+            }
             (Focus::Content, View::Pinned) => self.pinned_cursor = clamp(self.pinned_cursor, self.pins.len().max(1)),
         }
     }
@@ -3239,8 +3277,11 @@ mod tests {
         let items = app.menu_items();
         assert_eq!(items[0], MenuItem::NowPlaying, "a station plays: NOW PLAYING on top");
         assert_eq!((items[1], items[2], items[3]), (MenuItem::Stations, MenuItem::Genres, MenuItem::Pinned));
-        assert_eq!(items.len(), 7, "no favorites yet: no FAVORITES entries");
-        assert_eq!(&items[items.len() - 3..], [MenuItem::Settings, MenuItem::About, MenuItem::Quit]);
+        assert_eq!(items.len(), 8, "no favorites yet: no FAVORITES entries");
+        assert_eq!(
+            &items[items.len() - 4..],
+            [MenuItem::Settings, MenuItem::Notifications, MenuItem::About, MenuItem::Quit]
+        );
     }
 
     #[test]
@@ -3252,6 +3293,10 @@ mod tests {
         assert_eq!((app.view, app.focus), (View::Settings, Focus::Content));
         app.on_key(key(KeyCode::Esc));
         assert_eq!(app.menu_selected(), MenuItem::Settings);
+        app.on_key(key(KeyCode::Char('j')));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.view, View::Notifications);
+        app.on_key(key(KeyCode::Esc));
         app.on_key(key(KeyCode::Char('j')));
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.view, View::About);
@@ -3328,6 +3373,7 @@ mod tests {
                 MenuItem::Pinned,
                 MenuItem::Favorite(0),
                 MenuItem::Settings,
+                MenuItem::Notifications,
                 MenuItem::About,
                 MenuItem::Quit
             ]
@@ -3434,6 +3480,22 @@ mod tests {
             assert_eq!(app.now.as_ref().unwrap().track_token, playing, "{c} skips nothing");
             assert_eq!((app.view, &app.config.ui.theme), (view, &theme), "{c} goes nowhere");
         }
+    }
+
+    #[test]
+    fn notifications_keep_what_the_bottom_bar_said_newest_first() {
+        let mut app = demo();
+        for text in ["one", "one", "", "two"] {
+            app.status = text.into();
+            app.tick();
+        }
+        let said: Vec<&str> = app.notes.iter().map(|(_, s)| s.as_str()).collect();
+        assert_eq!(&said[..2], ["two", "one"], "newest first, repeats once");
+        for i in 0..NOTES_KEPT + 5 {
+            app.status = format!("n{i}");
+            app.note_status();
+        }
+        assert_eq!(app.notes.len(), NOTES_KEPT);
     }
 
     #[test]

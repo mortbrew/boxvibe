@@ -91,6 +91,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         View::Pinned => draw_pinned(frame, app, ic, right),
         View::Settings => draw_settings(frame, app, ic, right),
         View::About => draw_about(frame, app, ic, right),
+        View::Notifications => draw_notes(frame, app, ic, right),
     }
     draw_status(frame, app, status);
     draw_keys(frame, &p, &key_caps(app), keys);
@@ -633,7 +634,7 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         Constraint::Fill(1),
         Constraint::Length(1),
         Constraint::Length(1),
-        Constraint::Length(3),
+        Constraint::Length(4),
     ])
     .areas(inner);
     let selected = app.menu_selected();
@@ -643,6 +644,7 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             (item, app.view),
             (MenuItem::Settings, View::Settings)
                 | (MenuItem::About, View::About)
+                | (MenuItem::Notifications, View::Notifications)
                 | (MenuItem::NowPlaying, View::Player)
                 | (MenuItem::Stations, View::Stations)
                 | (MenuItem::Genres, View::Genres)
@@ -728,6 +730,7 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     frame.render_widget(inset_rule(&p, rule.width), rule);
     let entries = [
         (MenuItem::Settings, ic.settings, "Settings"),
+        (MenuItem::Notifications, ic.bell, "Notifications"),
         (MenuItem::About, ic.about, "About"),
         (MenuItem::Quit, ic.quit, "Quit"),
     ];
@@ -744,6 +747,46 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         lines.push(Line::from(pad(&text, app_area.width as usize)).style(style));
     }
     frame.render_widget(Paragraph::new(lines), app_area);
+}
+
+// --- Notifications ---
+
+/// "just now", "4 min ago", "2 h ago".
+fn ago(secs: u64) -> String {
+    match secs {
+        0..60 => "just now".into(),
+        60..3600 => format!("{} min ago", secs / 60),
+        _ => format!("{} h ago", secs / 3600),
+    }
+}
+
+/// What the bottom bar said, newest first, with how long ago.
+fn draw_notes(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
+    let p = app.palette;
+    let focused = app.focus == Focus::Content;
+    let block = panel(title(format!("{} Notifications", ic.bell), &p), &p, focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if app.notes.is_empty() {
+        let text = " Nothing yet. What the bottom bar says lands here, newest first.";
+        frame.render_widget(Paragraph::new(text).fg(p.muted).wrap(Wrap { trim: false }), inner);
+        return;
+    }
+    let when_w = 12;
+    let text_w = usize::from(inner.width).saturating_sub(when_w + 3);
+    let items: Vec<ListItem> = app
+        .notes
+        .iter()
+        .map(|(at, text)| {
+            ListItem::new(Line::from(vec![
+                Span::styled(format!(" {}", pad(&ago(at.elapsed().as_secs()), when_w)), Style::new().fg(p.muted)),
+                Span::styled(fit(text, text_w), Style::new().fg(p.fg)),
+            ]))
+        })
+        .collect();
+    let mut state = ListState::default().with_selected(Some(app.notes_cursor.min(app.notes.len() - 1)));
+    let list = List::new(items).highlight_style(selection(&p, focused));
+    frame.render_stateful_widget(list, inner, &mut state);
 }
 
 // --- Pinned ---
@@ -2110,6 +2153,7 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     let mut keys = Vec::new();
     // Rows to move over: not on Now Playing (one song) or About (text).
     let nothing_to_move = app.view == View::About
+        || app.view == View::Notifications && app.focus == Focus::Content && app.notes.len() < 2
         || app.view == View::Pinned && app.focus == Focus::Content && app.pins.len() < 2
         || in_songs && app.pane == Pane::NowPlaying
         || app.view == View::Genres && app.focus == Focus::Content && app.genre_rows().is_empty();
@@ -2211,6 +2255,7 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
             }
             keys.push(("Esc", "Menu"));
         }
+        (Focus::Content, View::Notifications) => keys.push(("Esc", "Menu")),
         (Focus::Content, View::About) => {
             if app.update_button_ready() {
                 keys.push(("Enter", if app.restart_ready() { "Restart Now" } else { "Update Now" }));
@@ -2346,7 +2391,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("P", "Now Playing: the pane gets the keys"),
             ("S", "Stations: every station, Enter plays one"),
             ("G", "Genres: Pandora's genre stations, Enter adds and plays one"),
-            ("O A", "Settings / About"),
+            ("O A", "Settings / About · menu Notifications (between them): what the bottom bar said"),
             ("F", "jump to FAVORITES in the menu"),
             ("Tab Esc", "menu, Now Playing, Up Next, History (Shift+Tab: back) · Esc: back to the menu"),
         ],
@@ -2590,6 +2635,23 @@ mod tests {
 
     /// A demo app on Now Playing, playing the station called `name`, with the
     /// keys on the Now Playing pane (`menu` false) or the menu on NOW PLAYING.
+    #[test]
+    fn the_notifications_page_lists_messages_under_its_menu_entry() {
+        let mut app = demo();
+        app.status = "Thumb taken back: Song".into();
+        app.note_status();
+        app.view = View::Notifications;
+        app.focus = Focus::Content;
+        let (lines, _) = screen(&app, 120, 30);
+        let text = lines.join("\n");
+        assert!(text.contains("Notifications"), "{text}");
+        assert!(text.contains("just now"), "{text}");
+        assert!(text.contains("Thumb taken back: Song"), "{text}");
+        let settings = lines.iter().position(|l| l.contains("Settings")).unwrap();
+        let about = lines.iter().position(|l| l.contains("About")).unwrap();
+        assert!(lines[settings + 1].contains("Notifications") && about == settings + 2);
+    }
+
     fn playing_demo(name: &str, menu: bool) -> App {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = demo();

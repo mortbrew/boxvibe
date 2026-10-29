@@ -1496,11 +1496,13 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let block = panel(title(format!("Now Playing · {station}"), &p), &p, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    // The same blank space on all four sides of the card's content.
+    // A blank row above and below the card's content, and three columns at each side
+    // (fewer on a narrow card, so the text keeps its room).
+    let side = if inner.width >= 40 { NOW_PLAYING_SIDE_PAD } else { NOW_PLAYING_PAD };
     let inner = Rect {
-        x: inner.x + NOW_PLAYING_PAD,
+        x: inner.x + side,
         y: inner.y + NOW_PLAYING_PAD,
-        width: inner.width.saturating_sub(2 * NOW_PLAYING_PAD),
+        width: inner.width.saturating_sub(2 * side),
         height: inner.height.saturating_sub(2 * NOW_PLAYING_PAD),
     };
     if let Some(ad) = app.ad_view() {
@@ -1605,8 +1607,10 @@ fn draw_ad(frame: &mut Frame, app: &App, ic: &Icons, ad: &crate::app::AdView, ar
 /// Rows Now Playing needs before the buttons join the stack.
 pub const STACK_WITH_BUTTONS: u16 = 11;
 
-/// Blank cells between Now Playing's border and what it holds, on every side.
+/// Blank rows between Now Playing's border and what it holds, top and bottom (and the side pad on a narrow card).
 pub const NOW_PLAYING_PAD: u16 = 1;
+/// Blank columns left and right of the Now Playing content.
+pub const NOW_PLAYING_SIDE_PAD: u16 = 3;
 
 /// Draws the cover, or a message that there is none, and returns where it went.
 fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) -> Rect {
@@ -2789,6 +2793,29 @@ mod tests {
         let lines = screen(app, cols, rows).0;
         let at = lines.iter().position(|l| l.contains("Edit station")).expect("the editor");
         lines[at + 2].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn now_playing_keeps_three_blank_columns_inside_each_side() {
+        let app = playing_demo("Today's Hits", false);
+        let lines = screen(&app, 160, 40).0;
+        let top = lines.iter().position(|l| l.contains("Now Playing ·")).expect("the card");
+        let chars: Vec<char> = lines[top].chars().collect();
+        let title_at = lines[top].find("Now Playing").map(|b| lines[top][..b].chars().count()).unwrap();
+        let left = (0..title_at).rev().find(|&x| matches!(chars[x], '╭' | '┌' | '┏')).expect("left corner");
+        let right = (title_at..chars.len()).find(|&x| matches!(chars[x], '╮' | '┐' | '┓')).expect("right corner");
+        let mut rows = 0;
+        for line in &lines[top + 1..] {
+            let c: Vec<char> = line.chars().collect();
+            if matches!(c[left], '╰' | '└' | '┗') {
+                break;
+            }
+            rows += 1;
+            assert!(c[left + 1..=left + 3].iter().all(|&ch| ch == ' '), "left pad: {line}");
+            assert!(c[right - 3..right].iter().all(|&ch| ch == ' '), "right pad: {line}");
+        }
+        assert!(rows > 3, "the card has rows");
+        assert!(lines.join("\n").contains(app.now.as_ref().unwrap().title.as_str()), "the song still shows");
     }
 
     #[test]

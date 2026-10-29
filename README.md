@@ -47,7 +47,7 @@ work right now drawn as key caps at the bottom.
 - **Your stations** (Shuffle too) on the left; `Enter` plays one, and the
   last one you played starts again next time
 - **Now Playing**: title, artist, album, your thumb, a progress bar with the
-  time, and the volume
+  time, and the volume, with three blank columns inside each side of its frame
 - **Thumbs up / down** (`U` / `D`, from any pane). Like in Pandora, a thumbs down skips the
   song. **Tired of this song** (`Z`, Shift+z) keeps it off all your stations for a month
 - **Up Next** and **History**: the few songs Pandora sent up next on the

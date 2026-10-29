@@ -381,6 +381,8 @@ pub enum Cmd {
     Sleep,
     /// Pin the selected or playing song.
     Pin,
+    /// `.`: the song menu of the selected or playing song.
+    SongMenu,
 }
 
 /// One key and what it does. Shift+letters are the capital letters;
@@ -419,6 +421,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(KeyCode::Char('H'), Cmd::Tint),
     bind(KeyCode::Char('B'), Cmd::Sleep),
     bind(KeyCode::Char('I'), Cmd::Pin),
+    bind(KeyCode::Char('.'), Cmd::SongMenu),
     Binding { code: KeyCode::Right, shift: true, cmd: Cmd::VolumeUp },
     Binding { code: KeyCode::Left, shift: true, cmd: Cmd::VolumeDown },
     bind(KeyCode::Char('{'), Cmd::MenuNarrower),
@@ -476,6 +479,8 @@ pub struct StationSearch {
     pub waiting: bool,
     /// Why the last search failed.
     pub error: Option<String>,
+    /// Started from a song's menu: the cursor goes to the first hit of this kind.
+    pub prefer: Option<crate::pandora::HitKind>,
 }
 
 impl StationSearch {
@@ -488,6 +493,7 @@ impl StationSearch {
             asked: None,
             waiting: false,
             error: None,
+            prefer: None,
         }
     }
 
@@ -536,6 +542,8 @@ pub enum DetailsOf {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Details {
     pub of: DetailsOf,
+    /// "Why This Song?": the song's details led by why the station plays it.
+    pub why: bool,
     /// The name of the song's station (or the station itself).
     pub station_name: String,
     pub station_id: String,
@@ -559,9 +567,43 @@ impl Details {
 
     pub fn kind(&self) -> &'static str {
         match self.of {
+            DetailsOf::Song(_) if self.why => "Why This Song?",
             DetailsOf::Song(_) => "Song",
             DetailsOf::Station(_) => "Station",
         }
+    }
+
+    /// Why the station plays `s`, from what boxvibe knows: the station's
+    /// seeds and your thumb (Pandora's own reasons aren't in its web API).
+    fn why_text(&self, s: &Song) -> String {
+        let station = if self.station_name.is_empty() {
+            "this station".to_owned()
+        } else {
+            format!("“{}”", self.station_name)
+        };
+        let mut why = match &self.from_pandora {
+            None => return "loading the station's seeds…".into(),
+            Some(Err(_)) => format!("Pandora picked it for {station}; its seeds couldn't be loaded."),
+            Some(Ok(d)) => {
+                let same = |a: &str| !a.is_empty() && a.trim().eq_ignore_ascii_case(s.artist.trim());
+                if let Some(seed) = d.seeds.iter().find(|x| x.kind == "Song" && x.name.eq_ignore_ascii_case(&s.title)) {
+                    format!("“{}” is itself a seed of {station}.", seed.name)
+                } else if d.seeds.iter().any(|x| x.kind == "Artist" && same(&x.name)) {
+                    format!("{} is a seed of {station}, so Pandora plays their songs and music like them.", s.artist)
+                } else if d.seeds.is_empty() {
+                    format!("Pandora picked it for {station} (a station without seeds you set, like a genre).")
+                } else {
+                    let names: Vec<&str> = d.seeds.iter().take(4).map(|x| x.name.as_str()).collect();
+                    format!("Pandora picked it as music like {station}'s seeds: {}.", names.join(", "))
+                }
+            }
+        };
+        match s.rating {
+            Rating::Up => why.push_str(" You gave it a thumbs up."),
+            Rating::Down => why.push_str(" You gave it a thumbs down."),
+            Rating::None => {}
+        }
+        why
     }
 
     /// The popup's rows (label, value): only what Pandora actually sent.
@@ -572,6 +614,9 @@ impl Details {
                 rows.push((label.into(), value));
             }
         };
+        if let (true, DetailsOf::Song(s)) = (self.why, &self.of) {
+            add("Why", self.why_text(s));
+        }
         match &self.of {
             DetailsOf::Song(s) => {
                 add("Title", s.title.clone());
@@ -638,6 +683,106 @@ impl Details {
 /// How many bottom-bar messages the Notifications page keeps.
 pub const NOTES_KEPT: usize = 200;
 
+/// What the song menu (`.`) offers, in its order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SongAction {
+    StationFromArtist,
+    StationFromSong,
+    Tired,
+    Share,
+    Why,
+    Pin,
+    ThumbUp,
+    ThumbDown,
+    Details,
+    Sleep,
+}
+
+impl SongAction {
+    pub const ALL: [SongAction; 10] = [
+        Self::StationFromArtist,
+        Self::StationFromSong,
+        Self::Tired,
+        Self::Share,
+        Self::Why,
+        Self::Pin,
+        Self::ThumbUp,
+        Self::ThumbDown,
+        Self::Details,
+        Self::Sleep,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::StationFromArtist => "Start Station from Artist",
+            Self::StationFromSong => "Start Station from Song",
+            Self::Tired => "Tired of This Song",
+            Self::Share => "Share (Copy Link)",
+            Self::Why => "Why This Song?",
+            Self::Pin => "Pin",
+            Self::ThumbUp => "Thumbs Up",
+            Self::ThumbDown => "Thumbs Down",
+            Self::Details => "Details",
+            Self::Sleep => "Sleep Timer",
+        }
+    }
+
+    /// The key that does the same outside the menu.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Tired => "Z",
+            Self::Pin => "I",
+            Self::ThumbUp => "l",
+            Self::ThumbDown => "b",
+            Self::Details => "v",
+            Self::Sleep => "B",
+            _ => "",
+        }
+    }
+}
+
+/// The open song menu: which song (by track token) and the cursor.
+#[derive(Debug, Clone)]
+pub struct SongMenu {
+    pub song: Song,
+    pub cursor: usize,
+}
+
+/// The link Share copies: the song's Pandora page, else a Pandora search.
+pub fn share_link(song: &Song) -> String {
+    if song.detail_url.starts_with("http") {
+        return song.detail_url.clone();
+    }
+    if let Some(path) = song.detail_url.strip_prefix('/') {
+        return format!("https://www.pandora.com/{path}");
+    }
+    let mut q = String::new();
+    for b in format!("{} {}", song.title, song.artist).bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => q.push(b as char),
+            _ => q.push_str(&format!("%{b:02X}")),
+        }
+    }
+    format!("https://www.pandora.com/search/{q}/all")
+}
+
+/// Standard base64 (for OSC 52).
+fn base64(bytes: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ABC[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
 pub struct App {
     pub config: Config,
     pub config_path: Option<PathBuf>,
@@ -694,6 +839,8 @@ pub struct App {
     pub pinned_cursor: usize,
     /// Up Next songs disliked with b: sent, and skipped, when their turn comes.
     pub held_dislikes: std::collections::HashSet<String>,
+    /// `.`: the song menu, and the song it is for.
+    pub song_menu: Option<SongMenu>,
     /// Bottom-bar messages, newest first (at most `NOTES_KEPT`).
     pub notes: VecDeque<(Instant, String)>,
     pub notes_cursor: usize,
@@ -818,6 +965,7 @@ impl App {
             pins: Vec::new(),
             pinned_cursor: 0,
             held_dislikes: Default::default(),
+            song_menu: None,
             notes: VecDeque::new(),
             notes_cursor: 0,
             last_status: String::new(),
@@ -1267,14 +1415,147 @@ impl App {
     }
 
     /// Shift+I: pins the selected song (Up Next, History) or else the playing one.
-    fn pin(&mut self) {
-        let song = match (self.in_songs(), self.pane) {
+    /// `.`: the song menu for the selected (or playing) song.
+    fn open_song_menu(&mut self) {
+        let Some(song) = self.selected_song() else {
+            self.status = "No song here: pick a station first".into();
+            return;
+        };
+        if song.title.is_empty() || song.track_token.is_empty() {
+            self.status = "Ads have no song menu".into();
+            return;
+        }
+        self.song_menu = Some(SongMenu { song, cursor: 0 });
+    }
+
+    fn song_menu_key(&mut self, key: KeyEvent) {
+        let Some(menu) = self.song_menu.as_mut() else { return };
+        let len = SongAction::ALL.len();
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('.' | 'q') => self.song_menu = None,
+            KeyCode::Char('j') | KeyCode::Down => menu.cursor = step(menu.cursor, len, 1),
+            KeyCode::Char('k') | KeyCode::Up => menu.cursor = step(menu.cursor, len, -1),
+            KeyCode::Home | KeyCode::Char('g') => menu.cursor = 0,
+            KeyCode::End | KeyCode::Char('G') => menu.cursor = len - 1,
+            KeyCode::Enter => {
+                let action = SongAction::ALL[menu.cursor.min(len - 1)];
+                let Some(menu) = self.song_menu.take() else { return };
+                self.song_action(action, menu.song);
+            }
+            _ => {}
+        }
+    }
+
+    fn song_action(&mut self, action: SongAction, song: Song) {
+        let playing = self.now.as_ref().is_some_and(|n| n.track_token == song.track_token);
+        match action {
+            SongAction::StationFromArtist => {
+                self.station_from_search(song.artist.clone(), crate::pandora::HitKind::Artist)
+            }
+            SongAction::StationFromSong => {
+                self.station_from_search(format!("{} {}", song.title, song.artist), crate::pandora::HitKind::Song)
+            }
+            SongAction::Tired if playing => self.tired(),
+            SongAction::Tired => {
+                self.backend.send(Request::Tired { track_token: song.track_token.clone() });
+                if let Some(at) = self.queue.iter().position(|s| s.track_token == song.track_token) {
+                    self.queue.remove(at);
+                    self.held_dislikes.remove(&song.track_token);
+                    self.requested.remove(&song.track_token);
+                    self.audio_cache.remove(&song.track_token);
+                }
+                self.status = format!("Tired of “{}”: Pandora rests it for a month", song.title);
+            }
+            SongAction::Share => self.share(&song),
+            SongAction::Why => self.show_song_details(song, true),
+            SongAction::Details => self.show_song_details(song, false),
+            SongAction::Pin => self.pin(),
+            SongAction::ThumbUp | SongAction::ThumbDown => {
+                let positive = action == SongAction::ThumbUp;
+                if self.in_songs() { self.rate_in_pane(positive) } else { self.rate(positive) }
+            }
+            SongAction::Sleep => self.next_sleep(),
+        }
+    }
+
+    /// "Start Station from …": the add-station search, filled in and sent;
+    /// Enter makes the station from the highlighted hit.
+    fn station_from_search(&mut self, query: String, prefer: crate::pandora::HitKind) {
+        self.open_add_station();
+        let Some(search) = self.add_station.as_mut() else { return };
+        search.text = TextInput::new(query.trim());
+        search.prefer = Some(prefer);
+        let query = search.text.text().to_owned();
+        search.asked = Some(query.clone());
+        search.waiting = true;
+        self.backend.send(Request::Search { query });
+    }
+
+    /// The song's Pandora page (or a Pandora search for it) on the clipboard:
+    /// wl-copy, else xclip, else the terminal's OSC 52.
+    fn share(&mut self, song: &Song) {
+        let link = share_link(song);
+        if self.demo {
+            self.status = format!("Demo: would copy {link}");
+            return;
+        }
+        let tools: [(&str, &[&str]); 2] = [("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])];
+        for (tool, args) in tools {
+            let child = std::process::Command::new(tool)
+                .args(args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            if let Ok(mut child) = child {
+                use std::io::Write;
+                let wrote = child.stdin.take().is_some_and(|mut i| i.write_all(link.as_bytes()).is_ok());
+                if wrote && child.wait().is_ok_and(|s| s.success()) {
+                    self.status = format!("Copied: {link}");
+                    return;
+                }
+            }
+        }
+        use std::io::Write;
+        let mut out = std::io::stdout();
+        let _ = write!(out, "\x1b]52;c;{}\x07", base64(link.as_bytes()));
+        let _ = out.flush();
+        self.status = format!("Copied (via the terminal): {link}");
+    }
+
+    fn show_song_details(&mut self, song: Song, why: bool) {
+        let station_name =
+            self.stations.iter().find(|s| s.id == song.station_id).map(|s| s.name.clone()).unwrap_or_default();
+        let details = Details {
+            station_name,
+            station_id: song.station_id.clone(),
+            of: DetailsOf::Song(Box::new(song)),
+            from_pandora: None,
+            why,
+        };
+        if details.station_id.is_empty() {
+            self.details = Some(Details { from_pandora: Some(Err("no station for this song".into())), ..details });
+            return;
+        }
+        let current = self.current_station.as_deref() == Some(details.station_id.as_str());
+        self.backend.send(Request::StationDetails { station_id: details.station_id.clone(), current });
+        self.details = Some(details);
+    }
+
+    /// The song a song key is for: the Up Next or History row when that
+    /// pane has the keys, else the playing song.
+    fn selected_song(&self) -> Option<Song> {
+        match (self.in_songs(), self.pane) {
             (true, Pane::UpNext) => self.queue.get(self.next_index()),
             (true, Pane::History) => self.history.get(self.history_index()),
             _ => None,
         }
         .or(self.now.as_ref())
-        .cloned();
+        .cloned()
+    }
+
+    fn pin(&mut self) {
+        let song = self.selected_song();
         let Some(song) = song else {
             self.status = "No song to pin: pick a station first".into();
             return;
@@ -1527,7 +1808,7 @@ impl App {
                     // Typing on while it searched keeps the keys in the text.
                     let same = search.text.text().trim() == query;
                     search.mode = if hits.is_empty() || !same { SearchMode::Typing } else { SearchMode::Results };
-                    search.cursor = 0;
+                    search.cursor = search.prefer.and_then(|k| hits.iter().position(|h| h.kind == k)).unwrap_or(0);
                     search.hits = hits;
                 }
             }
@@ -1994,6 +2275,7 @@ impl App {
             || self.rename.is_some()
             || self.add_station.is_some()
             || self.details.is_some()
+            || self.song_menu.is_some()
             || self.editor.is_some()
             || self.prompt == Some(Prompt::Password)
     }
@@ -2354,6 +2636,9 @@ impl App {
             self.details = None;
             return;
         }
+        if self.song_menu.is_some() {
+            return self.song_menu_key(key);
+        }
         if let Some(cmd) = command_for(key) {
             self.run(cmd);
         }
@@ -2401,6 +2686,7 @@ impl App {
             Cmd::Tint => self.next_art_tint(),
             Cmd::Sleep => self.next_sleep(),
             Cmd::Pin => self.pin(),
+            Cmd::SongMenu => self.open_song_menu(),
         }
     }
 
@@ -2615,14 +2901,13 @@ impl App {
 
     /// `v`: what Pandora tells about the selected song or station.
     fn show_details(&mut self) {
-        let station_name =
-            |app: &App, id: &str| app.stations.iter().find(|s| s.id == id).map(|s| s.name.clone()).unwrap_or_default();
         let details = if let Some((station, _)) = self.station_in_reach() {
             Details {
                 station_id: station.id.clone(),
                 station_name: station.name.clone(),
                 of: DetailsOf::Station(Box::new(station)),
                 from_pandora: None,
+                why: false,
             }
         } else if self.focus == Focus::Menu && matches!(self.menu_selected(), MenuItem::Favorite(_)) {
             return self.no_station_here("v shows details of");
@@ -2641,12 +2926,7 @@ impl App {
                     "No song to show details of: pick a station, or open Stations (Shift+S) for a station's".into();
                 return;
             };
-            Details {
-                station_name: station_name(self, &song.station_id),
-                station_id: song.station_id.clone(),
-                of: DetailsOf::Song(Box::new(song)),
-                from_pandora: None,
-            }
+            return self.show_song_details(song, false);
         };
         if details.station_id.is_empty() {
             self.details = Some(Details { from_pandora: Some(Err("no station for this song".into())), ..details });
@@ -3496,6 +3776,51 @@ mod tests {
             app.note_status();
         }
         assert_eq!(app.notes.len(), NOTES_KEPT);
+    }
+
+    #[test]
+    fn dot_opens_the_song_menu_and_start_station_fills_the_search() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::NowPlaying;
+        app.on_key(key(KeyCode::Char('.')));
+        assert!(app.song_menu.is_some());
+        assert!(app.overlay_open());
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.song_menu.is_none());
+        let artist = app.now.as_ref().unwrap().artist.clone();
+        app.on_key(key(KeyCode::Char('.')));
+        app.on_key(key(KeyCode::Enter));
+        let search = app.add_station.as_ref().expect("the add-station box opens");
+        assert_eq!(search.text.text(), artist.trim());
+        assert_eq!(search.prefer, Some(crate::pandora::HitKind::Artist));
+    }
+
+    #[test]
+    fn tired_from_the_menu_drops_an_up_next_song() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::UpNext;
+        let first = app.queue[0].track_token.clone();
+        app.on_key(key(KeyCode::Char('.')));
+        let at = SongAction::ALL.iter().position(|a| *a == SongAction::Tired).unwrap();
+        for _ in 0..at {
+            app.on_key(key(KeyCode::Char('j')));
+        }
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.queue.iter().all(|s| s.track_token != first));
+        assert!(app.status.starts_with("Tired of"), "{}", app.status);
+    }
+
+    #[test]
+    fn share_links_and_base64() {
+        let mut s = Song { title: "A B".into(), artist: "C&D".into(), ..Song::default() };
+        assert_eq!(share_link(&s), "https://www.pandora.com/search/A%20B%20C%26D/all");
+        s.detail_url = "/artist/x".into();
+        assert_eq!(share_link(&s), "https://www.pandora.com/artist/x");
+        assert_eq!(base64(b"Man"), "TWFu");
+        assert_eq!(base64(b"Ma"), "TWE=");
+        assert_eq!(base64(b"M"), "TQ==");
     }
 
     #[test]

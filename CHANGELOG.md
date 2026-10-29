@@ -21,6 +21,7 @@
 - Thumbs: pressing the same thumb again (`U`/`D`, `l`/`b`) takes it back (Pandora's deleteFeedback, using the `feedbackId` addFeedback returns). A thumb boxvibe has no `feedbackId` for says so; `e` on the station can still take it back.
 - Up Next: `b` no longer drops the row at once. The dislike is held (the row shows thumbs down) and sent when the song's turn comes, which skips it into History; `b` again cancels it, `l` turns it into a like.
 - Notifications: a menu entry between Settings and About lists what the bottom bar said this session, newest first, with how long ago (the last 200).
+- Song menu: `.` on the playing song or a selected Up Next / History row opens a menu: Start Station from the artist or the song (fills in the add-station search, the cursor on the first hit of that kind), Tired of This Song (from Up Next it also leaves the queue), Share (copies the song's Pandora link with wl-copy, xclip or OSC 52), Why This Song? (the station's seeds and your thumb), Pin, thumbs, Details and the sleep timer.
 
 ## 0.4.0 (2026-10-24)
 

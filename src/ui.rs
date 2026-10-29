@@ -17,7 +17,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
     App, Details, Editor, EditorTab, FeedState, Focus, GenresState, Loaded, MenuItem, Pane, Prompt, Rename, SearchMode,
-    Session, Setting, StationRef, StationSearch, View,
+    Session, Setting, SongAction, StationRef, StationSearch, View,
 };
 use crate::art::Cover;
 use crate::config::{AlbumArt, BorderStyle, GoodVibes};
@@ -103,6 +103,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     if app.system_open {
         draw_system(frame, app, body);
+    }
+    if let Some(menu) = &app.song_menu {
+        draw_song_menu(frame, &p, body, menu);
     }
     if let Some(d) = &app.details {
         draw_details(frame, &p, body, d);
@@ -291,6 +294,32 @@ fn draw_box(frame: &mut Frame, p: &Palette, screen: Rect, text: &BoxText) {
         let y = area.y + 1 + 1 + question_rows;
         frame.set_cursor_position(Position::new(x.min(area.right().saturating_sub(2)), y));
     }
+}
+
+/// `.`: what can be done with a song, its own key (if any) on the right.
+fn draw_song_menu(frame: &mut Frame, p: &Palette, area: Rect, menu: &crate::app::SongMenu) {
+    let width = 44.min(area.width.saturating_sub(2)).max(area.width.min(20));
+    let inner_w = usize::from(width.saturating_sub(2));
+    let mut lines = vec![Line::from(Span::styled(
+        format!(" {}", fit(&format!("{} · {}", menu.song.title, menu.song.artist), inner_w.saturating_sub(1))),
+        Style::new().fg(p.muted),
+    ))];
+    lines.push(Line::raw(""));
+    for (i, action) in SongAction::ALL.iter().enumerate() {
+        let key = action.key();
+        let label = action.label();
+        let gap = inner_w.saturating_sub(label.width() + key.width() + 3);
+        let text = format!(" {label}{}{key}  ", " ".repeat(gap));
+        let style = if i == menu.cursor { selection(p, true) } else { Style::new().fg(p.fg) };
+        lines.push(Line::from(Span::styled(pad(&text, inner_w), style)));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(" Enter picks · Esc closes", Style::new().fg(p.muted))));
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let box_area = centered(area, width, height);
+    frame.render_widget(Clear, box_area);
+    let block = panel(title("Song".into(), p), p, true).style(Style::new().bg(p.background));
+    frame.render_widget(Paragraph::new(lines).block(block), box_area);
 }
 
 /// `v`: what Pandora tells about a song or station: label and value rows,
@@ -2211,6 +2240,7 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
             playing_keys(&mut keys);
             if app.now.is_some() {
                 keys.push(("v", "Details"));
+                keys.push((".", "Song Menu"));
             }
             keys.push(("B", if app.sleep.is_some() { "Sleep (next / off)" } else { "Sleep" }));
             keys.push(("Esc", "Menu"));
@@ -2224,6 +2254,7 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
             keys.push(("Tab", if app.pane == Pane::UpNext { "History" } else { "Menu" }));
             if row_here {
                 keys.push(("v", "Details"));
+                keys.push((".", "Song Menu"));
             }
             keys.push(("Esc", "Menu"));
         }
@@ -2362,6 +2393,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("Shift ← →", "volume down / up (saved)"),
             ("I", "pin the selected or playing song (menu: Pinned; Enter opens its Pandora page, x unpins)"),
             ("B", "sleep timer: 15, 30, 60, 90 min, end of this song, off (fades out, then pauses)"),
+            (".", "song menu (selected or playing song): station from artist / song, tired, share, why, pin, thumbs…"),
         ],
     ),
     (

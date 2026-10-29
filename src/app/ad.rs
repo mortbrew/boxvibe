@@ -11,6 +11,7 @@ use std::time::SystemTime;
 
 use super::*;
 use crate::ads::{self, Action, Break};
+use crate::config::GoodVibes;
 use crate::pandora::AdAsk;
 
 /// Pandora gets this long to say whether an ad is due.
@@ -96,7 +97,7 @@ impl App {
     fn ad_ask(&self, how: End) -> Option<AdAsk> {
         let song = self.now.as_ref()?;
         let can_play = self.demo || self.audio.has_device();
-        (self.config.player.good_vibes_only
+        (self.config.player.good_vibes_only.plays_ads()
             && can_play
             && self.session == Session::LoggedIn
             && !self.ad_break()
@@ -187,7 +188,11 @@ impl App {
         if let AdPhase::Playing(play) = &mut self.ad {
             play.waiting = None;
         }
-        if let Err(e) = self.audio.start(data.filter(|d| !d.is_empty()), 0.0, false) {
+        if let Err(e) = self.audio.start(
+            data.filter(|d| !d.is_empty()),
+            0.0,
+            self.config.player.good_vibes_only == GoodVibes::Muted,
+        ) {
             return self.ad_give_up(&e);
         }
         let AdPhase::Playing(play) = &mut self.ad else { return };

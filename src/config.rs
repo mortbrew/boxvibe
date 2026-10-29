@@ -103,13 +103,90 @@ pub struct PlayerConfig {
     /// 0–100.
     pub volume: u8,
     /// Play Pandora's audio ads and report them like the website does (free
-    /// accounts get them). Off: no ad is asked for, so none plays.
-    pub good_vibes_only: bool,
+    /// accounts get them); Muted plays them silently. Off: no ad is asked
+    /// for, so none plays. Written `true`, `"muted"` or `false`.
+    pub good_vibes_only: GoodVibes,
 }
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self { volume: 70, good_vibes_only: true }
+        Self { volume: 70, good_vibes_only: GoodVibes::On }
+    }
+}
+
+/// Settings → Good Vibes Only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GoodVibes {
+    /// Ads play and are reported, like the website.
+    #[default]
+    On,
+    /// Ads play and are reported exactly as with On, at volume 0.
+    Muted,
+    /// No ad is asked for.
+    Off,
+}
+
+impl GoodVibes {
+    /// Ads are asked for (and played, maybe silently).
+    pub fn plays_ads(self) -> bool {
+        self != Self::Off
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Muted => "muted",
+            Self::Off => "off",
+        }
+    }
+
+    /// The order Settings steps through.
+    pub fn next(self) -> Self {
+        match self {
+            Self::On => Self::Muted,
+            Self::Muted => Self::Off,
+            Self::Off => Self::On,
+        }
+    }
+
+    /// As written in config.toml: `true`, `"muted"`, `false`.
+    pub fn to_value(self) -> toml_edit::Value {
+        match self {
+            Self::On => true.into(),
+            Self::Muted => "muted".into(),
+            Self::Off => false.into(),
+        }
+    }
+}
+
+impl Serialize for GoodVibes {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::On => s.serialize_bool(true),
+            Self::Muted => s.serialize_str("muted"),
+            Self::Off => s.serialize_bool(false),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for GoodVibes {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Bool(bool),
+            Text(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Bool(true) => Ok(Self::On),
+            Raw::Bool(false) => Ok(Self::Off),
+            Raw::Text(t) => match t.trim().to_ascii_lowercase().as_str() {
+                "muted" | "mute" => Ok(Self::Muted),
+                "on" | "true" => Ok(Self::On),
+                "off" | "false" => Ok(Self::Off),
+                other => Err(serde::de::Error::custom(format!("expected true, false or \"muted\", not \"{other}\""))),
+            },
+        }
     }
 }
 
@@ -1031,20 +1108,42 @@ mod tests {
     }
 
     #[test]
+    fn good_vibes_only_takes_true_false_or_muted_and_saves_them_back() {
+        for (text, want) in [
+            ("true", GoodVibes::On),
+            ("false", GoodVibes::Off),
+            ("\"muted\"", GoodVibes::Muted),
+            ("\"Muted\"", GoodVibes::Muted),
+        ] {
+            let (c, w) = Config::parse(&format!("[playback]\ngood_vibes_only = {text}\n")).unwrap();
+            assert_eq!(c.player.good_vibes_only, want, "{text}");
+            assert!(w.is_empty(), "{text}: {w:?}");
+        }
+        assert_eq!(GoodVibes::On.next(), GoodVibes::Muted);
+        assert_eq!(GoodVibes::Muted.next(), GoodVibes::Off);
+        assert_eq!(GoodVibes::Off.next(), GoodVibes::On);
+        assert!(GoodVibes::Muted.plays_ads() && !GoodVibes::Off.plays_ads());
+        let path = temp_dir("good-vibes-muted").join("config.toml");
+        set_values(&path, &[("playback", "good_vibes_only", GoodVibes::Muted.to_value())]).unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("good_vibes_only = \"muted\""));
+        assert_eq!(Config::load(&path).0.player.good_vibes_only, GoodVibes::Muted);
+    }
+
+    #[test]
     fn good_guy_reads_as_good_vibes_only_and_saving_writes_only_the_new_name() {
-        assert!(Config::default().player.good_vibes_only);
+        assert_eq!(Config::default().player.good_vibes_only, GoodVibes::On);
         // Every old place it lived in loads, without a warning.
         for old in
             ["[player]\ngood_guy = false\n", "[playback]\ngood_guy = false\n", "[playback]\ngood_vibes_only = false\n"]
         {
             let (c, w) = Config::parse(old).unwrap();
-            assert!(!c.player.good_vibes_only && w.is_empty(), "{old}: {w:?}");
+            assert!((c.player.good_vibes_only == GoodVibes::Off) && w.is_empty(), "{old}: {w:?}");
         }
         // The new name beats the old one, wherever the old one is.
         let (c, _) = Config::parse("[playback]\ngood_guy = false\ngood_vibes_only = true\n").unwrap();
-        assert!(c.player.good_vibes_only);
+        assert_eq!(c.player.good_vibes_only, GoodVibes::On);
         let (c, _) = Config::parse("[player]\ngood_guy = false\n[playback]\ngood_vibes_only = true\n").unwrap();
-        assert!(c.player.good_vibes_only);
+        assert_eq!(c.player.good_vibes_only, GoodVibes::On);
         // Saving anything moves it: the old key and the old table are gone, no key twice.
         let path = temp_dir("good-guy-migrate").join("config.toml");
         std::fs::write(&path, "[player]\n# keep me\ngood_guy = false # off\nvolume = 40\n").unwrap();
@@ -1054,7 +1153,7 @@ mod tests {
         assert!(text.contains("# keep me") && !text.contains("[player]") && text.contains("[playback]"), "{text}");
         assert_eq!(text.matches("good_vibes_only").count(), 1, "{text}");
         let (c, w) = Config::load(&path);
-        assert!(!c.player.good_vibes_only && c.player.volume == 40 && w.is_empty(), "{w:?}");
+        assert!((c.player.good_vibes_only == GoodVibes::Off) && c.player.volume == 40 && w.is_empty(), "{w:?}");
         // Both names in one file: the new value stays, the old key goes.
         std::fs::write(&path, "[playback]\ngood_guy = false\ngood_vibes_only = true\n").unwrap();
         set_values(&path, &[("playback", "volume", 50_i64.into())]).unwrap();
@@ -1070,7 +1169,7 @@ mod tests {
         std::fs::write(&path, old).unwrap();
         let (c, w) = Config::load(&path);
         assert_eq!((c.ui.theme.as_str(), c.ui.icons, c.player.volume), ("gruvbox", IconSet::Emoji, 35));
-        assert!(!c.player.good_vibes_only && c.pandora.username == "me@example.com");
+        assert!((c.player.good_vibes_only == GoodVibes::Off) && c.pandora.username == "me@example.com");
         assert!(w.iter().any(|x| matches!(x, ConfigWarning::Unknown(k) if k == "ui.mystery")), "{w:?}");
         set_values(&path, &[("look", "animations", false.into())]).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
@@ -1086,7 +1185,7 @@ mod tests {
         assert!(text.contains("good_vibes_only = false") && text.contains("animations = false"), "{text}");
         assert_eq!(text.matches("[ui]").count(), 1, "{text}");
         let (c, _) = Config::load(&path);
-        assert!(!c.player.good_vibes_only && c.ui.theme == "gruvbox" && !c.ui.animations);
+        assert!((c.player.good_vibes_only == GoodVibes::Off) && c.ui.theme == "gruvbox" && !c.ui.animations);
     }
 
     /// (old table, old key, a non-default value, new table, new key, is that value read?)

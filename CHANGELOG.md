@@ -6,6 +6,7 @@
 
 - Audio: each song now plays at Pandora's own loudness correction (`fileGain`) combined with your volume, as the website does, capped so a song Pandora turns up can never clip.
 - Audio: smoother sound, especially on Bluetooth (AirPods). Songs are resampled to the sound device's rate with a windowed-sinc filter instead of rodio's straight-line interpolation (Pandora's AAC decodes at 22 kHz, so every song was being upsampled the rough way), samples are kept inside full scale, and the output buffer is larger (4096 frames) so Bluetooth is less likely to run dry.
+- Good Vibes Only is now **On / Muted / Off** (Enter on the row steps through them). Muted plays and reports ads exactly as On, at volume 0, and gives your volume back when the ad ends, fails, or you quit; a volume change during the ad is what comes back. Picking Muted shows a short gray-area notice first, like Off. `[playback] good_vibes_only` takes `true`, `"muted"` or `false`.
 ## 0.4.0 (2026-10-24)
 
 ### Keys (breaking: please read)

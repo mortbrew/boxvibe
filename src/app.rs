@@ -797,6 +797,8 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 pub struct App {
+    /// Media keys and the desktop's player widget (`None` until main starts it).
+    pub mpris: Option<crate::mpris::Mpris>,
     pub config: Config,
     pub config_path: Option<PathBuf>,
     pub demo: bool,
@@ -1018,6 +1020,7 @@ impl App {
             quit: false,
             config,
             config_path,
+            mpris: None,
             demo,
         };
         app.apply_theme();
@@ -1726,12 +1729,47 @@ impl App {
             self.end_song(End::Played);
         }
         self.ad_tick();
+        self.mpris_tick();
         self.want_art();
         if self.follows_omarchy() && self.last_theme_poll.elapsed() > Duration::from_secs(2) {
             self.last_theme_poll = Instant::now();
             if let Some(p) = self.omarchy.poll() {
                 self.palette = p;
             }
+        }
+    }
+
+    /// Media keys in, the playing song out.
+    fn mpris_tick(&mut self) {
+        let Some(m) = self.mpris.as_ref() else { return };
+        let asked: Vec<_> = m.controls.try_iter().collect();
+        for c in asked {
+            use crate::mpris::Control;
+            let paused = self.audio.is_paused();
+            match c {
+                Control::PlayPause => self.run(Cmd::Pause),
+                Control::Play if paused => self.run(Cmd::Pause),
+                Control::Pause if !paused => self.run(Cmd::Pause),
+                Control::Next => self.run(Cmd::Skip),
+                _ => {}
+            }
+        }
+        let snap = match &self.now {
+            Some(s) => crate::mpris::Snapshot {
+                title: s.title.clone(),
+                artist: s.artist.clone(),
+                album: s.album.clone(),
+                art_url: s.cover_art_url.clone(),
+                url: s.detail_url.clone(),
+                track: s.track_token.clone(),
+                length: s.length,
+                playing: Some(!self.audio.is_paused()),
+            },
+            None => crate::mpris::Snapshot::default(),
+        };
+        let pos = self.audio.position().as_secs_f64();
+        if let Some(m) = self.mpris.as_mut() {
+            m.show(snap, pos);
         }
     }
 
@@ -5005,6 +5043,34 @@ mod tests {
         let c = Config::default();
         assert_eq!(c.ui.icons, crate::config::IconSet::Nerd);
         assert!(theme::names().any(|n| n == c.ui.theme));
+    }
+
+    #[test]
+    fn media_keys_pause_play_and_skip_and_the_desktop_sees_the_song() {
+        let mut app = demo();
+        let (m, tx, _changed) = crate::mpris::Mpris::detached();
+        app.mpris = Some(m);
+        app.tick();
+        let first = app.now.as_ref().unwrap().clone();
+        let shown = app.mpris.as_ref().unwrap().shown();
+        assert_eq!((shown.title.as_str(), shown.status()), (first.title.as_str(), "Playing"));
+        tx.send(crate::mpris::Control::Play).unwrap();
+        app.tick();
+        assert!(!app.audio.is_paused(), "Play while playing does nothing");
+        tx.send(crate::mpris::Control::PlayPause).unwrap();
+        app.tick();
+        assert!(app.audio.is_paused());
+        assert_eq!(app.mpris.as_ref().unwrap().shown().status(), "Paused");
+        tx.send(crate::mpris::Control::Pause).unwrap();
+        app.tick();
+        assert!(app.audio.is_paused(), "Pause while paused does nothing");
+        tx.send(crate::mpris::Control::Play).unwrap();
+        tx.send(crate::mpris::Control::Next).unwrap();
+        app.tick();
+        app.settle(Duration::from_millis(150));
+        app.tick();
+        assert_ne!(app.now.as_ref().unwrap().track_token, first.track_token);
+        assert_eq!(app.mpris.as_ref().unwrap().shown().track, app.now.as_ref().unwrap().track_token);
     }
 
     #[test]

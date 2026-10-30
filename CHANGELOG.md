@@ -26,6 +26,7 @@
 - Station modes: `m` (Stations, Now Playing, the `e` editor, or the song menu's **Station Mode**) lists My Station, Crowd Faves, Discovery, Deep Cuts, Newly Released and Artist Only; Enter switches and Up Next refills. Premium-only modes are shown locked. If Pandora doesn't offer modes, the panel says so. (Needs a live check: the endpoint paths are guesses.)
 - Shuffle: Shift+X plays Pandora's Shuffle station (your stations mixed), creating it if needed. The Stations key bar shows `X Shuffle`.
 - Add station: seed suggestions use Pandora's suggestions call, falling back to the artist's similar artists when it returns nothing.
+- MPRIS: boxvibe shows up on the session bus as `org.mpris.MediaPlayer2.boxvibe`, so media keys, `playerctl` and the desktop's player widget see the song (title, artist, album, cover, length, position) and can play, pause and skip. Previous and seek do nothing (Pandora can't). Without a session bus nothing changes.
 
 ## 0.4.0 (2026-10-24)
 

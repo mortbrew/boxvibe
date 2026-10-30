@@ -12,6 +12,7 @@ mod desktop;
 mod icons;
 mod input;
 mod keychain;
+mod mpris;
 mod pandora;
 mod pinned;
 mod snapshot;
@@ -80,6 +81,7 @@ fn main() -> anyhow::Result<()> {
     let demo = args.demo;
     // Open the sound device before the screen switches, so ALSA's warnings can't scribble on it.
     let mut app = App::new(config, path, &warnings, demo);
+    app.mpris = Some(mpris::Mpris::start());
     app.load_pins();
     let mut terminal = ratatui::init();
     // Once, before any events are read: what pictures this terminal shows.

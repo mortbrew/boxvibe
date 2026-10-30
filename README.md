@@ -78,6 +78,8 @@ work right now drawn as key caps at the bottom.
 - Whatever you change in the app (theme, icons, volume, last station) is
   saved to `config.toml` right away, keeping your comments
 
+Media keys and `playerctl` work through MPRIS (`org.mpris.MediaPlayer2.boxvibe`): play, pause, play/pause, next; the desktop's player widget shows the song and cover.
+
 ## Requirements
 
 - Linux with ALSA (PipeWire's and PulseAudio's ALSA plugins work, as on Omarchy)

@@ -284,6 +284,10 @@ impl App {
             KeyCode::Char('a') if ed.tab == EditorTab::Seeds => self.open_seed_add(),
             KeyCode::Char('x') if ed.tab == EditorTab::Seeds => self.ask_remove_seed(),
             KeyCode::Char('x') => self.ask_delete_thumb(),
+            KeyCode::Char('m') => {
+                let station = ed.station.clone();
+                self.open_modes(Some(station));
+            }
             _ => {}
         }
     }

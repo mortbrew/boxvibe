@@ -22,6 +22,10 @@
 - Up Next: `b` no longer drops the row at once. The dislike is held (the row shows thumbs down) and sent when the song's turn comes, which skips it into History; `b` again cancels it, `l` turns it into a like.
 - Notifications: a menu entry between Settings and About lists what the bottom bar said this session, newest first, with how long ago (the last 200).
 - Song menu: `.` on the playing song or a selected Up Next / History row opens a menu: Start Station from the artist or the song (fills in the add-station search, the cursor on the first hit of that kind), Tired of This Song (from Up Next it also leaves the queue), Share (copies the song's Pandora link with wl-copy, xclip or OSC 52), Why This Song? (the station's seeds and your thumb), Pin, thumbs, Details and the sleep timer.
+- Song menu → **Similar Artists & Bio**: a panel with the artist's bio (when Pandora sends one; otherwise it says so and gives the artist page) and similar artists; Enter starts a station from one. (Needs a live check: the bio field name is a guess.)
+- Station modes: `m` (Stations, Now Playing, the `e` editor, or the song menu's **Station Mode**) lists My Station, Crowd Faves, Discovery, Deep Cuts, Newly Released and Artist Only; Enter switches and Up Next refills. Premium-only modes are shown locked. If Pandora doesn't offer modes, the panel says so. (Needs a live check: the endpoint paths are guesses.)
+- Shuffle: Shift+X plays Pandora's Shuffle station (your stations mixed), creating it if needed. The Stations key bar shows `X Shuffle`.
+- Add station: seed suggestions use Pandora's suggestions call, falling back to the artist's similar artists when it returns nothing.
 
 ## 0.4.0 (2026-10-24)
 

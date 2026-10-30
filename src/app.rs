@@ -26,8 +26,10 @@ use crate::update::{Progress, Replace, Update};
 
 mod ad;
 mod editor;
+mod panel;
 pub use ad::{AdPhase, AdView, End};
 pub use editor::{Editor, EditorTab, FeedState, Loaded};
+pub use panel::{Panel, PanelKind};
 
 /// What boxvibe knows about the Pandora password in the desktop keychain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -383,6 +385,8 @@ pub enum Cmd {
     Pin,
     /// `.`: the song menu of the selected or playing song.
     SongMenu,
+    Mode,
+    Shuffle,
 }
 
 /// One key and what it does. Shift+letters are the capital letters;
@@ -437,6 +441,8 @@ pub const KEYMAP: &[Binding] = &[
     bind(KeyCode::Char('x'), Cmd::Delete),
     bind(KeyCode::Char('v'), Cmd::Details),
     bind(KeyCode::Char('e'), Cmd::Edit),
+    bind(KeyCode::Char('m'), Cmd::Mode),
+    bind(KeyCode::Char('X'), Cmd::Shuffle),
     bind(KeyCode::Char('j'), Cmd::Down),
     bind(KeyCode::Down, Cmd::Down),
     bind(KeyCode::Char('k'), Cmd::Up),
@@ -695,11 +701,13 @@ pub enum SongAction {
     ThumbUp,
     ThumbDown,
     Details,
+    Artist,
+    Mode,
     Sleep,
 }
 
 impl SongAction {
-    pub const ALL: [SongAction; 10] = [
+    pub const ALL: [SongAction; 12] = [
         Self::StationFromArtist,
         Self::StationFromSong,
         Self::Tired,
@@ -709,6 +717,8 @@ impl SongAction {
         Self::ThumbUp,
         Self::ThumbDown,
         Self::Details,
+        Self::Artist,
+        Self::Mode,
         Self::Sleep,
     ];
 
@@ -723,6 +733,8 @@ impl SongAction {
             Self::ThumbUp => "Thumbs Up",
             Self::ThumbDown => "Thumbs Down",
             Self::Details => "Details",
+            Self::Artist => "Similar Artists & Bio",
+            Self::Mode => "Station Mode",
             Self::Sleep => "Sleep Timer",
         }
     }
@@ -735,6 +747,7 @@ impl SongAction {
             Self::ThumbUp => "l",
             Self::ThumbDown => "b",
             Self::Details => "v",
+            Self::Mode => "m",
             Self::Sleep => "B",
             _ => "",
         }
@@ -841,6 +854,8 @@ pub struct App {
     pub held_dislikes: std::collections::HashSet<String>,
     /// `.`: the song menu, and the song it is for.
     pub song_menu: Option<SongMenu>,
+    /// The artist page or station modes popup.
+    pub panel: Option<Panel>,
     /// Bottom-bar messages, newest first (at most `NOTES_KEPT`).
     pub notes: VecDeque<(Instant, String)>,
     pub notes_cursor: usize,
@@ -966,6 +981,7 @@ impl App {
             pinned_cursor: 0,
             held_dislikes: Default::default(),
             song_menu: None,
+            panel: None,
             notes: VecDeque::new(),
             notes_cursor: 0,
             last_status: String::new(),
@@ -1339,6 +1355,36 @@ impl App {
     }
 
     /// Pandora made (or already had) a station: it joins the list, and plays.
+    /// Shift+X: plays Pandora's Shuffle, which mixes songs from the account's
+    /// stations (Pandora makes it if the account has none yet).
+    fn play_shuffle(&mut self) {
+        if let Some(at) = self.stations.iter().position(|s| s.is_shuffle) {
+            if self.current_station.as_deref() == Some(self.stations[at].id.as_str()) {
+                self.status = "Already playing Shuffle".into();
+                return;
+            }
+            self.stations_cursor = at;
+            self.on_add_row = false;
+            self.tune(at);
+            return;
+        }
+        self.status = "Asking Pandora for your Shuffle station…".into();
+        self.backend.send(Request::Shuffle);
+    }
+
+    fn shuffle_arrived(&mut self, station: Station) {
+        let at = match self.stations.iter().position(|s| s.id == station.id) {
+            Some(at) => at,
+            None => {
+                self.stations.insert(0, station);
+                0
+            }
+        };
+        self.stations_cursor = at;
+        self.on_add_row = false;
+        self.tune(at);
+    }
+
     fn station_created(&mut self, station: Station) {
         self.creating = false;
         let at = match self.stations.iter().position(|s| s.id == station.id) {
@@ -1473,6 +1519,15 @@ impl App {
             SongAction::ThumbUp | SongAction::ThumbDown => {
                 let positive = action == SongAction::ThumbUp;
                 if self.in_songs() { self.rate_in_pane(positive) } else { self.rate(positive) }
+            }
+            SongAction::Artist => self.open_artist(&song),
+            SongAction::Mode => {
+                let station = self.stations.iter().find(|s| s.id == song.station_id).map(|s| StationRef {
+                    id: s.id.clone(),
+                    name: s.name.clone(),
+                    favorite: false,
+                });
+                self.open_modes(station)
             }
             SongAction::Sleep => self.next_sleep(),
         }
@@ -1813,6 +1868,9 @@ impl App {
                 }
             }
             Reply::StationCreated(station) => self.station_created(station),
+            Reply::Artist(info) => self.artist_loaded(info),
+            Reply::Shuffle(station) => self.shuffle_arrived(station),
+            Reply::StationModes { station_id, modes, set } => self.modes_loaded(&station_id, modes, set),
             Reply::Genres(categories) => {
                 self.genres = GenresState::Loaded(categories);
                 self.genres_cursor = 0;
@@ -1886,7 +1944,11 @@ impl App {
             | Reply::Feedback { .. }
             | Reply::FeedbackDeleted { .. } => {}
             Reply::Failed { what, message } => {
-                if self.editor_failed(what, &message) {
+                if self.editor_failed(what, &message) || self.panel_failed(what, &message) {
+                    return;
+                }
+                if what == "shuffle" {
+                    self.status = format!("⚠ No Shuffle: {message}");
                     return;
                 }
                 if what == "ads" {
@@ -2276,6 +2338,7 @@ impl App {
             || self.add_station.is_some()
             || self.details.is_some()
             || self.song_menu.is_some()
+            || self.panel.is_some()
             || self.editor.is_some()
             || self.prompt == Some(Prompt::Password)
     }
@@ -2621,6 +2684,9 @@ impl App {
         if self.add_station.is_some() {
             return self.search_key(key);
         }
+        if self.panel.is_some() {
+            return self.panel_key(key);
+        }
         if self.editor.is_some() {
             return self.editor_key(key);
         }
@@ -2687,6 +2753,12 @@ impl App {
             Cmd::Sleep => self.next_sleep(),
             Cmd::Pin => self.pin(),
             Cmd::SongMenu => self.open_song_menu(),
+            Cmd::Mode => {
+                let station =
+                    self.station_to_change().map(|(s, fav)| StationRef { id: s.id, name: s.name, favorite: fav });
+                self.open_modes(station)
+            }
+            Cmd::Shuffle => self.play_shuffle(),
         }
     }
 
@@ -3794,6 +3866,126 @@ mod tests {
         let search = app.add_station.as_ref().expect("the add-station box opens");
         assert_eq!(search.text.text(), artist.trim());
         assert_eq!(search.prefer, Some(crate::pandora::HitKind::Artist));
+    }
+
+    fn menu_pick(app: &mut App, action: SongAction) {
+        app.on_key(key(KeyCode::Char('.')));
+        let at = SongAction::ALL.iter().position(|a| *a == action).unwrap();
+        for _ in 0..at {
+            app.on_key(key(KeyCode::Char('j')));
+        }
+        app.on_key(key(KeyCode::Enter));
+    }
+
+    #[test]
+    fn the_artist_panel_shows_a_bio_and_starts_a_similar_station() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::NowPlaying;
+        let artist = app.now.as_ref().unwrap().artist.clone();
+        menu_pick(&mut app, SongAction::Artist);
+        let panel = app.panel.as_ref().expect("the artist panel opens");
+        assert!(panel.loading && app.overlay_open());
+        app.settle(Duration::from_millis(150));
+        let panel = app.panel.as_ref().unwrap();
+        assert!(!panel.loading);
+        assert!(panel.intro.contains(&artist), "{}", panel.intro);
+        assert!(!panel.items.is_empty() && panel.items.iter().all(|i| !i.label.eq_ignore_ascii_case(&artist)));
+        let similar = panel.items[0].label.clone();
+        let stations = app.stations.len();
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.panel.is_none());
+        app.settle(Duration::from_millis(150));
+        assert!(app.stations.len() >= stations);
+        let playing = app.current_station.clone().unwrap();
+        let name = &app.stations.iter().find(|s| s.id == playing).unwrap().name;
+        assert!(name.contains(&similar), "{name} from {similar}");
+    }
+
+    #[test]
+    fn a_failed_artist_page_says_so_in_the_panel() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::NowPlaying;
+        menu_pick(&mut app, SongAction::Artist);
+        app.on_reply(Reply::Failed { what: "artist", message: "Pandora is down".into() });
+        let panel = app.panel.as_ref().unwrap();
+        assert!(panel.intro.contains("Pandora is down") && panel.items.is_empty());
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.panel.is_some(), "Enter on nothing does nothing");
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.panel.is_none());
+    }
+
+    #[test]
+    fn m_picks_a_station_mode_and_premium_ones_stay_locked() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::NowPlaying;
+        let playing = app.current_station.clone().unwrap();
+        app.on_key(key(KeyCode::Char('m')));
+        app.settle(Duration::from_millis(150));
+        let panel = app.panel.as_ref().expect("m opens the modes");
+        assert_eq!(panel.items.len(), 6);
+        assert!(panel.items[0].current && panel.cursor == 0);
+        // Down to Deep Cuts (the fourth) and switch.
+        for _ in 0..3 {
+            app.on_key(key(KeyCode::Char('j')));
+        }
+        app.on_key(key(KeyCode::Enter));
+        app.settle(Duration::from_millis(150));
+        let panel = app.panel.as_ref().unwrap();
+        assert!(panel.items[3].current && !panel.items[0].current);
+        assert!(app.status.contains("Deep Cuts"), "{}", app.status);
+        assert_eq!(app.current_station.as_deref(), Some(playing.as_str()), "the same station plays on");
+        // Artist Only is Premium in the demo: locked, nothing sent.
+        app.on_key(key(KeyCode::Char('G')));
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.status.contains("isn't available"), "{}", app.status);
+        app.on_key(key(KeyCode::Esc));
+        // Reopened from the song menu, it remembers.
+        menu_pick(&mut app, SongAction::Mode);
+        app.settle(Duration::from_millis(150));
+        assert_eq!(app.panel.as_ref().unwrap().cursor, 3);
+    }
+
+    #[test]
+    fn no_modes_from_pandora_fails_gracefully() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::NowPlaying;
+        app.on_key(key(KeyCode::Char('m')));
+        app.on_reply(Reply::Failed { what: "mode", message: "Pandora doesn't offer station modes here".into() });
+        let panel = app.panel.as_ref().unwrap();
+        assert!(panel.intro.starts_with("No station modes") && !panel.loading);
+        assert_eq!(crate::ui::key_caps(&app), [("Esc", "Close")]);
+    }
+
+    #[test]
+    fn shift_x_plays_shuffle() {
+        let mut app = demo();
+        let shuffle = app.stations.iter().find(|s| s.is_shuffle).unwrap().id.clone();
+        if app.current_station.as_deref() == Some(shuffle.as_str()) {
+            let other = app.stations.iter().position(|s| !s.is_shuffle).unwrap();
+            app.tune(other);
+        }
+        app.on_key(shift('X'));
+        assert_eq!(app.current_station.as_deref(), Some(shuffle.as_str()));
+        app.on_key(shift('X'));
+        assert_eq!(app.status, "Already playing Shuffle");
+        // An account without one asks Pandora, which makes it.
+        app.stations.retain(|s| !s.is_shuffle);
+        app.current_station = None;
+        app.on_key(shift('X'));
+        app.settle(Duration::from_millis(150));
+        assert!(app.status.starts_with("⚠ No Shuffle") || app.status.starts_with("Tuning"), "{}", app.status);
+        app.on_reply(Reply::Shuffle(Station {
+            id: "sh".into(),
+            name: "Shuffle".into(),
+            is_shuffle: true,
+            ..Default::default()
+        }));
+        assert_eq!((app.current_station.as_deref(), app.stations[0].is_shuffle), (Some("sh"), true));
     }
 
     #[test]

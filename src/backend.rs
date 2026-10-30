@@ -12,7 +12,8 @@ use crate::ads::{self, Ad};
 use crate::demo;
 use crate::keychain::Keychain;
 use crate::pandora::{
-    self, AdAsk, Client, Error, FeedbackPage, GenreCategory, Quality, SearchHit, Seed, Song, Station, StationDetails,
+    self, AdAsk, ArtistInfo, Client, Error, FeedbackPage, GenreCategory, Quality, SearchHit, Seed, Song, Station,
+    StationDetails, StationModes,
 };
 use crate::update::{self, Checked, Update};
 
@@ -70,6 +71,22 @@ pub enum Request {
     /// Search Pandora for artists and songs to start a station from.
     Search {
         query: String,
+    },
+    /// The artist page (bio, similar artists) of `name`; `music_id` is the
+    /// song's `artistMusicId` (empty: found by name).
+    Artist {
+        music_id: String,
+        name: String,
+    },
+    /// Pandora's Shuffle station (made if the account has none).
+    Shuffle,
+    /// The modes (Deep Cuts, Discovery, ...) a station offers.
+    StationModes {
+        station_id: String,
+    },
+    SetStationMode {
+        station_id: String,
+        mode_id: i64,
     },
     /// Make a station from a search hit or a genre station (`pandora_id`).
     CreateStation {
@@ -175,6 +192,14 @@ pub enum Reply {
     },
     /// A station Pandora just made (the account now has it).
     StationCreated(Station),
+    Artist(ArtistInfo),
+    Shuffle(Station),
+    /// `set`: the answer to a mode change (else just the list).
+    StationModes {
+        station_id: String,
+        modes: StationModes,
+        set: bool,
+    },
     Genres(Vec<GenreCategory>),
     Playlist {
         station_id: String,
@@ -337,6 +362,8 @@ impl Backend {
 
 fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
     let mut round = 0;
+    // Each demo station's mode (none: My Station).
+    let mut modes: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     let mut ads_asked = 0;
     // The made-up account: renames and removals change this list only.
     let mut stations = demo::stations();
@@ -402,6 +429,25 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
                 }
                 None => Reply::Failed { what: "create station", message: "no such artist, song or genre".into() },
             },
+            Request::Artist { name, .. } => Reply::Artist(demo::artist(&name)),
+            Request::Shuffle => match stations.iter().find(|s| s.is_shuffle) {
+                Some(s) => Reply::Shuffle(s.clone()),
+                None => Reply::Failed { what: "shuffle", message: "no Shuffle station".into() },
+            },
+            Request::StationModes { station_id } => {
+                let on = *modes.get(&station_id).unwrap_or(&0);
+                Reply::StationModes { station_id, modes: demo::modes(on), set: false }
+            }
+            Request::SetStationMode { station_id, mode_id } => {
+                match demo::modes(0).modes.iter().find(|m| m.id == mode_id) {
+                    Some(m) if m.available => {
+                        modes.insert(station_id.clone(), mode_id);
+                        Reply::StationModes { station_id, modes: demo::modes(mode_id), set: true }
+                    }
+                    Some(m) => Reply::Failed { what: "mode", message: format!("{} needs Pandora Premium", m.name) },
+                    None => Reply::Failed { what: "mode", message: "no such mode".into() },
+                }
+            }
             Request::Genres => Reply::Genres(demo::genres()),
             Request::Playlist { station_id } => {
                 round += 1;
@@ -500,6 +546,26 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
             }),
             Request::CreateStation { pandora_id } => run(&mut client, &login, &mut took_over, "create station", |c| {
                 c.create_station(&pandora_id).map(Reply::StationCreated)
+            }),
+            Request::Artist { music_id, name } => run(&mut client, &login, &mut took_over, "artist", |c| {
+                c.artist_by_name(&music_id, &name).map(Reply::Artist)
+            }),
+            Request::Shuffle => {
+                run(&mut client, &login, &mut took_over, "shuffle", |c| c.shuffle().map(Reply::Shuffle))
+            }
+            Request::StationModes { station_id } => run(&mut client, &login, &mut took_over, "mode", |c| {
+                c.station_modes(&station_id).map(|modes| Reply::StationModes {
+                    station_id: station_id.clone(),
+                    modes,
+                    set: false,
+                })
+            }),
+            Request::SetStationMode { station_id, mode_id } => run(&mut client, &login, &mut took_over, "mode", |c| {
+                c.set_station_mode(&station_id, mode_id).map(|modes| Reply::StationModes {
+                    station_id: station_id.clone(),
+                    modes,
+                    set: true,
+                })
             }),
             Request::Genres => run(&mut client, &login, &mut took_over, "genres", |c| c.genres().map(Reply::Genres)),
             Request::Playlist { station_id } => run(&mut client, &login, &mut took_over, "playlist", |c| {

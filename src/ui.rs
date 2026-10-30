@@ -107,6 +107,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if let Some(menu) = &app.song_menu {
         draw_song_menu(frame, &p, body, menu);
     }
+    if let Some(panel) = &app.panel {
+        draw_panel(frame, &p, body, panel);
+    }
     if let Some(d) = &app.details {
         draw_details(frame, &p, body, d);
     }
@@ -320,6 +323,69 @@ fn draw_song_menu(frame: &mut Frame, p: &Palette, area: Rect, menu: &crate::app:
     frame.render_widget(Clear, box_area);
     let block = panel(title("Song".into(), p), p, true).style(Style::new().bg(p.background));
     frame.render_widget(Paragraph::new(lines).block(block), box_area);
+}
+
+/// The artist page (bio, similar artists) or a station's modes: intro text
+/// on top, then a list with a cursor; long lists scroll with it.
+fn draw_panel(frame: &mut Frame, p: &Palette, area: Rect, panel: &crate::app::Panel) {
+    let width = 64.min(area.width.saturating_sub(2)).max(area.width.min(20));
+    let inner_w = usize::from(width.saturating_sub(2));
+    let text_w = inner_w.saturating_sub(2).max(1);
+    let mut lines: Vec<Line> = Vec::new();
+    let intro_style = if panel.loading { Style::new().fg(p.muted) } else { Style::new().fg(p.fg) };
+    for part in wrap_question(&clean(&panel.intro), text_w, 8) {
+        lines.push(Line::from(Span::styled(format!(" {part}"), intro_style)));
+    }
+    if !panel.link.is_empty() {
+        lines.push(Line::from(Span::styled(format!(" {}", fit(&panel.link, text_w)), Style::new().fg(p.muted))));
+    }
+    if !panel.items.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(format!(" {}", panel.list_heading()), Style::new().fg(p.muted))));
+    }
+    // The list gets what is left of the screen; it scrolls to keep the cursor in view.
+    let fixed = lines.len() + 2 + 2;
+    let room = usize::from(area.height).saturating_sub(fixed + 2).max(1);
+    let per_item = if panel.items.iter().any(|i| !i.note.is_empty()) { 2 } else { 1 };
+    let shown = (room / per_item).max(1);
+    let first = panel.cursor.saturating_sub(shown - 1);
+    for (i, item) in panel.items.iter().enumerate().skip(first).take(shown) {
+        let mark = if item.current { "● " } else { "  " };
+        let style = if i == panel.cursor {
+            selection(p, true)
+        } else if item.locked {
+            Style::new().fg(p.muted)
+        } else {
+            Style::new().fg(p.fg)
+        };
+        lines.push(Line::from(Span::styled(
+            pad(&format!(" {mark}{}", fit(&item.label, text_w.saturating_sub(2))), inner_w),
+            style,
+        )));
+        if !item.note.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("    {}", fit(&item.note, text_w.saturating_sub(3))),
+                Style::new().fg(p.muted),
+            )));
+        }
+    }
+    lines.push(Line::raw(""));
+    let hint = match panel.kind {
+        crate::app::PanelKind::Artist { .. } if !panel.items.is_empty() => " Enter starts a station · Esc closes",
+        crate::app::PanelKind::Modes { .. } if !panel.items.is_empty() => " Enter switches mode · Esc closes",
+        _ => " Esc closes",
+    };
+    lines.push(Line::from(Span::styled(hint, Style::new().fg(p.muted))));
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let box_area = centered(area, width, height);
+    frame.render_widget(Clear, box_area);
+    let heading = fit(&panel.title(), inner_w.saturating_sub(4));
+    let block = panel_block(heading, p).style(Style::new().bg(p.background));
+    frame.render_widget(Paragraph::new(lines).block(block), box_area);
+}
+
+fn panel_block<'a>(heading: String, p: &Palette) -> Block<'a> {
+    panel(title(heading, p), p, true)
 }
 
 /// `v`: what Pandora tells about a song or station: label and value rows,
@@ -2131,6 +2197,18 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.genre_notice.is_some() {
         return vec![("Space", "Tick Box"), ("Enter", "OK"), ("Esc", "Close"), ("Ctrl+c", "Quit")];
     }
+    if let Some(panel) = &app.panel {
+        let enter = match panel.kind {
+            crate::app::PanelKind::Artist { .. } => "Start Station",
+            crate::app::PanelKind::Modes { .. } => "Switch Mode",
+        };
+        let mut keys = vec![];
+        if !panel.items.is_empty() {
+            keys.extend([("j/k ↑↓", "Move"), ("Enter", enter)]);
+        }
+        keys.push(("Esc", "Close"));
+        return keys;
+    }
     if let Some(ed) = &app.editor {
         return editor_key_caps(ed);
     }
@@ -2207,6 +2285,9 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
             // A genre station: e shows (and takes back) your thumbs on it.
             keys.push(("e", "Thumbs"));
         }
+        if !station.is_shuffle {
+            keys.push(("m", "Mode"));
+        }
         keys.push(("v", "Details"));
     };
     // Now Playing (its pane, or its menu entry): r and e on the playing station, never x.
@@ -2219,6 +2300,9 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
             keys.push(("e", "Edit"));
         } else if station.is_locked() && !station.is_shuffle {
             keys.push(("e", "Thumbs"));
+        }
+        if !station.is_shuffle {
+            keys.push(("m", "Mode"));
         }
     };
     match (app.focus, app.view) {
@@ -2265,6 +2349,7 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
             } else {
                 station_keys(&mut keys, false);
                 keys.push(("a", "Add Station"));
+                keys.push(("X", "Shuffle"));
             }
             keys.push(("Esc", "Menu"));
         }
@@ -2338,6 +2423,7 @@ fn editor_key_caps(ed: &Editor) -> Vec<(&'static str, &'static str)> {
         EditorTab::Seeds => keys.extend([("a", "Add Seed"), ("x", "Remove")]),
         EditorTab::ThumbsUp | EditorTab::ThumbsDown => keys.push(("x", "Take Back")),
     }
+    keys.push(("m", "Mode"));
     keys.push(("Esc", "Close"));
     keys
 }
@@ -2393,7 +2479,14 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("Shift ← →", "volume down / up (saved)"),
             ("I", "pin the selected or playing song (menu: Pinned; Enter opens its Pandora page, x unpins)"),
             ("B", "sleep timer: 15, 30, 60, 90 min, end of this song, off (fades out, then pauses)"),
-            (".", "song menu (selected or playing song): station from artist / song, tired, share, why, pin, thumbs…"),
+            (
+                ".",
+                "song menu: station from artist / song, tired, share, why, pin, thumbs, artist bio & similar artists…",
+            ),
+            (
+                "m X",
+                "station mode (Deep Cuts, Discovery, Crowd Faves…; also in e) · X plays Shuffle: your stations mixed",
+            ),
         ],
     ),
     (

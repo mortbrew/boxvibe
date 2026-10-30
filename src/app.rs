@@ -27,9 +27,11 @@ use crate::update::{Progress, Replace, Update};
 mod ad;
 mod editor;
 mod panel;
+mod themes;
 pub use ad::{AdPhase, AdView, End};
 pub use editor::{Editor, EditorTab, FeedState, Loaded};
 pub use panel::{Panel, PanelKind};
+pub use themes::{ThemePicker, ThemeTab};
 
 /// What boxvibe knows about the Pandora password in the desktop keychain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,8 +125,8 @@ pub enum Setting {
     Autoplay,
     Notify,
     GoodVibesOnly,
-    Theme,
-    MoreThemes,
+    ThemeAutoMode,
+    ThemeSelect,
     Icons,
     BorderStyle,
     MenuWidth,
@@ -157,8 +159,8 @@ impl Setting {
         ("PLAYBACK", Self::Autoplay),
         ("PLAYBACK", Self::Notify),
         ("PLAYBACK", Self::GoodVibesOnly),
-        ("LOOK", Self::Theme),
-        ("LOOK", Self::MoreThemes),
+        ("LOOK", Self::ThemeAutoMode),
+        ("LOOK", Self::ThemeSelect),
         ("LOOK", Self::Icons),
         ("LOOK", Self::BorderStyle),
         ("LOOK", Self::MenuWidth),
@@ -187,8 +189,8 @@ impl Setting {
             Self::Autoplay => "Autoplay last station on open",
             Self::Notify => "Song change notifications",
             Self::GoodVibesOnly => "Good Vibes Only",
-            Self::Theme => "Theme",
-            Self::MoreThemes => "More themes",
+            Self::ThemeAutoMode => "Theme Auto Mode",
+            Self::ThemeSelect => "Theme Select",
             Self::Icons => "Icons",
             Self::BorderStyle => "Border style",
             Self::MenuWidth => "Menu width",
@@ -221,7 +223,8 @@ impl Setting {
             Self::Autoplay => Some(("playback", "autoplay_last_station")),
             Self::Notify => Some(("playback", "song_change_notifications")),
             Self::GoodVibesOnly => Some(("playback", "good_vibes_only")),
-            Self::Theme => Some(("look", "theme")),
+            Self::ThemeAutoMode => Some(("look", "theme_auto_mode")),
+            Self::ThemeSelect => Some(("look", "theme_select")),
             Self::Icons => Some(("look", "icons")),
             Self::BorderStyle => Some(("look", "border_style")),
             Self::MenuWidth => Some(("look", "menu_width")),
@@ -231,7 +234,7 @@ impl Setting {
             Self::RetroMode => Some(("look", "retro_mode")),
             Self::ArtTint => Some(("look", "tint_art_with_theme_colors")),
             Self::Animations => Some(("look", "animations")),
-            Self::Password | Self::LogIn | Self::LogOut | Self::EditFile | Self::MenuEntry | Self::MoreThemes => None,
+            Self::Password | Self::LogIn | Self::LogOut | Self::EditFile | Self::MenuEntry => None,
         }
     }
 
@@ -260,8 +263,8 @@ impl Setting {
             Self::GoodVibesOnly => {
                 "On plays Pandora's audio ads and reports them, like the website does. Muted plays and reports them the same way at volume 0 (your volume comes back after). Off skips ads. Muted and Off could break Pandora's terms: asks first. Written true, \"muted\" or false. Saved as [playback] good_vibes_only."
             }
-            Self::Theme => {
-                "Omarchy follows your current Omarchy theme; or pick a built-in one. The theme is only changed here. Saved as [look] theme."
+            Self::ThemeAutoMode => {
+                "omarchy follows your current Omarchy theme (Theme Select below is greyed out); off uses Theme Select. Enter switches. Saved as [look] theme_auto_mode."
             }
             Self::Icons => {
                 "Nerd Font (needs one installed; Omarchy ships one), emoji or plain Unicode. Also i. Saved as [look] icons."
@@ -299,8 +302,8 @@ impl Setting {
             Self::Splash => {
                 "A two-second boxvibe logo screen when it opens; any key skips it (Animations off skips it too). Saved as [look] boot_screen."
             }
-            Self::MoreThemes => {
-                "Enter browses about 900 colour schemes (iTerm2-Color-Schemes and Omarchy's). One you pick is saved in ~/.config/boxvibe/themes/ and joins the Theme list."
+            Self::ThemeSelect => {
+                "With Theme Auto Mode off, Enter opens the theme picker: Search about 900 schemes (iTerm2-Color-Schemes and Omarchy's) as you type, or pick an Installed one. Downloads go to ~/.config/boxvibe/themes/. Saved as [look] theme_select."
             }
             Self::EditFile => "Opens config.toml in $EDITOR; boxvibe reads it again when you close it.",
             Self::MenuEntry => {
@@ -805,13 +808,14 @@ fn base64(bytes: &[u8]) -> String {
 pub struct App {
     /// Media keys and the desktop's player widget (`None` until main starts it).
     pub mpris: Option<crate::mpris::Mpris>,
-    /// Schemes saved by Settings → More themes, by name.
+    /// Schemes saved by Settings → Theme Select, by name.
     pub user_themes: Vec<(String, theme::Palette)>,
     /// Where they are saved (`None` in the demo: kept in memory only).
     pub themes_dir: Option<PathBuf>,
     /// A theme list or download on its way.
     theme_job: Option<std::sync::mpsc::Receiver<crate::theme_store::Msg>>,
-    theme_entries: Vec<crate::theme_store::Entry>,
+    /// Settings → Theme Select's popup.
+    pub theme_picker: Option<ThemePicker>,
     pub config: Config,
     pub config_path: Option<PathBuf>,
     pub demo: bool,
@@ -1040,7 +1044,7 @@ impl App {
             },
             themes_dir: if demo { None } else { theme::user_dir() },
             theme_job: None,
-            theme_entries: Vec::new(),
+            theme_picker: None,
             mpris: None,
             demo,
         };
@@ -1142,7 +1146,7 @@ impl App {
 
     /// The built-in or saved palette of the chosen theme (`None`: follow Omarchy).
     fn theme_palette(&self) -> Option<theme::Palette> {
-        let name = &self.config.ui.theme;
+        let name = self.config.ui.theme();
         theme::built_in(name).or_else(|| self.user_themes.iter().find(|(n, _)| n == name).map(|(_, p)| *p))
     }
 
@@ -2405,6 +2409,7 @@ impl App {
             || self.details.is_some()
             || self.song_menu.is_some()
             || self.panel.is_some()
+            || self.theme_picker.is_some()
             || self.editor.is_some()
             || self.prompt == Some(Prompt::Password)
     }
@@ -2450,11 +2455,12 @@ impl App {
             Setting::Autoplay => on(self.config.ui.autoplay_last_station),
             Setting::Notify => on(self.config.ui.notifications),
             Setting::GoodVibesOnly => self.config.player.good_vibes_only.label().into(),
-            Setting::Theme => theme::label(&self.config.ui.theme),
-            Setting::MoreThemes => match self.user_themes.len() {
-                0 => "Browse…".into(),
-                n => format!("{n} saved · Browse…"),
-            },
+            Setting::ThemeAutoMode => self.config.ui.theme_auto_mode.as_str().into(),
+            Setting::ThemeSelect => format!(
+                "{} · {} saved ~ Browse for more…",
+                theme::label(&self.config.ui.theme_select),
+                self.user_themes.len()
+            ),
             Setting::Icons => crate::icons::label(self.config.ui.icons).into(),
             Setting::BorderStyle => self.config.ui.border_style.label().into(),
             Setting::MenuWidth => format!("{} columns", self.config.ui.menu_width),
@@ -2527,8 +2533,11 @@ impl App {
                 GoodVibes::On => self.set_good_vibes(GoodVibes::On),
                 next => self.confirm_good_vibes = Some(next),
             },
-            Setting::Theme => self.next_theme(),
-            Setting::MoreThemes => self.open_themes(),
+            Setting::ThemeAutoMode => self.toggle_theme_auto_mode(),
+            Setting::ThemeSelect if self.theme_select_greyed() => {
+                self.status = "Theme Auto Mode follows Omarchy: set it to off to pick a theme".into();
+            }
+            Setting::ThemeSelect => self.open_themes(),
             Setting::Icons => self.next_icons(),
             Setting::BorderStyle => {
                 let next = self.config.ui.border_style.next();
@@ -2757,6 +2766,9 @@ impl App {
         }
         if self.panel.is_some() {
             return self.panel_key(key);
+        }
+        if self.theme_picker.is_some() {
+            return self.theme_picker_key(key);
         }
         if self.editor.is_some() {
             return self.editor_key(key);
@@ -3190,15 +3202,36 @@ impl App {
         self.status = format!("Tint art with theme colors: {}", next.label());
     }
 
-    fn next_theme(&mut self) {
-        let next = theme::next_with(&self.config.ui.theme, &self.user_themes);
-        self.use_theme(&next);
+    /// Theme Auto Mode: omarchy ⇄ off.
+    fn toggle_theme_auto_mode(&mut self) {
+        use crate::config::ThemeAutoMode;
+        let next = match self.config.ui.theme_auto_mode {
+            ThemeAutoMode::Omarchy => ThemeAutoMode::Off,
+            ThemeAutoMode::Off => ThemeAutoMode::Omarchy,
+        };
+        self.config.ui.theme_auto_mode = next;
+        self.apply_theme();
+        let select = self.config.ui.theme_select.clone();
+        self.save(&[("look", "theme_auto_mode", next.as_str().into()), ("look", "theme_select", select.into())]);
+        self.status = match next {
+            ThemeAutoMode::Omarchy => "Theme Auto Mode: omarchy (follows your Omarchy theme)".into(),
+            ThemeAutoMode::Off => format!("Theme Auto Mode: off · {}", theme::label(&self.config.ui.theme_select)),
+        };
     }
 
+    /// Theme Select can't be used while Auto Mode follows Omarchy.
+    pub fn theme_select_greyed(&self) -> bool {
+        self.config.ui.theme_auto_mode == crate::config::ThemeAutoMode::Omarchy
+    }
+
+    /// Theme Select = `name` (Auto Mode off), applied and saved.
     pub(crate) fn use_theme(&mut self, name: &str) {
-        self.config.ui.theme = name.into();
+        self.config.ui.set_theme(name);
         self.apply_theme();
-        self.save(&[("look", "theme", name.into())]);
+        self.save(&[
+            ("look", "theme_auto_mode", self.config.ui.theme_auto_mode.as_str().into()),
+            ("look", "theme_select", name.into()),
+        ]);
         self.status = format!("Theme: {}", theme::label(name));
     }
 
@@ -3460,7 +3493,7 @@ mod tests {
         groups.dedup();
         assert_eq!(groups, ["ACCOUNT", "BOXVIBE", "PLAYBACK", "LOOK"]);
         assert_eq!(Setting::ALL[0].1, Setting::Email, "the account is on top");
-        assert!(Setting::at(Setting::Splash) > Setting::at(Setting::Theme), "the boot screen is under LOOK");
+        assert!(Setting::at(Setting::Splash) > Setting::at(Setting::ThemeAutoMode), "the boot screen is under LOOK");
         assert_eq!(App::new(Config::default(), None, &[], true).setting(), Setting::Email, "the cursor starts on it");
         let emoji = crate::icons::icons(crate::config::IconSet::Emoji);
         assert_eq!(emoji.setting[Setting::at(Setting::CheckUpdates)], "🆕", "icons move with their settings");
@@ -3901,11 +3934,11 @@ mod tests {
         app.pane = Pane::NowPlaying;
         let playing = app.now.as_ref().unwrap().track_token.clone();
         for c in ['+', '-', '=', 'u', 'd', 'n', 's', 't'] {
-            let (view, theme) = (app.view, app.config.ui.theme.clone());
+            let (view, theme) = (app.view, app.config.ui.theme().to_owned());
             app.on_key(key(KeyCode::Char(c)));
             assert_eq!(app.now.as_ref().unwrap().rating, Rating::None, "{c} rates nothing");
             assert_eq!(app.now.as_ref().unwrap().track_token, playing, "{c} skips nothing");
-            assert_eq!((app.view, &app.config.ui.theme), (view, &theme), "{c} goes nowhere");
+            assert_eq!((app.view, &app.config.ui.theme()), (view, &theme.as_str()), "{c} goes nowhere");
         }
     }
 
@@ -4674,9 +4707,9 @@ mod tests {
         app.config.ui.favorites.push(crate::config::Favorite { id: "1".into(), name: "One".into() });
         app.on_key(shift('F'));
         assert_eq!((app.focus, app.menu_selected()), (Focus::Menu, MenuItem::Favorite(0)));
-        let theme = app.config.ui.theme.clone();
+        let theme = app.config.ui.theme().to_owned();
         app.on_key(key(KeyCode::Char('t')));
-        assert_eq!(app.config.ui.theme, theme, "t no longer switches the theme: only Settings does");
+        assert_eq!(app.config.ui.theme(), theme, "t no longer switches the theme: only Settings does");
     }
 
     #[test]
@@ -5040,7 +5073,8 @@ mod tests {
         for (_, setting) in Setting::ALL {
             // The account and the volume have their own flows (below).
             let Some((table, name)) = setting.saved_as() else { continue };
-            if matches!(setting, Setting::Email | Setting::Password | Setting::Volume) {
+            // Theme Select opens the picker; its saving is tested with the picker.
+            if matches!(setting, Setting::Email | Setting::Password | Setting::Volume | Setting::ThemeSelect) {
                 continue;
             }
             let mut app = saving_app(&format!("saved-{setting:?}"));
@@ -5079,7 +5113,7 @@ mod tests {
     fn the_defaults_are_nerd_icons_and_a_theme_that_exists() {
         let c = Config::default();
         assert_eq!(c.ui.icons, crate::config::IconSet::Nerd);
-        assert!(theme::names().any(|n| n == c.ui.theme));
+        assert!(theme::names().any(|n| n == c.ui.theme()));
     }
 
     #[test]
@@ -5121,51 +5155,119 @@ mod tests {
         panic!("the theme job never answered");
     }
 
-    #[test]
-    fn more_themes_downloads_saves_and_joins_the_theme_list() {
-        let mut app = demo();
-        let dir = crate::config::temp_dir("more-themes");
-        app.themes_dir = Some(dir.clone());
-        app.focus = Focus::Content;
-        app.view = View::Settings;
-        app.settings_cursor = Setting::at(Setting::MoreThemes);
-        assert_eq!(app.setting_value(Setting::MoreThemes), "Browse…");
-        app.on_key(key(KeyCode::Enter));
-        assert!(app.panel.as_ref().unwrap().loading);
-        wait_for_themes(&mut app);
-        let panel = app.panel.as_ref().unwrap();
-        assert_eq!(panel.items.len(), 5);
-        assert!(panel.title().contains("More Themes · 5"));
-        // `/` filters; j and k are typed, not moves, while typing.
-        for c in "/drac".chars() {
+    fn type_in(app: &mut App, text: &str) {
+        for c in text.chars() {
             app.on_key(key(KeyCode::Char(c)));
         }
-        let panel = app.panel.as_ref().unwrap();
-        assert_eq!(panel.items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), ["Dracula"]);
-        app.on_key(key(KeyCode::Enter)); // done typing
-        app.on_key(key(KeyCode::Enter)); // download
+    }
+
+    fn hit_names(app: &App) -> Vec<String> {
+        let p = app.theme_picker.as_ref().unwrap();
+        p.hits.iter().map(|i| p.catalog[*i].name.clone()).collect()
+    }
+
+    #[test]
+    fn theme_select_searches_like_fzf_downloads_installs_and_deletes_without_closing() {
+        let mut app = demo();
+        let dir = crate::config::temp_dir("theme-picker");
+        app.themes_dir = Some(dir.clone());
+        app.config.ui.set_theme("kanagawa");
+        app.focus = Focus::Content;
+        app.view = View::Settings;
+        app.settings_cursor = Setting::at(Setting::ThemeSelect);
+        assert!(app.setting_value(Setting::ThemeSelect).ends_with("0 saved ~ Browse for more…"));
+        app.on_key(key(KeyCode::Enter));
+        let p = app.theme_picker.as_ref().unwrap();
+        assert!(p.loading && p.tab == ThemeTab::Search);
         wait_for_themes(&mut app);
-        assert_eq!(app.config.ui.theme, "dracula");
+        assert_eq!(hit_names(&app).len(), 5);
+        // Typing filters at once, no `/`; j and k are letters here.
+        type_in(&mut app, "drc");
+        assert_eq!(hit_names(&app)[0], "Dracula", "best match first");
+        assert!(!hit_names(&app).contains(&"rose-pine".to_string()));
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(app.theme_picker.as_ref().unwrap().query, "");
+        type_in(&mut app, "jk");
+        assert_eq!(app.theme_picker.as_ref().unwrap().query, "jk");
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        type_in(&mut app, "dracula");
+        // Enter downloads and uses it; the popup stays open.
+        app.on_key(key(KeyCode::Enter));
+        wait_for_themes(&mut app);
+        assert_eq!(app.config.ui.theme(), "dracula");
         assert!(dir.join("dracula.toml").is_file());
-        assert!(!app.follows_omarchy());
-        assert!(app.panel.as_ref().unwrap().items[0].current, "marked saved");
-        assert_eq!(app.setting_value(Setting::MoreThemes), "1 saved · Browse…");
+        assert!(app.theme_picker.is_some(), "still open");
+        let p = app.theme_picker.as_ref().unwrap();
+        assert!(app.is_installed(&p.catalog[p.hits[0]]), "shows as installed");
+        assert!(app.setting_value(Setting::ThemeSelect).contains("1 saved ~ Browse for more…"));
         // A file that isn't a theme is refused and nothing changes.
-        app.on_key(key(KeyCode::Char('/')));
-        app.on_key(key(KeyCode::Esc)); // clears the filter
-        let at = app.panel.as_ref().unwrap().items.iter().position(|i| i.label == "Broken").unwrap();
-        app.panel.as_mut().unwrap().cursor = at;
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        type_in(&mut app, "broken");
         app.on_key(key(KeyCode::Enter));
         wait_for_themes(&mut app);
-        assert!(app.status.contains("Couldn't get Broken"), "{}", app.status);
-        assert_eq!(app.config.ui.theme, "dracula");
-        // The saved one is in the Theme cycle, after the built-in ones.
-        app.panel = None;
-        app.config.ui.theme = "kanagawa".into();
-        app.settings_cursor = Setting::at(Setting::Theme);
+        assert!(app.status.contains("Broken"), "{}", app.status);
+        assert_eq!(app.config.ui.theme(), "dracula");
+        // Installed: Enter uses one and stays open.
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.theme_picker.as_ref().unwrap().tab, ThemeTab::Installed);
+        let names: Vec<String> = app.installed_themes().into_iter().map(|t| t.name).collect();
+        assert_eq!(names.last().map(String::as_str), Some("dracula"));
+        app.on_key(key(KeyCode::Home));
+        app.on_key(key(KeyCode::Char('j')));
         app.on_key(key(KeyCode::Enter));
-        assert_eq!(app.config.ui.theme, "dracula");
+        assert_eq!(app.config.ui.theme(), names[1]);
+        assert!(app.theme_picker.is_some());
+        // A built-in can't be deleted.
+        app.on_key(key(KeyCode::Char('x')));
+        assert!(app.theme_picker.as_ref().unwrap().confirm_delete.is_none());
+        // Back to dracula, then x asks; n keeps it, y deletes and falls back.
+        app.on_key(key(KeyCode::End));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.config.ui.theme(), "dracula");
+        app.on_key(key(KeyCode::Char('x')));
+        assert_eq!(app.theme_picker.as_ref().unwrap().confirm_delete.as_deref(), Some("dracula"));
+        app.on_key(key(KeyCode::Char('n')));
+        assert!(dir.join("dracula.toml").is_file());
+        app.on_key(key(KeyCode::Delete));
+        app.on_key(key(KeyCode::Char('y')));
+        assert!(!dir.join("dracula.toml").exists());
+        assert!(app.user_themes.is_empty());
+        assert_eq!(app.config.ui.theme(), crate::theme::FALLBACK);
+        // Esc closes.
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.theme_picker.is_none());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn theme_auto_mode_greys_theme_select_and_both_save() {
+        let mut app = saving_app("theme-auto");
+        app.config.ui.set_theme("kanagawa");
+        app.focus = Focus::Content;
+        app.view = View::Settings;
+        app.settings_cursor = Setting::at(Setting::ThemeAutoMode);
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.config.ui.theme_auto_mode, crate::config::ThemeAutoMode::Omarchy);
+        assert!(app.theme_select_greyed());
+        let text = saved(&app);
+        assert!(text.contains("theme_auto_mode = \"omarchy\""), "{text}");
+        app.settings_cursor = Setting::at(Setting::ThemeSelect);
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.theme_picker.is_none(), "greyed: no picker");
+        app.settings_cursor = Setting::at(Setting::ThemeAutoMode);
+        app.on_key(key(KeyCode::Enter));
+        assert!(!app.theme_select_greyed());
+        assert_eq!(app.config.ui.theme(), "kanagawa", "back to the selected theme");
+        assert!(saved(&app).contains("theme_select = \"kanagawa\""));
+    }
+
+    #[test]
+    fn rank_is_fuzzy_and_best_first() {
+        let demo = crate::theme_store::demo_catalog();
+        let names = |q: &str| themes::rank(&demo, q).into_iter().map(|i| demo[i].name.clone()).collect::<Vec<_>>();
+        assert_eq!(names("").len(), demo.len());
+        assert_eq!(names("sdk"), ["Solarized Dark"]);
+        assert!(names("zzzq").is_empty());
     }
 
     #[test]

@@ -68,7 +68,7 @@ work right now drawn as key caps at the bottom.
 - **Themes** (Settings): *Omarchy* (follows your current Omarchy theme, live, and
   is Tokyo Night elsewhere, and what a first run starts on) plus Tokyo Night, Gruvbox, Catppuccin, Catppuccin
   Latte, Rosé Pine Dawn, Nord, Everforest and Kanagawa
-- **More themes** (Settings → LOOK → More themes): browse about 900 colour schemes from [iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes) and Omarchy's own themes, listed from GitHub. `/` filters as you type; `Enter` downloads one, saves it in `~/.config/boxvibe/themes/<name>.toml` and uses it. Saved schemes join the Theme row's list after the built-in ones (Omarchy ones are named `omarchy-<name>`). Any alacritty or Omarchy `colors.toml` file dropped in that folder works too
+- **Theme Auto Mode / Theme Select** (Settings → LOOK): *Theme Auto Mode* `omarchy` follows your Omarchy theme (and greys out Theme Select); `off` uses the theme picked in *Theme Select*, which shows `<theme> · N saved ~ Browse for more…`. Enter opens a popup with two tabs. **Search** (first) lists about 900 colour schemes from [iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes) and Omarchy's own themes, listed from GitHub, and filters fzf-style as you type (no `/` needed; `↑ ↓` `PgUp PgDn` move, `Ctrl+u` clears); `Enter` downloads one into `~/.config/boxvibe/themes/<name>.toml` and uses it, and the popup stays open. Saved ones are marked *installed*. **Installed** (`Tab`) lists the built-in and saved themes: `Enter` uses one without closing, `x` / `Delete` deletes a saved one after a y/n question. `Esc` closes. Omarchy ones are named `omarchy-<name>`; any alacritty or Omarchy `colors.toml` file dropped in that folder works too
 - **Icon sets** (Settings → LOOK → Icons): Nerd Font (the default), colour emoji or plain Unicode. The boxvibe logo is always the Nerd Font box
 - **Rename and delete stations** (`r`, `x`) and **details** (`v`): see [Keys](#keys)
 - **Make a station by searching** (`a` on the Stations page, or the "Add station…" row): type an artist or song, `Enter` searches, pick one with `j` / `k`, `Enter` makes the station and plays it
@@ -219,10 +219,11 @@ last_station = ""              # the station to start on, kept by the app
 favorites = []                 # starred stations, { id = "…", name = "…" }, set with f
 
 [look]
-theme = "omarchy"              # omarchy | tokyo-night | gruvbox | catppuccin | catppuccin-latte
+theme_auto_mode = "omarchy"    # omarchy (follow the Omarchy theme) | off (use theme_select)
+                               # (the first run: omarchy on an Omarchy system, else off)
+theme_select = "tokyo-night"   # tokyo-night | gruvbox | catppuccin | catppuccin-latte
                                # | rose-pine | nord | everforest | kanagawa
                                # | a scheme saved in ~/.config/boxvibe/themes/ (by file name)
-                               # (the first run: omarchy on an Omarchy system, else tokyo-night)
 icons = "nerd"                 # nerd | emoji | unicode
 border_style = "plain"         # plain | rounded | thick | double | none
 menu_width = 30                # the menu, in columns: 20–40, step 2 (at most half the screen); also { and }
@@ -242,7 +243,7 @@ Some keys were renamed to match their Settings row, and the old names still read
 `username` is now `email_or_username`, `check_updates` is `look_for_new_versions_on_startup`,
 `notify` and `notifications` are `song_change_notifications`, `art_tint` is
 `tint_art_with_theme_colors`, `splash` (in `[boxvibe]` or `[look]`) is `boot_screen`
-and `good_guy` is `good_vibes_only`. The next save writes the new name and removes the
+and `good_guy` is `good_vibes_only`. The old `theme` key becomes `theme_auto_mode = "omarchy"`, or `theme_auto_mode = "off"` plus `theme_select`. The next save writes the new name and removes the
 old one, never both (if a file has both, the new one wins). Keys boxvibe doesn't know are
 kept and skipped with a warning. Settings → each setting's
 description in the box below the list says where it is saved.

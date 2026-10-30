@@ -71,7 +71,7 @@ fn main() -> anyhow::Result<()> {
         None => (Config::default(), Vec::new()),
     };
     if let Some(theme) = &args.theme {
-        config.ui.theme = theme.clone();
+        config.ui.set_theme(theme);
     }
     if let Some(icons) = &args.icons {
         config.ui.icons = IconSet::parse(icons).context("--icons takes emoji, nerd or unicode")?;
@@ -150,7 +150,13 @@ fn edit_config(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow
     let Some(path) = app.config_path.clone() else { return Ok(()) };
     if !path.exists() {
         // Something to edit, private from the start.
-        config::set_values(&path, &[("look", "theme", app.config.ui.theme.as_str().into())])?;
+        config::set_values(
+            &path,
+            &[
+                ("look", "theme_auto_mode", app.config.ui.theme_auto_mode.as_str().into()),
+                ("look", "theme_select", app.config.ui.theme_select.as_str().into()),
+            ],
+        )?;
     }
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))

@@ -132,6 +132,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if let Some(ed) = &app.editor {
         draw_editor(frame, &p, ic, area, ed);
     }
+    if let Some(picker) = &app.theme_picker {
+        draw_theme_picker(frame, app, area, picker);
+    }
     if app.prompt == Some(Prompt::Password) {
         draw_password_box(frame, app, ic, area);
     }
@@ -373,8 +376,6 @@ fn draw_panel(frame: &mut Frame, p: &Palette, area: Rect, panel: &crate::app::Pa
     let hint = match panel.kind {
         crate::app::PanelKind::Artist { .. } if !panel.items.is_empty() => " Enter starts a station · Esc closes",
         crate::app::PanelKind::Modes { .. } if !panel.items.is_empty() => " Enter switches mode · Esc closes",
-        crate::app::PanelKind::Themes { typing: true, .. } => " Type to filter · Enter done · Esc clears",
-        crate::app::PanelKind::Themes { .. } if !panel.loading => " Enter saves & uses · / filters · Esc closes",
         _ => " Esc closes",
     };
     lines.push(Line::from(Span::styled(hint, Style::new().fg(p.muted))));
@@ -658,7 +659,7 @@ fn sleep_label(app: &App) -> Option<String> {
 /// theme, album art, retro mode, tint.
 fn look_labels(app: &App) -> Vec<String> {
     let ui = &app.config.ui;
-    let theme = if ui.theme == "omarchy" { "Omarchy".to_owned() } else { crate::theme::label(&ui.theme) };
+    let theme = if ui.theme() == "omarchy" { "Omarchy".to_owned() } else { crate::theme::label(ui.theme()) };
     vec![
         theme,
         format!("Art {}", ui.album_art.label()),
@@ -1589,6 +1590,148 @@ fn draw_editor(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, ed: &Ed
     }
 }
 
+/// The key bar under the theme picker.
+fn theme_picker_key_caps(picker: &crate::app::ThemePicker) -> Vec<(&'static str, &'static str)> {
+    use crate::app::ThemeTab;
+    if picker.confirm_delete.is_some() {
+        return vec![("y", "Yes, Delete"), ("n Esc", "No")];
+    }
+    match picker.tab {
+        ThemeTab::Search => vec![
+            ("Type", "Fuzzy Search"),
+            ("↑↓", "Move"),
+            ("Enter", "Download & Use"),
+            ("Tab", "Installed"),
+            ("Esc", "Close"),
+        ],
+        ThemeTab::Installed => {
+            vec![("j/k ↑↓", "Move"), ("Enter", "Use"), ("x Del", "Delete"), ("Tab", "Search"), ("Esc", "Close")]
+        }
+    }
+}
+
+/// The theme hints at the bottom of the picker (and the key bar's twin).
+pub const THEME_SEARCH_HINT: &str = "type = fuzzy search · Enter = download & use · Tab = Installed · Esc = close";
+pub const THEME_INSTALLED_HINT: &str = "Enter = use · x = delete · Tab = Search · Esc = close";
+
+/// Settings → Theme Select: Search and Installed tabs, styled like the
+/// station editor.
+fn draw_theme_picker(frame: &mut Frame, app: &App, screen: Rect, picker: &crate::app::ThemePicker) {
+    use crate::app::ThemeTab;
+    let p = &app.palette;
+    let width = 76.min(screen.width.saturating_sub(2)).max(screen.width.min(24));
+    let inner_w = usize::from(width.saturating_sub(2));
+    let rows_room = usize::from(screen.height.saturating_sub(14)).clamp(3, 14);
+    let tab = |label: String, on: bool| {
+        let style = if on { selection(p, true) } else { Style::new().fg(p.muted) };
+        Span::styled(format!(" {label} "), style)
+    };
+    let installed = app.installed_themes();
+    let search_label = if picker.loading { "Search".to_owned() } else { format!("Search ({})", picker.hits.len()) };
+    let tabs = vec![
+        Span::raw(" "),
+        tab(search_label, picker.tab == ThemeTab::Search),
+        Span::raw("  "),
+        tab(format!("Installed ({})", installed.len()), picker.tab == ThemeTab::Installed),
+    ];
+    let mut lines = vec![Line::from(""), Line::from(tabs).left_aligned(), Line::from("")];
+    let row = |text: String, selected: bool, dim: bool| {
+        let style = if selected {
+            selection(p, true)
+        } else if dim {
+            Style::new().fg(p.muted)
+        } else {
+            Style::new().fg(p.fg)
+        };
+        Line::from(Span::styled(pad(&fit(&text, inner_w), inner_w), style)).left_aligned()
+    };
+    let note = |text: String| {
+        Line::from(Span::styled(format!(" {}", fit(&text, inner_w - 1)), Style::new().fg(p.muted))).left_aligned()
+    };
+    let window = |len: usize, cursor: usize, room: usize| {
+        let at = cursor.min(len.saturating_sub(1));
+        let start = at.saturating_sub(room - 1).min(len.saturating_sub(room));
+        (start, at)
+    };
+    // Right-aligned tag after a name ("installed", "in use").
+    let tagged = |name: &str, tag: &str| {
+        if tag.is_empty() {
+            return format!(" {name}");
+        }
+        let room = inner_w.saturating_sub(tag.width() + 3);
+        format!(" {} {tag}", pad(&fit(name, room), room))
+    };
+    let current = app.config.ui.theme();
+    let mut footer = String::new();
+    let hint;
+    if picker.tab == ThemeTab::Search {
+        hint = THEME_SEARCH_HINT;
+        lines.push(
+            Line::from(vec![
+                Span::styled(" › ", Style::new().fg(p.accent).bold()),
+                Span::styled(fit(&picker.query, inner_w.saturating_sub(5)), Style::new().fg(p.fg)),
+                Span::styled("▏", Style::new().fg(p.accent)),
+            ])
+            .left_aligned(),
+        );
+        let room = rows_room - 1;
+        if picker.loading {
+            lines.push(note("Asking GitHub for iTerm2-Color-Schemes and Omarchy's themes…".into()));
+        } else if let Some(e) = &picker.error {
+            lines.push(note(format!("No theme list: {}", clean(e))));
+        } else if picker.hits.is_empty() {
+            lines.push(note("No theme matches".into()));
+        } else {
+            let (start, at) = window(picker.hits.len(), picker.search_cursor, room);
+            for (i, idx) in picker.hits.iter().enumerate().skip(start).take(room) {
+                let entry = &picker.catalog[*idx];
+                let tag = if entry.slug() == current {
+                    "in use"
+                } else if app.is_installed(entry) {
+                    "installed"
+                } else if picker.downloading.as_deref() == Some(entry.name.as_str()) {
+                    "downloading…"
+                } else {
+                    ""
+                };
+                let name = format!("{} · {}", clean(&entry.name), entry.source.label());
+                lines.push(row(tagged(&name, tag), i == at, false));
+            }
+            footer = format!("{} of {}", at + 1, picker.hits.len());
+        }
+    } else {
+        hint = THEME_INSTALLED_HINT;
+        lines.push(note("Built-in themes and the ones you downloaded".into()));
+        let room = rows_room - 1;
+        let (start, at) = window(installed.len(), picker.installed_cursor, room);
+        for (i, t) in installed.iter().enumerate().skip(start).take(room) {
+            let tag = match (t.name == current, t.built_in) {
+                (true, _) => "in use",
+                (false, true) => "built-in",
+                (false, false) => "",
+            };
+            lines.push(row(tagged(&crate::theme::label(&t.name), tag), i == at, false));
+        }
+        footer = format!("{} of {}", at + 1, installed.len());
+    }
+    let used = lines.len() - 3;
+    for _ in used..rows_room.max(1) {
+        lines.push(Line::from(""));
+    }
+    lines.push(note(footer));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(hint, Style::new().fg(p.muted))));
+    lines.push(Line::from(""));
+    let area = centered(screen, width, (lines.len() as u16 + 2).min(screen.height));
+    frame.render_widget(Clear, area);
+    let block = panel(title("Theme Select".into(), p), p, true).style(Style::new().bg(p.background));
+    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center).block(block), area);
+    if let Some(name) = &picker.confirm_delete {
+        let question = format!("Delete the theme “{}”? Its file in ~/.config/boxvibe/themes/ goes too.", clean(name));
+        draw_box(frame, p, screen, &BoxText { title: " Delete theme ", ..BoxText::confirm(&question) });
+    }
+}
+
 // --- Player ---
 
 /// Rows Up Next and History each show at most (History keeps 10 songs).
@@ -2030,11 +2173,19 @@ fn draw_settings(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
                 Style::new().fg(p.muted)
             }
             (Setting::EditFile, _) => Style::new().fg(p.cyan),
+            (Setting::ThemeSelect, _) if app.theme_select_greyed() => Style::new().fg(p.muted),
             _ => Style::new().fg(p.yellow).bold(),
         };
         items.push(ListItem::new(Line::from(vec![
             Span::raw(format!("   {} ", pad(ic.setting[i], 2))),
-            Span::styled(pad(setting.label(), label_w), Style::new().fg(p.fg)),
+            Span::styled(
+                pad(setting.label(), label_w),
+                Style::new().fg(if *setting == Setting::ThemeSelect && app.theme_select_greyed() {
+                    p.muted
+                } else {
+                    p.fg
+                }),
+            ),
             Span::styled(value, value_style),
         ])));
     }
@@ -2203,20 +2354,16 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         let enter = match panel.kind {
             crate::app::PanelKind::Artist { .. } => "Start Station",
             crate::app::PanelKind::Modes { .. } => "Switch Mode",
-            crate::app::PanelKind::Themes { typing: true, .. } => {
-                return vec![("Type", "Filter"), ("↑↓", "Move"), ("Enter", "Done"), ("Esc", "Clear")];
-            }
-            crate::app::PanelKind::Themes { .. } => "Save & Use",
         };
         let mut keys = vec![];
         if !panel.items.is_empty() {
             keys.extend([("j/k ↑↓", "Move"), ("Enter", enter)]);
         }
-        if matches!(panel.kind, crate::app::PanelKind::Themes { .. }) && !panel.loading {
-            keys.push(("/", "Filter"));
-        }
         keys.push(("Esc", "Close"));
         return keys;
+    }
+    if let Some(picker) = &app.theme_picker {
+        return theme_picker_key_caps(picker);
     }
     if let Some(ed) = &app.editor {
         return editor_key_caps(ed);
@@ -2667,7 +2814,7 @@ fn draw_system_box(frame: &mut Frame, p: &Palette, lines: Vec<Line<'static>>, ar
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), box_area);
 }
 
-const HELP_FOOTER: &str = " Themes (900 more to download), account, boot screen and more: Settings (Shift+O)";
+const HELP_FOOTER: &str = " Themes (fuzzy-search 900 more), account, boot screen and more: Settings (Shift+O)";
 
 #[cfg(test)]
 mod tests {
@@ -3731,9 +3878,9 @@ mod tests {
         let mut app = demo();
         let caps = key_caps(&app);
         assert!(!caps.iter().any(|(k, _)| matches!(*k, "t" | "i" | "T")), "{caps:?}");
-        let theme = app.config.ui.theme.clone();
+        let theme = app.config.ui.theme().to_owned();
         app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('t')));
-        assert_eq!(app.config.ui.theme, theme, "t no longer switches the theme");
+        assert_eq!(app.config.ui.theme(), theme, "t no longer switches the theme");
     }
 
     /// Every place the keys can be: (focus, view, pane), plus the menu on a favorite.
@@ -4323,7 +4470,7 @@ mod tests {
         let mut app = demo();
         app.config.ui.icons = crate::config::IconSet::Unicode;
         app.config.pandora.username = "toby@example.com".into();
-        app.config.ui.theme = "gruvbox".into();
+        app.config.ui.set_theme("gruvbox");
         app.config.ui.album_art = AlbumArt::Picture;
         app.config.ui.retro_mode = crate::config::RetroMode::Bit8;
         app.config.ui.art_tint = crate::config::ArtTint::Duotone;

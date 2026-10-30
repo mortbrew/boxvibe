@@ -227,8 +227,11 @@ pub fn is_omarchy() -> bool {
 /// The theme used until one is saved: `omarchy` (follow the system) on an
 /// Omarchy system, `tokyo-night` anywhere else.
 pub fn default_name() -> &'static str {
-    if is_omarchy() { "omarchy" } else { "tokyo-night" }
+    if is_omarchy() { "omarchy" } else { FALLBACK }
 }
+
+/// Theme Select's choice until one is saved.
+pub const FALLBACK: &str = "tokyo-night";
 
 // --- Omarchy theme files (ported from tubevibe's theme.rs) ---
 
@@ -388,14 +391,6 @@ pub fn load_user(dir: &Path) -> Vec<(String, Palette)> {
     found
 }
 
-/// The theme after `name`, the saved ones after the built-in ones.
-pub fn next_with(name: &str, user: &[(String, Palette)]) -> String {
-    let mut all: Vec<&str> = names().collect();
-    all.extend(user.iter().map(|(n, _)| n.as_str()));
-    let at = all.iter().position(|n| *n == name);
-    all[at.map_or(0, |i| (i + 1) % all.len())].to_owned()
-}
-
 fn theme_file(dirs: &[PathBuf]) -> Option<PathBuf> {
     dirs.iter().find_map(|dir| ["colors.toml", "alacritty.toml"].iter().map(|f| dir.join(f)).find(|f| f.is_file()))
 }
@@ -493,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn saved_themes_load_and_join_the_cycle() {
+    fn saved_themes_load() {
         let dir = crate::config::temp_dir("user-themes");
         std::fs::create_dir_all(&dir).unwrap();
         let alacritty = "[colors.primary]\nbackground = '#101010'\nforeground = '#eeeeee'\n[colors.normal]\nblack = '#000000'\nred = '#ff0000'\ngreen = '#00ff00'\nyellow = '#ffff00'\nblue = '#0000ff'\nmagenta = '#ff00ff'\ncyan = '#00ffff'\nwhite = '#ffffff'\n";
@@ -504,8 +499,6 @@ mod tests {
         let user = load_user(&dir);
         assert_eq!(user.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["zeta"]);
         assert_eq!(user[0].1.background, Color::Rgb(0x10, 0x10, 0x10));
-        assert_eq!(next_with("kanagawa", &user), "zeta");
-        assert_eq!(next_with("zeta", &user), "omarchy");
         assert!(load_user(&dir.join("missing")).is_empty());
     }
 

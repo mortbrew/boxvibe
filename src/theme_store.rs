@@ -177,7 +177,15 @@ pub fn save(dir: &Path, slug: &str, text: &str) -> std::io::Result<()> {
     std::fs::write(dir.join(format!("{slug}.toml")), text)
 }
 
-fn demo_catalog() -> Vec<Entry> {
+/// Deletes the saved scheme `<dir>/<slug>.toml` (a missing file is fine).
+pub fn remove(dir: &Path, slug: &str) -> std::io::Result<()> {
+    match std::fs::remove_file(dir.join(format!("{slug}.toml"))) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+pub(crate) fn demo_catalog() -> Vec<Entry> {
     [
         (Source::Omarchy, "nord"),
         (Source::Omarchy, "rose-pine"),

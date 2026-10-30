@@ -378,7 +378,7 @@ fn draw_panel(frame: &mut Frame, p: &Palette, area: Rect, panel: &crate::app::Pa
         crate::app::PanelKind::Modes { .. } if !panel.items.is_empty() => " Enter switches mode · Esc closes",
         _ => " Esc closes",
     };
-    lines.push(Line::from(Span::styled(hint, Style::new().fg(p.muted))));
+    lines.push(Line::from(Span::styled(fit(hint, inner_w.saturating_sub(2)), Style::new().fg(p.muted))));
     let height = (lines.len() as u16 + 2).min(area.height);
     let box_area = centered(area, width, height);
     frame.render_widget(Clear, box_area);
@@ -1611,8 +1611,8 @@ fn theme_picker_key_caps(picker: &crate::app::ThemePicker) -> Vec<(&'static str,
 }
 
 /// The theme hints at the bottom of the picker (and the key bar's twin).
-pub const THEME_SEARCH_HINT: &str = "type = fuzzy search · Enter = download & use · Tab = Installed · Esc = close";
-pub const THEME_INSTALLED_HINT: &str = "Enter = use · x = delete · Tab = Search · Esc = close";
+pub const THEME_SEARCH_HINT: &str = "type search · ↑↓ move · Enter use · Tab Installed · Esc close";
+pub const THEME_INSTALLED_HINT: &str = "↑↓ move · Enter use · x delete · Tab Search · Esc close";
 
 /// Settings → Theme Select: Search and Installed tabs, styled like the
 /// station editor.
@@ -1653,13 +1653,16 @@ fn draw_theme_picker(frame: &mut Frame, app: &App, screen: Rect, picker: &crate:
         let start = at.saturating_sub(room - 1).min(len.saturating_sub(room));
         (start, at)
     };
-    // Right-aligned tag after a name ("installed", "in use").
+    // Right-aligned tag after a name ("in use", "downloading…"), never cut:
+    // the name gives way, and a margin keeps the tag off the border.
     let tagged = |name: &str, tag: &str| {
         if tag.is_empty() {
-            return format!(" {name}");
+            return format!(" {}", fit(name, inner_w.saturating_sub(2)));
         }
-        let room = inner_w.saturating_sub(tag.width() + 3);
-        format!(" {} {tag}", pad(&fit(name, room), room))
+        // Worst-case widths ("·", "…"), the same ones `fit` cuts by.
+        let room = inner_w.saturating_sub(safe_width(tag) + 4);
+        let name = fit(name, room);
+        format!(" {name}{} {tag} ", " ".repeat(room.saturating_sub(safe_width(&name))))
     };
     let current = app.config.ui.theme();
     let mut footer = String::new();
@@ -1674,21 +1677,25 @@ fn draw_theme_picker(frame: &mut Frame, app: &App, screen: Rect, picker: &crate:
             ])
             .left_aligned(),
         );
-        let room = rows_room - 1;
+        let mut room = rows_room - 1;
+        // The built-in themes list at once; GitHub's join them when they come.
         if picker.loading {
             lines.push(note("Asking GitHub for iTerm2-Color-Schemes and Omarchy's themes…".into()));
+            room = room.saturating_sub(1).max(1);
         } else if let Some(e) = &picker.error {
             lines.push(note(format!("No theme list: {}", clean(e))));
-        } else if picker.hits.is_empty() {
-            lines.push(note("No theme matches".into()));
+            room = room.saturating_sub(1).max(1);
+        }
+        if picker.hits.is_empty() {
+            if !picker.loading && picker.error.is_none() {
+                lines.push(note("No theme matches".into()));
+            }
         } else {
             let (start, at) = window(picker.hits.len(), picker.search_cursor, room);
             for (i, idx) in picker.hits.iter().enumerate().skip(start).take(room) {
                 let entry = &picker.catalog[*idx];
                 let tag = if entry.slug() == current {
                     "in use"
-                } else if app.is_installed(entry) {
-                    "installed"
                 } else if picker.downloading.as_deref() == Some(entry.name.as_str()) {
                     "downloading…"
                 } else {
@@ -1701,18 +1708,18 @@ fn draw_theme_picker(frame: &mut Frame, app: &App, screen: Rect, picker: &crate:
         }
     } else {
         hint = THEME_INSTALLED_HINT;
-        lines.push(note("Built-in themes and the ones you downloaded".into()));
+        lines.push(note("The themes you downloaded (built-in ones are in Search)".into()));
         let room = rows_room - 1;
-        let (start, at) = window(installed.len(), picker.installed_cursor, room);
-        for (i, t) in installed.iter().enumerate().skip(start).take(room) {
-            let tag = match (t.name == current, t.built_in) {
-                (true, _) => "in use",
-                (false, true) => "built-in",
-                (false, false) => "",
-            };
-            lines.push(row(tagged(&crate::theme::label(&t.name), tag), i == at, false));
+        if installed.is_empty() {
+            lines.push(note("None yet: Tab to Search and Enter on one".into()));
+        } else {
+            let (start, at) = window(installed.len(), picker.installed_cursor, room);
+            for (i, name) in installed.iter().enumerate().skip(start).take(room) {
+                let tag = if name == current { "in use" } else { "" };
+                lines.push(row(tagged(&crate::theme::label(name), tag), i == at, false));
+            }
+            footer = format!("{} of {}", at + 1, installed.len());
         }
-        footer = format!("{} of {}", at + 1, installed.len());
     }
     let used = lines.len() - 3;
     for _ in used..rows_room.max(1) {
@@ -2822,6 +2829,29 @@ mod tests {
     use crate::config::Config;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    #[test]
+    fn the_theme_picker_never_cuts_its_tags_or_hints() {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.themes_dir = Some(crate::config::temp_dir("picker-draw"));
+        app.config.ui.set_theme("gruvbox");
+        app.view = crate::app::View::Settings;
+        app.focus = crate::app::Focus::Content;
+        app.settings_cursor = crate::app::Setting::at(crate::app::Setting::ThemeSelect);
+        app.on_key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Enter));
+        for cols in [80, 100, 160] {
+            let (lines, _) = screen(&app, cols, 32);
+            let all = lines.join("\n");
+            assert!(all.contains(THEME_SEARCH_HINT), "{cols}: search hint cut\n{all}");
+            assert!(all.contains("in use "), "{cols}: tag cut\n{all}");
+            assert!(!all.contains("installed"), "{cols}\n{all}");
+        }
+        app.on_key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Tab));
+        for cols in [80, 160] {
+            let all = screen(&app, cols, 32).0.join("\n");
+            assert!(all.contains(THEME_INSTALLED_HINT), "{cols}: installed hint cut\n{all}");
+        }
+    }
 
     fn screen(app: &App, cols: u16, rows: u16) -> (Vec<String>, ratatui::buffer::Buffer) {
         let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();

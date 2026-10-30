@@ -1,8 +1,9 @@
 //! Settings → Theme Select: the theme picker popup. Two tabs, like the
-//! station editor's: Search (first) filters every scheme GitHub lists as you
-//! type, fuzzy-ranked like fzf, and Enter downloads, saves and uses one;
-//! Installed lists the built-in and saved themes, Enter uses one and `x`
-//! deletes a saved one (after asking). The popup stays open until Esc.
+//! station editor's: Search (first) filters the built-in themes and every
+//! scheme GitHub lists as you type, fuzzy-ranked like fzf, hiding the ones
+//! already saved; Enter uses a built-in one at once or downloads, saves and
+//! uses one. Installed lists only the saved themes: Enter uses one and `x`
+//! deletes one (after asking). The popup stays open until Esc.
 
 use super::*;
 use crate::theme_store::{Entry, Msg};
@@ -16,21 +17,12 @@ pub enum ThemeTab {
     Installed,
 }
 
-/// One row of the Installed tab.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InstalledTheme {
-    /// The config name (`gruvbox`, `omarchy-nord`).
-    pub name: String,
-    /// Built-in themes come with boxvibe and can't be deleted.
-    pub built_in: bool,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThemePicker {
     pub tab: ThemeTab,
     /// What is typed in Search.
     pub query: String,
-    /// Every scheme GitHub listed.
+    /// The built-in themes, then every scheme GitHub listed.
     pub catalog: Vec<Entry>,
     /// `catalog` indexes that match `query`, best first.
     pub hits: Vec<usize>,
@@ -51,7 +43,7 @@ impl ThemePicker {
         Self {
             tab: ThemeTab::Search,
             query: String::new(),
-            catalog: Vec::new(),
+            catalog: crate::theme_store::built_in_entries(),
             hits: Vec::new(),
             search_cursor: 0,
             installed_cursor: 0,
@@ -63,10 +55,21 @@ impl ThemePicker {
     }
 
     /// Ranks the catalog against the query (fzf-style fuzzy match on the
-    /// name and source); an empty query lists everything by name.
-    fn refilter(&mut self) {
-        self.hits = rank(&self.catalog, &self.query);
+    /// name and source), leaving out the saved themes; an empty query lists
+    /// everything by name.
+    fn refilter(&mut self, saved: &[(String, theme::Palette)]) {
+        self.hits = rank(&self.catalog, &self.query)
+            .into_iter()
+            .filter(|i| !saved.iter().any(|(n, _)| *n == self.catalog[*i].slug()))
+            .collect();
         self.search_cursor = 0;
+    }
+
+    /// Like [`Self::refilter`], keeping the cursor where it was (clamped).
+    fn refilter_keep(&mut self, saved: &[(String, theme::Palette)]) {
+        let at = self.search_cursor;
+        self.refilter(saved);
+        self.search_cursor = at.min(self.hits.len().saturating_sub(1));
     }
 }
 
@@ -97,16 +100,14 @@ impl App {
     /// for the list (in the background).
     pub(super) fn open_themes(&mut self) {
         self.theme_job = Some(crate::theme_store::fetch_catalog(self.demo));
-        self.theme_picker = Some(ThemePicker::new());
+        let mut picker = ThemePicker::new();
+        picker.refilter(&self.user_themes);
+        self.theme_picker = Some(picker);
     }
 
-    /// The Installed tab's rows: built-in themes, then the saved ones.
-    pub fn installed_themes(&self) -> Vec<InstalledTheme> {
-        crate::theme::names()
-            .filter(|n| *n != "omarchy")
-            .map(|n| InstalledTheme { name: n.into(), built_in: true })
-            .chain(self.user_themes.iter().map(|(n, _)| InstalledTheme { name: n.clone(), built_in: false }))
-            .collect()
+    /// The Installed tab's rows: the themes you downloaded or saved.
+    pub fn installed_themes(&self) -> Vec<String> {
+        self.user_themes.iter().map(|(n, _)| n.clone()).collect()
     }
 
     /// Whether a catalog entry is already saved.
@@ -148,15 +149,15 @@ impl App {
                 match key.code {
                     KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         picker.query.clear();
-                        picker.refilter();
+                        picker.refilter(&self.user_themes);
                     }
                     KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                         picker.query.push(c);
-                        picker.refilter();
+                        picker.refilter(&self.user_themes);
                     }
                     KeyCode::Backspace => {
                         picker.query.pop();
-                        picker.refilter();
+                        picker.refilter(&self.user_themes);
                     }
                     KeyCode::Down => picker.search_cursor = step(picker.search_cursor, len, 1),
                     KeyCode::Up => picker.search_cursor = step(picker.search_cursor, len, -1),
@@ -168,7 +169,7 @@ impl App {
                             return;
                         };
                         let busy = picker.downloading.is_some();
-                        if self.is_installed(&entry) {
+                        if entry.source == crate::theme_store::Source::BuiltIn || self.is_installed(&entry) {
                             self.use_theme(&entry.slug());
                         } else if busy {
                             self.status = "Still downloading the last one…".into();
@@ -197,18 +198,15 @@ impl App {
                     KeyCode::Home | KeyCode::Char('g') => picker.installed_cursor = 0,
                     KeyCode::End | KeyCode::Char('G') => picker.installed_cursor = len.saturating_sub(1),
                     KeyCode::Enter => {
-                        if let Some(row) = rows.get(picker.installed_cursor) {
-                            self.use_theme(&row.name);
+                        if let Some(name) = rows.get(picker.installed_cursor) {
+                            self.use_theme(name);
                         }
                     }
-                    KeyCode::Char('x') | KeyCode::Delete => match rows.get(picker.installed_cursor) {
-                        Some(row) if row.built_in => {
-                            self.status =
-                                format!("{} comes with boxvibe: it can't be deleted", theme::label(&row.name));
+                    KeyCode::Char('x') | KeyCode::Delete => {
+                        if let Some(name) = rows.get(picker.installed_cursor) {
+                            picker.confirm_delete = Some(name.clone());
                         }
-                        Some(row) => picker.confirm_delete = Some(row.name.clone()),
-                        None => {}
-                    },
+                    }
                     _ => {}
                 }
             }
@@ -227,6 +225,7 @@ impl App {
         let len = self.installed_themes().len();
         if let Some(picker) = self.theme_picker.as_mut() {
             picker.installed_cursor = picker.installed_cursor.min(len.saturating_sub(1));
+            picker.refilter_keep(&self.user_themes); // back in Search
         }
         if self.config.ui.theme_select == name {
             self.use_theme(theme::FALLBACK);
@@ -246,8 +245,8 @@ impl App {
                 picker.loading = false;
                 match result {
                     Ok(entries) => {
-                        picker.catalog = entries;
-                        picker.refilter();
+                        picker.catalog.extend(entries);
+                        picker.refilter(&self.user_themes);
                     }
                     Err(e) => picker.error = Some(e),
                 }
@@ -277,6 +276,9 @@ impl App {
                 self.user_themes.retain(|(n, _)| *n != slug);
                 self.user_themes.push((slug.clone(), palette));
                 self.user_themes.sort_by(|a, b| a.0.cmp(&b.0));
+                if let Some(picker) = self.theme_picker.as_mut() {
+                    picker.refilter_keep(&self.user_themes); // gone from Search
+                }
                 self.use_theme(&slug);
             }
         }

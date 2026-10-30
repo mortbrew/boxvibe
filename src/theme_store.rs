@@ -1,7 +1,7 @@
-//! Settings → More themes: the colour schemes of iTerm2-Color-Schemes (its
+//! Settings → Theme Select: the colour schemes of iTerm2-Color-Schemes (its
 //! alacritty files, about 900) and Omarchy's own themes, listed from GitHub.
-//! One you pick is saved in `~/.config/boxvibe/themes/<name>.toml` and joins
-//! the Theme list.
+//! One you pick is saved in `~/.config/boxvibe/themes/<name>.toml` and is
+//! listed under Installed.
 //!
 //! Network calls run on a thread and answer through a channel; the demo
 //! answers from a few made-up schemes and never touches the network.
@@ -20,6 +20,8 @@ const OMARCHY_RAW: &str = "https://raw.githubusercontent.com/omacom/omarchy/HEAD
 pub enum Source {
     Iterm,
     Omarchy,
+    /// Comes with boxvibe: nothing to download (`url` holds its config name).
+    BuiltIn,
 }
 
 impl Source {
@@ -27,6 +29,7 @@ impl Source {
         match self {
             Self::Iterm => "iTerm2-Color-Schemes",
             Self::Omarchy => "Omarchy",
+            Self::BuiltIn => "built-in",
         }
     }
 }
@@ -46,6 +49,7 @@ impl Entry {
     pub fn slug(&self) -> String {
         let base = slug(&self.name);
         match self.source {
+            Source::BuiltIn => self.url.clone(),
             Source::Omarchy => format!("omarchy-{base}"),
             Source::Iterm if theme::built_in(&base).is_some() || base == "omarchy" || base.starts_with("omarchy-") => {
                 format!("{base}-iterm")
@@ -72,6 +76,14 @@ pub enum Msg {
     Catalog(Result<Vec<Entry>, String>),
     /// The slug and the file's text, or why not.
     Downloaded(Entry, Result<String, String>),
+}
+
+/// The built-in themes as Search rows (Omarchy is Theme Auto Mode's).
+pub fn built_in_entries() -> Vec<Entry> {
+    theme::names()
+        .filter(|n| *n != "omarchy")
+        .map(|n| Entry { source: Source::BuiltIn, name: theme::label(n), url: n.to_owned() })
+        .collect()
 }
 
 /// The schemes of both sources, on a thread.
@@ -135,6 +147,7 @@ fn download(entry: &Entry) -> Result<String, String> {
         Source::Iterm => get(&entry.url),
         Source::Omarchy => get(&format!("{}/colors.toml", entry.url))
             .or_else(|first| get(&format!("{}/alacritty.toml", entry.url)).map_err(|_| first)),
+        Source::BuiltIn => Err("built in, nothing to download".into()),
     }
 }
 

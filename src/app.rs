@@ -5180,7 +5180,10 @@ mod tests {
         let p = app.theme_picker.as_ref().unwrap();
         assert!(p.loading && p.tab == ThemeTab::Search);
         wait_for_themes(&mut app);
-        assert_eq!(hit_names(&app).len(), 5);
+        // The 5 demo schemes plus the built-in themes (not Omarchy: that's Auto Mode).
+        let built_in = crate::theme::names().filter(|n| *n != "omarchy").count();
+        assert_eq!(hit_names(&app).len(), 5 + built_in);
+        assert!(!hit_names(&app).iter().any(|n| n == "Omarchy"));
         // Typing filters at once, no `/`; j and k are letters here.
         type_in(&mut app, "drc");
         assert_eq!(hit_names(&app)[0], "Dracula", "best match first");
@@ -5190,6 +5193,14 @@ mod tests {
         type_in(&mut app, "jk");
         assert_eq!(app.theme_picker.as_ref().unwrap().query, "jk");
         app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        // A built-in theme applies at once: no download, nothing saved.
+        type_in(&mut app, "gruvbox");
+        assert_eq!(hit_names(&app)[0], crate::theme::label("gruvbox"));
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.theme_job.is_none(), "no download");
+        assert_eq!(app.config.ui.theme(), "gruvbox");
+        assert!(app.user_themes.is_empty() && app.theme_picker.is_some());
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
         type_in(&mut app, "dracula");
         // Enter downloads and uses it; the popup stays open.
         app.on_key(key(KeyCode::Enter));
@@ -5197,8 +5208,7 @@ mod tests {
         assert_eq!(app.config.ui.theme(), "dracula");
         assert!(dir.join("dracula.toml").is_file());
         assert!(app.theme_picker.is_some(), "still open");
-        let p = app.theme_picker.as_ref().unwrap();
-        assert!(app.is_installed(&p.catalog[p.hits[0]]), "shows as installed");
+        assert!(!hit_names(&app).contains(&"Dracula".to_string()), "installed ones leave Search");
         assert!(app.setting_value(Setting::ThemeSelect).contains("1 saved ~ Browse for more…"));
         // A file that isn't a theme is refused and nothing changes.
         app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
@@ -5207,23 +5217,25 @@ mod tests {
         wait_for_themes(&mut app);
         assert!(app.status.contains("Broken"), "{}", app.status);
         assert_eq!(app.config.ui.theme(), "dracula");
-        // Installed: Enter uses one and stays open.
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        type_in(&mut app, "solarized");
+        app.on_key(key(KeyCode::Enter));
+        wait_for_themes(&mut app);
+        assert_eq!(app.config.ui.theme(), "solarized-dark");
+        // Installed: only the downloaded ones; Enter uses one and stays open.
         app.on_key(key(KeyCode::Tab));
         assert_eq!(app.theme_picker.as_ref().unwrap().tab, ThemeTab::Installed);
-        let names: Vec<String> = app.installed_themes().into_iter().map(|t| t.name).collect();
-        assert_eq!(names.last().map(String::as_str), Some("dracula"));
+        assert_eq!(app.installed_themes(), ["dracula", "solarized-dark"]);
         app.on_key(key(KeyCode::Home));
-        app.on_key(key(KeyCode::Char('j')));
-        app.on_key(key(KeyCode::Enter));
-        assert_eq!(app.config.ui.theme(), names[1]);
-        assert!(app.theme_picker.is_some());
-        // A built-in can't be deleted.
-        app.on_key(key(KeyCode::Char('x')));
-        assert!(app.theme_picker.as_ref().unwrap().confirm_delete.is_none());
-        // Back to dracula, then x asks; n keeps it, y deletes and falls back.
-        app.on_key(key(KeyCode::End));
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.config.ui.theme(), "dracula");
+        app.on_key(key(KeyCode::Char('j')));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.config.ui.theme(), "solarized-dark");
+        assert!(app.theme_picker.is_some());
+        // x asks; n keeps it, y deletes and falls back.
+        app.on_key(key(KeyCode::Char('k')));
+        app.on_key(key(KeyCode::Enter));
         app.on_key(key(KeyCode::Char('x')));
         assert_eq!(app.theme_picker.as_ref().unwrap().confirm_delete.as_deref(), Some("dracula"));
         app.on_key(key(KeyCode::Char('n')));
@@ -5231,8 +5243,13 @@ mod tests {
         app.on_key(key(KeyCode::Delete));
         app.on_key(key(KeyCode::Char('y')));
         assert!(!dir.join("dracula.toml").exists());
-        assert!(app.user_themes.is_empty());
+        assert_eq!(app.installed_themes(), ["solarized-dark"]);
         assert_eq!(app.config.ui.theme(), crate::theme::FALLBACK);
+        // Deleted, it is back in Search.
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        type_in(&mut app, "dracula");
+        assert_eq!(hit_names(&app)[0], "Dracula");
         // Esc closes.
         app.on_key(key(KeyCode::Esc));
         assert!(app.theme_picker.is_none());

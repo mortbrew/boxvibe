@@ -629,7 +629,8 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     }
     let mut spans = Vec::new();
     for (i, label) in extra.iter().enumerate() {
-        let color = if i == 0 && app.sleep.is_some() { p.yellow } else { p.muted };
+        // The look labels share the account's colour; the sleep timer stays yellow.
+        let color = if i == 0 && app.sleep.is_some() { p.yellow } else { p.blue };
         spans.push(Span::styled(label.clone(), Style::new().fg(color)));
         spans.push(Span::styled(" · ", Style::new().fg(p.muted)));
     }
@@ -4518,6 +4519,13 @@ mod tests {
             bar.trim_end().ends_with("Gruvbox · Art Picture · 8-bit · Tint Duotone · Logged In As: toby@example.com"),
             "{bar}"
         );
+        // The look is in the account's colour; the separators stay muted.
+        let (lines, buffer) = screen(&app, 200, 36);
+        let col = |s: &str| lines[34].chars().take(lines[34].find(s).unwrap()).count() as u16;
+        for label in ["Gruvbox", "Art Picture", "8-bit", "Tint Duotone", "Logged In As"] {
+            assert_eq!(buffer[(col(label), 34)].fg, app.palette.blue, "{label}");
+        }
+        assert_eq!(buffer[(col("Gruvbox") + 8, 34)].fg, app.palette.muted);
         app.sleep = Some(crate::app::Sleep::Minutes(15, std::time::Instant::now()));
         let bar = screen(&app, 200, 36).0[34].clone();
         assert!(bar.contains("☾ 15:00 · Gruvbox") || bar.contains("☾ 14:59 · Gruvbox"), "{bar}");

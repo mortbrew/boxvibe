@@ -373,6 +373,8 @@ fn draw_panel(frame: &mut Frame, p: &Palette, area: Rect, panel: &crate::app::Pa
     let hint = match panel.kind {
         crate::app::PanelKind::Artist { .. } if !panel.items.is_empty() => " Enter starts a station · Esc closes",
         crate::app::PanelKind::Modes { .. } if !panel.items.is_empty() => " Enter switches mode · Esc closes",
+        crate::app::PanelKind::Themes { typing: true, .. } => " Type to filter · Enter done · Esc clears",
+        crate::app::PanelKind::Themes { .. } if !panel.loading => " Enter saves & uses · / filters · Esc closes",
         _ => " Esc closes",
     };
     lines.push(Line::from(Span::styled(hint, Style::new().fg(p.muted))));
@@ -2201,10 +2203,17 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         let enter = match panel.kind {
             crate::app::PanelKind::Artist { .. } => "Start Station",
             crate::app::PanelKind::Modes { .. } => "Switch Mode",
+            crate::app::PanelKind::Themes { typing: true, .. } => {
+                return vec![("Type", "Filter"), ("↑↓", "Move"), ("Enter", "Done"), ("Esc", "Clear")];
+            }
+            crate::app::PanelKind::Themes { .. } => "Save & Use",
         };
         let mut keys = vec![];
         if !panel.items.is_empty() {
             keys.extend([("j/k ↑↓", "Move"), ("Enter", enter)]);
+        }
+        if matches!(panel.kind, crate::app::PanelKind::Themes { .. }) && !panel.loading {
+            keys.push(("/", "Filter"));
         }
         keys.push(("Esc", "Close"));
         return keys;
@@ -2658,7 +2667,7 @@ fn draw_system_box(frame: &mut Frame, p: &Palette, lines: Vec<Line<'static>>, ar
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), box_area);
 }
 
-const HELP_FOOTER: &str = " Theme, account, animations, boot screen and more: Settings (Shift+O)";
+const HELP_FOOTER: &str = " Themes (900 more to download), account, boot screen and more: Settings (Shift+O)";
 
 #[cfg(test)]
 mod tests {

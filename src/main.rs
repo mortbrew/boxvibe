@@ -18,6 +18,7 @@ mod pinned;
 mod snapshot;
 mod splash;
 mod theme;
+mod theme_store;
 mod ui;
 mod update;
 

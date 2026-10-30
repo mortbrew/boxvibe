@@ -124,6 +124,7 @@ pub enum Setting {
     Notify,
     GoodVibesOnly,
     Theme,
+    MoreThemes,
     Icons,
     BorderStyle,
     MenuWidth,
@@ -142,7 +143,7 @@ pub enum Setting {
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 24] = [
+    pub const ALL: [(&'static str, Self); 25] = [
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
@@ -157,6 +158,7 @@ impl Setting {
         ("PLAYBACK", Self::Notify),
         ("PLAYBACK", Self::GoodVibesOnly),
         ("LOOK", Self::Theme),
+        ("LOOK", Self::MoreThemes),
         ("LOOK", Self::Icons),
         ("LOOK", Self::BorderStyle),
         ("LOOK", Self::MenuWidth),
@@ -186,6 +188,7 @@ impl Setting {
             Self::Notify => "Song change notifications",
             Self::GoodVibesOnly => "Good Vibes Only",
             Self::Theme => "Theme",
+            Self::MoreThemes => "More themes",
             Self::Icons => "Icons",
             Self::BorderStyle => "Border style",
             Self::MenuWidth => "Menu width",
@@ -228,7 +231,7 @@ impl Setting {
             Self::RetroMode => Some(("look", "retro_mode")),
             Self::ArtTint => Some(("look", "tint_art_with_theme_colors")),
             Self::Animations => Some(("look", "animations")),
-            Self::Password | Self::LogIn | Self::LogOut | Self::EditFile | Self::MenuEntry => None,
+            Self::Password | Self::LogIn | Self::LogOut | Self::EditFile | Self::MenuEntry | Self::MoreThemes => None,
         }
     }
 
@@ -295,6 +298,9 @@ impl Setting {
             }
             Self::Splash => {
                 "A two-second boxvibe logo screen when it opens; any key skips it (Animations off skips it too). Saved as [look] boot_screen."
+            }
+            Self::MoreThemes => {
+                "Enter browses about 900 colour schemes (iTerm2-Color-Schemes and Omarchy's). One you pick is saved in ~/.config/boxvibe/themes/ and joins the Theme list."
             }
             Self::EditFile => "Opens config.toml in $EDITOR; boxvibe reads it again when you close it.",
             Self::MenuEntry => {
@@ -799,6 +805,13 @@ fn base64(bytes: &[u8]) -> String {
 pub struct App {
     /// Media keys and the desktop's player widget (`None` until main starts it).
     pub mpris: Option<crate::mpris::Mpris>,
+    /// Schemes saved by Settings → More themes, by name.
+    pub user_themes: Vec<(String, theme::Palette)>,
+    /// Where they are saved (`None` in the demo: kept in memory only).
+    pub themes_dir: Option<PathBuf>,
+    /// A theme list or download on its way.
+    theme_job: Option<std::sync::mpsc::Receiver<crate::theme_store::Msg>>,
+    theme_entries: Vec<crate::theme_store::Entry>,
     pub config: Config,
     pub config_path: Option<PathBuf>,
     pub demo: bool,
@@ -1020,6 +1033,14 @@ impl App {
             quit: false,
             config,
             config_path,
+            user_themes: if demo {
+                Vec::new()
+            } else {
+                theme::user_dir().map(|d| theme::load_user(&d)).unwrap_or_default()
+            },
+            themes_dir: if demo { None } else { theme::user_dir() },
+            theme_job: None,
+            theme_entries: Vec::new(),
             mpris: None,
             demo,
         };
@@ -1116,11 +1137,17 @@ impl App {
     }
 
     pub fn follows_omarchy(&self) -> bool {
-        theme::built_in(&self.config.ui.theme).is_none()
+        self.theme_palette().is_none()
     }
 
-    fn apply_theme(&mut self) {
-        match theme::built_in(&self.config.ui.theme) {
+    /// The built-in or saved palette of the chosen theme (`None`: follow Omarchy).
+    fn theme_palette(&self) -> Option<theme::Palette> {
+        let name = &self.config.ui.theme;
+        theme::built_in(name).or_else(|| self.user_themes.iter().find(|(n, _)| n == name).map(|(_, p)| *p))
+    }
+
+    pub(crate) fn apply_theme(&mut self) {
+        match self.theme_palette() {
             Some(p) => self.palette = p,
             None => {
                 self.omarchy.reset();
@@ -1730,6 +1757,7 @@ impl App {
         }
         self.ad_tick();
         self.mpris_tick();
+        self.theme_tick();
         self.want_art();
         if self.follows_omarchy() && self.last_theme_poll.elapsed() > Duration::from_secs(2) {
             self.last_theme_poll = Instant::now();
@@ -2423,6 +2451,10 @@ impl App {
             Setting::Notify => on(self.config.ui.notifications),
             Setting::GoodVibesOnly => self.config.player.good_vibes_only.label().into(),
             Setting::Theme => theme::label(&self.config.ui.theme),
+            Setting::MoreThemes => match self.user_themes.len() {
+                0 => "Browse…".into(),
+                n => format!("{n} saved · Browse…"),
+            },
             Setting::Icons => crate::icons::label(self.config.ui.icons).into(),
             Setting::BorderStyle => self.config.ui.border_style.label().into(),
             Setting::MenuWidth => format!("{} columns", self.config.ui.menu_width),
@@ -2496,6 +2528,7 @@ impl App {
                 next => self.confirm_good_vibes = Some(next),
             },
             Setting::Theme => self.next_theme(),
+            Setting::MoreThemes => self.open_themes(),
             Setting::Icons => self.next_icons(),
             Setting::BorderStyle => {
                 let next = self.config.ui.border_style.next();
@@ -3158,11 +3191,15 @@ impl App {
     }
 
     fn next_theme(&mut self) {
-        let next = theme::next(&self.config.ui.theme);
-        self.config.ui.theme = next.into();
+        let next = theme::next_with(&self.config.ui.theme, &self.user_themes);
+        self.use_theme(&next);
+    }
+
+    pub(crate) fn use_theme(&mut self, name: &str) {
+        self.config.ui.theme = name.into();
         self.apply_theme();
-        self.save(&[("look", "theme", next.into())]);
-        self.status = format!("Theme: {}", theme::label(next));
+        self.save(&[("look", "theme", name.into())]);
+        self.status = format!("Theme: {}", theme::label(name));
     }
 
     fn next_icons(&mut self) {
@@ -5071,6 +5108,64 @@ mod tests {
         app.tick();
         assert_ne!(app.now.as_ref().unwrap().track_token, first.track_token);
         assert_eq!(app.mpris.as_ref().unwrap().shown().track, app.now.as_ref().unwrap().track_token);
+    }
+
+    fn wait_for_themes(app: &mut App) {
+        for _ in 0..100 {
+            app.tick();
+            if app.theme_job.is_none() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("the theme job never answered");
+    }
+
+    #[test]
+    fn more_themes_downloads_saves_and_joins_the_theme_list() {
+        let mut app = demo();
+        let dir = crate::config::temp_dir("more-themes");
+        app.themes_dir = Some(dir.clone());
+        app.focus = Focus::Content;
+        app.view = View::Settings;
+        app.settings_cursor = Setting::at(Setting::MoreThemes);
+        assert_eq!(app.setting_value(Setting::MoreThemes), "Browse…");
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.panel.as_ref().unwrap().loading);
+        wait_for_themes(&mut app);
+        let panel = app.panel.as_ref().unwrap();
+        assert_eq!(panel.items.len(), 5);
+        assert!(panel.title().contains("More Themes · 5"));
+        // `/` filters; j and k are typed, not moves, while typing.
+        for c in "/drac".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        let panel = app.panel.as_ref().unwrap();
+        assert_eq!(panel.items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), ["Dracula"]);
+        app.on_key(key(KeyCode::Enter)); // done typing
+        app.on_key(key(KeyCode::Enter)); // download
+        wait_for_themes(&mut app);
+        assert_eq!(app.config.ui.theme, "dracula");
+        assert!(dir.join("dracula.toml").is_file());
+        assert!(!app.follows_omarchy());
+        assert!(app.panel.as_ref().unwrap().items[0].current, "marked saved");
+        assert_eq!(app.setting_value(Setting::MoreThemes), "1 saved · Browse…");
+        // A file that isn't a theme is refused and nothing changes.
+        app.on_key(key(KeyCode::Char('/')));
+        app.on_key(key(KeyCode::Esc)); // clears the filter
+        let at = app.panel.as_ref().unwrap().items.iter().position(|i| i.label == "Broken").unwrap();
+        app.panel.as_mut().unwrap().cursor = at;
+        app.on_key(key(KeyCode::Enter));
+        wait_for_themes(&mut app);
+        assert!(app.status.contains("Couldn't get Broken"), "{}", app.status);
+        assert_eq!(app.config.ui.theme, "dracula");
+        // The saved one is in the Theme cycle, after the built-in ones.
+        app.panel = None;
+        app.config.ui.theme = "kanagawa".into();
+        app.settings_cursor = Setting::at(Setting::Theme);
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.config.ui.theme, "dracula");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

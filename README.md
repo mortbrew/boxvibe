@@ -68,6 +68,7 @@ work right now drawn as key caps at the bottom.
 - **Themes** (Settings): *Omarchy* (follows your current Omarchy theme, live, and
   is Tokyo Night elsewhere, and what a first run starts on) plus Tokyo Night, Gruvbox, Catppuccin, Catppuccin
   Latte, Rosé Pine Dawn, Nord, Everforest and Kanagawa
+- **More themes** (Settings → LOOK → More themes): browse about 900 colour schemes from [iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes) and Omarchy's own themes, listed from GitHub. `/` filters as you type; `Enter` downloads one, saves it in `~/.config/boxvibe/themes/<name>.toml` and uses it. Saved schemes join the Theme row's list after the built-in ones (Omarchy ones are named `omarchy-<name>`). Any alacritty or Omarchy `colors.toml` file dropped in that folder works too
 - **Icon sets** (Settings → LOOK → Icons): Nerd Font (the default), colour emoji or plain Unicode. The boxvibe logo is always the Nerd Font box
 - **Rename and delete stations** (`r`, `x`) and **details** (`v`): see [Keys](#keys)
 - **Make a station by searching** (`a` on the Stations page, or the "Add station…" row): type an artist or song, `Enter` searches, pick one with `j` / `k`, `Enter` makes the station and plays it
@@ -220,6 +221,7 @@ favorites = []                 # starred stations, { id = "…", name = "…" },
 [look]
 theme = "omarchy"              # omarchy | tokyo-night | gruvbox | catppuccin | catppuccin-latte
                                # | rose-pine | nord | everforest | kanagawa
+                               # | a scheme saved in ~/.config/boxvibe/themes/ (by file name)
                                # (the first run: omarchy on an Omarchy system, else tokyo-night)
 icons = "nerd"                 # nerd | emoji | unicode
 border_style = "plain"         # plain | rounded | thick | double | none

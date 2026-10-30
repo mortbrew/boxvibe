@@ -27,6 +27,7 @@
 - Shuffle: Shift+X plays Pandora's Shuffle station (your stations mixed), creating it if needed. The Stations key bar shows `X Shuffle`.
 - Add station: seed suggestions use Pandora's suggestions call, falling back to the artist's similar artists when it returns nothing.
 - MPRIS: boxvibe shows up on the session bus as `org.mpris.MediaPlayer2.boxvibe`, so media keys, `playerctl` and the desktop's player widget see the song (title, artist, album, cover, length, position) and can play, pause and skip. Previous and seek do nothing (Pandora can't). Without a session bus nothing changes.
+- Settings → LOOK → **More themes**: browse about 900 schemes (iTerm2-Color-Schemes' alacritty files and Omarchy's themes, listed from GitHub), `/` to filter, `Enter` downloads, saves to `~/.config/boxvibe/themes/<name>.toml` and uses it. Saved schemes join the Theme list. A file that isn't a readable scheme, GitHub's rate limit or no network is said in the bottom bar or the panel.
 
 ## 0.4.0 (2026-10-24)
 

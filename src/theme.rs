@@ -182,6 +182,7 @@ pub fn names() -> impl Iterator<Item = &'static str> {
 }
 
 /// The theme after `name` (an unknown name starts over).
+#[cfg(test)]
 pub fn next(name: &str) -> &'static str {
     let all: Vec<_> = names().collect();
     let at = all.iter().position(|n| *n == name);
@@ -350,6 +351,51 @@ pub fn parse_alacritty(text: &str) -> Option<Palette> {
     named.palette()
 }
 
+/// A downloaded or saved scheme: alacritty (`[colors.primary]`…) or an Omarchy `colors.toml`.
+pub fn parse_any(text: &str) -> Option<Palette> {
+    let table: toml::Table = text.parse().ok()?;
+    if table.get("colors").is_some_and(Value::is_table) { parse_alacritty(text) } else { parse_colors_toml(text) }
+}
+
+/// Where Settings → More themes saves schemes: `~/.config/boxvibe/themes/`.
+pub fn user_dir() -> Option<PathBuf> {
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(config.join("boxvibe/themes"))
+}
+
+/// The saved schemes in `dir` (`<name>.toml`), by name; ones that don't
+/// parse or would shadow a built-in theme are left out.
+pub fn load_user(dir: &Path) -> Vec<(String, Palette)> {
+    let Ok(read_dir) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut found: Vec<(String, Palette)> = read_dir
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            if path.extension()? != "toml" {
+                return None;
+            }
+            let name = path.file_stem()?.to_str()?.to_owned();
+            if name == "omarchy" || built_in(&name).is_some() {
+                return None;
+            }
+            Some((name, parse_any(&std::fs::read_to_string(&path).ok()?)?))
+        })
+        .collect();
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    found
+}
+
+/// The theme after `name`, the saved ones after the built-in ones.
+pub fn next_with(name: &str, user: &[(String, Palette)]) -> String {
+    let mut all: Vec<&str> = names().collect();
+    all.extend(user.iter().map(|(n, _)| n.as_str()));
+    let at = all.iter().position(|n| *n == name);
+    all[at.map_or(0, |i| (i + 1) % all.len())].to_owned()
+}
+
 fn theme_file(dirs: &[PathBuf]) -> Option<PathBuf> {
     dirs.iter().find_map(|dir| ["colors.toml", "alacritty.toml"].iter().map(|f| dir.join(f)).find(|f| f.is_file()))
 }
@@ -444,6 +490,23 @@ mod tests {
         assert!(names().any(|n| n == default_name()), "{}", default_name());
         assert!(matches!(default_name(), "omarchy" | "tokyo-night"));
         assert!(built_in("tokyo-night").is_some());
+    }
+
+    #[test]
+    fn saved_themes_load_and_join_the_cycle() {
+        let dir = crate::config::temp_dir("user-themes");
+        std::fs::create_dir_all(&dir).unwrap();
+        let alacritty = "[colors.primary]\nbackground = '#101010'\nforeground = '#eeeeee'\n[colors.normal]\nblack = '#000000'\nred = '#ff0000'\ngreen = '#00ff00'\nyellow = '#ffff00'\nblue = '#0000ff'\nmagenta = '#ff00ff'\ncyan = '#00ffff'\nwhite = '#ffffff'\n";
+        std::fs::write(dir.join("zeta.toml"), alacritty).unwrap();
+        std::fs::write(dir.join("gruvbox.toml"), alacritty).unwrap();
+        std::fs::write(dir.join("broken.toml"), "x = 1").unwrap();
+        std::fs::write(dir.join("notes.txt"), alacritty).unwrap();
+        let user = load_user(&dir);
+        assert_eq!(user.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["zeta"]);
+        assert_eq!(user[0].1.background, Color::Rgb(0x10, 0x10, 0x10));
+        assert_eq!(next_with("kanagawa", &user), "zeta");
+        assert_eq!(next_with("zeta", &user), "omarchy");
+        assert!(load_user(&dir.join("missing")).is_empty());
     }
 
     #[test]

@@ -5180,9 +5180,12 @@ mod tests {
         let p = app.theme_picker.as_ref().unwrap();
         assert!(p.loading && p.tab == ThemeTab::Search);
         wait_for_themes(&mut app);
-        // The 5 demo schemes plus the built-in themes (not Omarchy: that's Auto Mode).
+        // The 3 demo iTerm2 schemes plus the built-in themes; no Omarchy ones
+        // (the demo lists two, nord and rose-pine): those come with Auto Mode.
         let built_in = crate::theme::names().filter(|n| *n != "omarchy").count();
-        assert_eq!(hit_names(&app).len(), 5 + built_in);
+        assert_eq!(hit_names(&app).len(), 3 + built_in);
+        let p = app.theme_picker.as_ref().unwrap();
+        assert!(p.catalog.iter().all(|e| e.source != crate::theme_store::Source::Omarchy));
         assert!(!hit_names(&app).iter().any(|n| n == "Omarchy"));
         // Typing filters at once, no `/`; j and k are letters here.
         type_in(&mut app, "drc");

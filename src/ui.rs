@@ -1680,7 +1680,7 @@ fn draw_theme_picker(frame: &mut Frame, app: &App, screen: Rect, picker: &crate:
         let mut room = rows_room - 1;
         // The built-in themes list at once; GitHub's join them when they come.
         if picker.loading {
-            lines.push(note("Asking GitHub for iTerm2-Color-Schemes and Omarchy's themes…".into()));
+            lines.push(note("Asking GitHub for iTerm2-Color-Schemes…".into()));
             room = room.saturating_sub(1).max(1);
         } else if let Some(e) = &picker.error {
             lines.push(note(format!("No theme list: {}", clean(e))));
@@ -2464,10 +2464,14 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         } else if station.is_locked() && !station.is_shuffle {
             keys.push(("e", "Thumbs"));
         }
-        if !station.is_shuffle {
+        // With a song playing, Station Mode is in the `.` menu (m still works).
+        if !station.is_shuffle && app.now.is_none() {
             keys.push(("m", "Mode"));
         }
     };
+    // Keys the `.` song menu also offers (U/D, l/b, I, v on a song, m, B, Z)
+    // are left off the bar once `.` works; they still work and Help lists them.
+    let song_menu_here = app.now.is_some() || in_songs && row_here;
     match (app.focus, app.view) {
         (Focus::Menu, _) if matches!(app.menu_selected(), MenuItem::Favorite(_)) => {
             if app.station_in_reach().is_some() {
@@ -2485,11 +2489,6 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         (Focus::Content, View::Player) if app.pane == Pane::NowPlaying => {
             keys.push(("Tab", "Up Next"));
             playing_keys(&mut keys);
-            if app.now.is_some() {
-                keys.push(("v", "Details"));
-                keys.push((".", "Song Menu"));
-            }
-            keys.push(("B", if app.sleep.is_some() { "Sleep (next / off)" } else { "Sleep" }));
             keys.push(("Esc", "Menu"));
         }
         (Focus::Menu, _) => {
@@ -2499,10 +2498,6 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         }
         (Focus::Content, View::Player) => {
             keys.push(("Tab", if app.pane == Pane::UpNext { "History" } else { "Menu" }));
-            if row_here {
-                keys.push(("v", "Details"));
-                keys.push((".", "Song Menu"));
-            }
             keys.push(("Esc", "Menu"));
         }
         (Focus::Content, View::Settings) => keys.extend([("Enter", "Change"), ("Esc", "Menu")]),
@@ -2545,13 +2540,12 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.view != View::Player && app.has_now_playing() {
         keys.push(("P", "Now Playing"));
     }
-    // Pause, skip and thumbs act on the playing song: only once there is one.
+    // Pause and skip act on the playing song: only once there is one.
     if app.now.is_some() {
-        keys.extend([("space", pause), ("N", "Skip"), ("U/D", "Thumbs"), ("I", "Pin")]);
+        keys.extend([("space", pause), ("N", "Skip")]);
     }
-    // l and b rate the selected row: Up Next and History only (Now Playing has U/D).
-    if in_songs && row_here {
-        keys.push(("l/b", "Like/Bad"));
+    if song_menu_here {
+        keys.push((".", "Song Menu"));
     }
     keys.extend([("⇧←→", "Volume"), ("?", "Help"), ("Q", "Quit")]);
     keys
@@ -3884,7 +3878,9 @@ mod tests {
         let mut app = demo();
         let (lines, _) = screen(&app, 140, 40);
         assert!(lines.iter().any(|l| l.contains("Pinned")), "the menu entry, shown by default");
-        assert!(key_caps(&app).iter().any(|(k, v)| *k == "I" && *v == "Pin"));
+        // I still pins, but the bar leaves it to the `.` menu.
+        assert!(!key_caps(&app).iter().any(|(k, _)| *k == "I"));
+        assert!(key_caps(&app).iter().any(|(k, v)| *k == "." && *v == "Song Menu"));
         app.on_key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char('I'),
             crossterm::event::KeyModifiers::SHIFT,
@@ -3982,13 +3978,20 @@ mod tests {
                     'e' => app.editor.is_some(),
                     _ => app.details.is_some(),
                 };
-                assert_eq!(shown, did, "{key} in {name}: hinted {shown}, acts {did}");
+                // v on a song is in the `.` menu: it works, unhinted.
+                let song_v = key == 'v' && view == View::Player && focus == Focus::Content;
+                if song_v {
+                    assert!(!shown, "v in {name} is left to the . menu");
+                } else {
+                    assert_eq!(shown, did, "{key} in {name}: hinted {shown}, acts {did}");
+                }
             }
-            // l/b only where they rate a row, never beside Now Playing's U/D.
+            // l/b, U/D, I, B: in the `.` menu, so never on the bar; `.` is, with a song.
             enter(&mut app, focus, view, pane, favorite);
-            let rows = view == View::Player && focus == Focus::Content && pane != Pane::NowPlaying;
-            assert_eq!(hinted(&app, "l"), rows, "l/b in {name}");
-            assert_eq!(hinted(&app, "b"), rows, "l/b in {name}");
+            for k in ["l", "b", "U", "D", "I", "B", "Z"] {
+                assert!(!hinted(&app, k), "{k} in {name}");
+            }
+            assert!(hinted(&app, "."), ". in {name}");
             // f: stars a station row, or unstars the favorite the menu is on.
             let stars = (view == View::Stations && focus == Focus::Content) || (focus == Focus::Menu && favorite);
             assert_eq!(hinted(&app, "f"), stars, "f in {name}");
@@ -4025,20 +4028,24 @@ mod tests {
     }
 
     #[test]
-    fn thumbs_pause_and_skip_are_hinted_only_with_a_song_to_act_on() {
+    fn pause_skip_and_the_song_menu_are_hinted_only_with_a_song_to_act_on() {
         let mut app = App::new(Config::default(), None, &[], true);
         let has = |app: &App, key: &str| key_caps(app).iter().any(|(k, _)| *k == key);
         // Nothing playing yet.
         assert!(app.now.is_none());
-        for key in ["space", "N", "U/D"] {
+        for key in ["space", "N", "."] {
             assert!(!has(&app, key), "{key} with nothing playing");
         }
         app.settle(std::time::Duration::from_millis(400));
         app.demo_warm_up(3, std::time::Duration::ZERO);
         app.settle(std::time::Duration::from_millis(400));
         assert!(app.now.is_some());
-        for key in ["space", "N", "U/D"] {
+        for key in ["space", "N", "."] {
             assert!(has(&app, key), "{key} while playing");
+        }
+        // Thumbs, pin, sleep and mode are in the `.` menu, not the bar.
+        for key in ["U/D", "I", "B", "l/b", "m"] {
+            assert!(!has(&app, key), "{key} is left to the . menu");
         }
     }
 

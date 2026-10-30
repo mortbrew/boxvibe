@@ -6,7 +6,7 @@
 //! deletes one (after asking). The popup stays open until Esc.
 
 use super::*;
-use crate::theme_store::{Entry, Msg};
+use crate::theme_store::{Entry, Msg, Source};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Matcher, Utf32Str};
 
@@ -169,7 +169,7 @@ impl App {
                             return;
                         };
                         let busy = picker.downloading.is_some();
-                        if entry.source == crate::theme_store::Source::BuiltIn || self.is_installed(&entry) {
+                        if entry.source == Source::BuiltIn || self.is_installed(&entry) {
                             self.use_theme(&entry.slug());
                         } else if busy {
                             self.status = "Still downloading the last one…".into();
@@ -245,7 +245,8 @@ impl App {
                 picker.loading = false;
                 match result {
                     Ok(entries) => {
-                        picker.catalog.extend(entries);
+                        // iTerm2-Color-Schemes only: Omarchy's themes come with Auto Mode.
+                        picker.catalog.extend(entries.into_iter().filter(|e| e.source != Source::Omarchy));
                         picker.refilter(&self.user_themes);
                     }
                     Err(e) => picker.error = Some(e),

@@ -838,6 +838,8 @@ pub struct App {
     pub query: TextInput,
     pub palette: Palette,
     omarchy: theme::Watcher,
+    /// The Omarchy theme followed, as shown ("Tokyo Night"); for the status bar.
+    pub omarchy_theme: Option<String>,
     last_theme_poll: Instant,
     pub stations: Vec<Station>,
     pub current_station: Option<String>,
@@ -979,6 +981,7 @@ impl App {
             query: TextInput::default(),
             palette: theme::TOKYO_NIGHT,
             omarchy: theme::Watcher::system(),
+            omarchy_theme: None,
             last_theme_poll: Instant::now(),
             stations: Vec::new(),
             current_station: None,
@@ -1157,6 +1160,7 @@ impl App {
                 self.omarchy.reset();
                 if let Some(p) = self.omarchy.poll() {
                     self.palette = p;
+                    self.omarchy_theme = self.omarchy.name.clone();
                 }
             }
         }
@@ -1767,6 +1771,7 @@ impl App {
             self.last_theme_poll = Instant::now();
             if let Some(p) = self.omarchy.poll() {
                 self.palette = p;
+                self.omarchy_theme = self.omarchy.name.clone();
             }
         }
     }

@@ -660,7 +660,12 @@ fn sleep_label(app: &App) -> Option<String> {
 /// theme, album art, retro mode, tint.
 fn look_labels(app: &App) -> Vec<String> {
     let ui = &app.config.ui;
-    let theme = if ui.theme() == "omarchy" { "Omarchy".to_owned() } else { crate::theme::label(ui.theme()) };
+    // Following Omarchy: "omarchy: Tokyo Night" (just "Omarchy" if its name is unknown).
+    let theme = if ui.theme() == "omarchy" {
+        app.omarchy_theme.as_ref().map_or_else(|| "Omarchy".to_owned(), |n| format!("omarchy: {n}"))
+    } else {
+        crate::theme::label(ui.theme())
+    };
     vec![
         theme,
         format!("Art {}", ui.album_art.label()),
@@ -4536,6 +4541,27 @@ mod tests {
         assert!(bar.contains("☾ 1") && !bar.contains("Gruvbox") && bar.contains("toby@example.com"), "{bar}");
         app.sleep = Some(crate::app::Sleep::EndOfSong);
         assert!(screen(&app, 200, 36).0[34].contains("☾ end of song"));
+    }
+
+    #[test]
+    fn following_omarchy_the_status_bar_names_its_theme_in_the_account_colour() {
+        let mut app = demo();
+        app.config.pandora.username = "toby@example.com".into();
+        app.session = Session::LoggedIn;
+        app.config.ui.set_theme("omarchy");
+        app.omarchy_theme = Some("Tokyo Night".into());
+        let (lines, buffer) = screen(&app, 200, 36);
+        let bar = &lines[34];
+        assert!(bar.contains("omarchy: Tokyo Night · Art"), "{bar}");
+        let x = bar.chars().take(bar.find("omarchy: Tokyo").unwrap()).count() as u16;
+        assert_eq!((buffer[(x, 34)].fg, buffer[(x + 12, 34)].fg), (app.palette.blue, app.palette.blue));
+        // Its name not known yet: just "Omarchy"; a picked theme: its own name.
+        app.omarchy_theme = None;
+        assert!(screen(&app, 200, 36).0[34].contains("Omarchy · Art"));
+        app.config.ui.set_theme("gruvbox");
+        app.omarchy_theme = Some("Tokyo Night".into());
+        let bar = screen(&app, 200, 36).0[34].clone();
+        assert!(bar.contains("Gruvbox · Art") && !bar.contains("omarchy:"), "{bar}");
     }
 
     #[test]

@@ -4904,3 +4904,171 @@ mod tests {
         }
     }
 }
+
+/// The README's screenshots: `cargo test --release screenshots -- --ignored`
+/// writes each screen (demo mode, no account) as cells to
+/// `target/screenshots/*.json`; `scripts/screenshots.py` draws them to PNG.
+#[cfg(test)]
+mod screenshots {
+    use super::*;
+    use crate::config::{AlbumArt, ArtTint, Config, RetroMode};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::style::Color;
+
+    const COLS: u16 = 160;
+    const ROWS: u16 = 40;
+
+    fn app() -> App {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.config.ui.set_theme("tokyo-night");
+        app.apply_theme();
+        app.demo_warm_up(3, std::time::Duration::ZERO);
+        app.settle(std::time::Duration::from_millis(400));
+        let station = app.playing_station_in_reach().map(|s| s.name).unwrap_or_default();
+        app.status = format!("Playing {station}");
+        cover(&mut app);
+        app
+    }
+
+    /// A made-up synthwave cover with detail, so the art styles show their difference.
+    fn cover(app: &mut App) {
+        use image::{DynamicImage, Rgb, RgbImage};
+        let Some(song) = app.now.clone() else { return };
+        let n = 256u32;
+        let img = RgbImage::from_fn(n, n, |x, y| {
+            let (fx, fy) = (x as f32 / n as f32, y as f32 / n as f32);
+            let horizon = 0.62;
+            if fy < horizon {
+                // Sky: deep purple to orange, a striped sun, a mountain ridge.
+                let t = fy / horizon;
+                let mut c = [40.0 + 215.0 * t, 20.0 + 70.0 * t, 90.0 - 30.0 * t];
+                let (dx, dy) = (fx - 0.5, fy - 0.42);
+                if (dx * dx + dy * dy).sqrt() < 0.2 && !(fy > 0.42 && ((fy * 60.0) as u32).is_multiple_of(3)) {
+                    c = [255.0, 200.0 - 160.0 * (fy / 0.62), 80.0 + 60.0 * (1.0 - fy)];
+                }
+                let ridge = horizon - 0.08 - 0.07 * ((fx * 9.0).sin() * 0.6 + (fx * 23.0).cos() * 0.4).abs();
+                if fy > ridge {
+                    c = [30.0, 15.0, 55.0];
+                }
+                if fy <= ridge && (x * 7 + y * 13) % 97 == 0 && fy < 0.3 {
+                    c = [255.0, 255.0, 255.0];
+                }
+                Rgb(c.map(|v| v.clamp(0.0, 255.0) as u8))
+            } else {
+                // A neon grid floor.
+                let d = (fy - horizon) / (1.0 - horizon);
+                let gx = ((fx - 0.5) / (d + 0.05) * 4.0).fract().abs();
+                let gy = (1.0 / (d + 0.08)).fract();
+                if gx < 0.08 || gy < 0.12 {
+                    Rgb([255, 60, 200])
+                } else {
+                    Rgb([(25.0 + 30.0 * d) as u8, 10, (50.0 + 40.0 * d) as u8])
+                }
+            }
+        });
+        app.art.arrived(song.cover_art_url.clone(), Some(DynamicImage::ImageRgb8(img)));
+    }
+
+    fn key(app: &mut App, code: KeyCode) {
+        let mods = match code {
+            KeyCode::Char(c) if c.is_ascii_uppercase() => KeyModifiers::SHIFT,
+            _ => KeyModifiers::NONE,
+        };
+        app.on_key(KeyEvent::new(code, mods));
+        app.settle(std::time::Duration::from_millis(300));
+    }
+
+    fn hex(c: Color, reset: Color) -> String {
+        match c {
+            Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+            Color::Reset => hex(reset, Color::Rgb(0, 0, 0)),
+            other => format!("{other:?}"),
+        }
+    }
+
+    fn shot(app: &App, name: &str) {
+        let mut terminal = Terminal::new(TestBackend::new(COLS, ROWS)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let p = app.palette;
+        let cells: Vec<serde_json::Value> = buffer
+            .content()
+            .iter()
+            .map(|c| {
+                let bold = c.modifier.contains(ratatui::style::Modifier::BOLD);
+                let rev = c.modifier.contains(ratatui::style::Modifier::REVERSED);
+                let (fg, bg) = (hex(c.fg, p.fg), hex(c.bg, p.background));
+                let (fg, bg) = if rev { (bg, fg) } else { (fg, bg) };
+                serde_json::json!([c.symbol(), fg, bg, bold])
+            })
+            .collect();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/screenshots");
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = serde_json::json!({ "cols": COLS, "rows": ROWS, "cells": cells });
+        std::fs::write(dir.join(format!("{name}.json")), doc.to_string()).unwrap();
+    }
+
+    #[test]
+    #[ignore = "writes the README screenshots"]
+    fn screenshots() {
+        shot(&app(), "now-playing");
+
+        let styles = [
+            ("hd", RetroMode::Hd, ArtTint::Off),
+            ("64bit", RetroMode::Bit64, ArtTint::Off),
+            ("32bit", RetroMode::Bit32, ArtTint::Off),
+            ("16bit", RetroMode::Bit16, ArtTint::Off),
+            ("8bit", RetroMode::Bit8, ArtTint::Off),
+            ("4bit", RetroMode::Bit4, ArtTint::Off),
+            ("2bit", RetroMode::Bit2, ArtTint::Off),
+            ("duotone", RetroMode::Hd, ArtTint::Duotone),
+            ("palette", RetroMode::Bit16, ArtTint::Palette),
+        ];
+        for (name, retro, tint) in styles {
+            let mut a = app();
+            a.config.ui.album_art = AlbumArt::Picture;
+            a.config.ui.retro_mode = retro;
+            a.config.ui.art_tint = tint;
+            shot(&a, &format!("art-{name}"));
+        }
+        let mut a = app();
+        a.config.ui.album_art = AlbumArt::Off;
+        shot(&a, "art-off");
+
+        // The station editor: seeds, then thumbs up.
+        let mut a = app();
+        a.view = View::Stations;
+        a.focus = crate::app::Focus::Content;
+        a.stations_cursor = a.stations.iter().position(|s| s.name == "M83 Radio").unwrap();
+        key(&mut a, KeyCode::Char('e'));
+        shot(&a, "editor-seeds");
+        key(&mut a, KeyCode::Tab);
+        shot(&a, "editor-thumbs");
+
+        // Creating a station from a search.
+        let mut a = app();
+        key(&mut a, KeyCode::Char('S'));
+        key(&mut a, KeyCode::Char('a'));
+        for c in "m83".chars() {
+            a.on_key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        key(&mut a, KeyCode::Enter);
+        shot(&a, "create-station");
+
+        // Favorites: a few starred stations in the menu and on the Stations page.
+        let mut a = app();
+        for s in a.stations.iter().skip(1).take(3).cloned().collect::<Vec<_>>() {
+            a.config.ui.favorites.push(crate::config::Favorite { id: s.id, name: s.name });
+        }
+        a.view = View::Stations;
+        a.focus = crate::app::Focus::Content;
+        shot(&a, "favorites");
+
+        let mut a = app();
+        a.view = View::Settings;
+        a.focus = crate::app::Focus::Content;
+        shot(&a, "settings");
+    }
+}

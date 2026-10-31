@@ -1,6 +1,6 @@
 //! `--snapshot FILE`: draws one demo frame with ratatui's TestBackend and
 //! writes it as HTML (each cell coloured as in a terminal), which a headless
-//! browser turns into a PNG (see `tools/screenshots.sh`).
+//! browser can turn into a PNG (the README screenshots use `scripts/screenshots.py`).
 
 use std::fmt::Write as _;
 use std::path::Path;

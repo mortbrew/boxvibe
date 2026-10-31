@@ -18,6 +18,7 @@ Short and scannable; the git history has the details.
 - `e` on genre stations opens their thumbs.
 
 ### Changed
+- README screenshots come from `scripts/screenshots.py`; the old `tools/screenshots.sh` and `screenshots/` are gone.
 - Pressing the same thumb again takes it back; `b` in Up Next waits for the song's turn.
 - The key bar leaves song shortcuts to `.` (they still work and are in Help).
 - Loudness follows Pandora's `fileGain`; windowed-sinc resampling and a bigger buffer (no Bluetooth crackle).
@@ -26,6 +27,7 @@ Short and scannable; the git history has the details.
 ### Fixed
 - Missing covers retry every ~60 s; failures go to `~/.cache/boxvibe/art.log`.
 - Theme picker tags and hints are never clipped.
+- The Add station and Add a seed hints always fit (were cut to "Esc = cance").
 
 ## 0.4.0 (2026-10-24)
 

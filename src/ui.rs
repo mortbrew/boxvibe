@@ -1323,10 +1323,14 @@ fn draw_add_station(frame: &mut Frame, p: &Palette, screen: Rect, search: &Stati
         title: " Add station ",
         prompt: "Type an artist or a song",
         suggested: false,
-        results_hint: "Enter = make the station · j/k = move · / = edit · Esc = cancel",
+        results_hint: ADD_RESULTS_HINT,
     };
     draw_search_box(frame, p, screen, search, &look);
 }
+
+/// The hints under the add boxes' results; they fit the 62 cells inside the box.
+pub const ADD_RESULTS_HINT: &str = "Enter make station · j/k move · / edit · Esc cancel";
+pub const SEED_RESULTS_HINT: &str = "Enter add seed · j/k move · / edit · Esc cancel";
 
 /// What differs between the add-station box and the editor's add-a-seed box.
 struct AddLook<'a> {
@@ -1391,14 +1395,15 @@ fn draw_search_box(frame: &mut Frame, p: &Palette, screen: Rect, search: &Statio
     lines.push(Line::from(""));
     let hint = if typing {
         match (len > 0, look.suggested && search.text.text().trim().is_empty()) {
-            (true, true) => "Enter = add the suggestion · ↓ = pick another · Esc = cancel",
-            (true, false) => "Enter = search · ↓ = results · Esc = cancel",
-            (false, _) => "Enter = search · Esc = cancel",
+            (true, true) => "Enter add suggestion · ↓ pick another · Esc cancel",
+            (true, false) => "Enter search · ↓ results · Esc cancel",
+            (false, _) => "Enter search · Esc cancel",
         }
     } else {
         look.results_hint
     };
-    lines.push(Line::from(Span::styled(hint, Style::new().fg(p.muted))));
+    // Short like the theme picker's, and cut with "…" rather than mid-word on a tiny screen.
+    lines.push(Line::from(Span::styled(fit(hint, inner_w), Style::new().fg(p.muted))));
     lines.push(Line::from(""));
     let area = centered(screen, width, (lines.len() as u16 + 2).min(screen.height));
     frame.render_widget(Clear, area);
@@ -1587,7 +1592,7 @@ fn draw_editor(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, ed: &Ed
             title: " Add a seed ",
             prompt: "Type an artist or a song",
             suggested: add.suggested || add.suggesting || !add.suggestions.is_empty(),
-            results_hint: "Enter = add it as a seed · j/k = move · / = edit · Esc = cancel",
+            results_hint: SEED_RESULTS_HINT,
         };
         draw_search_box(frame, p, screen, &add.search, &look);
     }
@@ -2850,6 +2855,26 @@ mod tests {
         for cols in [80, 160] {
             let all = screen(&app, cols, 32).0.join("\n");
             assert!(all.contains(THEME_INSTALLED_HINT), "{cols}: installed hint cut\n{all}");
+        }
+    }
+
+    #[test]
+    fn the_add_station_hint_always_fits() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.demo_warm_up(3, std::time::Duration::ZERO);
+        for k in [KeyCode::Char('S'), KeyCode::Char('a'), KeyCode::Char('m'), KeyCode::Char('8'), KeyCode::Char('3')] {
+            app.on_key(KeyEvent::from(k));
+        }
+        for cols in [80, 100, 160] {
+            let all = screen(&app, cols, 40).0.join("\n");
+            assert!(all.contains("Enter search · Esc cancel"), "{cols}: typing hint cut\n{all}");
+        }
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        app.settle(std::time::Duration::from_millis(300));
+        for cols in [80, 100, 160] {
+            let all = screen(&app, cols, 40).0.join("\n");
+            assert!(all.contains(ADD_RESULTS_HINT), "{cols}: results hint cut\n{all}");
         }
     }
 

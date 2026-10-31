@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 
 use crate::pandora::{
-    AudioFormat, FEEDBACK_PAGE, Feedback, FeedbackPage, Genre, GenreCategory, HitKind, Rating, SearchHit, Seed, Song,
-    Station, StationDetails,
+    ArtistInfo, AudioFormat, FEEDBACK_PAGE, Feedback, FeedbackPage, Genre, GenreCategory, HitKind, Rating, SearchHit,
+    Seed, Song, Station, StationDetails, StationMode, StationModes,
 };
 
 pub fn stations() -> Vec<Station> {
@@ -91,9 +91,11 @@ pub fn playlist(station_id: &str, round: usize) -> Vec<Song> {
                 audio_format: AudioFormat::Mp3,
                 cover_art_url: format!("https://example.invalid/art/{n}.jpg"),
                 detail_url: String::new(),
+                artist_music_id: format!("R-demo-{}", artist.to_lowercase().replace(' ', "-")),
                 length,
                 gain: 0.0,
                 rating: if n == 0 { Rating::Up } else { Rating::None },
+                feedback_id: if n == 0 { format!("demo-fb-{round}-{i}") } else { String::new() },
             }
         })
         .collect()
@@ -320,4 +322,48 @@ pub fn new_station(pandora_id: &str, existing: usize) -> Option<Station> {
         allow_delete: true,
         allow_edit_seeds: !name_is_genre,
     })
+}
+
+/// A demo artist page: a short bio and four similar artists from the catalogue.
+pub fn artist(name: &str) -> ArtistInfo {
+    ArtistInfo {
+        name: name.to_owned(),
+        bio: format!(
+            "{name} is a demo artist: boxvibe made this bio up so the panel can be tried without an account. \
+             Real bios come from Pandora's artist pages when it sends one."
+        ),
+        detail_url: format!("https://www.pandora.com/artist/{}", name.to_lowercase().replace(' ', "-")),
+        similar: CATALOGUE
+            .iter()
+            .filter(|(_, kind, n, _)| *kind == HitKind::Artist && !n.eq_ignore_ascii_case(name))
+            .take(4)
+            .map(|(id, kind, n, by)| SearchHit { id: (*id).into(), kind: *kind, name: (*n).into(), by: (*by).into() })
+            .collect(),
+    }
+}
+
+/// Pandora's six modes, as the old app API listed them; `current` is on.
+pub fn modes(current: i64) -> StationModes {
+    let all: [(&str, &str, bool); 6] = [
+        ("My Station", "The station experience you know and love.", false),
+        ("Crowd Faves", "You'll hear the most Thumbed Up songs by other listeners.", false),
+        ("Discovery", "You'll hear more artists who don't usually play on this station.", false),
+        ("Deep Cuts", "You'll hear less familiar songs from station artists.", false),
+        ("Newly Released", "You'll hear the newest releases from station artists.", false),
+        ("Artist Only", "You'll only hear songs from the station artist.", true),
+    ];
+    StationModes {
+        current: Some(current),
+        modes: all
+            .iter()
+            .enumerate()
+            .map(|(i, (name, description, premium))| StationMode {
+                id: i as i64,
+                name: (*name).into(),
+                description: (*description).into(),
+                available: !premium,
+                premium_only: *premium,
+            })
+            .collect(),
+    }
 }

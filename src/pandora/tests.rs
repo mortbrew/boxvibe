@@ -744,3 +744,89 @@ fn an_empty_or_odd_ad_answer_means_no_ads_and_a_refusal_is_an_error() {
     }
     assert!(c.ad_list(&ask).is_err());
 }
+
+#[test]
+fn artist_pages_and_modes_parse_tolerantly() {
+    let a = parse_artist(&json!({
+        "name": "M83", "detailUrl": "https://www.pandora.com/artist/m83/AR1",
+        "bio": { "text": "<p>French &amp; electronic.</p>  <b>Formed 2001</b>" },
+        "similar": [ { "name": "MGMT", "pandoraId": "AR:9" }, { "name": "Only music id", "musicId": "R7" }, { "name": "No id" } ]
+    }))
+    .unwrap();
+    assert_eq!(a.bio, "French & electronic. Formed 2001");
+    assert_eq!(a.similar.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(), ["AR:9", "AR:7"]);
+    let plain = parse_artist(&json!({ "name": "X", "biography": "Short." })).unwrap();
+    assert_eq!((plain.bio.as_str(), plain.similar.len()), ("Short.", 0));
+    assert_eq!(parse_artist(&json!({})), None);
+
+    let modes = parse_modes(&json!({ "result": { "currentModeId": 3, "availableModes": [
+        { "modeId": 0, "modeName": "My Station", "isModeAvailable": true },
+        { "modeId": 5, "modeButtonText": "Artist Only", "isModeAvailable": false, "isPremiumOnly": true },
+        { "modeName": "no id" }
+    ] } }));
+    assert_eq!(modes.current, Some(3));
+    assert_eq!(modes.modes.len(), 2);
+    assert_eq!(
+        (modes.modes[1].name.as_str(), modes.modes[1].available, modes.modes[1].premium_only),
+        ("Artist Only", false, true)
+    );
+    assert_eq!(parse_modes(&json!({})), StationModes::default());
+}
+
+#[test]
+fn artist_shuffle_mode_and_suggestion_calls() {
+    let (base, seen) = fake_pandora(Box::new(|r| {
+        match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        "/api/v1/music/artist" => (
+            200,
+            json!({ "name": "M83", "similar": [{ "name": "MGMT", "pandoraId": "AR:9" }] }).to_string(),
+        ),
+        "/api/v1/search" => (200, json!({ "items": [] }).to_string()),
+        // No suggestions path: the artist's similar artists stand in.
+        "/api/v1/search/getSeedSuggestions" => (404, json!({ "errorString": "NOT_FOUND" }).to_string()),
+        "/api/v1/station/shuffle" => (200, json!({ "stationId": "77", "name": "Shuffle", "isShuffle": true }).to_string()),
+        // The first modes guess is unknown here, the second answers.
+        "/api/v1/interactiveradio/getAvailableModesSimple" | "/api/v1/interactiveradio/setAndGetAvailableModes" => {
+            (404, json!({ "errorString": "NOT_FOUND" }).to_string())
+        }
+        "/api/v1/station/getAvailableModes" => (
+            200,
+            json!({ "currentModeId": 0, "availableModes": [{ "modeId": 0, "modeName": "My Station" }, { "modeId": 3, "modeName": "Deep Cuts" }] })
+                .to_string(),
+        ),
+        "/api/v1/station/setAndGetAvailableModes" => (
+            200,
+            json!({ "currentModeId": r.body["modeId"], "availableModes": [{ "modeId": 0, "modeName": "My Station" }, { "modeId": 3, "modeName": "Deep Cuts" }] })
+                .to_string(),
+        ),
+        _ => (200, "{}".into()),
+    }
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    assert_eq!(c.artist("AR:83").unwrap().similar[0].name, "MGMT");
+    assert_eq!(c.artist_by_name("R83", "M83").unwrap().name, "M83");
+    assert!(c.artist_by_name("", "Nobody").is_err(), "no music id and no search hit");
+    assert_eq!(c.seed_suggestions("9", "R83").unwrap()[0].name, "MGMT");
+    assert!(c.shuffle().unwrap().is_shuffle);
+    assert_eq!(c.station_modes("9").unwrap().modes.len(), 2);
+    assert_eq!(c.set_station_mode("9", 3).unwrap().current, Some(3));
+    let seen = seen.lock().unwrap();
+    let artist: Vec<&Value> = seen.iter().filter(|s| s.path == "/api/v1/music/artist").map(|s| &s.body).collect();
+    assert_eq!(artist[0], &json!({ "token": "R83" }), "AR:83 asked as its musicId");
+    let set = seen.iter().find(|s| s.path == "/api/v1/station/setAndGetAvailableModes").unwrap();
+    assert_eq!(set.body, json!({ "stationId": "9", "modeId": 3 }));
+}
+
+#[test]
+fn every_modes_guess_missing_is_a_plain_error() {
+    let (base, _) = fake_pandora(Box::new(|r| match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        _ => (404, json!({ "errorString": "NOT_FOUND", "message": "Service method not found" }).to_string()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    let e = c.station_modes("9").unwrap_err();
+    assert!(e.to_string().contains("station modes") || e.to_string().contains("not found"), "{e}");
+}

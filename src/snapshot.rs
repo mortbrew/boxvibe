@@ -1,6 +1,6 @@
 //! `--snapshot FILE`: draws one demo frame with ratatui's TestBackend and
 //! writes it as HTML (each cell coloured as in a terminal), which a headless
-//! browser turns into a PNG (see `tools/screenshots.sh`).
+//! browser can turn into a PNG (the README screenshots use `scripts/screenshots.py`).
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -95,7 +95,7 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
         // a few seconds in.
         "ad" => {
             use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-            app.config.player.good_vibes_only = true;
+            app.config.player.good_vibes_only = crate::config::GoodVibes::On;
             for _ in 0..9 {
                 if app.ad_view().is_some() {
                     break;

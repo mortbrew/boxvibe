@@ -216,11 +216,16 @@ pub struct Song {
     /// The album cover Now Playing draws (about 500 px: [`art_for_box`]).
     pub cover_art_url: String,
     pub detail_url: String,
+    /// `artistMusicId` (`R123`): what the artist page (`v1/music/artist`) takes.
+    pub artist_music_id: String,
     /// `trackLength`, seconds (0 when missing).
     pub length: u32,
     /// `fileGain`, dB.
     pub gain: f32,
     pub rating: Rating,
+    /// The `feedbackId` of this song's thumb, once Pandora has said it
+    /// (addFeedback's answer, or the track's own): what clearing it takes.
+    pub feedback_id: String,
 }
 
 /// `[pandora] audio_quality`.
@@ -436,6 +441,129 @@ pub fn parse_seeds(v: &Value) -> Vec<Seed> {
         .collect()
 }
 
+/// Guessed (get, set) paths for station modes, after the old app API's
+/// `interactiveradio.v1.getAvailableModesSimple` / `setAndGetAvailableModes`.
+const MODE_PATHS: [(&str, &str); 2] = [
+    ("/api/v1/interactiveradio/getAvailableModesSimple", "/api/v1/interactiveradio/setAndGetAvailableModes"),
+    ("/api/v1/station/getAvailableModes", "/api/v1/station/setAndGetAvailableModes"),
+];
+
+/// An artist's page: name, a bio when Pandora sends one, similar artists.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ArtistInfo {
+    pub name: String,
+    pub bio: String,
+    pub detail_url: String,
+    pub similar: Vec<SearchHit>,
+}
+
+/// `v1/music/artist`. The bio key isn't documented, so a few likely ones
+/// (plain text or `{ "text": .. }`) are tried; HTML tags are dropped.
+pub fn parse_artist(v: &Value) -> Option<ArtistInfo> {
+    let v = v.get("artist").filter(|a| a.is_object()).unwrap_or(v);
+    let name = str_of(v, "name").trim().to_owned();
+    let similar: Vec<SearchHit> = v
+        .get("similar")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|s| {
+            let name = str_of(s, "name").trim().to_owned();
+            let mut id = str_of(s, "pandoraId");
+            if id.is_empty() {
+                id = str_of(s, "musicId").strip_prefix('R').map(|n| format!("AR:{n}")).unwrap_or_default();
+            }
+            (!id.is_empty() && !name.is_empty()).then_some(SearchHit {
+                id,
+                kind: HitKind::Artist,
+                name,
+                by: String::new(),
+            })
+        })
+        .collect();
+    let bio = ["bio", "biography", "artistBio", "shortBio", "description"]
+        .iter()
+        .find_map(|k| {
+            let b = v.get(*k)?;
+            let text = b.as_str().map(str::to_owned).or_else(|| {
+                ["text", "bio", "content", "summary"].iter().find_map(|t| b.get(*t)?.as_str().map(str::to_owned))
+            })?;
+            let text = strip_tags(&text);
+            (!text.is_empty()).then_some(text)
+        })
+        .unwrap_or_default();
+    if name.is_empty() && similar.is_empty() && bio.is_empty() {
+        return None;
+    }
+    let mut detail_url = str_of(v, "detailUrl");
+    if detail_url.is_empty() {
+        detail_url = str_of(v, "artistDetailUrl");
+    }
+    Some(ArtistInfo { name, bio, detail_url, similar })
+}
+
+/// Text without HTML tags, with common entities and whitespace tidied.
+fn strip_tags(s: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' if in_tag => {
+                in_tag = false;
+                out.push(' ');
+            }
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    let out = out.replace("&amp;", "&").replace("&quot;", "\"").replace("&#39;", "'").replace("&nbsp;", " ");
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// One station mode.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StationMode {
+    pub id: i64,
+    pub name: String,
+    pub description: String,
+    pub available: bool,
+    pub premium_only: bool,
+}
+
+/// The modes a station offers and which is on.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StationModes {
+    pub current: Option<i64>,
+    pub modes: Vec<StationMode>,
+}
+
+/// `getAvailableModesSimple`-shaped answers, at the top or under `result`.
+pub fn parse_modes(v: &Value) -> StationModes {
+    let v = v.get("result").unwrap_or(v);
+    let modes = v
+        .get("availableModes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|m| {
+            let id = m.get("modeId")?.as_i64()?;
+            let mut name = str_of(m, "modeName");
+            if name.is_empty() {
+                name = str_of(m, "modeButtonText");
+            }
+            Some(StationMode {
+                id,
+                name,
+                description: str_of(m, "modeDescription"),
+                available: flag(m, "isModeAvailable").unwrap_or(true),
+                premium_only: flag(m, "isPremiumOnly").unwrap_or(false),
+            })
+        })
+        .collect();
+    StationModes { current: v.get("currentModeId").and_then(Value::as_i64), modes }
+}
+
 /// `getSeedSuggestions`: a bare list of artists (`name`, `pandoraId`). Anything
 /// without both is skipped.
 pub fn parse_seed_suggestions(v: &Value) -> Vec<SearchHit> {
@@ -603,6 +731,7 @@ pub fn parse_track(v: &Value, station_id: &str) -> Option<Song> {
         },
         cover_art_url: art_for_box(v.get("albumArt")),
         detail_url: str_of(v, "songDetailURL"),
+        artist_music_id: str_of(v, "artistMusicId"),
         length: v.get("trackLength").and_then(Value::as_u64).unwrap_or(0) as u32,
         gain: v
             .get("fileGain")
@@ -613,7 +742,17 @@ pub fn parse_track(v: &Value, station_id: &str) -> Option<Song> {
             Some(r) if r < 0 => Rating::Down,
             _ => Rating::None,
         },
+        feedback_id: id_of(v, "feedbackId"),
     })
+}
+
+/// A string or number field as text (empty when missing).
+fn id_of(v: &Value, key: &str) -> String {
+    match v.get(key) {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Number(n)) => n.to_string(),
+        _ => String::new(),
+    }
 }
 
 /// The `csrftoken` value in a `Set-Cookie` header, if it is that cookie.
@@ -817,11 +956,101 @@ impl Client {
     /// so the body is the captured shape and a failure is silently "no
     /// suggestions" (the editor shows nothing for it).
     pub fn seed_suggestions(&mut self, station_id: &str, seed_music_id: &str) -> Result<Vec<SearchHit>, Error> {
-        let v = self.post(
+        let asked = self.post(
             "/api/v1/search/getSeedSuggestions",
             &json!({ "stationId": station_id, "seedMusicId": seed_music_id, "maxResults": 10 }),
-        )?;
-        Ok(parse_seed_suggestions(&v))
+        );
+        match asked {
+            Ok(v) if !parse_seed_suggestions(&v).is_empty() => Ok(parse_seed_suggestions(&v)),
+            // Nothing (or no such path): the seed artist's similar artists from
+            // the documented `v1/music/artist`, which the site's artist pages use.
+            other if seed_music_id.starts_with('R') => match self.artist(seed_music_id) {
+                Ok(a) if !a.similar.is_empty() => Ok(a.similar.into_iter().take(10).collect()),
+                _ => other.map(|v| parse_seed_suggestions(&v)),
+            },
+            other => other.map(|v| parse_seed_suggestions(&v)),
+        }
+    }
+
+    /// `v1/music/artist`: an artist's page (similar artists and, if the site
+    /// sends one, a bio). `music_id` is the `musicId` (`R123`); an `AR:123`
+    /// pandoraId is turned into one.
+    pub fn artist(&mut self, music_id: &str) -> Result<ArtistInfo, Error> {
+        let token = music_id.strip_prefix("AR:").map(|n| format!("R{n}")).unwrap_or_else(|| music_id.to_owned());
+        let v = self.post("/api/v1/music/artist", &json!({ "token": token }))?;
+        parse_artist(&v).ok_or(Error::InvalidResponse)
+    }
+
+    /// The artist named `name`: by `music_id` when the song had one, else the
+    /// first artist hit for the name.
+    pub fn artist_by_name(&mut self, music_id: &str, name: &str) -> Result<ArtistInfo, Error> {
+        if !music_id.is_empty()
+            && let Ok(a) = self.artist(music_id)
+        {
+            return Ok(a);
+        }
+        let hit = self
+            .search(name)?
+            .into_iter()
+            .find(|h| h.kind == HitKind::Artist && h.name.eq_ignore_ascii_case(name.trim()))
+            .ok_or_else(|| Error::Api {
+                status: 404,
+                code: None,
+                kind: "NOT_FOUND".into(),
+                message: format!("Pandora has no artist page for {name}"),
+            })?;
+        self.artist(&hit.id)
+    }
+
+    /// `v1/station/shuffle`: the account's Shuffle station (Pandora mixes
+    /// the stations in `shuffleStationIds`); the site makes it if needed.
+    pub fn shuffle(&mut self) -> Result<Station, Error> {
+        let v = self.post("/api/v1/station/shuffle", &json!({}))?;
+        parse_station(&v).ok_or(Error::InvalidResponse)
+    }
+
+    /// The station modes (My Station, Deep Cuts, ...) Pandora offers for a
+    /// station. The REST path was never captured: it is guessed from the old
+    /// app API's `interactiveradio.v1.getAvailableModesSimple`, so a failure
+    /// means "no modes here".
+    pub fn station_modes(&mut self, station_id: &str) -> Result<StationModes, Error> {
+        let v = self.post_first(MODE_PATHS.map(|p| p.0), &json!({ "stationId": station_id }))?;
+        Ok(parse_modes(&v))
+    }
+
+    /// Switches a station to mode `mode_id` and returns the modes as now set.
+    pub fn set_station_mode(&mut self, station_id: &str, mode_id: i64) -> Result<StationModes, Error> {
+        let v = self.post_first(MODE_PATHS.map(|p| p.1), &json!({ "stationId": station_id, "modeId": mode_id }))?;
+        let modes = parse_modes(&v);
+        if modes.current != Some(mode_id) && !modes.modes.is_empty() {
+            return Err(Error::Api {
+                status: 200,
+                code: None,
+                kind: "MODE_NOT_SET".into(),
+                message: "Pandora didn't switch the mode".into(),
+            });
+        }
+        Ok(modes)
+    }
+
+    /// Tries `paths` in order until one is not a "no such path" answer.
+    fn post_first<const N: usize>(&mut self, paths: [&str; N], body: &Value) -> Result<Value, Error> {
+        let mut last = Error::InvalidResponse;
+        for path in paths {
+            match self.post(path, body) {
+                Err(e @ Error::Api { status: 404 | 405, .. }) => last = e,
+                Err(Error::Api { kind, .. }) if kind == "NOT_FOUND" || kind == "INVALID_REQUEST" => {
+                    last = Error::Api {
+                        status: 404,
+                        code: None,
+                        kind,
+                        message: "Pandora doesn't offer station modes here".into(),
+                    }
+                }
+                other => return other,
+            }
+        }
+        Err(last)
     }
 
     /// Adds the artist or song `seed_id` (a `pandoraId`) to a station.
@@ -975,9 +1204,10 @@ impl Client {
     }
 
     /// `v1/station/addFeedback`: thumbs up (`positive`) or down.
-    pub fn add_feedback(&mut self, track_token: &str, positive: bool) -> Result<(), Error> {
+    /// Returns the thumb's `feedbackId` (empty if Pandora sent none).
+    pub fn add_feedback(&mut self, track_token: &str, positive: bool) -> Result<String, Error> {
         self.post("/api/v1/station/addFeedback", &json!({ "trackToken": track_token, "isPositive": positive }))
-            .map(|_| ())
+            .map(|v| id_of(&v, "feedbackId"))
     }
 
     /// `v1/listener/addTiredSong`: off every station for a month.

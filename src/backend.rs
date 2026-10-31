@@ -12,7 +12,8 @@ use crate::ads::{self, Ad};
 use crate::demo;
 use crate::keychain::Keychain;
 use crate::pandora::{
-    self, AdAsk, Client, Error, FeedbackPage, GenreCategory, Quality, SearchHit, Seed, Song, Station, StationDetails,
+    self, AdAsk, ArtistInfo, Client, Error, FeedbackPage, GenreCategory, Quality, SearchHit, Seed, Song, Station,
+    StationDetails, StationModes,
 };
 use crate::update::{self, Checked, Update};
 
@@ -71,6 +72,22 @@ pub enum Request {
     Search {
         query: String,
     },
+    /// The artist page (bio, similar artists) of `name`; `music_id` is the
+    /// song's `artistMusicId` (empty: found by name).
+    Artist {
+        music_id: String,
+        name: String,
+    },
+    /// Pandora's Shuffle station (made if the account has none).
+    Shuffle,
+    /// The modes (Deep Cuts, Discovery, ...) a station offers.
+    StationModes {
+        station_id: String,
+    },
+    SetStationMode {
+        station_id: String,
+        mode_id: i64,
+    },
     /// Make a station from a search hit or a genre station (`pandora_id`).
     CreateStation {
         pandora_id: String,
@@ -82,6 +99,12 @@ pub enum Request {
     },
     Rate {
         track_token: String,
+        positive: bool,
+    },
+    /// Takes back a song's thumb (the same thumb pressed again).
+    ClearThumb {
+        track_token: String,
+        feedback_id: String,
         positive: bool,
     },
     Tired {
@@ -169,6 +192,14 @@ pub enum Reply {
     },
     /// A station Pandora just made (the account now has it).
     StationCreated(Station),
+    Artist(ArtistInfo),
+    Shuffle(Station),
+    /// `set`: the answer to a mode change (else just the list).
+    StationModes {
+        station_id: String,
+        modes: StationModes,
+        set: bool,
+    },
     Genres(Vec<GenreCategory>),
     Playlist {
         station_id: String,
@@ -177,6 +208,10 @@ pub enum Reply {
     Rated {
         track_token: String,
         positive: bool,
+        feedback_id: String,
+    },
+    ThumbCleared {
+        track_token: String,
     },
     Tired {
         track_token: String,
@@ -327,6 +362,8 @@ impl Backend {
 
 fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
     let mut round = 0;
+    // Each demo station's mode (none: My Station).
+    let mut modes: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     let mut ads_asked = 0;
     // The made-up account: renames and removals change this list only.
     let mut stations = demo::stations();
@@ -392,12 +429,34 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
                 }
                 None => Reply::Failed { what: "create station", message: "no such artist, song or genre".into() },
             },
+            Request::Artist { name, .. } => Reply::Artist(demo::artist(&name)),
+            Request::Shuffle => match stations.iter().find(|s| s.is_shuffle) {
+                Some(s) => Reply::Shuffle(s.clone()),
+                None => Reply::Failed { what: "shuffle", message: "no Shuffle station".into() },
+            },
+            Request::StationModes { station_id } => {
+                let on = *modes.get(&station_id).unwrap_or(&0);
+                Reply::StationModes { station_id, modes: demo::modes(on), set: false }
+            }
+            Request::SetStationMode { station_id, mode_id } => {
+                match demo::modes(0).modes.iter().find(|m| m.id == mode_id) {
+                    Some(m) if m.available => {
+                        modes.insert(station_id.clone(), mode_id);
+                        Reply::StationModes { station_id, modes: demo::modes(mode_id), set: true }
+                    }
+                    Some(m) => Reply::Failed { what: "mode", message: format!("{} needs Pandora Premium", m.name) },
+                    None => Reply::Failed { what: "mode", message: "no such mode".into() },
+                }
+            }
             Request::Genres => Reply::Genres(demo::genres()),
             Request::Playlist { station_id } => {
                 round += 1;
                 Reply::Playlist { songs: demo::playlist(&station_id, round - 1), station_id }
             }
-            Request::Rate { track_token, positive } => Reply::Rated { track_token, positive },
+            Request::Rate { track_token, positive } => {
+                Reply::Rated { feedback_id: format!("demo-fb-{track_token}"), track_token, positive }
+            }
+            Request::ClearThumb { track_token, .. } => Reply::ThumbCleared { track_token },
             Request::Tired { track_token } => Reply::Tired { track_token },
             Request::AdList { ask } => {
                 ads_asked += 1;
@@ -488,14 +547,43 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
             Request::CreateStation { pandora_id } => run(&mut client, &login, &mut took_over, "create station", |c| {
                 c.create_station(&pandora_id).map(Reply::StationCreated)
             }),
+            Request::Artist { music_id, name } => run(&mut client, &login, &mut took_over, "artist", |c| {
+                c.artist_by_name(&music_id, &name).map(Reply::Artist)
+            }),
+            Request::Shuffle => {
+                run(&mut client, &login, &mut took_over, "shuffle", |c| c.shuffle().map(Reply::Shuffle))
+            }
+            Request::StationModes { station_id } => run(&mut client, &login, &mut took_over, "mode", |c| {
+                c.station_modes(&station_id).map(|modes| Reply::StationModes {
+                    station_id: station_id.clone(),
+                    modes,
+                    set: false,
+                })
+            }),
+            Request::SetStationMode { station_id, mode_id } => run(&mut client, &login, &mut took_over, "mode", |c| {
+                c.set_station_mode(&station_id, mode_id).map(|modes| Reply::StationModes {
+                    station_id: station_id.clone(),
+                    modes,
+                    set: true,
+                })
+            }),
             Request::Genres => run(&mut client, &login, &mut took_over, "genres", |c| c.genres().map(Reply::Genres)),
             Request::Playlist { station_id } => run(&mut client, &login, &mut took_over, "playlist", |c| {
                 c.fragment(&station_id).map(|songs| Reply::Playlist { station_id: station_id.clone(), songs })
             }),
             Request::Rate { track_token, positive } => run(&mut client, &login, &mut took_over, "thumbs", |c| {
-                c.add_feedback(&track_token, positive)
-                    .map(|()| Reply::Rated { track_token: track_token.clone(), positive })
+                c.add_feedback(&track_token, positive).map(|feedback_id| Reply::Rated {
+                    track_token: track_token.clone(),
+                    positive,
+                    feedback_id,
+                })
             }),
+            Request::ClearThumb { track_token, feedback_id, positive } => {
+                run(&mut client, &login, &mut took_over, "clear thumb", |c| {
+                    c.delete_feedback(&feedback_id, positive)
+                        .map(|()| Reply::ThumbCleared { track_token: track_token.clone() })
+                })
+            }
             Request::Tired { track_token } => run(&mut client, &login, &mut took_over, "tired", |c| {
                 c.add_tired(&track_token).map(|()| Reply::Tired { track_token: track_token.clone() })
             }),
@@ -576,6 +664,7 @@ fn audio_worker(requests: Receiver<Request>, replies: Sender<Reply>, user_agent:
 fn art_worker(requests: Receiver<Request>, replies: Sender<Reply>, demo: bool, user_agent: &str) {
     let client = Client::new(user_agent);
     let dir = if demo { None } else { crate::art::cache_dir() };
+    let log = if demo { None } else { crate::art::log_path() };
     for request in requests {
         let Request::Art { url } = request else { continue };
         let image = if demo {
@@ -583,17 +672,27 @@ fn art_worker(requests: Receiver<Request>, replies: Sender<Reply>, demo: bool, u
         } else {
             let file = dir.as_ref().map(|d| crate::art::cache_path(d, &url));
             let cached = file.as_ref().and_then(|f| std::fs::read(f).ok()).and_then(|b| crate::art::decode(&b));
-            cached.or_else(|| {
-                let bytes = client.fetch_art(&url).ok()?;
-                let image = crate::art::decode(&bytes)?;
+            let fetched = || -> Result<image::DynamicImage, String> {
+                let bytes = client.fetch_art(&url).map_err(|e| format!("download failed: {e}"))?;
+                let image = crate::art::decode(&bytes)
+                    .ok_or_else(|| format!("not a picture boxvibe can read ({} bytes)", bytes.len()))?;
                 if let (Some(d), Some(f)) = (&dir, &file)
                     && std::fs::create_dir_all(d).is_ok()
                     && std::fs::write(f, &bytes).is_ok()
                 {
                     crate::art::trim_cache(d, crate::art::DISK_CAP);
                 }
-                Some(image)
-            })
+                Ok(image)
+            };
+            match cached.map(Ok).unwrap_or_else(fetched) {
+                Ok(image) => Some(image),
+                Err(why) => {
+                    if let Some(log) = &log {
+                        crate::art::log_failure(log, &url, &why);
+                    }
+                    None
+                }
+            }
         };
         if replies.send(Reply::Art { url, image }).is_err() {
             break;

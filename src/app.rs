@@ -17,7 +17,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::ads;
 use crate::audio::Audio;
 use crate::backend::{Backend, KeychainJob, KeychainReply, Reply, Request};
-use crate::config::{self, AlbumArt, Config, ConfigWarning, Secret};
+use crate::config::{self, AlbumArt, Config, ConfigWarning, GoodVibes, Secret};
 use crate::input::TextInput;
 use crate::keychain::{self, Keychain, NO_KEYCHAIN};
 use crate::pandora::{GenreCategory, Quality, Rating, SearchHit, Song, Station, StationDetails};
@@ -26,8 +26,12 @@ use crate::update::{Progress, Replace, Update};
 
 mod ad;
 mod editor;
+mod panel;
+mod themes;
 pub use ad::{AdPhase, AdView, End};
 pub use editor::{Editor, EditorTab, FeedState, Loaded};
+pub use panel::{Panel, PanelKind};
+pub use themes::{ThemePicker, ThemeTab};
 
 /// What boxvibe knows about the Pandora password in the desktop keychain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +54,11 @@ pub enum View {
     Stations,
     /// Pandora's genre stations, to add one (`Enter`).
     Genres,
+    /// Songs pinned with Shift+I.
+    Pinned,
     Settings,
+    /// What the bottom bar said, newest first.
+    Notifications,
     About,
 }
 
@@ -70,9 +78,13 @@ pub enum MenuItem {
     Stations,
     /// Opens Pandora's genre stations on the right.
     Genres,
+    /// The songs pinned with Shift+I (hidden by `[look] pinned_in_menu`).
+    Pinned,
     /// A starred station, by its index in `[playback] favorites`.
     Favorite(usize),
     Settings,
+    /// What the bottom bar said lately.
+    Notifications,
     About,
     Quit,
 }
@@ -113,10 +125,13 @@ pub enum Setting {
     Autoplay,
     Notify,
     GoodVibesOnly,
-    Theme,
+    ThemeAutoMode,
+    ThemeSelect,
     Icons,
     BorderStyle,
     MenuWidth,
+    FavoritesInMenu,
+    PinnedInMenu,
     AlbumArt,
     RetroMode,
     ArtTint,
@@ -130,7 +145,7 @@ pub enum Setting {
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 22] = [
+    pub const ALL: [(&'static str, Self); 25] = [
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
@@ -144,10 +159,13 @@ impl Setting {
         ("PLAYBACK", Self::Autoplay),
         ("PLAYBACK", Self::Notify),
         ("PLAYBACK", Self::GoodVibesOnly),
-        ("LOOK", Self::Theme),
+        ("LOOK", Self::ThemeAutoMode),
+        ("LOOK", Self::ThemeSelect),
         ("LOOK", Self::Icons),
         ("LOOK", Self::BorderStyle),
         ("LOOK", Self::MenuWidth),
+        ("LOOK", Self::FavoritesInMenu),
+        ("LOOK", Self::PinnedInMenu),
         ("LOOK", Self::AlbumArt),
         ("LOOK", Self::RetroMode),
         ("LOOK", Self::ArtTint),
@@ -171,10 +189,13 @@ impl Setting {
             Self::Autoplay => "Autoplay last station on open",
             Self::Notify => "Song change notifications",
             Self::GoodVibesOnly => "Good Vibes Only",
-            Self::Theme => "Theme",
+            Self::ThemeAutoMode => "Theme Auto Mode",
+            Self::ThemeSelect => "Theme Select",
             Self::Icons => "Icons",
             Self::BorderStyle => "Border style",
             Self::MenuWidth => "Menu width",
+            Self::FavoritesInMenu => "Favorites in menu",
+            Self::PinnedInMenu => "Pinned in menu",
             Self::AlbumArt => "Album art",
             Self::RetroMode => "Retro mode",
             Self::ArtTint => "Tint art with theme colors",
@@ -202,10 +223,13 @@ impl Setting {
             Self::Autoplay => Some(("playback", "autoplay_last_station")),
             Self::Notify => Some(("playback", "song_change_notifications")),
             Self::GoodVibesOnly => Some(("playback", "good_vibes_only")),
-            Self::Theme => Some(("look", "theme")),
+            Self::ThemeAutoMode => Some(("look", "theme_auto_mode")),
+            Self::ThemeSelect => Some(("look", "theme_select")),
             Self::Icons => Some(("look", "icons")),
             Self::BorderStyle => Some(("look", "border_style")),
             Self::MenuWidth => Some(("look", "menu_width")),
+            Self::FavoritesInMenu => Some(("look", "favorites_in_menu")),
+            Self::PinnedInMenu => Some(("look", "pinned_in_menu")),
             Self::AlbumArt => Some(("look", "album_art")),
             Self::RetroMode => Some(("look", "retro_mode")),
             Self::ArtTint => Some(("look", "tint_art_with_theme_colors")),
@@ -237,10 +261,10 @@ impl Setting {
                 "A desktop notification (notify-send, mako on Omarchy) for every new song. Saved as [playback] song_change_notifications."
             }
             Self::GoodVibesOnly => {
-                "Play Pandora's audio ads and report them, like the website does. Off skips ads, which could break Pandora's terms: asks first. Saved as [playback] good_vibes_only."
+                "On plays Pandora's audio ads and reports them, like the website does. Muted plays and reports them the same way at volume 0 (your volume comes back after). Off skips ads. Muted and Off could break Pandora's terms: asks first. Written true, \"muted\" or false. Saved as [playback] good_vibes_only."
             }
-            Self::Theme => {
-                "Omarchy follows your current Omarchy theme; or pick a built-in one. The theme is only changed here. Saved as [look] theme."
+            Self::ThemeAutoMode => {
+                "omarchy follows your current Omarchy theme (Theme Select below is greyed out); off uses Theme Select. Enter switches. Saved as [look] theme_auto_mode."
             }
             Self::Icons => {
                 "Nerd Font (needs one installed; Omarchy ships one), emoji or plain Unicode. Also i. Saved as [look] icons."
@@ -260,6 +284,12 @@ impl Setting {
             Self::RetroMode => {
                 "Makes the cover blocky on purpose, like an old console: 64-bit (256 pixels across), 32-bit (128), 16-bit (64), 8-bit (32), 4-bit (16), 2-bit (8), or HD for the full picture. Also Shift+R. Saved as [look] retro_mode."
             }
+            Self::FavoritesInMenu => {
+                "On: the menu lists FAVORITES (Shift+F jumps there). Off: they are hidden from the menu, but kept, and f still stars a station. Saved as [look] favorites_in_menu."
+            }
+            Self::PinnedInMenu => {
+                "On: the menu has a Pinned entry with the songs Shift+I pinned. Off: the entry is hidden; Shift+I still pins and the list is kept. Saved as [look] pinned_in_menu."
+            }
             Self::Animations => {
                 "On: the boot screen fades in. Off: no motion anywhere, so the boot screen is skipped (the song progress and clock still update). Saved as [look] animations."
             }
@@ -271,6 +301,9 @@ impl Setting {
             }
             Self::Splash => {
                 "A two-second boxvibe logo screen when it opens; any key skips it (Animations off skips it too). Saved as [look] boot_screen."
+            }
+            Self::ThemeSelect => {
+                "With Theme Auto Mode off, Enter opens the theme picker: Search about 900 schemes (iTerm2-Color-Schemes and Omarchy's) as you type, or pick an Installed one. Downloads go to ~/.config/boxvibe/themes/. Saved as [look] theme_select."
             }
             Self::EditFile => "Opens config.toml in $EDITOR; boxvibe reads it again when you close it.",
             Self::MenuEntry => {
@@ -287,6 +320,30 @@ pub enum Pane {
     NowPlaying,
     UpNext,
     History,
+}
+
+/// The sleep timer's lengths, in minutes, in the order `B` steps through.
+pub const SLEEP_STEPS: [u64; 4] = [15, 30, 60, 90];
+/// The sleep timer turns the sound down over this long before it pauses.
+pub const SLEEP_FADE: Duration = Duration::from_secs(10);
+
+/// A sleep timer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sleep {
+    /// This many minutes from this moment.
+    Minutes(u64, Instant),
+    /// When the playing song ends.
+    EndOfSong,
+}
+
+/// "14:59", or "1:29:59" from an hour up.
+pub fn clock_text(d: Duration) -> String {
+    let s = d.as_secs();
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
 }
 
 /// What a key can do. [`KEYMAP`] says which key does which; the context
@@ -331,6 +388,14 @@ pub enum Cmd {
     ArtType,
     Retro,
     Tint,
+    /// The sleep timer: 15, 30, 60, 90 minutes, end of this song, off.
+    Sleep,
+    /// Pin the selected or playing song.
+    Pin,
+    /// `.`: the song menu of the selected or playing song.
+    SongMenu,
+    Mode,
+    Shuffle,
 }
 
 /// One key and what it does. Shift+letters are the capital letters;
@@ -367,6 +432,9 @@ pub const KEYMAP: &[Binding] = &[
     bind(KeyCode::Char('C'), Cmd::ArtType),
     bind(KeyCode::Char('R'), Cmd::Retro),
     bind(KeyCode::Char('H'), Cmd::Tint),
+    bind(KeyCode::Char('B'), Cmd::Sleep),
+    bind(KeyCode::Char('I'), Cmd::Pin),
+    bind(KeyCode::Char('.'), Cmd::SongMenu),
     Binding { code: KeyCode::Right, shift: true, cmd: Cmd::VolumeUp },
     Binding { code: KeyCode::Left, shift: true, cmd: Cmd::VolumeDown },
     bind(KeyCode::Char('{'), Cmd::MenuNarrower),
@@ -382,6 +450,8 @@ pub const KEYMAP: &[Binding] = &[
     bind(KeyCode::Char('x'), Cmd::Delete),
     bind(KeyCode::Char('v'), Cmd::Details),
     bind(KeyCode::Char('e'), Cmd::Edit),
+    bind(KeyCode::Char('m'), Cmd::Mode),
+    bind(KeyCode::Char('X'), Cmd::Shuffle),
     bind(KeyCode::Char('j'), Cmd::Down),
     bind(KeyCode::Down, Cmd::Down),
     bind(KeyCode::Char('k'), Cmd::Up),
@@ -424,6 +494,8 @@ pub struct StationSearch {
     pub waiting: bool,
     /// Why the last search failed.
     pub error: Option<String>,
+    /// Started from a song's menu: the cursor goes to the first hit of this kind.
+    pub prefer: Option<crate::pandora::HitKind>,
 }
 
 impl StationSearch {
@@ -436,6 +508,7 @@ impl StationSearch {
             asked: None,
             waiting: false,
             error: None,
+            prefer: None,
         }
     }
 
@@ -484,6 +557,8 @@ pub enum DetailsOf {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Details {
     pub of: DetailsOf,
+    /// "Why This Song?": the song's details led by why the station plays it.
+    pub why: bool,
     /// The name of the song's station (or the station itself).
     pub station_name: String,
     pub station_id: String,
@@ -507,9 +582,43 @@ impl Details {
 
     pub fn kind(&self) -> &'static str {
         match self.of {
+            DetailsOf::Song(_) if self.why => "Why This Song?",
             DetailsOf::Song(_) => "Song",
             DetailsOf::Station(_) => "Station",
         }
+    }
+
+    /// Why the station plays `s`, from what boxvibe knows: the station's
+    /// seeds and your thumb (Pandora's own reasons aren't in its web API).
+    fn why_text(&self, s: &Song) -> String {
+        let station = if self.station_name.is_empty() {
+            "this station".to_owned()
+        } else {
+            format!("“{}”", self.station_name)
+        };
+        let mut why = match &self.from_pandora {
+            None => return "loading the station's seeds…".into(),
+            Some(Err(_)) => format!("Pandora picked it for {station}; its seeds couldn't be loaded."),
+            Some(Ok(d)) => {
+                let same = |a: &str| !a.is_empty() && a.trim().eq_ignore_ascii_case(s.artist.trim());
+                if let Some(seed) = d.seeds.iter().find(|x| x.kind == "Song" && x.name.eq_ignore_ascii_case(&s.title)) {
+                    format!("“{}” is itself a seed of {station}.", seed.name)
+                } else if d.seeds.iter().any(|x| x.kind == "Artist" && same(&x.name)) {
+                    format!("{} is a seed of {station}, so Pandora plays their songs and music like them.", s.artist)
+                } else if d.seeds.is_empty() {
+                    format!("Pandora picked it for {station} (a station without seeds you set, like a genre).")
+                } else {
+                    let names: Vec<&str> = d.seeds.iter().take(4).map(|x| x.name.as_str()).collect();
+                    format!("Pandora picked it as music like {station}'s seeds: {}.", names.join(", "))
+                }
+            }
+        };
+        match s.rating {
+            Rating::Up => why.push_str(" You gave it a thumbs up."),
+            Rating::Down => why.push_str(" You gave it a thumbs down."),
+            Rating::None => {}
+        }
+        why
     }
 
     /// The popup's rows (label, value): only what Pandora actually sent.
@@ -520,6 +629,9 @@ impl Details {
                 rows.push((label.into(), value));
             }
         };
+        if let (true, DetailsOf::Song(s)) = (self.why, &self.of) {
+            add("Why", self.why_text(s));
+        }
         match &self.of {
             DetailsOf::Song(s) => {
                 add("Title", s.title.clone());
@@ -583,7 +695,127 @@ impl Details {
     }
 }
 
+/// How many bottom-bar messages the Notifications page keeps.
+pub const NOTES_KEPT: usize = 200;
+
+/// What the song menu (`.`) offers, in its order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SongAction {
+    StationFromArtist,
+    StationFromSong,
+    Tired,
+    Share,
+    Why,
+    Pin,
+    ThumbUp,
+    ThumbDown,
+    Details,
+    Artist,
+    Mode,
+    Sleep,
+}
+
+impl SongAction {
+    pub const ALL: [SongAction; 12] = [
+        Self::StationFromArtist,
+        Self::StationFromSong,
+        Self::Tired,
+        Self::Share,
+        Self::Why,
+        Self::Pin,
+        Self::ThumbUp,
+        Self::ThumbDown,
+        Self::Details,
+        Self::Artist,
+        Self::Mode,
+        Self::Sleep,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::StationFromArtist => "Start Station from Artist",
+            Self::StationFromSong => "Start Station from Song",
+            Self::Tired => "Tired of This Song",
+            Self::Share => "Share (Copy Link)",
+            Self::Why => "Why This Song?",
+            Self::Pin => "Pin",
+            Self::ThumbUp => "Thumbs Up",
+            Self::ThumbDown => "Thumbs Down",
+            Self::Details => "Details",
+            Self::Artist => "Similar Artists & Bio",
+            Self::Mode => "Station Mode",
+            Self::Sleep => "Sleep Timer",
+        }
+    }
+
+    /// The key that does the same outside the menu.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Tired => "Z",
+            Self::Pin => "I",
+            Self::ThumbUp => "l",
+            Self::ThumbDown => "b",
+            Self::Details => "v",
+            Self::Mode => "m",
+            Self::Sleep => "B",
+            _ => "",
+        }
+    }
+}
+
+/// The open song menu: which song (by track token) and the cursor.
+#[derive(Debug, Clone)]
+pub struct SongMenu {
+    pub song: Song,
+    pub cursor: usize,
+}
+
+/// The link Share copies: the song's Pandora page, else a Pandora search.
+pub fn share_link(song: &Song) -> String {
+    if song.detail_url.starts_with("http") {
+        return song.detail_url.clone();
+    }
+    if let Some(path) = song.detail_url.strip_prefix('/') {
+        return format!("https://www.pandora.com/{path}");
+    }
+    let mut q = String::new();
+    for b in format!("{} {}", song.title, song.artist).bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => q.push(b as char),
+            _ => q.push_str(&format!("%{b:02X}")),
+        }
+    }
+    format!("https://www.pandora.com/search/{q}/all")
+}
+
+/// Standard base64 (for OSC 52).
+fn base64(bytes: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ABC[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
 pub struct App {
+    /// Media keys and the desktop's player widget (`None` until main starts it).
+    pub mpris: Option<crate::mpris::Mpris>,
+    /// Schemes saved by Settings → Theme Select, by name.
+    pub user_themes: Vec<(String, theme::Palette)>,
+    /// Where they are saved (`None` in the demo: kept in memory only).
+    pub themes_dir: Option<PathBuf>,
+    /// A theme list or download on its way.
+    theme_job: Option<std::sync::mpsc::Receiver<crate::theme_store::Msg>>,
+    /// Settings → Theme Select's popup.
+    pub theme_picker: Option<ThemePicker>,
     pub config: Config,
     pub config_path: Option<PathBuf>,
     pub demo: bool,
@@ -606,6 +838,8 @@ pub struct App {
     pub query: TextInput,
     pub palette: Palette,
     omarchy: theme::Watcher,
+    /// The Omarchy theme followed, as shown ("Tokyo Night"); for the status bar.
+    pub omarchy_theme: Option<String>,
     last_theme_poll: Instant,
     pub stations: Vec<Station>,
     pub current_station: Option<String>,
@@ -615,6 +849,10 @@ pub struct App {
     pub history: Vec<Song>,
     pub status: String,
     pub help: bool,
+    /// The sleep timer (`B`), when one is set.
+    pub sleep: Option<Sleep>,
+    /// The sleep timer ran out at a song's end: pause what starts next.
+    sleep_pause_next: bool,
     /// The boot screen: when it began (`None` once it is over or switched off).
     pub splash: Option<Instant>,
     /// What boxvibe needs from the system and whether it is there (`None`:
@@ -626,11 +864,29 @@ pub struct App {
     system_look: Option<std::sync::mpsc::Receiver<crate::deps::Facts>>,
     /// `x` asked "Delete this station?": y does, any other key doesn't.
     pub confirm_delete: Option<StationRef>,
+    /// `x` on the Pinned page asked "Unpin this song?" (the pin's index).
+    pub confirm_unpin: Option<usize>,
+    /// Songs pinned with Shift+I, newest first.
+    pub pins: Vec<crate::pinned::Pin>,
+    /// Where they are kept (`None`: in the demo, only in memory).
+    pub pins_path: Option<PathBuf>,
+    pub pinned_cursor: usize,
+    /// Up Next songs disliked with b: sent, and skipped, when their turn comes.
+    pub held_dislikes: std::collections::HashSet<String>,
+    /// `.`: the song menu, and the song it is for.
+    pub song_menu: Option<SongMenu>,
+    /// The artist page or station modes popup.
+    pub panel: Option<Panel>,
+    /// Bottom-bar messages, newest first (at most `NOTES_KEPT`).
+    pub notes: VecDeque<(Instant, String)>,
+    pub notes_cursor: usize,
+    last_status: String,
     /// The "genre stations can't be changed" popup, while it is open.
     pub genre_notice: Option<GenreNotice>,
     /// Good Vibes Only was turned off in Settings: the risk popup asks first
     /// (Enter = turn it off anyway, Esc = keep it on).
-    pub confirm_good_vibes_off: bool,
+    /// Settings → Good Vibes Only asks before Muted or Off: which one.
+    pub confirm_good_vibes: Option<GoodVibes>,
     /// `r` is typing a new station name.
     pub rename: Option<Rename>,
     /// `a`: the add-station search box.
@@ -725,6 +981,7 @@ impl App {
             query: TextInput::default(),
             palette: theme::TOKYO_NIGHT,
             omarchy: theme::Watcher::system(),
+            omarchy_theme: None,
             last_theme_poll: Instant::now(),
             stations: Vec::new(),
             current_station: None,
@@ -733,13 +990,25 @@ impl App {
             history: Vec::new(),
             status: String::new(),
             help: false,
+            sleep: None,
+            sleep_pause_next: false,
             splash: None,
             system: None,
             system_open: false,
             system_look: None,
             confirm_delete: None,
+            confirm_unpin: None,
+            pins_path: if demo { None } else { crate::pinned::default_path() },
+            pins: Vec::new(),
+            pinned_cursor: 0,
+            held_dislikes: Default::default(),
+            song_menu: None,
+            panel: None,
+            notes: VecDeque::new(),
+            notes_cursor: 0,
+            last_status: String::new(),
             genre_notice: None,
-            confirm_good_vibes_off: false,
+            confirm_good_vibes: None,
             rename: None,
             add_station: None,
             genres: GenresState::Idle,
@@ -771,6 +1040,15 @@ impl App {
             quit: false,
             config,
             config_path,
+            user_themes: if demo {
+                Vec::new()
+            } else {
+                theme::user_dir().map(|d| theme::load_user(&d)).unwrap_or_default()
+            },
+            themes_dir: if demo { None } else { theme::user_dir() },
+            theme_job: None,
+            theme_picker: None,
+            mpris: None,
             demo,
         };
         app.apply_theme();
@@ -866,16 +1144,23 @@ impl App {
     }
 
     pub fn follows_omarchy(&self) -> bool {
-        theme::built_in(&self.config.ui.theme).is_none()
+        self.theme_palette().is_none()
     }
 
-    fn apply_theme(&mut self) {
-        match theme::built_in(&self.config.ui.theme) {
+    /// The built-in or saved palette of the chosen theme (`None`: follow Omarchy).
+    fn theme_palette(&self) -> Option<theme::Palette> {
+        let name = self.config.ui.theme();
+        theme::built_in(name).or_else(|| self.user_themes.iter().find(|(n, _)| n == name).map(|(_, p)| *p))
+    }
+
+    pub(crate) fn apply_theme(&mut self) {
+        match self.theme_palette() {
             Some(p) => self.palette = p,
             None => {
                 self.omarchy.reset();
                 if let Some(p) = self.omarchy.poll() {
                     self.palette = p;
+                    self.omarchy_theme = self.omarchy.name.clone();
                 }
             }
         }
@@ -903,8 +1188,12 @@ impl App {
         let top = self.has_now_playing().then_some(MenuItem::NowPlaying);
         top.into_iter()
             .chain([MenuItem::Stations, MenuItem::Genres])
-            .chain((0..self.config.ui.favorites.len()).map(MenuItem::Favorite))
-            .chain([MenuItem::Settings, MenuItem::About, MenuItem::Quit])
+            .chain(self.config.ui.pinned_in_menu.then_some(MenuItem::Pinned))
+            .chain(
+                (0..if self.config.ui.favorites_in_menu { self.config.ui.favorites.len() } else { 0 })
+                    .map(MenuItem::Favorite),
+            )
+            .chain([MenuItem::Settings, MenuItem::Notifications, MenuItem::About, MenuItem::Quit])
             .collect()
     }
 
@@ -918,6 +1207,7 @@ impl App {
             MenuItem::NowPlaying => self.show_now_playing(),
             MenuItem::Stations => self.show_stations(),
             MenuItem::Genres => self.show_genres(),
+            MenuItem::Pinned => self.show_page(View::Pinned),
             MenuItem::Favorite(i) => {
                 let Some(fav) = self.config.ui.favorites.get(i).cloned() else { return };
                 match self.stations.iter().position(|s| s.id == fav.id) {
@@ -931,6 +1221,7 @@ impl App {
             }
             MenuItem::Settings => self.show_page(View::Settings),
             MenuItem::About => self.show_page(View::About),
+            MenuItem::Notifications => self.show_page(View::Notifications),
             MenuItem::Quit => self.quit = true,
         }
     }
@@ -956,6 +1247,9 @@ impl App {
             Some(at) => {
                 self.menu_cursor = at;
                 self.focus = Focus::Menu;
+            }
+            None if !self.config.ui.favorites_in_menu => {
+                self.status = "Favorites are hidden from the menu (Settings: Favorites in menu)".into()
             }
             None => self.status = "No favorites yet: f on a station stars it".into(),
         }
@@ -1099,6 +1393,36 @@ impl App {
     }
 
     /// Pandora made (or already had) a station: it joins the list, and plays.
+    /// Shift+X: plays Pandora's Shuffle, which mixes songs from the account's
+    /// stations (Pandora makes it if the account has none yet).
+    fn play_shuffle(&mut self) {
+        if let Some(at) = self.stations.iter().position(|s| s.is_shuffle) {
+            if self.current_station.as_deref() == Some(self.stations[at].id.as_str()) {
+                self.status = "Already playing Shuffle".into();
+                return;
+            }
+            self.stations_cursor = at;
+            self.on_add_row = false;
+            self.tune(at);
+            return;
+        }
+        self.status = "Asking Pandora for your Shuffle station…".into();
+        self.backend.send(Request::Shuffle);
+    }
+
+    fn shuffle_arrived(&mut self, station: Station) {
+        let at = match self.stations.iter().position(|s| s.id == station.id) {
+            Some(at) => at,
+            None => {
+                self.stations.insert(0, station);
+                0
+            }
+        };
+        self.stations_cursor = at;
+        self.on_add_row = false;
+        self.tune(at);
+    }
+
     fn station_created(&mut self, station: Station) {
         self.creating = false;
         let at = match self.stations.iter().position(|s| s.id == station.id) {
@@ -1174,14 +1498,239 @@ impl App {
         self.save(&[("playback", "favorites", toml_edit::Value::Array(list))]);
     }
 
+    /// Shift+I: pins the selected song (Up Next, History) or else the playing one.
+    /// `.`: the song menu for the selected (or playing) song.
+    fn open_song_menu(&mut self) {
+        let Some(song) = self.selected_song() else {
+            self.status = "No song here: pick a station first".into();
+            return;
+        };
+        if song.title.is_empty() || song.track_token.is_empty() {
+            self.status = "Ads have no song menu".into();
+            return;
+        }
+        self.song_menu = Some(SongMenu { song, cursor: 0 });
+    }
+
+    fn song_menu_key(&mut self, key: KeyEvent) {
+        let Some(menu) = self.song_menu.as_mut() else { return };
+        let len = SongAction::ALL.len();
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('.' | 'q') => self.song_menu = None,
+            KeyCode::Char('j') | KeyCode::Down => menu.cursor = step(menu.cursor, len, 1),
+            KeyCode::Char('k') | KeyCode::Up => menu.cursor = step(menu.cursor, len, -1),
+            KeyCode::Home | KeyCode::Char('g') => menu.cursor = 0,
+            KeyCode::End | KeyCode::Char('G') => menu.cursor = len - 1,
+            KeyCode::Enter => {
+                let action = SongAction::ALL[menu.cursor.min(len - 1)];
+                let Some(menu) = self.song_menu.take() else { return };
+                self.song_action(action, menu.song);
+            }
+            _ => {}
+        }
+    }
+
+    fn song_action(&mut self, action: SongAction, song: Song) {
+        let playing = self.now.as_ref().is_some_and(|n| n.track_token == song.track_token);
+        match action {
+            SongAction::StationFromArtist => {
+                self.station_from_search(song.artist.clone(), crate::pandora::HitKind::Artist)
+            }
+            SongAction::StationFromSong => {
+                self.station_from_search(format!("{} {}", song.title, song.artist), crate::pandora::HitKind::Song)
+            }
+            SongAction::Tired if playing => self.tired(),
+            SongAction::Tired => {
+                self.backend.send(Request::Tired { track_token: song.track_token.clone() });
+                if let Some(at) = self.queue.iter().position(|s| s.track_token == song.track_token) {
+                    self.queue.remove(at);
+                    self.held_dislikes.remove(&song.track_token);
+                    self.requested.remove(&song.track_token);
+                    self.audio_cache.remove(&song.track_token);
+                }
+                self.status = format!("Tired of “{}”: Pandora rests it for a month", song.title);
+            }
+            SongAction::Share => self.share(&song),
+            SongAction::Why => self.show_song_details(song, true),
+            SongAction::Details => self.show_song_details(song, false),
+            SongAction::Pin => self.pin(),
+            SongAction::ThumbUp | SongAction::ThumbDown => {
+                let positive = action == SongAction::ThumbUp;
+                if self.in_songs() { self.rate_in_pane(positive) } else { self.rate(positive) }
+            }
+            SongAction::Artist => self.open_artist(&song),
+            SongAction::Mode => {
+                let station = self.stations.iter().find(|s| s.id == song.station_id).map(|s| StationRef {
+                    id: s.id.clone(),
+                    name: s.name.clone(),
+                    favorite: false,
+                });
+                self.open_modes(station)
+            }
+            SongAction::Sleep => self.next_sleep(),
+        }
+    }
+
+    /// "Start Station from …": the add-station search, filled in and sent;
+    /// Enter makes the station from the highlighted hit.
+    fn station_from_search(&mut self, query: String, prefer: crate::pandora::HitKind) {
+        self.open_add_station();
+        let Some(search) = self.add_station.as_mut() else { return };
+        search.text = TextInput::new(query.trim());
+        search.prefer = Some(prefer);
+        let query = search.text.text().to_owned();
+        search.asked = Some(query.clone());
+        search.waiting = true;
+        self.backend.send(Request::Search { query });
+    }
+
+    /// The song's Pandora page (or a Pandora search for it) on the clipboard:
+    /// wl-copy, else xclip, else the terminal's OSC 52.
+    fn share(&mut self, song: &Song) {
+        let link = share_link(song);
+        if self.demo {
+            self.status = format!("Demo: would copy {link}");
+            return;
+        }
+        let tools: [(&str, &[&str]); 2] = [("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])];
+        for (tool, args) in tools {
+            let child = std::process::Command::new(tool)
+                .args(args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            if let Ok(mut child) = child {
+                use std::io::Write;
+                let wrote = child.stdin.take().is_some_and(|mut i| i.write_all(link.as_bytes()).is_ok());
+                if wrote && child.wait().is_ok_and(|s| s.success()) {
+                    self.status = format!("Copied: {link}");
+                    return;
+                }
+            }
+        }
+        use std::io::Write;
+        let mut out = std::io::stdout();
+        let _ = write!(out, "\x1b]52;c;{}\x07", base64(link.as_bytes()));
+        let _ = out.flush();
+        self.status = format!("Copied (via the terminal): {link}");
+    }
+
+    fn show_song_details(&mut self, song: Song, why: bool) {
+        let station_name =
+            self.stations.iter().find(|s| s.id == song.station_id).map(|s| s.name.clone()).unwrap_or_default();
+        let details = Details {
+            station_name,
+            station_id: song.station_id.clone(),
+            of: DetailsOf::Song(Box::new(song)),
+            from_pandora: None,
+            why,
+        };
+        if details.station_id.is_empty() {
+            self.details = Some(Details { from_pandora: Some(Err("no station for this song".into())), ..details });
+            return;
+        }
+        let current = self.current_station.as_deref() == Some(details.station_id.as_str());
+        self.backend.send(Request::StationDetails { station_id: details.station_id.clone(), current });
+        self.details = Some(details);
+    }
+
+    /// The song a song key is for: the Up Next or History row when that
+    /// pane has the keys, else the playing song.
+    fn selected_song(&self) -> Option<Song> {
+        match (self.in_songs(), self.pane) {
+            (true, Pane::UpNext) => self.queue.get(self.next_index()),
+            (true, Pane::History) => self.history.get(self.history_index()),
+            _ => None,
+        }
+        .or(self.now.as_ref())
+        .cloned()
+    }
+
+    fn pin(&mut self) {
+        let song = self.selected_song();
+        let Some(song) = song else {
+            self.status = "No song to pin: pick a station first".into();
+            return;
+        };
+        if song.title.is_empty() {
+            self.status = "Ads can't be pinned".into();
+            return;
+        }
+        if self.pins.iter().any(|p| p.same(&song)) {
+            self.status = format!("“{}” is already pinned", song.title);
+            return;
+        }
+        self.pins.insert(0, crate::pinned::Pin::of(&song, &crate::pinned::today()));
+        self.pinned_cursor = 0;
+        self.save_pins();
+        let where_ = if self.config.ui.pinned_in_menu { "the menu's Pinned" } else { "pinned.toml" };
+        self.status = format!("Pinned “{}” by {} (see {where_})", song.title, song.artist);
+    }
+
+    fn save_pins(&mut self) {
+        if let Some(path) = &self.pins_path
+            && let Err(e) = crate::pinned::save(path, &self.pins)
+        {
+            self.status = format!("Couldn't save the pins to {}: {e}", path.display());
+        }
+    }
+
+    /// Reads the pins from disk (main calls it once; the demo keeps none).
+    pub fn load_pins(&mut self) {
+        if let Some(path) = &self.pins_path {
+            self.pins = crate::pinned::load(path);
+        }
+    }
+
+    /// Enter on the Pinned page: the song's Pandora page in the browser.
+    fn open_pin(&mut self) {
+        let Some(pin) = self.pins.get(self.pinned_cursor) else {
+            self.status = "Nothing pinned yet: Shift+I pins the selected or playing song".into();
+            return;
+        };
+        if pin.link.is_empty() {
+            self.status = format!("Pandora gave no page for “{}”", pin.title);
+            return;
+        }
+        let link = pin.link.clone();
+        if !self.demo {
+            let _ = std::process::Command::new("xdg-open")
+                .arg(&link)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+        self.status = format!("Opening {link}");
+    }
+
+    /// Keeps each new bottom-bar message for the Notifications page.
+    pub fn note_status(&mut self) {
+        if self.status == self.last_status {
+            return;
+        }
+        self.last_status.clone_from(&self.status);
+        if self.status.trim().is_empty() || self.notes.front().is_some_and(|(_, s)| *s == self.status) {
+            return;
+        }
+        self.notes.push_front((Instant::now(), self.status.clone()));
+        self.notes.truncate(NOTES_KEPT);
+        if self.notes_cursor > 0 {
+            self.notes_cursor = (self.notes_cursor + 1).min(NOTES_KEPT - 1);
+        }
+    }
+
     /// The menu entry of what the right side shows.
     fn point_menu_at_view(&mut self) {
         let items = self.menu_items();
         let want = match self.view {
             View::Settings => Some(MenuItem::Settings),
             View::About => Some(MenuItem::About),
+            View::Notifications => Some(MenuItem::Notifications),
             View::Stations => Some(MenuItem::Stations),
             View::Genres => Some(MenuItem::Genres),
+            View::Pinned => Some(MenuItem::Pinned),
             View::Player if self.has_now_playing() => Some(MenuItem::NowPlaying),
             View::Player => None,
         };
@@ -1196,23 +1745,68 @@ impl App {
         if self.splash.is_some_and(|t| t.elapsed() >= SPLASH) {
             self.splash = None;
         }
+        self.note_status();
         while let Ok(reply) = self.backend.replies.try_recv() {
             self.on_reply(reply);
         }
+        self.note_status();
         if let Some(facts) = self.system_look.as_ref().and_then(|r| r.try_recv().ok()) {
             self.system_look = None;
             self.system_checked(&facts);
         }
+        self.sleep_tick();
         if self.now.as_ref().is_some_and(|s| self.audio.finished(s.length)) {
+            if self.sleep == Some(Sleep::EndOfSong) {
+                self.sleep = None;
+                self.sleep_pause_next = true;
+                self.audio.set_fade(0.0);
+            }
             self.end_song(End::Played);
         }
         self.ad_tick();
+        self.mpris_tick();
+        self.theme_tick();
         self.want_art();
         if self.follows_omarchy() && self.last_theme_poll.elapsed() > Duration::from_secs(2) {
             self.last_theme_poll = Instant::now();
             if let Some(p) = self.omarchy.poll() {
                 self.palette = p;
+                self.omarchy_theme = self.omarchy.name.clone();
             }
+        }
+    }
+
+    /// Media keys in, the playing song out.
+    fn mpris_tick(&mut self) {
+        let Some(m) = self.mpris.as_ref() else { return };
+        let asked: Vec<_> = m.controls.try_iter().collect();
+        for c in asked {
+            use crate::mpris::Control;
+            let paused = self.audio.is_paused();
+            match c {
+                Control::PlayPause => self.run(Cmd::Pause),
+                Control::Play if paused => self.run(Cmd::Pause),
+                Control::Pause if !paused => self.run(Cmd::Pause),
+                Control::Next => self.run(Cmd::Skip),
+                _ => {}
+            }
+        }
+        let snap = match &self.now {
+            Some(s) => crate::mpris::Snapshot {
+                title: s.title.clone(),
+                artist: s.artist.clone(),
+                album: s.album.clone(),
+                art_url: s.cover_art_url.clone(),
+                url: s.detail_url.clone(),
+                track: s.track_token.clone(),
+                length: s.length,
+                playing: Some(!self.audio.is_paused()),
+            },
+            None => crate::mpris::Snapshot::default(),
+        };
+        let pos = self.audio.position().as_secs_f64();
+        if let Some(m) = self.mpris.as_mut() {
+            m.show(snap, pos);
         }
     }
 
@@ -1344,11 +1938,14 @@ impl App {
                     // Typing on while it searched keeps the keys in the text.
                     let same = search.text.text().trim() == query;
                     search.mode = if hits.is_empty() || !same { SearchMode::Typing } else { SearchMode::Results };
-                    search.cursor = 0;
+                    search.cursor = search.prefer.and_then(|k| hits.iter().position(|h| h.kind == k)).unwrap_or(0);
                     search.hits = hits;
                 }
             }
             Reply::StationCreated(station) => self.station_created(station),
+            Reply::Artist(info) => self.artist_loaded(info),
+            Reply::Shuffle(station) => self.shuffle_arrived(station),
+            Reply::StationModes { station_id, modes, set } => self.modes_loaded(&station_id, modes, set),
             Reply::Genres(categories) => {
                 self.genres = GenresState::Loaded(categories);
                 self.genres_cursor = 0;
@@ -1368,11 +1965,21 @@ impl App {
                     self.prefetch();
                 }
             }
-            Reply::Rated { track_token, positive } => {
+            Reply::Rated { track_token, positive, feedback_id } => {
+                if let Some(song) = self.song_mut(&track_token) {
+                    song.feedback_id = feedback_id;
+                }
                 let ic = crate::icons::icons(self.config.ui.icons);
                 let what = if positive { format!("{} Liked", ic.up) } else { format!("{} Disliked", ic.down) };
                 let title = self.find_song(&track_token).map(|s| s.title.clone()).unwrap_or_default();
                 self.status = format!("{what}: {title}");
+            }
+            Reply::ThumbCleared { track_token } => {
+                let title = self.song_mut(&track_token).map(|s| {
+                    s.feedback_id.clear();
+                    s.title.clone()
+                });
+                self.status = format!("Thumb taken back: {}", title.unwrap_or_default());
             }
             Reply::TookOver => {
                 self.status = "Pandora was playing on another device with this account: boxvibe took over".into();
@@ -1412,7 +2019,11 @@ impl App {
             | Reply::Feedback { .. }
             | Reply::FeedbackDeleted { .. } => {}
             Reply::Failed { what, message } => {
-                if self.editor_failed(what, &message) {
+                if self.editor_failed(what, &message) || self.panel_failed(what, &message) {
+                    return;
+                }
+                if what == "shuffle" {
+                    self.status = format!("⚠ No Shuffle: {message}");
                     return;
                 }
                 if what == "ads" {
@@ -1467,6 +2078,10 @@ impl App {
                 self.self_update = Progress::Failed(error);
             }
         }
+    }
+
+    fn song_mut(&mut self, token: &str) -> Option<&mut Song> {
+        self.now.iter_mut().chain(self.history.iter_mut()).chain(self.queue.iter_mut()).find(|s| s.track_token == token)
     }
 
     fn find_song(&self, token: &str) -> Option<&Song> {
@@ -1678,6 +2293,17 @@ impl App {
 
     /// Starts the next song of the queue (or asks for more).
     fn next_song(&mut self) {
+        // Dislikes held on Up Next rows count now, at their turn: sent, and skipped.
+        while let Some(front) = self.queue.front()
+            && self.held_dislikes.contains(&front.track_token)
+        {
+            let Some(song) = self.queue.pop_front() else { break };
+            self.held_dislikes.remove(&song.track_token);
+            self.backend.send(Request::Rate { track_token: song.track_token.clone(), positive: false });
+            self.status = format!("Disliked and skipped: {}", song.title);
+            self.audio_cache.remove(&song.track_token);
+            self.push_history(song);
+        }
         let Some(song) = self.queue.pop_front() else {
             self.request_more();
             return;
@@ -1725,7 +2351,7 @@ impl App {
 
     fn play_now(&mut self, data: Option<Vec<u8>>) {
         let data = data.filter(|d| !d.is_empty());
-        match self.audio.start(data) {
+        match self.audio.start(data, self.now.as_ref().map_or(0.0, |s| s.gain), false) {
             Ok(()) => {
                 // Pandora counts plays (and skips) from this report, like the website.
                 if let Some(song) = &self.now {
@@ -1780,11 +2406,15 @@ impl App {
             || self.system_open
             || self.confirm_quit
             || self.confirm_delete.is_some()
+            || self.confirm_unpin.is_some()
             || self.genre_notice.is_some()
-            || self.confirm_good_vibes_off
+            || self.confirm_good_vibes.is_some()
             || self.rename.is_some()
             || self.add_station.is_some()
             || self.details.is_some()
+            || self.song_menu.is_some()
+            || self.panel.is_some()
+            || self.theme_picker.is_some()
             || self.editor.is_some()
             || self.prompt == Some(Prompt::Password)
     }
@@ -1829,8 +2459,13 @@ impl App {
             Setting::Volume => format!("{}%", self.config.player.volume),
             Setting::Autoplay => on(self.config.ui.autoplay_last_station),
             Setting::Notify => on(self.config.ui.notifications),
-            Setting::GoodVibesOnly => on(self.config.player.good_vibes_only),
-            Setting::Theme => theme::label(&self.config.ui.theme),
+            Setting::GoodVibesOnly => self.config.player.good_vibes_only.label().into(),
+            Setting::ThemeAutoMode => self.config.ui.theme_auto_mode.as_str().into(),
+            Setting::ThemeSelect => format!(
+                "{} · {} saved ~ Browse for more…",
+                theme::label(&self.config.ui.theme_select),
+                self.user_themes.len()
+            ),
             Setting::Icons => crate::icons::label(self.config.ui.icons).into(),
             Setting::BorderStyle => self.config.ui.border_style.label().into(),
             Setting::MenuWidth => format!("{} columns", self.config.ui.menu_width),
@@ -1841,6 +2476,8 @@ impl App {
             Setting::RetroMode => self.config.ui.retro_mode.label().into(),
             Setting::ArtTint => self.config.ui.art_tint.label().into(),
             Setting::Animations => on(self.config.ui.animations),
+            Setting::FavoritesInMenu => on(self.config.ui.favorites_in_menu),
+            Setting::PinnedInMenu => on(self.config.ui.pinned_in_menu),
             Setting::CheckUpdates => on(self.config.ui.check_updates),
             Setting::GenrePopup => on(self.config.ui.genre_edit_popup),
             Setting::Splash => on(self.config.ui.splash),
@@ -1895,14 +2532,17 @@ impl App {
                 self.save(&[("playback", "song_change_notifications", on.into())]);
                 self.status = format!("Song change notifications {}", if on { "on" } else { "off" });
             }
-            // Turning it off asks first (the risk popup); turning it on needs no question.
-            Setting::GoodVibesOnly if self.config.player.good_vibes_only => self.confirm_good_vibes_off = true,
-            Setting::GoodVibesOnly => {
-                self.config.player.good_vibes_only = true;
-                self.save(&[("playback", "good_vibes_only", true.into())]);
-                self.status = "Good Vibes Only on: Pandora's audio ads play".into();
+            // On → Muted → Off → On. Muted and Off ask first (the risk popup);
+            // turning it on needs no question.
+            Setting::GoodVibesOnly => match self.config.player.good_vibes_only.next() {
+                GoodVibes::On => self.set_good_vibes(GoodVibes::On),
+                next => self.confirm_good_vibes = Some(next),
+            },
+            Setting::ThemeAutoMode => self.toggle_theme_auto_mode(),
+            Setting::ThemeSelect if self.theme_select_greyed() => {
+                self.status = "Theme Auto Mode follows Omarchy: set it to off to pick a theme".into();
             }
-            Setting::Theme => self.next_theme(),
+            Setting::ThemeSelect => self.open_themes(),
             Setting::Icons => self.next_icons(),
             Setting::BorderStyle => {
                 let next = self.config.ui.border_style.next();
@@ -1928,6 +2568,18 @@ impl App {
                 self.config.ui.genre_edit_popup = on;
                 self.save(&[("boxvibe", "genre_edit_popup", on.into())]);
                 self.status = format!("Genre station edit popup: {}", if on { "on" } else { "off" });
+            }
+            Setting::FavoritesInMenu => {
+                let on = !self.config.ui.favorites_in_menu;
+                self.config.ui.favorites_in_menu = on;
+                self.save(&[("look", "favorites_in_menu", on.into())]);
+                self.status = format!("Favorites in menu: {}", if on { "on" } else { "off (kept; f still stars)" });
+            }
+            Setting::PinnedInMenu => {
+                let on = !self.config.ui.pinned_in_menu;
+                self.config.ui.pinned_in_menu = on;
+                self.save(&[("look", "pinned_in_menu", on.into())]);
+                self.status = format!("Pinned in menu: {}", if on { "on" } else { "off (kept; Shift+I still pins)" });
             }
             Setting::Animations => {
                 let on = !self.config.ui.animations;
@@ -2083,6 +2735,18 @@ impl App {
             self.quit = matches!(key.code, KeyCode::Char('y' | 'Y'));
             return;
         }
+        if let Some(at) = self.confirm_unpin.take() {
+            // y unpins; any other key is no.
+            if matches!(key.code, KeyCode::Char('y' | 'Y')) && at < self.pins.len() {
+                let pin = self.pins.remove(at);
+                self.pinned_cursor = self.pinned_cursor.min(self.pins.len().saturating_sub(1));
+                self.save_pins();
+                self.status = format!("Unpinned “{}”", pin.title);
+            } else {
+                self.status = "Kept the pin".into();
+            }
+            return;
+        }
         if let Some(station) = self.confirm_delete.take() {
             // y deletes; any other key is no, like the quit box.
             if matches!(key.code, KeyCode::Char('y' | 'Y')) {
@@ -2096,7 +2760,7 @@ impl App {
         if self.genre_notice.is_some() {
             return self.genre_notice_key(key);
         }
-        if self.confirm_good_vibes_off {
+        if self.confirm_good_vibes.is_some() {
             return self.good_vibes_off_key(key);
         }
         if self.rename.is_some() {
@@ -2104,6 +2768,12 @@ impl App {
         }
         if self.add_station.is_some() {
             return self.search_key(key);
+        }
+        if self.panel.is_some() {
+            return self.panel_key(key);
+        }
+        if self.theme_picker.is_some() {
+            return self.theme_picker_key(key);
         }
         if self.editor.is_some() {
             return self.editor_key(key);
@@ -2119,6 +2789,9 @@ impl App {
         if self.details.is_some() {
             self.details = None;
             return;
+        }
+        if self.song_menu.is_some() {
+            return self.song_menu_key(key);
         }
         if let Some(cmd) = command_for(key) {
             self.run(cmd);
@@ -2165,6 +2838,15 @@ impl App {
             Cmd::ArtType => self.next_album_art(),
             Cmd::Retro => self.next_retro_mode(),
             Cmd::Tint => self.next_art_tint(),
+            Cmd::Sleep => self.next_sleep(),
+            Cmd::Pin => self.pin(),
+            Cmd::SongMenu => self.open_song_menu(),
+            Cmd::Mode => {
+                let station =
+                    self.station_to_change().map(|(s, fav)| StationRef { id: s.id, name: s.name, favorite: fav });
+                self.open_modes(station)
+            }
+            Cmd::Shuffle => self.play_shuffle(),
         }
     }
 
@@ -2271,22 +2953,36 @@ impl App {
         }
     }
 
-    /// Keys in the "Turn off Good Vibes Only?" popup: Enter turns it off (and
-    /// saves), Esc keeps it on. Other keys do nothing.
+    /// Keys in the "Mute ads?" / "Turn off Good Vibes Only?" popup: Enter
+    /// switches (and saves), Esc keeps what it was. Other keys do nothing.
     fn good_vibes_off_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Enter => {
-                self.confirm_good_vibes_off = false;
-                self.config.player.good_vibes_only = false;
-                self.save(&[("playback", "good_vibes_only", false.into())]);
-                self.status = "Good Vibes Only off: no ads".into();
+                if let Some(next) = self.confirm_good_vibes.take() {
+                    self.set_good_vibes(next);
+                }
             }
             KeyCode::Esc => {
-                self.confirm_good_vibes_off = false;
-                self.status = "Good Vibes Only stays on".into();
+                self.confirm_good_vibes = None;
+                self.status = format!("Good Vibes Only stays {}", self.config.player.good_vibes_only.label());
             }
             _ => {}
         }
+    }
+
+    fn set_good_vibes(&mut self, mode: GoodVibes) {
+        self.config.player.good_vibes_only = mode;
+        self.save(&[("playback", "good_vibes_only", mode.to_value())]);
+        // An ad playing now follows at once.
+        if self.ad_break() && self.audio.is_active() {
+            self.audio.set_muted(mode == GoodVibes::Muted);
+        }
+        self.status = match mode {
+            GoodVibes::On => "Good Vibes Only on: Pandora's audio ads play",
+            GoodVibes::Muted => "Good Vibes Only muted: ads play silently, the volume comes back after",
+            GoodVibes::Off => "Good Vibes Only off: no ads",
+        }
+        .into();
     }
 
     fn rename_key(&mut self, key: KeyEvent) {
@@ -2315,6 +3011,14 @@ impl App {
 
     /// `x`: asks before deleting the selected station from the account.
     fn ask_delete(&mut self) {
+        if self.focus == Focus::Content && self.view == View::Pinned {
+            if self.pins.is_empty() {
+                self.status = "Nothing pinned yet: Shift+I pins the selected or playing song".into();
+            } else {
+                self.confirm_unpin = Some(self.pinned_cursor.min(self.pins.len() - 1));
+            }
+            return;
+        }
         let Some((station, favorite)) = self.station_in_reach() else {
             return self.no_station_here("x deletes");
         };
@@ -2357,14 +3061,13 @@ impl App {
 
     /// `v`: what Pandora tells about the selected song or station.
     fn show_details(&mut self) {
-        let station_name =
-            |app: &App, id: &str| app.stations.iter().find(|s| s.id == id).map(|s| s.name.clone()).unwrap_or_default();
         let details = if let Some((station, _)) = self.station_in_reach() {
             Details {
                 station_id: station.id.clone(),
                 station_name: station.name.clone(),
                 of: DetailsOf::Station(Box::new(station)),
                 from_pandora: None,
+                why: false,
             }
         } else if self.focus == Focus::Menu && matches!(self.menu_selected(), MenuItem::Favorite(_)) {
             return self.no_station_here("v shows details of");
@@ -2383,12 +3086,7 @@ impl App {
                     "No song to show details of: pick a station, or open Stations (Shift+S) for a station's".into();
                 return;
             };
-            Details {
-                station_name: station_name(self, &song.station_id),
-                station_id: song.station_id.clone(),
-                of: DetailsOf::Song(Box::new(song)),
-                from_pandora: None,
-            }
+            return self.show_song_details(song, false);
         };
         if details.station_id.is_empty() {
             self.details = Some(Details { from_pandora: Some(Err("no station for this song".into())), ..details });
@@ -2441,6 +3139,8 @@ impl App {
                 self.tune(self.stations_index());
             }
             (Focus::Content, View::Genres) => self.add_genre_station(),
+            (Focus::Content, View::Pinned) => self.open_pin(),
+            (Focus::Content, View::Notifications) => {}
             (Focus::Content, View::Player) => {}
         }
     }
@@ -2464,6 +3164,10 @@ impl App {
                 self.genres_cursor = clamp(self.genres_index(), self.genre_rows().len().max(1))
             }
             (Focus::Content, View::About) => {}
+            (Focus::Content, View::Notifications) => {
+                self.notes_cursor = clamp(self.notes_cursor, self.notes.len().max(1))
+            }
+            (Focus::Content, View::Pinned) => self.pinned_cursor = clamp(self.pinned_cursor, self.pins.len().max(1)),
         }
     }
 
@@ -2503,12 +3207,37 @@ impl App {
         self.status = format!("Tint art with theme colors: {}", next.label());
     }
 
-    fn next_theme(&mut self) {
-        let next = theme::next(&self.config.ui.theme);
-        self.config.ui.theme = next.into();
+    /// Theme Auto Mode: omarchy ⇄ off.
+    fn toggle_theme_auto_mode(&mut self) {
+        use crate::config::ThemeAutoMode;
+        let next = match self.config.ui.theme_auto_mode {
+            ThemeAutoMode::Omarchy => ThemeAutoMode::Off,
+            ThemeAutoMode::Off => ThemeAutoMode::Omarchy,
+        };
+        self.config.ui.theme_auto_mode = next;
         self.apply_theme();
-        self.save(&[("look", "theme", next.into())]);
-        self.status = format!("Theme: {}", theme::label(next));
+        let select = self.config.ui.theme_select.clone();
+        self.save(&[("look", "theme_auto_mode", next.as_str().into()), ("look", "theme_select", select.into())]);
+        self.status = match next {
+            ThemeAutoMode::Omarchy => "Theme Auto Mode: omarchy (follows your Omarchy theme)".into(),
+            ThemeAutoMode::Off => format!("Theme Auto Mode: off · {}", theme::label(&self.config.ui.theme_select)),
+        };
+    }
+
+    /// Theme Select can't be used while Auto Mode follows Omarchy.
+    pub fn theme_select_greyed(&self) -> bool {
+        self.config.ui.theme_auto_mode == crate::config::ThemeAutoMode::Omarchy
+    }
+
+    /// Theme Select = `name` (Auto Mode off), applied and saved.
+    pub(crate) fn use_theme(&mut self, name: &str) {
+        self.config.ui.set_theme(name);
+        self.apply_theme();
+        self.save(&[
+            ("look", "theme_auto_mode", self.config.ui.theme_auto_mode.as_str().into()),
+            ("look", "theme_select", name.into()),
+        ]);
+        self.status = format!("Theme: {}", theme::label(name));
     }
 
     fn next_icons(&mut self) {
@@ -2516,6 +3245,62 @@ impl App {
         self.config.ui.icons = next;
         self.save(&[("look", "icons", next.as_str().into())]);
         self.status = format!("Icons: {}", crate::icons::label(next));
+    }
+
+    /// `B`: off → 15 → 30 → 60 → 90 minutes → end of this song → off.
+    fn next_sleep(&mut self) {
+        let next = match self.sleep {
+            None => Some(Sleep::Minutes(SLEEP_STEPS[0], Instant::now())),
+            Some(Sleep::Minutes(m, _)) => match SLEEP_STEPS.iter().position(|s| *s == m) {
+                Some(i) if i + 1 < SLEEP_STEPS.len() => Some(Sleep::Minutes(SLEEP_STEPS[i + 1], Instant::now())),
+                _ => Some(Sleep::EndOfSong),
+            },
+            Some(Sleep::EndOfSong) => None,
+        };
+        self.sleep = next;
+        self.sleep_pause_next = false;
+        self.audio.set_fade(1.0);
+        self.status = match next {
+            Some(Sleep::Minutes(m, _)) => {
+                format!("Sleep timer: {m} minutes, then a fade out and pause (B: more / off)")
+            }
+            Some(Sleep::EndOfSong) => "Sleep timer: at the end of this song (B: off)".into(),
+            None => "Sleep timer off".into(),
+        };
+    }
+
+    /// How long until the sleep timer pauses (`None`: no timer, or "end of
+    /// song" with no song playing).
+    pub fn sleep_left(&self) -> Option<Duration> {
+        match self.sleep? {
+            Sleep::Minutes(m, from) => Some(Duration::from_secs(m * 60).saturating_sub(from.elapsed())),
+            Sleep::EndOfSong => {
+                let song = self.now.as_ref()?;
+                Some(Duration::from_secs(u64::from(song.length)).saturating_sub(self.audio.position()))
+            }
+        }
+    }
+
+    /// Every frame: fade out over the last [`SLEEP_FADE`], then pause.
+    fn sleep_tick(&mut self) {
+        if self.sleep_pause_next && self.audio.is_active() {
+            if !self.audio.is_paused() {
+                self.audio.toggle_pause();
+            }
+            self.sleep_pause_next = false;
+            self.audio.set_fade(1.0);
+            self.status = "Sleep timer: paused at the end of the song. p plays on".into();
+        }
+        let Some(left) = self.sleep_left() else { return };
+        self.audio.set_fade(left.as_secs_f32() / SLEEP_FADE.as_secs_f32());
+        if left.is_zero() && matches!(self.sleep, Some(Sleep::Minutes(..))) {
+            self.sleep = None;
+            if !self.audio.is_paused() {
+                self.audio.toggle_pause();
+            }
+            self.audio.set_fade(1.0);
+            self.status = "Sleep timer: paused. p plays on".into();
+        }
     }
 
     fn change_volume(&mut self, by: i16) {
@@ -2539,6 +3324,10 @@ impl App {
         if song.station_id.is_empty() || song.track_token.is_empty() {
             self.status = "Pandora can't rate this song (no track token)".into();
             return;
+        }
+        if song.rating == (if positive { Rating::Up } else { Rating::Down }) {
+            let token = song.track_token.clone();
+            return self.clear_thumb(&token);
         }
         song.rating = if positive { Rating::Up } else { Rating::Down };
         let request = Request::Rate { track_token: song.track_token.clone(), positive };
@@ -2575,15 +3364,45 @@ impl App {
             self.status = format!("Pandora can't rate “{}” (no track token)", song.title);
             return;
         }
-        song.rating = if positive { Rating::Up } else { Rating::Down };
-        self.backend.send(Request::Rate { track_token: song.track_token.clone(), positive });
-        // A thumbs down on a song still to come drops it, as skipping would.
-        if !positive && pane == Pane::UpNext {
-            let Some(gone) = self.queue.remove(at) else { return };
-            self.requested.remove(&gone.track_token);
-            self.audio_cache.remove(&gone.track_token);
-            self.status = format!("Disliked and dropped from Up Next: {}", gone.title);
+        let token = song.track_token.clone();
+        let wanted = if positive { Rating::Up } else { Rating::Down };
+        // An Up Next dislike is held here until the song's turn: b again cancels it.
+        if self.held_dislikes.contains(&token) {
+            self.held_dislikes.remove(&token);
+            song.rating = Rating::None;
+            if !positive {
+                self.status = format!("Dislike cancelled: {} stays in Up Next", song.title);
+                return;
+            }
+        } else if song.rating == wanted {
+            return self.clear_thumb(&token);
         }
+        if !positive && pane == Pane::UpNext {
+            song.rating = Rating::Down;
+            self.status = format!("Disliked: {} is skipped at its turn (b again cancels)", song.title);
+            self.held_dislikes.insert(token);
+            return;
+        }
+        song.rating = wanted;
+        self.backend.send(Request::Rate { track_token: token, positive });
+    }
+
+    /// The same thumb pressed again: Pandora takes it back (deleteFeedback).
+    fn clear_thumb(&mut self, token: &str) {
+        let Some(song) = self.song_mut(token) else { return };
+        if song.feedback_id.is_empty() {
+            self.status = format!(
+                "Pandora didn't say which thumb to take back for “{}” yet (e on its station lists your thumbs)",
+                song.title
+            );
+            return;
+        }
+        let positive = song.rating == Rating::Up;
+        song.rating = Rating::None;
+        let request =
+            Request::ClearThumb { track_token: token.into(), feedback_id: song.feedback_id.clone(), positive };
+        self.status = format!("Taking back the thumb on “{}”…", song.title);
+        self.backend.send(request);
     }
 
     fn tired(&mut self) {
@@ -2679,7 +3498,7 @@ mod tests {
         groups.dedup();
         assert_eq!(groups, ["ACCOUNT", "BOXVIBE", "PLAYBACK", "LOOK"]);
         assert_eq!(Setting::ALL[0].1, Setting::Email, "the account is on top");
-        assert!(Setting::at(Setting::Splash) > Setting::at(Setting::Theme), "the boot screen is under LOOK");
+        assert!(Setting::at(Setting::Splash) > Setting::at(Setting::ThemeAutoMode), "the boot screen is under LOOK");
         assert_eq!(App::new(Config::default(), None, &[], true).setting(), Setting::Email, "the cursor starts on it");
         let emoji = crate::icons::icons(crate::config::IconSet::Emoji);
         assert_eq!(emoji.setting[Setting::at(Setting::CheckUpdates)], "🆕", "icons move with their settings");
@@ -2796,7 +3615,7 @@ mod tests {
     fn demo() -> App {
         // Ads have their own tests: here a skip goes straight to the next song.
         let mut config = Config::default();
-        config.player.good_vibes_only = false;
+        config.player.good_vibes_only = GoodVibes::Off;
         let mut app = App::new(config, None, &[], true);
         app.demo_warm_up(2, Duration::ZERO);
         app
@@ -2806,8 +3625,71 @@ mod tests {
     fn ad_demo() -> App {
         let mut app = App::new(Config::default(), None, &[], true);
         app.settle(Duration::from_millis(300));
-        assert!(app.now.is_some() && app.config.player.good_vibes_only);
+        assert!(app.now.is_some() && app.config.player.good_vibes_only == GoodVibes::On);
         app
+    }
+
+    #[test]
+    fn b_steps_the_sleep_timer_and_it_fades_out_then_pauses() {
+        let mut app = ad_demo();
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            app.on_key(shift('B'));
+            seen.push(match app.sleep {
+                Some(Sleep::Minutes(m, _)) => m.to_string(),
+                Some(Sleep::EndOfSong) => "end".into(),
+                None => "off".into(),
+            });
+        }
+        assert_eq!(seen, ["15", "30", "60", "90", "end", "off"]);
+        assert!(app.status.contains("off"), "{}", app.status);
+        // 5 seconds left: half way down the fade.
+        let full = app.audio.level();
+        app.sleep = Some(Sleep::Minutes(15, Instant::now() - Duration::from_secs(15 * 60 - 5)));
+        app.tick();
+        let half = app.audio.level() / full;
+        assert!((0.4..=0.55).contains(&half), "{half}");
+        assert!(!app.audio.is_paused());
+        // Time's up: paused, the volume as it was, the timer gone.
+        app.sleep = Some(Sleep::Minutes(15, Instant::now() - Duration::from_secs(15 * 60 + 1)));
+        app.tick();
+        assert!(app.audio.is_paused() && app.sleep.is_none());
+        assert_eq!(app.audio.level(), full);
+        app.on_key(key(KeyCode::Char('p')));
+        assert!(!app.audio.is_paused(), "p plays on");
+        assert_eq!(clock_text(Duration::from_secs(14 * 60 + 59)), "14:59");
+        assert_eq!(clock_text(Duration::from_secs(90 * 60)), "1:30:00");
+    }
+
+    #[test]
+    fn sleep_at_the_end_of_the_song_pauses_the_next_one_at_once() {
+        let mut app = App::new(
+            Config {
+                player: crate::config::PlayerConfig { good_vibes_only: GoodVibes::Off, ..Default::default() },
+                ..Default::default()
+            },
+            None,
+            &[],
+            true,
+        );
+        app.settle(Duration::from_millis(300));
+        let first = app.now.as_ref().unwrap().track_token.clone();
+        let length = app.now.as_ref().unwrap().length;
+        app.sleep = Some(Sleep::EndOfSong);
+        app.audio.seek_silent(Duration::from_secs(u64::from(length) - 3));
+        app.tick();
+        assert!(app.audio.level() < 0.5 * level_at(&app), "fading in the last seconds");
+        app.audio.seek_silent(Duration::from_secs(u64::from(length) + 1));
+        app.tick();
+        app.settle(Duration::from_millis(300));
+        app.tick();
+        assert!(app.now.as_ref().is_some_and(|s| s.track_token != first), "the next song is there");
+        assert!(app.audio.is_paused() && app.sleep.is_none(), "{}", app.status);
+        assert_eq!(app.audio.level(), level_at(&app));
+    }
+
+    fn level_at(app: &App) -> f32 {
+        crate::audio::level(app.config.player.volume, app.now.as_ref().map_or(0.0, |s| s.gain))
     }
 
     #[test]
@@ -2859,20 +3741,27 @@ mod tests {
         let app = demo();
         let items = app.menu_items();
         assert_eq!(items[0], MenuItem::NowPlaying, "a station plays: NOW PLAYING on top");
-        assert_eq!((items[1], items[2]), (MenuItem::Stations, MenuItem::Genres));
-        assert_eq!(items.len(), 6, "no favorites yet: no FAVORITES entries");
-        assert_eq!(&items[items.len() - 3..], [MenuItem::Settings, MenuItem::About, MenuItem::Quit]);
+        assert_eq!((items[1], items[2], items[3]), (MenuItem::Stations, MenuItem::Genres, MenuItem::Pinned));
+        assert_eq!(items.len(), 8, "no favorites yet: no FAVORITES entries");
+        assert_eq!(
+            &items[items.len() - 4..],
+            [MenuItem::Settings, MenuItem::Notifications, MenuItem::About, MenuItem::Quit]
+        );
     }
 
     #[test]
     fn enter_on_settings_and_about_opens_them() {
         let mut app = demo();
         app.focus = Focus::Menu;
-        app.menu_cursor = 3;
+        app.menu_cursor = 4;
         app.on_key(key(KeyCode::Enter));
         assert_eq!((app.view, app.focus), (View::Settings, Focus::Content));
         app.on_key(key(KeyCode::Esc));
         assert_eq!(app.menu_selected(), MenuItem::Settings);
+        app.on_key(key(KeyCode::Char('j')));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.view, View::Notifications);
+        app.on_key(key(KeyCode::Esc));
         app.on_key(key(KeyCode::Char('j')));
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.view, View::About);
@@ -2946,8 +3835,10 @@ mod tests {
             [
                 MenuItem::Stations,
                 MenuItem::Genres,
+                MenuItem::Pinned,
                 MenuItem::Favorite(0),
                 MenuItem::Settings,
+                MenuItem::Notifications,
                 MenuItem::About,
                 MenuItem::Quit
             ]
@@ -2961,6 +3852,8 @@ mod tests {
         app.on_key(key(KeyCode::Esc));
         app.on_key(key(KeyCode::Char('j')));
         assert_eq!(app.menu_selected(), MenuItem::Genres);
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(app.menu_selected(), MenuItem::Pinned);
         app.on_key(key(KeyCode::Char('j')));
         assert_eq!(app.menu_selected(), MenuItem::Favorite(0));
         app.on_key(key(KeyCode::Enter));
@@ -3046,12 +3939,232 @@ mod tests {
         app.pane = Pane::NowPlaying;
         let playing = app.now.as_ref().unwrap().track_token.clone();
         for c in ['+', '-', '=', 'u', 'd', 'n', 's', 't'] {
-            let (view, theme) = (app.view, app.config.ui.theme.clone());
+            let (view, theme) = (app.view, app.config.ui.theme().to_owned());
             app.on_key(key(KeyCode::Char(c)));
             assert_eq!(app.now.as_ref().unwrap().rating, Rating::None, "{c} rates nothing");
             assert_eq!(app.now.as_ref().unwrap().track_token, playing, "{c} skips nothing");
-            assert_eq!((app.view, &app.config.ui.theme), (view, &theme), "{c} goes nowhere");
+            assert_eq!((app.view, &app.config.ui.theme()), (view, &theme.as_str()), "{c} goes nowhere");
         }
+    }
+
+    #[test]
+    fn notifications_keep_what_the_bottom_bar_said_newest_first() {
+        let mut app = demo();
+        for text in ["one", "one", "", "two"] {
+            app.status = text.into();
+            app.tick();
+        }
+        let said: Vec<&str> = app.notes.iter().map(|(_, s)| s.as_str()).collect();
+        assert_eq!(&said[..2], ["two", "one"], "newest first, repeats once");
+        for i in 0..NOTES_KEPT + 5 {
+            app.status = format!("n{i}");
+            app.note_status();
+        }
+        assert_eq!(app.notes.len(), NOTES_KEPT);
+    }
+
+    #[test]
+    fn dot_opens_the_song_menu_and_start_station_fills_the_search() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::NowPlaying;
+        app.on_key(key(KeyCode::Char('.')));
+        assert!(app.song_menu.is_some());
+        assert!(app.overlay_open());
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.song_menu.is_none());
+        let artist = app.now.as_ref().unwrap().artist.clone();
+        app.on_key(key(KeyCode::Char('.')));
+        app.on_key(key(KeyCode::Enter));
+        let search = app.add_station.as_ref().expect("the add-station box opens");
+        assert_eq!(search.text.text(), artist.trim());
+        assert_eq!(search.prefer, Some(crate::pandora::HitKind::Artist));
+    }
+
+    fn menu_pick(app: &mut App, action: SongAction) {
+        app.on_key(key(KeyCode::Char('.')));
+        let at = SongAction::ALL.iter().position(|a| *a == action).unwrap();
+        for _ in 0..at {
+            app.on_key(key(KeyCode::Char('j')));
+        }
+        app.on_key(key(KeyCode::Enter));
+    }
+
+    #[test]
+    fn the_artist_panel_shows_a_bio_and_starts_a_similar_station() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::NowPlaying;
+        let artist = app.now.as_ref().unwrap().artist.clone();
+        menu_pick(&mut app, SongAction::Artist);
+        let panel = app.panel.as_ref().expect("the artist panel opens");
+        assert!(panel.loading && app.overlay_open());
+        app.settle(Duration::from_millis(150));
+        let panel = app.panel.as_ref().unwrap();
+        assert!(!panel.loading);
+        assert!(panel.intro.contains(&artist), "{}", panel.intro);
+        assert!(!panel.items.is_empty() && panel.items.iter().all(|i| !i.label.eq_ignore_ascii_case(&artist)));
+        let similar = panel.items[0].label.clone();
+        let stations = app.stations.len();
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.panel.is_none());
+        app.settle(Duration::from_millis(150));
+        assert!(app.stations.len() >= stations);
+        let playing = app.current_station.clone().unwrap();
+        let name = &app.stations.iter().find(|s| s.id == playing).unwrap().name;
+        assert!(name.contains(&similar), "{name} from {similar}");
+    }
+
+    #[test]
+    fn a_failed_artist_page_says_so_in_the_panel() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::NowPlaying;
+        menu_pick(&mut app, SongAction::Artist);
+        app.on_reply(Reply::Failed { what: "artist", message: "Pandora is down".into() });
+        let panel = app.panel.as_ref().unwrap();
+        assert!(panel.intro.contains("Pandora is down") && panel.items.is_empty());
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.panel.is_some(), "Enter on nothing does nothing");
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.panel.is_none());
+    }
+
+    #[test]
+    fn m_picks_a_station_mode_and_premium_ones_stay_locked() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::NowPlaying;
+        let playing = app.current_station.clone().unwrap();
+        app.on_key(key(KeyCode::Char('m')));
+        app.settle(Duration::from_millis(150));
+        let panel = app.panel.as_ref().expect("m opens the modes");
+        assert_eq!(panel.items.len(), 6);
+        assert!(panel.items[0].current && panel.cursor == 0);
+        // Down to Deep Cuts (the fourth) and switch.
+        for _ in 0..3 {
+            app.on_key(key(KeyCode::Char('j')));
+        }
+        app.on_key(key(KeyCode::Enter));
+        app.settle(Duration::from_millis(150));
+        let panel = app.panel.as_ref().unwrap();
+        assert!(panel.items[3].current && !panel.items[0].current);
+        assert!(app.status.contains("Deep Cuts"), "{}", app.status);
+        assert_eq!(app.current_station.as_deref(), Some(playing.as_str()), "the same station plays on");
+        // Artist Only is Premium in the demo: locked, nothing sent.
+        app.on_key(key(KeyCode::Char('G')));
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.status.contains("isn't available"), "{}", app.status);
+        app.on_key(key(KeyCode::Esc));
+        // Reopened from the song menu, it remembers.
+        menu_pick(&mut app, SongAction::Mode);
+        app.settle(Duration::from_millis(150));
+        assert_eq!(app.panel.as_ref().unwrap().cursor, 3);
+    }
+
+    #[test]
+    fn no_modes_from_pandora_fails_gracefully() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::NowPlaying;
+        app.on_key(key(KeyCode::Char('m')));
+        app.on_reply(Reply::Failed { what: "mode", message: "Pandora doesn't offer station modes here".into() });
+        let panel = app.panel.as_ref().unwrap();
+        assert!(panel.intro.starts_with("No station modes") && !panel.loading);
+        assert_eq!(crate::ui::key_caps(&app), [("Esc", "Close")]);
+    }
+
+    #[test]
+    fn shift_x_plays_shuffle() {
+        let mut app = demo();
+        let shuffle = app.stations.iter().find(|s| s.is_shuffle).unwrap().id.clone();
+        if app.current_station.as_deref() == Some(shuffle.as_str()) {
+            let other = app.stations.iter().position(|s| !s.is_shuffle).unwrap();
+            app.tune(other);
+        }
+        app.on_key(shift('X'));
+        assert_eq!(app.current_station.as_deref(), Some(shuffle.as_str()));
+        app.on_key(shift('X'));
+        assert_eq!(app.status, "Already playing Shuffle");
+        // An account without one asks Pandora, which makes it.
+        app.stations.retain(|s| !s.is_shuffle);
+        app.current_station = None;
+        app.on_key(shift('X'));
+        app.settle(Duration::from_millis(150));
+        assert!(app.status.starts_with("⚠ No Shuffle") || app.status.starts_with("Tuning"), "{}", app.status);
+        app.on_reply(Reply::Shuffle(Station {
+            id: "sh".into(),
+            name: "Shuffle".into(),
+            is_shuffle: true,
+            ..Default::default()
+        }));
+        assert_eq!((app.current_station.as_deref(), app.stations[0].is_shuffle), (Some("sh"), true));
+    }
+
+    #[test]
+    fn tired_from_the_menu_drops_an_up_next_song() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::UpNext;
+        let first = app.queue[0].track_token.clone();
+        app.on_key(key(KeyCode::Char('.')));
+        let at = SongAction::ALL.iter().position(|a| *a == SongAction::Tired).unwrap();
+        for _ in 0..at {
+            app.on_key(key(KeyCode::Char('j')));
+        }
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.queue.iter().all(|s| s.track_token != first));
+        assert!(app.status.starts_with("Tired of"), "{}", app.status);
+    }
+
+    #[test]
+    fn share_links_and_base64() {
+        let mut s = Song { title: "A B".into(), artist: "C&D".into(), ..Song::default() };
+        assert_eq!(share_link(&s), "https://www.pandora.com/search/A%20B%20C%26D/all");
+        s.detail_url = "/artist/x".into();
+        assert_eq!(share_link(&s), "https://www.pandora.com/artist/x");
+        assert_eq!(base64(b"Man"), "TWFu");
+        assert_eq!(base64(b"Ma"), "TWE=");
+        assert_eq!(base64(b"M"), "TQ==");
+    }
+
+    #[test]
+    fn the_same_thumb_again_takes_it_back() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::NowPlaying;
+        app.on_key(key(KeyCode::Char('l')));
+        app.settle(Duration::from_millis(150));
+        assert_eq!(app.now.as_ref().unwrap().rating, Rating::Up);
+        assert!(!app.now.as_ref().unwrap().feedback_id.is_empty(), "Pandora's feedbackId is kept");
+        app.on_key(key(KeyCode::Char('l')));
+        assert_eq!(app.now.as_ref().unwrap().rating, Rating::None);
+        app.settle(Duration::from_millis(150));
+        assert!(app.status.starts_with("Thumb taken back"), "{}", app.status);
+        // Without a feedbackId it says why and changes nothing.
+        app.now.as_mut().unwrap().rating = Rating::Up;
+        app.on_key(key(KeyCode::Char('l')));
+        assert_eq!(app.now.as_ref().unwrap().rating, Rating::Up);
+        assert!(app.status.contains("didn't say which thumb"), "{}", app.status);
+    }
+
+    #[test]
+    fn an_up_next_dislike_waits_for_its_turn_and_b_again_cancels_it() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::UpNext;
+        let first = app.queue[0].track_token.clone();
+        app.on_key(key(KeyCode::Char('b')));
+        app.on_key(key(KeyCode::Char('b')));
+        assert_eq!(app.queue[0].rating, Rating::None, "b again cancels");
+        assert!(app.held_dislikes.is_empty());
+        app.on_key(key(KeyCode::Char('b')));
+        let second = app.queue[1].track_token.clone();
+        app.on_key(shift('N'));
+        app.settle(Duration::from_millis(150));
+        assert_eq!(app.now.as_ref().unwrap().track_token, second, "the held song is skipped at its turn");
+        assert!(app.history.iter().any(|s| s.track_token == first && s.rating == Rating::Down));
+        assert!(app.held_dislikes.is_empty());
     }
 
     #[test]
@@ -3066,15 +4179,15 @@ mod tests {
         assert_eq!(app.history[1].rating, Rating::Down);
         assert_eq!(app.now.as_ref().unwrap().rating, Rating::None);
         assert_eq!(app.now.as_ref().unwrap().track_token, playing, "rating a row doesn't skip");
-        // Up Next: l likes the highlighted song in place; b drops it.
+        // Up Next: l likes the highlighted song in place; b holds a dislike for its turn.
         app.pane = Pane::UpNext;
         let token = app.queue[0].track_token.clone();
         app.on_key(key(KeyCode::Char('l')));
         assert_eq!((app.queue[0].track_token.as_str(), app.queue[0].rating), (token.as_str(), Rating::Up));
         let n = app.queue.len();
         app.on_key(key(KeyCode::Char('b')));
-        assert_eq!(app.queue.len(), n - 1);
-        assert!(app.status.starts_with("Disliked and dropped from Up Next"), "{}", app.status);
+        assert_eq!((app.queue.len(), app.queue[0].rating), (n, Rating::Down));
+        assert!(app.status.contains("b again cancels"), "{}", app.status);
         // Now Playing focused: the current song.
         app.pane = Pane::NowPlaying;
         app.on_key(key(KeyCode::Char('l')));
@@ -3154,9 +4267,8 @@ mod tests {
 
     #[test]
     fn a_genre_station_that_cant_be_changed_gets_a_popup_and_the_bar_message() {
-        for (key_pressed, what, bar) in
-            [('r', "renamed", "doesn't let you rename"), ('e', "edited", "doesn't let you edit the seeds")]
         {
+            let (key_pressed, what, bar) = ('r', "renamed", "doesn't let you rename");
             let mut app = on_station(Config::default(), None, genre);
             assert!(app.config.ui.genre_edit_popup, "on by default");
             app.on_key(key(KeyCode::Char(key_pressed)));
@@ -3170,6 +4282,10 @@ mod tests {
             app.on_key(key(KeyCode::Esc));
             assert!(app.genre_notice.is_none() && app.status.contains(bar), "{}", app.status);
         }
+        // `e` opens its thumbs instead (no popup).
+        let mut app = on_station(Config::default(), None, genre);
+        app.on_key(key(KeyCode::Char('e')));
+        assert!(app.genre_notice.is_none() && app.editor.as_ref().is_some_and(|e| e.thumbs_only));
         // Deleting a genre station Pandora does allow deleting asks as before.
         let mut app = on_station(Config::default(), None, genre);
         app.on_key(key(KeyCode::Char('x')));
@@ -3199,7 +4315,8 @@ mod tests {
     fn with_the_popup_off_only_the_bar_says_it() {
         let mut config = Config::default();
         config.ui.genre_edit_popup = false;
-        for key_pressed in ['r', 'e'] {
+        {
+            let key_pressed = 'r';
             let mut app = on_station(config.clone(), None, genre);
             app.on_key(key(KeyCode::Char(key_pressed)));
             assert!(app.genre_notice.is_none() && !app.overlay_open());
@@ -3284,8 +4401,8 @@ mod tests {
     }
 
     #[test]
-    fn good_vibes_only_is_on_by_default_and_its_toggle_is_saved() {
-        assert!(Config::default().player.good_vibes_only);
+    fn good_vibes_only_steps_on_muted_off_asking_first_and_is_saved() {
+        assert_eq!(Config::default().player.good_vibes_only, GoodVibes::On);
         let path = crate::config::temp_dir("good-guy").join("config.toml");
         let mut config = Config::default();
         config.ui.check_updates = false;
@@ -3296,27 +4413,35 @@ mod tests {
         app.settings_cursor = Setting::at(Setting::GoodVibesOnly);
         assert_eq!(Setting::GoodVibesOnly.label(), "Good Vibes Only");
         assert_eq!(app.setting_value(Setting::GoodVibesOnly), "on");
-        // Turning it off asks first; nothing changes or is saved until Enter.
+        // Muting asks first; nothing changes or is saved until Enter.
         app.on_key(key(KeyCode::Enter));
-        assert!(app.confirm_good_vibes_off && app.overlay_open());
+        assert!(app.confirm_good_vibes == Some(GoodVibes::Muted) && app.overlay_open());
         assert_eq!(app.setting_value(Setting::GoodVibesOnly), "on");
         assert!(!std::fs::read_to_string(&path).unwrap_or_default().contains("good_vibes_only"));
         app.on_key(key(KeyCode::Enter));
-        assert!(!app.confirm_good_vibes_off);
+        assert!(app.confirm_good_vibes.is_none());
+        assert_eq!(app.setting_value(Setting::GoodVibesOnly), "muted");
+        assert!(std::fs::read_to_string(&path).unwrap().contains("good_vibes_only = \"muted\""));
+        assert_eq!(Config::load(&path).0.player.good_vibes_only, GoodVibes::Muted);
+        // Off asks too.
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.confirm_good_vibes, Some(GoodVibes::Off));
+        app.on_key(key(KeyCode::Enter));
         assert_eq!(app.setting_value(Setting::GoodVibesOnly), "off");
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("[playback]") && text.contains("good_vibes_only = false"), "{text}");
-        assert!(!Config::load(&path).0.player.good_vibes_only);
+        assert_eq!(Config::load(&path).0.player.good_vibes_only, GoodVibes::Off);
         assert!(
             Setting::GoodVibesOnly.about().contains("good_vibes_only")
                 && Setting::GoodVibesOnly.about().contains("Saved")
+                && Setting::GoodVibesOnly.about().contains("Muted")
         );
         // Turning it back on needs no question and is saved at once.
         app.on_key(key(KeyCode::Enter));
-        assert!(!app.confirm_good_vibes_off, "no popup for turning it on");
+        assert!(app.confirm_good_vibes.is_none(), "no popup for turning it on");
         assert_eq!(app.setting_value(Setting::GoodVibesOnly), "on");
         assert!(std::fs::read_to_string(&path).unwrap().contains("good_vibes_only = true"));
-        assert!(Config::load(&path).0.player.good_vibes_only);
+        assert_eq!(Config::load(&path).0.player.good_vibes_only, GoodVibes::On);
     }
 
     #[test]
@@ -3330,13 +4455,13 @@ mod tests {
         app.focus = Focus::Content;
         app.settings_cursor = Setting::at(Setting::GoodVibesOnly);
         app.on_key(key(KeyCode::Enter));
-        assert!(app.confirm_good_vibes_off);
+        assert!(app.confirm_good_vibes.is_some());
         for code in [KeyCode::Char('y'), KeyCode::Char(' '), KeyCode::Down, KeyCode::Char('q')] {
             app.on_key(key(code));
-            assert!(app.confirm_good_vibes_off && app.config.player.good_vibes_only, "{code:?}");
+            assert!(app.confirm_good_vibes.is_some() && app.config.player.good_vibes_only == GoodVibes::On, "{code:?}");
         }
         app.on_key(key(KeyCode::Esc));
-        assert!(!app.confirm_good_vibes_off && app.config.player.good_vibes_only);
+        assert!(app.confirm_good_vibes.is_none() && app.config.player.good_vibes_only == GoodVibes::On);
         assert_eq!(app.setting_value(Setting::GoodVibesOnly), "on");
         assert!(!std::fs::read_to_string(&path).unwrap_or_default().contains("good_vibes_only"), "nothing saved");
     }
@@ -3347,6 +4472,28 @@ mod tests {
             app.on_key(shift('N'));
             app.settle(Duration::from_millis(300));
         }
+    }
+
+    #[test]
+    fn muted_ads_play_silently_and_the_volume_comes_back_even_when_changed_meanwhile() {
+        let mut app = ad_demo();
+        app.config.player.good_vibes_only = GoodVibes::Muted;
+        let before = app.audio.level();
+        assert!(before > 0.0);
+        skip_into_an_ad(&mut app);
+        assert!(app.ad_view().is_some(), "Muted still plays the ad");
+        assert!(app.audio.is_muted() && app.audio.level() == 0.0);
+        // A volume change during the ad is what comes back.
+        app.change_volume(-20);
+        assert!(app.audio.level() == 0.0 && app.config.player.volume == 50);
+        app.audio.seek_silent(Duration::from_secs(7));
+        app.tick();
+        assert!(app.ad_view().is_some() && app.audio.is_muted(), "the second ad is muted too");
+        app.audio.seek_silent(Duration::from_secs(5));
+        app.tick();
+        app.settle(Duration::from_millis(300));
+        assert!(app.now.is_some() && !app.audio.is_muted());
+        assert!(app.audio.level() > 0.0 && app.audio.level() < before);
     }
 
     #[test]
@@ -3392,7 +4539,7 @@ mod tests {
     #[test]
     fn with_good_vibes_only_off_no_ad_is_asked_for_and_the_next_song_starts_at_once() {
         let mut config = Config::default();
-        config.player.good_vibes_only = false;
+        config.player.good_vibes_only = GoodVibes::Off;
         let mut app = App::new(config, None, &[], true);
         app.settle(Duration::from_millis(300));
         let first = app.now.as_ref().unwrap().track_token.clone();
@@ -3565,9 +4712,9 @@ mod tests {
         app.config.ui.favorites.push(crate::config::Favorite { id: "1".into(), name: "One".into() });
         app.on_key(shift('F'));
         assert_eq!((app.focus, app.menu_selected()), (Focus::Menu, MenuItem::Favorite(0)));
-        let theme = app.config.ui.theme.clone();
+        let theme = app.config.ui.theme().to_owned();
         app.on_key(key(KeyCode::Char('t')));
-        assert_eq!(app.config.ui.theme, theme, "t no longer switches the theme: only Settings does");
+        assert_eq!(app.config.ui.theme(), theme, "t no longer switches the theme: only Settings does");
     }
 
     #[test]
@@ -3581,6 +4728,76 @@ mod tests {
         app.on_key(shift('T'));
         assert_eq!((app.view, app.focus), before, "Shift+T is unbound now");
         assert!(!KEYMAP.iter().any(|b| b.code == KeyCode::Char('T')));
+    }
+
+    #[test]
+    fn shift_i_pins_the_playing_or_selected_song_and_x_unpins_after_asking() {
+        let mut app = demo();
+        let dir = crate::config::temp_dir("pins-app");
+        app.pins_path = Some(dir.join("pinned.toml"));
+        let playing = app.now.clone().unwrap();
+        app.on_key(shift('I'));
+        assert_eq!(app.pins.len(), 1);
+        assert_eq!(
+            (app.pins[0].title.as_str(), app.pins[0].artist.as_str()),
+            (playing.title.as_str(), playing.artist.as_str())
+        );
+        assert_eq!(app.pins[0].link, playing.detail_url);
+        assert_eq!(app.pins[0].pinned.len(), 10);
+        app.on_key(shift('I'));
+        assert_eq!(app.pins.len(), 1, "already pinned: {}", app.status);
+        // The selected Up Next row, when Up Next has the keys.
+        app.view = View::Player;
+        app.focus = Focus::Content;
+        app.pane = Pane::UpNext;
+        let next = app.queue[app.next_index()].clone();
+        app.on_key(shift('I'));
+        assert_eq!(app.pins[0].title, next.title, "newest first");
+        let on_disk = crate::pinned::load(app.pins_path.as_ref().unwrap());
+        assert_eq!(on_disk, app.pins, "kept on disk, not in the config");
+        // The menu's Pinned entry opens the page; x asks, n keeps, y unpins.
+        app.focus = Focus::Menu;
+        app.menu_cursor = app.menu_items().iter().position(|m| *m == MenuItem::Pinned).unwrap();
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!((app.view, app.focus), (View::Pinned, Focus::Content));
+        app.on_key(key(KeyCode::Char('x')));
+        assert_eq!(app.confirm_unpin, Some(0));
+        app.on_key(key(KeyCode::Char('n')));
+        assert_eq!(app.pins.len(), 2);
+        app.on_key(key(KeyCode::Char('j')));
+        app.on_key(key(KeyCode::Char('x')));
+        app.on_key(key(KeyCode::Char('y')));
+        assert_eq!(app.pins.len(), 1);
+        assert_eq!(app.pins[0].title, next.title);
+        assert_eq!(crate::pinned::load(app.pins_path.as_ref().unwrap()).len(), 1);
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.status.contains("no page"), "the demo songs have no page: {}", app.status);
+        app.pins[0].link = "https://www.pandora.com/artist/x".into();
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.status, "Opening https://www.pandora.com/artist/x", "the demo opens nothing");
+    }
+
+    #[test]
+    fn the_settings_hide_favorites_and_pinned_from_the_menu() {
+        let mut app = saving_app("menu-entries");
+        app.config.ui.favorites.push(crate::config::Favorite { id: "x".into(), name: "X".into() });
+        assert!(app.menu_items().contains(&MenuItem::Pinned) && app.menu_items().contains(&MenuItem::Favorite(0)));
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        for (setting, key_name) in
+            [(Setting::FavoritesInMenu, "favorites_in_menu"), (Setting::PinnedInMenu, "pinned_in_menu")]
+        {
+            app.settings_cursor = Setting::at(setting);
+            assert_eq!(app.setting_value(setting), "on");
+            app.on_key(key(KeyCode::Enter));
+            assert_eq!(app.setting_value(setting), "off");
+            assert!(saved(&app).contains(&format!("{key_name} = false")), "{}", saved(&app));
+        }
+        let items = app.menu_items();
+        assert!(!items.contains(&MenuItem::Pinned) && !items.iter().any(|m| matches!(m, MenuItem::Favorite(_))));
+        assert_eq!(app.config.ui.favorites.len(), 1, "hidden, not dropped");
+        app.on_key(shift('F'));
+        assert!(app.status.contains("hidden"), "{}", app.status);
     }
 
     fn saving_app(name: &str) -> App {
@@ -3861,7 +5078,8 @@ mod tests {
         for (_, setting) in Setting::ALL {
             // The account and the volume have their own flows (below).
             let Some((table, name)) = setting.saved_as() else { continue };
-            if matches!(setting, Setting::Email | Setting::Password | Setting::Volume) {
+            // Theme Select opens the picker; its saving is tested with the picker.
+            if matches!(setting, Setting::Email | Setting::Password | Setting::Volume | Setting::ThemeSelect) {
                 continue;
             }
             let mut app = saving_app(&format!("saved-{setting:?}"));
@@ -3870,7 +5088,7 @@ mod tests {
             app.settings_cursor = Setting::at(setting);
             app.on_key(key(KeyCode::Enter));
             if setting == Setting::GoodVibesOnly {
-                // Turning it off asks first; Enter says yes.
+                // Muting asks first; Enter says yes.
                 app.on_key(key(KeyCode::Enter));
             }
             let doc: toml_edit::DocumentMut = saved(&app).parse().unwrap();
@@ -3900,7 +5118,181 @@ mod tests {
     fn the_defaults_are_nerd_icons_and_a_theme_that_exists() {
         let c = Config::default();
         assert_eq!(c.ui.icons, crate::config::IconSet::Nerd);
-        assert!(theme::names().any(|n| n == c.ui.theme));
+        assert!(theme::names().any(|n| n == c.ui.theme()));
+    }
+
+    #[test]
+    fn media_keys_pause_play_and_skip_and_the_desktop_sees_the_song() {
+        let mut app = demo();
+        let (m, tx, _changed) = crate::mpris::Mpris::detached();
+        app.mpris = Some(m);
+        app.tick();
+        let first = app.now.as_ref().unwrap().clone();
+        let shown = app.mpris.as_ref().unwrap().shown();
+        assert_eq!((shown.title.as_str(), shown.status()), (first.title.as_str(), "Playing"));
+        tx.send(crate::mpris::Control::Play).unwrap();
+        app.tick();
+        assert!(!app.audio.is_paused(), "Play while playing does nothing");
+        tx.send(crate::mpris::Control::PlayPause).unwrap();
+        app.tick();
+        assert!(app.audio.is_paused());
+        assert_eq!(app.mpris.as_ref().unwrap().shown().status(), "Paused");
+        tx.send(crate::mpris::Control::Pause).unwrap();
+        app.tick();
+        assert!(app.audio.is_paused(), "Pause while paused does nothing");
+        tx.send(crate::mpris::Control::Play).unwrap();
+        tx.send(crate::mpris::Control::Next).unwrap();
+        app.tick();
+        app.settle(Duration::from_millis(150));
+        app.tick();
+        assert_ne!(app.now.as_ref().unwrap().track_token, first.track_token);
+        assert_eq!(app.mpris.as_ref().unwrap().shown().track, app.now.as_ref().unwrap().track_token);
+    }
+
+    fn wait_for_themes(app: &mut App) {
+        for _ in 0..100 {
+            app.tick();
+            if app.theme_job.is_none() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("the theme job never answered");
+    }
+
+    fn type_in(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    fn hit_names(app: &App) -> Vec<String> {
+        let p = app.theme_picker.as_ref().unwrap();
+        p.hits.iter().map(|i| p.catalog[*i].name.clone()).collect()
+    }
+
+    #[test]
+    fn theme_select_searches_like_fzf_downloads_installs_and_deletes_without_closing() {
+        let mut app = demo();
+        let dir = crate::config::temp_dir("theme-picker");
+        app.themes_dir = Some(dir.clone());
+        app.config.ui.set_theme("kanagawa");
+        app.focus = Focus::Content;
+        app.view = View::Settings;
+        app.settings_cursor = Setting::at(Setting::ThemeSelect);
+        assert!(app.setting_value(Setting::ThemeSelect).ends_with("0 saved ~ Browse for more…"));
+        app.on_key(key(KeyCode::Enter));
+        let p = app.theme_picker.as_ref().unwrap();
+        assert!(p.loading && p.tab == ThemeTab::Search);
+        wait_for_themes(&mut app);
+        // The 3 demo iTerm2 schemes plus the built-in themes; no Omarchy ones
+        // (the demo lists two, nord and rose-pine): those come with Auto Mode.
+        let built_in = crate::theme::names().filter(|n| *n != "omarchy").count();
+        assert_eq!(hit_names(&app).len(), 3 + built_in);
+        let p = app.theme_picker.as_ref().unwrap();
+        assert!(p.catalog.iter().all(|e| e.source != crate::theme_store::Source::Omarchy));
+        assert!(!hit_names(&app).iter().any(|n| n == "Omarchy"));
+        // Typing filters at once, no `/`; j and k are letters here.
+        type_in(&mut app, "drc");
+        assert_eq!(hit_names(&app)[0], "Dracula", "best match first");
+        assert!(!hit_names(&app).contains(&"rose-pine".to_string()));
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(app.theme_picker.as_ref().unwrap().query, "");
+        type_in(&mut app, "jk");
+        assert_eq!(app.theme_picker.as_ref().unwrap().query, "jk");
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        // A built-in theme applies at once: no download, nothing saved.
+        type_in(&mut app, "gruvbox");
+        assert_eq!(hit_names(&app)[0], crate::theme::label("gruvbox"));
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.theme_job.is_none(), "no download");
+        assert_eq!(app.config.ui.theme(), "gruvbox");
+        assert!(app.user_themes.is_empty() && app.theme_picker.is_some());
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        type_in(&mut app, "dracula");
+        // Enter downloads and uses it; the popup stays open.
+        app.on_key(key(KeyCode::Enter));
+        wait_for_themes(&mut app);
+        assert_eq!(app.config.ui.theme(), "dracula");
+        assert!(dir.join("dracula.toml").is_file());
+        assert!(app.theme_picker.is_some(), "still open");
+        assert!(!hit_names(&app).contains(&"Dracula".to_string()), "installed ones leave Search");
+        assert!(app.setting_value(Setting::ThemeSelect).contains("1 saved ~ Browse for more…"));
+        // A file that isn't a theme is refused and nothing changes.
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        type_in(&mut app, "broken");
+        app.on_key(key(KeyCode::Enter));
+        wait_for_themes(&mut app);
+        assert!(app.status.contains("Broken"), "{}", app.status);
+        assert_eq!(app.config.ui.theme(), "dracula");
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        type_in(&mut app, "solarized");
+        app.on_key(key(KeyCode::Enter));
+        wait_for_themes(&mut app);
+        assert_eq!(app.config.ui.theme(), "solarized-dark");
+        // Installed: only the downloaded ones; Enter uses one and stays open.
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.theme_picker.as_ref().unwrap().tab, ThemeTab::Installed);
+        assert_eq!(app.installed_themes(), ["dracula", "solarized-dark"]);
+        app.on_key(key(KeyCode::Home));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.config.ui.theme(), "dracula");
+        app.on_key(key(KeyCode::Char('j')));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.config.ui.theme(), "solarized-dark");
+        assert!(app.theme_picker.is_some());
+        // x asks; n keeps it, y deletes and falls back.
+        app.on_key(key(KeyCode::Char('k')));
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::Char('x')));
+        assert_eq!(app.theme_picker.as_ref().unwrap().confirm_delete.as_deref(), Some("dracula"));
+        app.on_key(key(KeyCode::Char('n')));
+        assert!(dir.join("dracula.toml").is_file());
+        app.on_key(key(KeyCode::Delete));
+        app.on_key(key(KeyCode::Char('y')));
+        assert!(!dir.join("dracula.toml").exists());
+        assert_eq!(app.installed_themes(), ["solarized-dark"]);
+        assert_eq!(app.config.ui.theme(), crate::theme::FALLBACK);
+        // Deleted, it is back in Search.
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        type_in(&mut app, "dracula");
+        assert_eq!(hit_names(&app)[0], "Dracula");
+        // Esc closes.
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.theme_picker.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn theme_auto_mode_greys_theme_select_and_both_save() {
+        let mut app = saving_app("theme-auto");
+        app.config.ui.set_theme("kanagawa");
+        app.focus = Focus::Content;
+        app.view = View::Settings;
+        app.settings_cursor = Setting::at(Setting::ThemeAutoMode);
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.config.ui.theme_auto_mode, crate::config::ThemeAutoMode::Omarchy);
+        assert!(app.theme_select_greyed());
+        let text = saved(&app);
+        assert!(text.contains("theme_auto_mode = \"omarchy\""), "{text}");
+        app.settings_cursor = Setting::at(Setting::ThemeSelect);
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.theme_picker.is_none(), "greyed: no picker");
+        app.settings_cursor = Setting::at(Setting::ThemeAutoMode);
+        app.on_key(key(KeyCode::Enter));
+        assert!(!app.theme_select_greyed());
+        assert_eq!(app.config.ui.theme(), "kanagawa", "back to the selected theme");
+        assert!(saved(&app).contains("theme_select = \"kanagawa\""));
+    }
+
+    #[test]
+    fn rank_is_fuzzy_and_best_first() {
+        let demo = crate::theme_store::demo_catalog();
+        let names = |q: &str| themes::rank(&demo, q).into_iter().map(|i| demo[i].name.clone()).collect::<Vec<_>>();
+        assert_eq!(names("").len(), demo.len());
+        assert_eq!(names("sdk"), ["Solarized Dark"]);
+        assert!(names("zzzq").is_empty());
     }
 
     #[test]

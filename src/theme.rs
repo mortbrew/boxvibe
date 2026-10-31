@@ -182,6 +182,7 @@ pub fn names() -> impl Iterator<Item = &'static str> {
 }
 
 /// The theme after `name` (an unknown name starts over).
+#[cfg(test)]
 pub fn next(name: &str) -> &'static str {
     let all: Vec<_> = names().collect();
     let at = all.iter().position(|n| *n == name);
@@ -226,8 +227,11 @@ pub fn is_omarchy() -> bool {
 /// The theme used until one is saved: `omarchy` (follow the system) on an
 /// Omarchy system, `tokyo-night` anywhere else.
 pub fn default_name() -> &'static str {
-    if is_omarchy() { "omarchy" } else { "tokyo-night" }
+    if is_omarchy() { "omarchy" } else { FALLBACK }
 }
+
+/// Theme Select's choice until one is saved.
+pub const FALLBACK: &str = "tokyo-night";
 
 // --- Omarchy theme files (ported from tubevibe's theme.rs) ---
 
@@ -350,8 +354,75 @@ pub fn parse_alacritty(text: &str) -> Option<Palette> {
     named.palette()
 }
 
+/// A downloaded or saved scheme: alacritty (`[colors.primary]`…) or an Omarchy `colors.toml`.
+pub fn parse_any(text: &str) -> Option<Palette> {
+    let table: toml::Table = text.parse().ok()?;
+    if table.get("colors").is_some_and(Value::is_table) { parse_alacritty(text) } else { parse_colors_toml(text) }
+}
+
+/// Where Settings → More themes saves schemes: `~/.config/boxvibe/themes/`.
+pub fn user_dir() -> Option<PathBuf> {
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(config.join("boxvibe/themes"))
+}
+
+/// The saved schemes in `dir` (`<name>.toml`), by name; ones that don't
+/// parse or would shadow a built-in theme are left out.
+pub fn load_user(dir: &Path) -> Vec<(String, Palette)> {
+    let Ok(read_dir) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut found: Vec<(String, Palette)> = read_dir
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            if path.extension()? != "toml" {
+                return None;
+            }
+            let name = path.file_stem()?.to_str()?.to_owned();
+            if name == "omarchy" || built_in(&name).is_some() {
+                return None;
+            }
+            Some((name, parse_any(&std::fs::read_to_string(&path).ok()?)?))
+        })
+        .collect();
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    found
+}
+
 fn theme_file(dirs: &[PathBuf]) -> Option<PathBuf> {
     dirs.iter().find_map(|dir| ["colors.toml", "alacritty.toml"].iter().map(|f| dir.join(f)).find(|f| f.is_file()))
+}
+
+/// The current Omarchy theme's name, title-cased ("tokyo-night" → "Tokyo
+/// Night"): from `current/theme.name` (newer Omarchy copies the theme there)
+/// or else the folder `current/theme` links to.
+fn theme_name(dirs: &[PathBuf]) -> Option<String> {
+    let dir = dirs.iter().find(|d| d.is_dir())?;
+    let from_file = dir
+        .parent()
+        .and_then(|p| std::fs::read_to_string(p.join("theme.name")).ok())
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+    let raw = from_file.or_else(|| {
+        let real = std::fs::canonicalize(dir).ok()?;
+        let name = real.file_name()?.to_str()?.to_owned();
+        (name != "theme").then_some(name)
+    })?;
+    Some(title_case(&raw))
+}
+
+/// "tokyo-night" / "rose_pine" → "Tokyo Night" / "Rose Pine".
+pub fn title_case(raw: &str) -> String {
+    raw.split(['-', '_', ' '])
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut c = w.chars();
+            c.next().map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn read(file: &Path) -> Option<Palette> {
@@ -368,6 +439,8 @@ fn read(file: &Path) -> Option<Palette> {
 pub struct Watcher {
     dirs: Vec<PathBuf>,
     last: Option<Option<(PathBuf, Option<SystemTime>, u64)>>,
+    /// The current Omarchy theme's name as shown ("Tokyo Night"), read by `poll`.
+    pub name: Option<String>,
 }
 
 impl Watcher {
@@ -381,7 +454,7 @@ impl Watcher {
             }
             None => Vec::new(),
         };
-        Self { dirs, last: None }
+        Self { dirs, last: None, name: None }
     }
 
     pub fn reset(&mut self) {
@@ -401,6 +474,7 @@ impl Watcher {
             return None;
         }
         self.last = Some(stamp);
+        self.name = theme_name(&self.dirs);
         Some(file.as_deref().and_then(read).unwrap_or(TOKYO_NIGHT))
     }
 }
@@ -444,6 +518,42 @@ mod tests {
         assert!(names().any(|n| n == default_name()), "{}", default_name());
         assert!(matches!(default_name(), "omarchy" | "tokyo-night"));
         assert!(built_in("tokyo-night").is_some());
+    }
+
+    #[test]
+    fn saved_themes_load() {
+        let dir = crate::config::temp_dir("user-themes");
+        std::fs::create_dir_all(&dir).unwrap();
+        let alacritty = "[colors.primary]\nbackground = '#101010'\nforeground = '#eeeeee'\n[colors.normal]\nblack = '#000000'\nred = '#ff0000'\ngreen = '#00ff00'\nyellow = '#ffff00'\nblue = '#0000ff'\nmagenta = '#ff00ff'\ncyan = '#00ffff'\nwhite = '#ffffff'\n";
+        std::fs::write(dir.join("zeta.toml"), alacritty).unwrap();
+        std::fs::write(dir.join("gruvbox.toml"), alacritty).unwrap();
+        std::fs::write(dir.join("broken.toml"), "x = 1").unwrap();
+        std::fs::write(dir.join("notes.txt"), alacritty).unwrap();
+        let user = load_user(&dir);
+        assert_eq!(user.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["zeta"]);
+        assert_eq!(user[0].1.background, Color::Rgb(0x10, 0x10, 0x10));
+        assert!(load_user(&dir.join("missing")).is_empty());
+    }
+
+    #[test]
+    fn the_omarchy_theme_name_comes_from_theme_name_or_the_linked_folder() {
+        let root = std::env::temp_dir().join(format!("boxvibe-omarchy-name-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let themes = root.join("themes/rose-pine");
+        std::fs::create_dir_all(&themes).unwrap();
+        std::fs::create_dir_all(root.join("current")).unwrap();
+        let current = root.join("current/theme");
+        // Older Omarchy: current/theme links to themes/<name>.
+        std::os::unix::fs::symlink(&themes, &current).unwrap();
+        assert_eq!(theme_name(std::slice::from_ref(&current)).as_deref(), Some("Rose Pine"));
+        // Newer Omarchy: a copied folder and current/theme.name.
+        std::fs::remove_file(&current).unwrap();
+        std::fs::create_dir_all(&current).unwrap();
+        assert_eq!(theme_name(std::slice::from_ref(&current)), None);
+        std::fs::write(root.join("current/theme.name"), "tokyo-night\n").unwrap();
+        assert_eq!(theme_name(&[root.join("missing"), current]).as_deref(), Some("Tokyo Night"));
+        assert_eq!(title_case("catppuccin_latte"), "Catppuccin Latte");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

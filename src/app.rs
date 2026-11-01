@@ -5289,7 +5289,8 @@ mod tests {
     #[test]
     fn rank_is_fuzzy_and_best_first() {
         let demo = crate::theme_store::demo_catalog();
-        let names = |q: &str| themes::rank(&demo, q).into_iter().map(|i| demo[i].name.clone()).collect::<Vec<_>>();
+        let names =
+            |q: &str| vibekit::picker::rank(&demo, q).into_iter().map(|i| demo[i].name.clone()).collect::<Vec<_>>();
         assert_eq!(names("").len(), demo.len());
         assert_eq!(names("sdk"), ["Solarized Dark"]);
         assert!(names("zzzq").is_empty());

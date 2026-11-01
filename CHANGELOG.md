@@ -4,6 +4,9 @@ Short and scannable; the git history has the details.
 
 ## 0.5.0 (unreleased)
 
+### Internal
+- Themes, Theme Select state, the theme store and self-update now live in the shared `vibekit` crate (path dependency).
+
 ### Added
 - **Song menu** (`.`): start a station from the artist or song, Tired, Share, Why This Song?, Similar Artists & Bio, Station Mode, Pin, thumbs, Details, Sleep.
 - **Station modes** (`m`): My Station, Crowd Faves, Discovery, Deep Cuts, Newly Released, Artist Only (Premium ones shown locked).

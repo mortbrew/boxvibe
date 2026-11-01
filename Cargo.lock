@@ -397,24 +397,21 @@ dependencies = [
  "clap",
  "crossterm",
  "directories",
- "flate2",
  "image",
- "nucleo-matcher",
  "ratatui",
  "ratatui-image",
  "rodio",
  "rustfft",
  "secret-service",
- "self-replace",
  "serde",
  "serde_ignored",
  "serde_json",
- "tar",
  "thiserror 2.0.21",
  "toml",
  "toml_edit",
  "unicode-width",
  "ureq",
+ "vibekit",
  "zbus",
 ]
 
@@ -3428,6 +3425,21 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vibekit"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "nucleo-matcher",
+ "ratatui",
+ "self-replace",
+ "serde_json",
+ "tar",
+ "toml",
+ "unicode-width",
+ "ureq",
+]
 
 [[package]]
 name = "vsimd"

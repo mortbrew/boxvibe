@@ -31,7 +31,7 @@ mod themes;
 pub use ad::{AdPhase, AdView, End};
 pub use editor::{Editor, EditorTab, FeedState, Loaded};
 pub use panel::{Panel, PanelKind};
-pub use themes::{ThemePicker, ThemeTab};
+pub use themes::ThemePicker;
 
 /// What boxvibe knows about the Pandora password in the desktop keychain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5172,6 +5172,25 @@ mod tests {
     }
 
     #[test]
+    fn theme_select_actions_reach_the_app() {
+        let mut app = demo();
+        app.themes_dir = Some(crate::config::temp_dir("theme-actions"));
+        app.focus = Focus::Content;
+        app.view = View::Settings;
+        app.settings_cursor = Setting::at(Setting::ThemeSelect);
+        app.on_key(key(KeyCode::Enter));
+        wait_for_themes(&mut app);
+        type_in(&mut app, "dracula");
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.status.starts_with("Downloading Dracula"), "{}", app.status);
+        assert!(app.theme_job.is_some());
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.status, "Still downloading the last one…");
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.theme_picker.is_none(), "Esc closes");
+    }
+
+    #[test]
     fn theme_select_searches_like_fzf_downloads_installs_and_deletes_without_closing() {
         let mut app = demo();
         let dir = crate::config::temp_dir("theme-picker");
@@ -5183,7 +5202,7 @@ mod tests {
         assert!(app.setting_value(Setting::ThemeSelect).ends_with("0 saved ~ Browse for more…"));
         app.on_key(key(KeyCode::Enter));
         let p = app.theme_picker.as_ref().unwrap();
-        assert!(p.loading && p.tab == ThemeTab::Search);
+        assert!(p.loading && p.tab == vibekit::picker::ThemeTab::Search);
         wait_for_themes(&mut app);
         // The 3 demo iTerm2 schemes plus the built-in themes; no Omarchy ones
         // (the demo lists two, nord and rose-pine): those come with Auto Mode.
@@ -5232,7 +5251,7 @@ mod tests {
         assert_eq!(app.config.ui.theme(), "solarized-dark");
         // Installed: only the downloaded ones; Enter uses one and stays open.
         app.on_key(key(KeyCode::Tab));
-        assert_eq!(app.theme_picker.as_ref().unwrap().tab, ThemeTab::Installed);
+        assert_eq!(app.theme_picker.as_ref().unwrap().tab, vibekit::picker::ThemeTab::Installed);
         assert_eq!(app.installed_themes(), ["dracula", "solarized-dark"]);
         app.on_key(key(KeyCode::Home));
         app.on_key(key(KeyCode::Enter));
@@ -5289,7 +5308,8 @@ mod tests {
     #[test]
     fn rank_is_fuzzy_and_best_first() {
         let demo = crate::theme_store::demo_catalog();
-        let names = |q: &str| themes::rank(&demo, q).into_iter().map(|i| demo[i].name.clone()).collect::<Vec<_>>();
+        let names =
+            |q: &str| vibekit::picker::rank(&demo, q).into_iter().map(|i| demo[i].name.clone()).collect::<Vec<_>>();
         assert_eq!(names("").len(), demo.len());
         assert_eq!(names("sdk"), ["Solarized Dark"]);
         assert!(names("zzzq").is_empty());

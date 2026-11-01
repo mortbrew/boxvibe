@@ -6,9 +6,10 @@
 //! deletes one (after asking). The popup stays open until Esc.
 
 use super::*;
-use crate::theme_store::{Entry, Msg, Source};
+use crate::theme_store::{Msg, Source};
 
-pub use vibekit::picker::{ThemePicker, ThemeTab};
+use vibekit::picker::Action;
+pub use vibekit::picker::ThemePicker;
 
 impl App {
     /// Settings → Theme Select: opens the picker on Search and asks GitHub
@@ -25,106 +26,19 @@ impl App {
         self.user_themes.iter().map(|(n, _)| n.clone()).collect()
     }
 
-    /// Whether a catalog entry is already saved.
-    pub fn is_installed(&self, entry: &Entry) -> bool {
-        let slug = entry.slug();
-        self.user_themes.iter().any(|(n, _)| *n == slug)
-    }
-
     pub(super) fn theme_picker_key(&mut self, key: KeyEvent) {
+        let installed = self.installed_themes();
         let Some(picker) = self.theme_picker.as_mut() else { return };
-        if let Some(name) = picker.confirm_delete.clone() {
-            match key.code {
-                KeyCode::Char('y') | KeyCode::Enter => {
-                    picker.confirm_delete = None;
-                    self.delete_theme(&name);
-                }
-                KeyCode::Char('n') | KeyCode::Esc => picker.confirm_delete = None,
-                _ => {}
+        match picker.key(key, &self.user_themes, &installed) {
+            Action::None => {}
+            Action::Close => self.theme_picker = None,
+            Action::Use(slug) => self.use_theme(&slug),
+            Action::Busy => self.status = "Still downloading the last one…".into(),
+            Action::Download(entry) => {
+                self.status = format!("Downloading {}…", entry.name);
+                self.theme_job = Some(crate::theme_store::fetch_theme(entry, self.demo));
             }
-            return;
-        }
-        match key.code {
-            KeyCode::Esc => {
-                self.theme_picker = None;
-                return;
-            }
-            KeyCode::Tab | KeyCode::BackTab => {
-                picker.tab = match picker.tab {
-                    ThemeTab::Search => ThemeTab::Installed,
-                    ThemeTab::Installed => ThemeTab::Search,
-                };
-                return;
-            }
-            _ => {}
-        }
-        match picker.tab {
-            ThemeTab::Search => {
-                let len = picker.hits.len();
-                match key.code {
-                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        picker.query.clear();
-                        picker.refilter(&self.user_themes);
-                    }
-                    KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        picker.query.push(c);
-                        picker.refilter(&self.user_themes);
-                    }
-                    KeyCode::Backspace => {
-                        picker.query.pop();
-                        picker.refilter(&self.user_themes);
-                    }
-                    KeyCode::Down => picker.search_cursor = step(picker.search_cursor, len, 1),
-                    KeyCode::Up => picker.search_cursor = step(picker.search_cursor, len, -1),
-                    KeyCode::PageDown => picker.search_cursor = (picker.search_cursor + 10).min(len.saturating_sub(1)),
-                    KeyCode::PageUp => picker.search_cursor = picker.search_cursor.saturating_sub(10),
-                    KeyCode::Enter => {
-                        let Some(entry) = picker.hits.get(picker.search_cursor).map(|i| picker.catalog[*i].clone())
-                        else {
-                            return;
-                        };
-                        let busy = picker.downloading.is_some();
-                        if entry.source == Source::BuiltIn || self.is_installed(&entry) {
-                            self.use_theme(&entry.slug());
-                        } else if busy {
-                            self.status = "Still downloading the last one…".into();
-                        } else {
-                            self.status = format!("Downloading {}…", entry.name);
-                            if let Some(picker) = self.theme_picker.as_mut() {
-                                picker.downloading = Some(entry.name.clone());
-                            }
-                            self.theme_job = Some(crate::theme_store::fetch_theme(entry, self.demo));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            ThemeTab::Installed => {
-                let rows = self.installed_themes();
-                let Some(picker) = self.theme_picker.as_mut() else { return };
-                let len = rows.len();
-                match key.code {
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        picker.installed_cursor = step(picker.installed_cursor, len, 1)
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        picker.installed_cursor = step(picker.installed_cursor, len, -1)
-                    }
-                    KeyCode::Home | KeyCode::Char('g') => picker.installed_cursor = 0,
-                    KeyCode::End | KeyCode::Char('G') => picker.installed_cursor = len.saturating_sub(1),
-                    KeyCode::Enter => {
-                        if let Some(name) = rows.get(picker.installed_cursor) {
-                            self.use_theme(name);
-                        }
-                    }
-                    KeyCode::Char('x') | KeyCode::Delete => {
-                        if let Some(name) = rows.get(picker.installed_cursor) {
-                            picker.confirm_delete = Some(name.clone());
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            Action::Delete(name) => self.delete_theme(&name),
         }
     }
 

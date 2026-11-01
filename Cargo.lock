@@ -3437,6 +3437,7 @@ dependencies = [
  "serde_json",
  "tar",
  "toml",
+ "unicode-width",
  "ureq",
 ]
 

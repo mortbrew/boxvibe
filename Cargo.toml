@@ -13,6 +13,7 @@ categories = ["command-line-utilities", "multimedia::audio"]
 exclude = ["/screenshots", "/tools"]
 
 [dependencies]
+# Path for now; see docs/vibekit-dependency.md for the git + tag line.
 vibekit = { path = "../vibekit" }
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }

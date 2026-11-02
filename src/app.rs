@@ -25,6 +25,7 @@ use crate::theme::{self, Palette};
 use crate::update::{Progress, Replace, Update};
 
 mod ad;
+mod dialogs;
 mod editor;
 mod panel;
 mod themes;
@@ -848,7 +849,6 @@ pub struct App {
     /// Played songs, newest first.
     pub history: Vec<Song>,
     pub status: String,
-    pub help: bool,
     /// The sleep timer (`B`), when one is set.
     pub sleep: Option<Sleep>,
     /// The sleep timer ran out at a song's end: pause what starts next.
@@ -858,14 +858,13 @@ pub struct App {
     /// What boxvibe needs from the system and whether it is there (`None`:
     /// still looking, or not looked yet).
     pub system: Option<Vec<crate::deps::Check>>,
+    /// Open dialogs (quit / unpin / delete questions, Help, details, System Check): see `app/dialogs.rs`.
+    pub dialogs: vibekit::dialog::DialogStack,
     /// The System Check list is showing.
-    pub system_open: bool,
     /// The look at the system that is on its way.
     system_look: Option<std::sync::mpsc::Receiver<crate::deps::Facts>>,
     /// `x` asked "Delete this station?": y does, any other key doesn't.
-    pub confirm_delete: Option<StationRef>,
     /// `x` on the Pinned page asked "Unpin this song?" (the pin's index).
-    pub confirm_unpin: Option<usize>,
     /// Songs pinned with Shift+I, newest first.
     pub pins: Vec<crate::pinned::Pin>,
     /// Where they are kept (`None`: in the demo, only in memory).
@@ -898,7 +897,6 @@ pub struct App {
     /// A station is being made: a second Enter waits for it.
     creating: bool,
     /// `v`: the details popup.
-    pub details: Option<Details>,
     /// `e`: the seeds and thumbs editor.
     pub editor: Option<Editor>,
     /// Good Vibes Only: where the ad break is (see [`ad`]).
@@ -934,7 +932,6 @@ pub struct App {
     /// Restart Now was pressed: once quit, start the new version.
     pub restart: bool,
     /// Shift+Q asked "Quit boxvibe?": y quits, any other key doesn't (like tubevibe).
-    pub confirm_quit: bool,
     pub quit: bool,
 }
 
@@ -989,15 +986,12 @@ impl App {
             now: None,
             history: Vec::new(),
             status: String::new(),
-            help: false,
             sleep: None,
             sleep_pause_next: false,
             splash: None,
             system: None,
-            system_open: false,
+            dialogs: vibekit::dialog::DialogStack::new(),
             system_look: None,
-            confirm_delete: None,
-            confirm_unpin: None,
             pins_path: if demo { None } else { crate::pinned::default_path() },
             pins: Vec::new(),
             pinned_cursor: 0,
@@ -1014,7 +1008,6 @@ impl App {
             genres: GenresState::Idle,
             genres_cursor: 0,
             creating: false,
-            details: None,
             editor: None,
             ad: AdPhase::Off,
             ad_serial: 0,
@@ -1035,7 +1028,6 @@ impl App {
             edit_config: false,
             hifi: None,
             restart: false,
-            confirm_quit: false,
             art: crate::art::Art::default(),
             quit: false,
             config,
@@ -1111,9 +1103,10 @@ impl App {
         if !lacking.is_empty() {
             self.status = format!("⚠ Missing: {}", lacking.join(", "));
             if !self.overlay_open() && self.prompt.is_none() {
-                self.system_open = true;
+                self.system = Some(checks.clone());
+                self.open_system();
             }
-        } else if self.system_open {
+        } else if self.system_open() {
             self.status = "System checked".into();
         } else if extras > 0 && !self.status.starts_with('⚠') && self.status != NO_KEYCHAIN {
             // (a config warning already showing matters more)
@@ -1121,16 +1114,7 @@ impl App {
             self.status = format!("Optional, not installed: {}", names.join(", "));
         }
         self.system = Some(checks);
-    }
-
-    /// Keys on the System Check list: Enter looks again, any other key closes it.
-    fn on_system_key(&mut self, key: KeyEvent) {
-        if key.code == KeyCode::Enter {
-            self.system = None;
-            self.start_system_check();
-        } else {
-            self.system_open = false;
-        }
+        self.system_changed();
     }
 
     /// The boot screen starts (main calls this once, if `[look] boot_screen` and `[look] animations` are on).
@@ -1516,7 +1500,7 @@ impl App {
         let Some(menu) = self.song_menu.as_mut() else { return };
         let len = SongAction::ALL.len();
         match key.code {
-            KeyCode::Esc | KeyCode::Char('.' | 'q') => self.song_menu = None,
+            KeyCode::Esc | KeyCode::Char('.') => self.song_menu = None,
             KeyCode::Char('j') | KeyCode::Down => menu.cursor = step(menu.cursor, len, 1),
             KeyCode::Char('k') | KeyCode::Up => menu.cursor = step(menu.cursor, len, -1),
             KeyCode::Home | KeyCode::Char('g') => menu.cursor = 0,
@@ -1627,12 +1611,12 @@ impl App {
             why,
         };
         if details.station_id.is_empty() {
-            self.details = Some(Details { from_pandora: Some(Err("no station for this song".into())), ..details });
+            self.open_details(Details { from_pandora: Some(Err("no station for this song".into())), ..details });
             return;
         }
         let current = self.current_station.as_deref() == Some(details.station_id.as_str());
         self.backend.send(Request::StationDetails { station_id: details.station_id.clone(), current });
-        self.details = Some(details);
+        self.open_details(details);
     }
 
     /// The song a song key is for: the Up Next or History row when that
@@ -1924,7 +1908,7 @@ impl App {
             }
             Reply::StationRemoved { station_id } => self.station_removed(&station_id),
             Reply::StationDetails { station_id, details } => {
-                if let Some(d) = self.details.as_mut().filter(|d| d.station_id == station_id) {
+                if let Some(d) = self.details_mut().filter(|d| d.station_id == station_id) {
                     d.from_pandora = Some(Ok(details));
                 }
             }
@@ -2047,7 +2031,7 @@ impl App {
                     self.genres = GenresState::Failed(message.clone());
                 }
                 if what == "details"
-                    && let Some(d) = self.details.as_mut().filter(|d| d.from_pandora.is_none())
+                    && let Some(d) = self.details_mut().filter(|d| d.from_pandora.is_none())
                 {
                     d.from_pandora = Some(Err(message.clone()));
                     return;
@@ -2402,16 +2386,11 @@ impl App {
     /// The player's panes have the keys.
     /// A popup is drawn over the screen (Help, the quit box, the station boxes, details).
     pub fn overlay_open(&self) -> bool {
-        self.help
-            || self.system_open
-            || self.confirm_quit
-            || self.confirm_delete.is_some()
-            || self.confirm_unpin.is_some()
+        self.dialogs.is_open()
             || self.genre_notice.is_some()
             || self.confirm_good_vibes.is_some()
             || self.rename.is_some()
             || self.add_station.is_some()
-            || self.details.is_some()
             || self.song_menu.is_some()
             || self.panel.is_some()
             || self.theme_picker.is_some()
@@ -2726,35 +2705,8 @@ impl App {
             self.splash = None;
             return;
         }
-        if self.system_open {
-            return self.on_system_key(key);
-        }
-        if self.confirm_quit {
-            // y quits; any other key is no, as in tubevibe.
-            self.confirm_quit = false;
-            self.quit = matches!(key.code, KeyCode::Char('y' | 'Y'));
-            return;
-        }
-        if let Some(at) = self.confirm_unpin.take() {
-            // y unpins; any other key is no.
-            if matches!(key.code, KeyCode::Char('y' | 'Y')) && at < self.pins.len() {
-                let pin = self.pins.remove(at);
-                self.pinned_cursor = self.pinned_cursor.min(self.pins.len().saturating_sub(1));
-                self.save_pins();
-                self.status = format!("Unpinned “{}”", pin.title);
-            } else {
-                self.status = "Kept the pin".into();
-            }
-            return;
-        }
-        if let Some(station) = self.confirm_delete.take() {
-            // y deletes; any other key is no, like the quit box.
-            if matches!(key.code, KeyCode::Char('y' | 'Y')) {
-                self.status = format!("Deleting “{}” from your Pandora account…", station.name);
-                self.backend.send(Request::RemoveStation { station_id: station.id });
-            } else {
-                self.status = "Kept the station".into();
-            }
+        // Dialogs (questions, Help, details, System Check) are on top: they get the keys.
+        if self.dialog_key(key) {
             return;
         }
         if self.genre_notice.is_some() {
@@ -2781,15 +2733,6 @@ impl App {
         if self.prompt.is_some() {
             return self.prompt_key(key);
         }
-        if self.help {
-            // The title says "Any Key Closes", so any key does.
-            self.help = false;
-            return;
-        }
-        if self.details.is_some() {
-            self.details = None;
-            return;
-        }
         if self.song_menu.is_some() {
             return self.song_menu_key(key);
         }
@@ -2801,8 +2744,8 @@ impl App {
     fn run(&mut self, cmd: Cmd) {
         match cmd {
             // Only Shift+Q quits, so a stray lowercase q can't end playback.
-            Cmd::Quit => self.confirm_quit = true,
-            Cmd::Help => self.help = true,
+            Cmd::Quit => self.ask_quit(),
+            Cmd::Help => self.open_help(),
             Cmd::Pause => self.audio.toggle_pause(),
             Cmd::Skip => self.skip(),
             Cmd::NowPlaying => self.show_now_playing(),
@@ -3015,7 +2958,7 @@ impl App {
             if self.pins.is_empty() {
                 self.status = "Nothing pinned yet: Shift+I pins the selected or playing song".into();
             } else {
-                self.confirm_unpin = Some(self.pinned_cursor.min(self.pins.len() - 1));
+                self.ask_unpin(self.pinned_cursor.min(self.pins.len() - 1));
             }
             return;
         }
@@ -3026,7 +2969,7 @@ impl App {
             self.blocked(&station, "deleted", format!("Pandora doesn't let you delete “{}”", station.name));
             return;
         }
-        self.confirm_delete = Some(StationRef { id: station.id, name: station.name, favorite });
+        self.ask_delete_station(StationRef { id: station.id, name: station.name, favorite });
     }
 
     /// Pandora removed a station: it goes from the list, Favorites and,
@@ -3089,12 +3032,12 @@ impl App {
             return self.show_song_details(song, false);
         };
         if details.station_id.is_empty() {
-            self.details = Some(Details { from_pandora: Some(Err("no station for this song".into())), ..details });
+            self.open_details(Details { from_pandora: Some(Err("no station for this song".into())), ..details });
             return;
         }
         let current = self.current_station.as_deref() == Some(details.station_id.as_str());
         self.backend.send(Request::StationDetails { station_id: details.station_id.clone(), current });
-        self.details = Some(details);
+        self.open_details(details);
     }
 
     /// Tab: menu → Up Next → History → menu on the player (Shift+Tab the
@@ -3584,21 +3527,89 @@ mod tests {
     fn only_shift_q_quits() {
         let mut app = demo();
         app.on_key(key(KeyCode::Char('q')));
-        assert!(!app.quit && !app.confirm_quit);
+        assert!(!app.quit && !app.quit_asked());
         app.on_key(KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT));
-        assert!(app.confirm_quit && !app.quit, "Q asks first");
+        assert!(app.quit_asked() && !app.quit, "Q asks first");
         app.on_key(key(KeyCode::Char('y')));
         assert!(app.quit);
     }
 
     #[test]
-    fn quit_box_any_other_key_is_no() {
-        for no in [KeyCode::Char('n'), KeyCode::Enter, KeyCode::Esc, KeyCode::Char('Q')] {
+    fn quit_box_answers_only_on_y_n_enter_esc_and_a_second_q() {
+        let shift_q = KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT);
+        // No: n, Esc, and Enter (the box starts on No).
+        for no in [KeyCode::Char('n'), KeyCode::Enter, KeyCode::Esc] {
             let mut app = demo();
-            app.on_key(KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT));
+            app.on_key(shift_q);
             app.on_key(key(no));
-            assert!(!app.quit && !app.confirm_quit, "{no:?}");
+            assert!(!app.quit && !app.quit_asked(), "{no:?}");
         }
+        // Yes: y, a second Q, and Enter once moved to Quit.
+        for yes in [vec![key(KeyCode::Char('y'))], vec![shift_q], vec![key(KeyCode::Left), key(KeyCode::Enter)]] {
+            let mut app = demo();
+            app.on_key(shift_q);
+            for k in yes {
+                app.on_key(k);
+            }
+            assert!(app.quit, "yes");
+        }
+        // Anything else is ignored: the question stays, nothing quits.
+        let mut app = demo();
+        app.on_key(shift_q);
+        for other in [KeyCode::Char('q'), KeyCode::Char('x'), KeyCode::Char(' '), KeyCode::Char('?'), KeyCode::Down] {
+            app.on_key(key(other));
+            assert!(app.quit_asked() && !app.quit, "{other:?}");
+        }
+    }
+
+    #[test]
+    fn unpin_and_delete_questions_ignore_stray_keys() {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.settle(Duration::from_millis(150));
+        app.on_key(shift('S'));
+        let station = app.stations.iter().position(|s| s.allow_delete).unwrap();
+        app.stations_cursor = station;
+        app.on_key(key(KeyCode::Char('x')));
+        for other in ['q', 'j', 'x', ' '] {
+            app.on_key(key(KeyCode::Char(other)));
+            assert!(app.confirm_delete().is_some(), "{other} leaves the question open");
+        }
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.confirm_delete().is_none() && app.status == "Kept the station", "{}", app.status);
+    }
+
+    #[test]
+    fn help_closes_only_with_question_mark_or_esc() {
+        for close in [KeyCode::Char('?'), KeyCode::Esc] {
+            let mut app = demo();
+            app.on_key(key(KeyCode::Char('?')));
+            for other in ['q', 'x', 'j', ' '] {
+                app.on_key(key(KeyCode::Char(other)));
+                assert!(app.help_open(), "{other} leaves Help open");
+            }
+            app.on_key(key(close));
+            assert!(!app.help_open() && !app.quit, "{close:?} closes it");
+        }
+    }
+
+    #[test]
+    fn lowercase_q_closes_neither_the_song_menu_nor_a_panel() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::NowPlaying;
+        app.on_key(key(KeyCode::Char('.')));
+        assert!(app.song_menu.is_some(), "the song menu opens");
+        app.on_key(key(KeyCode::Char('q')));
+        assert!(app.song_menu.is_some() && !app.quit_asked(), "q does nothing");
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.song_menu.is_none(), "Esc closes it");
+        app.on_key(key(KeyCode::Char('m')));
+        app.settle(Duration::from_millis(150));
+        assert!(app.panel.is_some(), "the modes panel opens");
+        app.on_key(key(KeyCode::Char('q')));
+        assert!(app.panel.is_some(), "q does nothing");
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.panel.is_none(), "Esc closes it");
     }
 
     #[test]
@@ -4278,7 +4289,7 @@ mod tests {
             assert!(app.status.contains(bar), "the bar says it too: {}", app.status);
             // Other keys do nothing; Esc closes it and the bar keeps the message.
             app.on_key(key(KeyCode::Char('q')));
-            assert!(app.genre_notice.is_some() && !app.confirm_quit, "the popup eats other keys");
+            assert!(app.genre_notice.is_some() && !app.quit_asked(), "the popup eats other keys");
             app.on_key(key(KeyCode::Esc));
             assert!(app.genre_notice.is_none() && app.status.contains(bar), "{}", app.status);
         }
@@ -4289,7 +4300,7 @@ mod tests {
         // Deleting a genre station Pandora does allow deleting asks as before.
         let mut app = on_station(Config::default(), None, genre);
         app.on_key(key(KeyCode::Char('x')));
-        assert!(app.confirm_delete.is_some() && app.genre_notice.is_none());
+        assert!(app.confirm_delete().is_some() && app.genre_notice.is_none());
     }
 
     #[test]
@@ -4761,7 +4772,7 @@ mod tests {
         app.on_key(key(KeyCode::Enter));
         assert_eq!((app.view, app.focus), (View::Pinned, Focus::Content));
         app.on_key(key(KeyCode::Char('x')));
-        assert_eq!(app.confirm_unpin, Some(0));
+        assert_eq!(app.confirm_unpin(), Some(0));
         app.on_key(key(KeyCode::Char('n')));
         assert_eq!(app.pins.len(), 2);
         app.on_key(key(KeyCode::Char('j')));
@@ -5451,9 +5462,9 @@ mod tests {
         app.config.ui.favorites.push(crate::config::Favorite { id: station.id.clone(), name: station.name.clone() });
         let count = app.stations.len();
         app.on_key(key(KeyCode::Char('x')));
-        assert_eq!(app.confirm_delete.as_ref().map(|s| s.id.as_str()), Some(station.id.as_str()));
+        assert_eq!(app.confirm_delete().map(|s| s.id.as_str()), Some(station.id.as_str()));
         app.on_key(key(KeyCode::Char('n')));
-        assert!(app.confirm_delete.is_none());
+        assert!(app.confirm_delete().is_none());
         app.settle(Duration::from_millis(100));
         assert_eq!(app.stations.len(), count, "any key but y keeps it");
         app.on_key(key(KeyCode::Char('x')));
@@ -5476,12 +5487,17 @@ mod tests {
         let rename = app.rename.take().expect("rename box");
         assert!(rename.station.favorite && rename.station.id == station.id);
         app.on_key(key(KeyCode::Char('x')));
-        let delete = app.confirm_delete.take().expect("delete box");
+        let delete = app.confirm_delete().cloned().expect("delete box");
+        app.on_key(key(KeyCode::Esc));
         assert!(delete.favorite && delete.id == station.id);
         app.on_key(key(KeyCode::Char('v')));
-        assert_eq!(app.details.as_ref().map(|d| d.station_id.as_str()), Some(station.id.as_str()));
+        assert_eq!(app.details().map(|d| d.station_id.as_str()), Some(station.id.as_str()));
         app.on_key(key(KeyCode::Char('q')));
-        assert!(app.details.is_none(), "any key closes details");
+        app.on_key(key(KeyCode::Char('f')));
+        assert!(app.details().is_some(), "q and other keys leave details open");
+        assert!(app.is_favorite(&station.id), "and do nothing behind it");
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.details().is_none(), "Esc closes details");
         app.on_key(key(KeyCode::Char('f')));
         assert!(!app.is_favorite(&station.id), "f still removes the favorite");
         assert!(app.stations.iter().any(|s| s.id == station.id), "and leaves the station alone");
@@ -5495,7 +5511,7 @@ mod tests {
         let i = app.stations.iter().position(|s| !s.allow_delete).expect("the demo has a shuffle station");
         app.stations_cursor = i;
         app.on_key(key(KeyCode::Char('x')));
-        assert!(app.confirm_delete.is_none());
+        assert!(app.confirm_delete().is_none());
         assert!(app.status.contains("doesn't let you delete"), "{}", app.status);
         app.on_key(key(KeyCode::Char('r')));
         assert!(app.rename.is_none());
@@ -5509,15 +5525,15 @@ mod tests {
         app.settle(Duration::from_millis(150));
         app.on_key(key(KeyCode::Char('v')));
         app.settle(Duration::from_millis(150));
-        let d = app.details.clone().expect("details open");
+        let d = app.details().cloned().expect("details open");
         assert!(matches!(d.of, DetailsOf::Song(_)));
         assert!(matches!(d.from_pandora, Some(Ok(ref s)) if !s.seeds.is_empty()), "{d:?}");
         app.on_key(key(KeyCode::Esc));
-        assert!(app.details.is_none());
+        assert!(app.details().is_none());
         app.on_key(shift('S'));
         app.on_key(key(KeyCode::Char('v')));
         app.settle(Duration::from_millis(150));
-        assert!(matches!(app.details.as_ref().unwrap().of, DetailsOf::Station(_)));
+        assert!(matches!(app.details().unwrap().of, DetailsOf::Station(_)));
     }
 
     fn type_text(app: &mut App, text: &str) {
@@ -5766,10 +5782,10 @@ mod tests {
     fn the_list_opens_by_itself_only_when_something_needed_is_missing() {
         let mut app = App::new(Config::default(), None, &[], true);
         app.system_checked(&facts(true, false));
-        assert!(!app.system_open, "the font is there: only a line about the extra");
+        assert!(!app.system_open(), "the font is there: only a line about the extra");
         assert_eq!(app.status, "Optional, not installed: notify-send");
         app.system_checked(&facts(false, true));
-        assert!(app.system_open, "no Nerd Font: the list opens");
+        assert!(app.system_open(), "no Nerd Font: the list opens");
         assert!(app.status.contains("Missing: Nerd Font symbols"), "{}", app.status);
     }
 
@@ -5778,7 +5794,7 @@ mod tests {
         let mut app = App::new(Config::default(), None, &[], true);
         app.status = String::new();
         app.system_checked(&facts(true, true));
-        assert!(!app.system_open && app.status.is_empty(), "{}", app.status);
+        assert!(!app.system_open() && app.status.is_empty(), "{}", app.status);
     }
 
     #[test]
@@ -5786,7 +5802,7 @@ mod tests {
         let mut app = App::new(Config::default(), None, &[], true);
         app.config.ui.icons = crate::config::IconSet::Emoji;
         app.system_checked(&facts(false, true));
-        assert!(!app.system_open);
+        assert!(!app.system_open());
         assert!(app.status.contains("Optional"), "the font is listed but optional: {}", app.status);
     }
 
@@ -5795,23 +5811,27 @@ mod tests {
         let mut app = App::new(Config::default(), None, &[], true);
         app.open_prompt(Prompt::Email);
         app.system_checked(&facts(false, true));
-        assert!(!app.system_open, "the email box keeps the keys");
+        assert!(!app.system_open(), "the email box keeps the keys");
         assert!(app.status.contains("Missing: Nerd Font symbols"), "{}", app.status);
         app.prompt = None;
-        app.help = true;
+        app.open_help();
         app.system_checked(&facts(false, true));
-        assert!(!app.system_open, "nor over Help");
+        assert!(!app.system_open(), "nor over Help");
     }
 
     #[test]
-    fn enter_looks_again_and_any_other_key_closes_the_list() {
+    fn enter_looks_again_and_only_esc_closes_the_list() {
         let mut app = App::new(Config::default(), None, &[], true);
         app.system_checked(&facts(false, false));
-        assert!(app.system_open && app.overlay_open());
+        assert!(app.system_open() && app.overlay_open());
         app.on_key(key(KeyCode::Enter));
-        assert!(app.system_open && app.system.is_none(), "looking again");
-        app.on_key(key(KeyCode::Char('q')));
-        assert!(!app.system_open && !app.quit, "q only closes it");
+        assert!(app.system_open() && app.system.is_none(), "looking again");
+        for other in ['q', 'x', ' '] {
+            app.on_key(key(KeyCode::Char(other)));
+            assert!(app.system_open() && !app.quit, "{other} does nothing");
+        }
+        app.on_key(key(KeyCode::Esc));
+        assert!(!app.system_open() && !app.quit, "Esc closes it");
     }
 
     #[test]
@@ -5823,7 +5843,7 @@ mod tests {
         assert!(app.system.is_none(), "not yet");
         send.send(facts(false, true)).unwrap();
         app.tick();
-        assert!(app.system.is_some() && app.system_open);
+        assert!(app.system.is_some() && app.system_open());
     }
 
     #[test]

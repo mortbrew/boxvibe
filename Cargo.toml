@@ -13,8 +13,9 @@ categories = ["command-line-utilities", "multimedia::audio"]
 exclude = ["/screenshots", "/tools"]
 
 [dependencies]
-# Path for now; see docs/vibekit-dependency.md for the git + tag line.
-vibekit = { git = "https://github.com/mortbrew/vibekit", tag = "v0.1.0" }
+# vibekit 0.2.0 from its local `dialogs` branch until v0.2.0 is pushed and tagged;
+# then: vibekit = { git = "https://github.com/mortbrew/vibekit", tag = "v0.2.0" } (docs/vibekit-dependency.md)
+vibekit = { path = "../vibekit" }
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 crossterm = "0.29"

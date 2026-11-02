@@ -186,7 +186,7 @@ impl App {
         let Some(panel) = self.panel.as_mut() else { return };
         let len = panel.items.len();
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.panel = None,
+            KeyCode::Esc => self.panel = None,
             KeyCode::Char('j') | KeyCode::Down => panel.cursor = step(panel.cursor, len, 1),
             KeyCode::Char('k') | KeyCode::Up => panel.cursor = step(panel.cursor, len, -1),
             KeyCode::Home | KeyCode::Char('g') => panel.cursor = 0,

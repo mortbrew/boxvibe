@@ -22,7 +22,7 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
     let mut app = App::new(config, Config::default_path(), &[], true);
     app.demo_warm_up(3, Duration::from_secs(102));
     match screen {
-        "help" => app.help = true,
+        "help" => app.open_help(),
         // The System Check list for a missing Nerd Font and notify-send.
         "system" => {
             app.system_checked(&crate::deps::Facts { families: Some("DejaVu Sans\n".into()), ..Default::default() });

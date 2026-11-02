@@ -6,6 +6,10 @@ Short and scannable; the git history has the details.
 
 ### Internal
 - Themes, Theme Select (state, keys and drawing), the theme store and self-update now live in the shared `vibekit` crate (path dependency).
+- The quit, unpin and delete questions, Help, Details and System Check now use vibekit 0.2.0's `Confirm`, `Help` and `DialogStack`.
+
+### Changed
+- Keys follow the shared vibe shortcuts: a second `Q` confirms quit; questions answer only on y / n / Enter / Esc; Help closes on `?` or Esc; Details, System Check, panels and the song menu close on Esc only (lowercase `q` no longer closes anything, and no box closes on any key).
 
 ### Added
 - **Song menu** (`.`): start a station from the artist or song, Tired, Share, Why This Song?, Similar Artists & Bio, Station Mode, Pin, thumbs, Details, Sleep.

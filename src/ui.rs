@@ -17,7 +17,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
     App, Details, Editor, EditorTab, FeedState, Focus, GenresState, Loaded, MenuItem, Pane, Prompt, Rename, SearchMode,
-    Session, Setting, SongAction, StationRef, StationSearch, View,
+    Session, Setting, SongAction, StationSearch, View,
 };
 use crate::art::Cover;
 use crate::config::{AlbumArt, BorderStyle, GoodVibes};
@@ -27,6 +27,7 @@ use crate::pandora::{Rating, Song};
 use crate::theme::Palette;
 use crate::update::{Progress, Replace};
 use ratatui_image::{Resize, StatefulImage};
+use vibekit::dialog::Section;
 
 thread_local! {
     /// `[look] border_style` of the frame being drawn (set by [`draw`]), like tubevibe.
@@ -98,31 +99,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if app.overlay_open() {
         dim(frame.buffer_mut(), p.background);
     }
-    if app.help {
-        draw_help(frame, app, body);
-    }
-    if app.system_open {
-        draw_system(frame, app, body);
-    }
     if let Some(menu) = &app.song_menu {
         draw_song_menu(frame, &p, body, menu);
     }
     if let Some(panel) = &app.panel {
         draw_panel(frame, &p, body, panel);
     }
-    if let Some(d) = &app.details {
-        draw_details(frame, &p, body, d);
-    }
-    if app.confirm_quit {
-        draw_confirm_quit(frame, &p, area);
-    }
-    if let Some(station) = &app.confirm_delete {
-        draw_confirm_delete(frame, &p, area, station);
-    }
-    if let Some(pin) = app.confirm_unpin.and_then(|at| app.pins.get(at)) {
-        let question = format!("Unpin “{}” by {}?", clean(&pin.title), clean(&pin.artist));
-        draw_box(frame, &p, area, &BoxText { title: " Unpin song ", ..BoxText::confirm(&question) });
-    }
+    // Questions, Help, details and System Check (vibekit's dialog stack; the dim is ours, above).
+    app.dialogs.draw_dialogs(frame, &p);
     if let Some(rename) = &app.rename {
         draw_rename(frame, &p, area, rename);
     }
@@ -183,23 +167,6 @@ fn dim_color(color: Color, background: Color) -> Color {
         Color::Black => Color::Black,
         _ => Color::DarkGray,
     }
-}
-
-/// tubevibe's confirm box: " Confirm " on a red border; a blank line, the
-/// question, the keys and a blank line, so it sits evenly in the frame.
-fn draw_confirm_quit(frame: &mut Frame, p: &Palette, screen: Rect) {
-    draw_box(frame, p, screen, &BoxText::confirm("Quit boxvibe?"));
-}
-
-/// `x` on a station: the same box, naming the station and what happens.
-fn draw_confirm_delete(frame: &mut Frame, p: &Palette, screen: Rect, station: &StationRef) {
-    let name = clean(&station.name);
-    let question = if station.favorite {
-        format!("Delete the station “{name}” (the one this favorite plays)? It removes it from your Pandora account.")
-    } else {
-        format!("Delete the station “{name}”? It removes it from your Pandora account.")
-    };
-    draw_box(frame, p, screen, &BoxText::confirm(&question));
 }
 
 /// `r` on a station: a box asking for the new name, in the same style.
@@ -393,7 +360,7 @@ fn panel_block<'a>(heading: String, p: &Palette) -> Block<'a> {
 
 /// `v`: what Pandora tells about a song or station: label and value rows,
 /// the values wrapped, nothing the API did not send.
-fn draw_details(frame: &mut Frame, p: &Palette, area: Rect, d: &Details) {
+pub(crate) fn draw_details(frame: &mut Frame, p: &Palette, area: Rect, d: &Details) {
     let rows = d.rows();
     let label_w = rows.iter().map(|(l, _)| l.width()).max().unwrap_or(0) + 2;
     let width = 72.min(area.width.saturating_sub(2)).max(area.width.min(20));
@@ -524,7 +491,7 @@ fn is_zero_width(c: char) -> bool {
 /// as two-cell emoji, Nerd Font glyphs) go too, since a glyph drawn wider
 /// than measured shifts the rest of the row, the rating included.
 /// Two-cell emoji (🎵) stay: every terminal agrees on those.
-fn clean(text: &str) -> String {
+pub(crate) fn clean(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         if c.is_control() {
@@ -693,14 +660,6 @@ pub fn logo_title<'a>(p: &Palette) -> Line<'a> {
     logo_line_with(p, Span::styled(format!(" {} ", crate::icons::LOGO), Style::new().fg(p.blue).bold()), "")
 }
 
-/// tubevibe's Help icon: the little keyboard, the same in every icon set,
-/// in the text colour with two spaces after it, like tubevibe's title.
-const HELP_ICON: &str = "⌨";
-
-fn help_title<'a>(p: &Palette) -> Line<'a> {
-    logo_line_with(p, Span::styled(format!(" {HELP_ICON}  "), Style::new().fg(p.fg).bold()), HELP_TITLE_REST)
-}
-
 fn logo_line_with<'a>(p: &Palette, icon: Span<'a>, rest: &str) -> Line<'a> {
     Line::from(vec![
         icon,
@@ -708,9 +667,6 @@ fn logo_line_with<'a>(p: &Palette, icon: Span<'a>, rest: &str) -> Line<'a> {
         Span::styled(format!("vibe{rest} "), Style::new().fg(p.fg).bold()),
     ])
 }
-
-/// The Help window's title: "⌨  boxvibe Help · Any Key Closes".
-const HELP_TITLE_REST: &str = " Help · Any Key Closes";
 
 // --- Menu ---
 
@@ -2213,17 +2169,17 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.splash.is_some() {
         return Vec::new();
     }
-    if app.system_open {
-        return vec![("Enter", "Check Again"), ("Any Other Key", "Close")];
+    if app.system_open() {
+        return vec![("Enter", "Check Again"), ("Esc", "Close")];
     }
     if app.rename.is_some() {
         return vec![("Enter", "Rename"), ("Esc", "Cancel"), ("← →", "Move"), ("Ctrl+u", "Clear"), ("Ctrl+c", "Quit")];
     }
-    if app.confirm_delete.is_some() {
-        return vec![("y", "Yes, Delete"), ("Other Key", "No")];
+    if app.confirm_delete().is_some() {
+        return vec![("y", "Yes, Delete"), ("n Esc", "No"), ("← → Enter", "Choose")];
     }
-    if app.confirm_unpin.is_some() {
-        return vec![("y", "Yes, Unpin"), ("Other Key", "No")];
+    if app.confirm_unpin().is_some() {
+        return vec![("y", "Yes, Unpin"), ("n Esc", "No"), ("← → Enter", "Choose")];
     }
     if let Some(mode) = app.confirm_good_vibes {
         let yes = if mode == GoodVibes::Muted { "Mute Anyway" } else { "Turn Off Anyway" };
@@ -2277,14 +2233,14 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.prompt.is_some() {
         return vec![("Enter", "Save"), ("Esc", "Cancel"), ("← →", "Move"), ("Ctrl+u", "Clear"), ("Ctrl+c", "Quit")];
     }
-    if app.confirm_quit {
-        return vec![("y", "Yes, Quit"), ("Other Key", "No")];
+    if app.quit_asked() {
+        return vec![("Q y", "Yes, Quit"), ("n Esc", "No"), ("← → Enter", "Choose")];
     }
-    if app.details.is_some() {
-        return vec![("Any Key", "Close")];
+    if app.details().is_some() {
+        return vec![("Esc", "Close")];
     }
-    if app.help {
-        return vec![("Esc", "Close"), ("?", "Close")];
+    if app.help_open() {
+        return vec![("j/k ↑↓", "Scroll"), ("? Esc", "Close")];
     }
     let pause = if app.audio.is_paused() { "Play" } else { "Pause" };
     // A key is hinted only where it does something: what each one acts on
@@ -2559,83 +2515,37 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("C R H", "album art picture / off · retro HD, 64-bit … 2-bit · tint off / duotone / palette (saved)"),
             ("{ }", "menu narrower / wider (saved)"),
             ("?", "this help"),
-            ("Q Ctrl+c", "quit (asks first) / quit now"),
+            ("Q Ctrl+c", "quit (asks first; Q again confirms) / quit now"),
         ],
     ),
 ];
 
-fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
-    let p = app.palette;
-    // Every key pill is padded to the widest one, so the descriptions line up.
-    let key_w = HELP.iter().flat_map(|(_, keys)| keys.iter()).map(|(k, _)| k.width()).max().unwrap_or(0);
-    let mut lines = Vec::new();
-    for (name, keys) in HELP {
-        lines.push(Line::from(Span::styled(format!(" {name}"), Style::new().fg(p.orange).bold())));
-        for (key, what) in keys {
-            // A row with no key goes on explaining the one above it.
-            let pill = if key.is_empty() {
-                Span::raw("  ")
-            } else {
-                Span::styled(format!(" {key} "), Style::new().fg(p.background).bg(p.fg).bold())
-            };
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                pill,
-                Span::raw(" ".repeat(if key.is_empty() { key_w + 2 } else { key_w - key.width() + 2 })),
-                Span::styled((*what).to_owned(), Style::new().fg(p.fg)),
-            ]));
-        }
-        lines.push(Line::raw(""));
-    }
-    // The station icons, in the glyphs the icon set in use draws.
-    let ic = icons(app.config.ui.icons);
-    lines.push(Line::from(Span::styled(" STATION ICONS (right after the star)", Style::new().fg(p.orange).bold())));
-    let station_icons = [
-        (ic.genre_station, "genre station: made by Pandora, so it can't be renamed or edited (it can be deleted)"),
-        (ic.own_station, "a station you made: you can rename, edit and delete it"),
-    ];
-    for (glyph, what) in station_icons {
-        // Only the glyph and one cell either side wear the pill colour, so the
-        // glyph sits in the middle of it; the room the glyph may need (and the
-        // gap to the text) is plain background, never highlighted.
-        let pill = format!(" {glyph} ");
-        let gap = (key_w + 4).saturating_sub(safe_width(&pill));
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(pill, Style::new().fg(p.background).bg(p.fg).bold()),
-            Span::raw(" ".repeat(gap)),
-            Span::styled(what.to_owned(), Style::new().fg(p.fg)),
-        ]));
-    }
-    lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(HELP_FOOTER, Style::new().fg(p.muted))));
-    // A short terminal: the blank rows between the sections go first.
-    if lines.len() as u16 + 2 > area.height {
-        lines.retain(|l| l.width() > 0);
-    }
-    // As wide as the longest line (and the title), plus the borders and one
-    // blank cell; only a terminal too narrow for that wraps the lines.
-    let title_w = help_title(&p).width() + 2;
-    let text_w = lines.iter().map(Line::width).max().unwrap_or(0).max(title_w) as u16;
-    let width = (text_w + 3).min(area.width);
-    let inner_w = width.saturating_sub(2).max(1) as usize;
-    let rows: usize = lines.iter().map(|l| l.width().max(1).div_ceil(inner_w)).sum();
-    let box_area = centered(area, width, (rows as u16 + 2).min(area.height));
-    frame.render_widget(Clear, box_area);
-    let block = panel(help_title(&p), &p, true).style(Style::new().bg(p.background));
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), box_area);
+/// Help, for vibekit's `Help`: every key in `HELP`, the station icons in the
+/// glyphs of the icon set in use, and where the rest lives.
+pub fn help_sections(icon_set: crate::config::IconSet) -> Vec<Section> {
+    let mut sections: Vec<Section> = HELP.iter().map(|(name, keys)| Section::new(*name, keys)).collect();
+    let ic = icons(icon_set);
+    sections.push(Section::new(
+        "STATION ICONS (right after the star)",
+        &[
+            (ic.genre_station, "genre station: made by Pandora, so it can't be renamed or edited (it can be deleted)"),
+            (ic.own_station, "a station you made: you can rename, edit and delete it"),
+        ],
+    ));
+    sections.push(Section::new("MORE", &[("Shift+O", HELP_FOOTER.trim())]));
+    sections
 }
 
 /// What boxvibe uses from the system and whether it is there, like tubevibe's
 /// System Check: a mark, the name, what it is for, and under a missing one the
 /// package. Plain characters only: it has to read without the font it may lack.
-fn draw_system(frame: &mut Frame, app: &App, area: Rect) {
+pub(crate) fn draw_system(frame: &mut Frame, p: &Palette, checks: Option<&[crate::deps::Check]>, area: Rect) {
     use crate::deps::Presence;
-    let p = app.palette;
+    let p = *p;
     let text = Style::new().fg(p.fg);
     let muted = Style::new().fg(p.muted);
     let mut lines = vec![Line::raw("")];
-    let Some(checks) = &app.system else {
+    let Some(checks) = checks else {
         lines.push(Line::from(Span::styled(" Checking…", Style::new().fg(p.orange))));
         return draw_system_box(frame, &p, lines, area);
     };
@@ -2676,7 +2586,7 @@ fn draw_system(frame: &mut Frame, app: &App, area: Rect) {
         )));
     }
     lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled("  Enter checks again · any other key closes", muted)));
+    lines.push(Line::from(Span::styled("  Enter checks again · Esc closes", muted)));
     draw_system_box(frame, &p, lines, area);
 }
 
@@ -2887,7 +2797,7 @@ mod tests {
             assert_eq!(ed.station.name, "M83 Radio");
             // Delete stays refused here, with its old message.
             press(&mut app, 'x');
-            assert!(app.confirm_delete.is_none() && app.genre_notice.is_none());
+            assert!(app.confirm_delete().is_none() && app.genre_notice.is_none());
             assert!(app.status.starts_with("x deletes works on a station"), "{}", app.status);
         }
     }
@@ -3159,7 +3069,7 @@ mod tests {
     fn help_explains_seeds_and_thumbs_under_the_editor() {
         for (cols, rows) in [(255u16, 70u16), (160, 40)] {
             let mut app = demo();
-            app.help = true;
+            app.open_help();
             let text = screen(&app, cols, rows).0.join("\n");
             assert!(text.contains("Seeds: the artists, songs and genres it plays music like"), "{cols}x{rows}\n{text}");
             assert!(
@@ -3317,7 +3227,9 @@ mod tests {
             let ic = icons(set);
             let mut app = demo();
             app.config.ui.icons = set;
-            app.help = true;
+            app.open_help();
+            // Short screens scroll Help; the icons and footer are at its end.
+            app.on_key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Char('G')));
             for (cols, rows) in [(160u16, 40u16), (255, 70)] {
                 let lines = screen(&app, cols, rows).0;
                 let all = lines.join("\n");
@@ -3337,33 +3249,14 @@ mod tests {
     }
 
     #[test]
-    fn help_icons_sit_in_the_middle_of_their_highlight_with_no_extra_colour_on_the_right() {
+    fn help_keeps_the_station_icons_its_text_cleaning_would_drop() {
         use crate::config::IconSet;
-        use unicode_width::UnicodeWidthStr;
         for set in [IconSet::Emoji, IconSet::Nerd, IconSet::Unicode] {
             let ic = icons(set);
-            let mut app = demo();
-            app.config.ui.icons = set;
-            app.help = true;
-            let fg = app.palette.fg;
-            for (cols, rows) in [(160u16, 40u16), (255, 70)] {
-                let (lines, buffer) = screen(&app, cols, rows);
-                for (glyph, what) in
-                    [(ic.genre_station, "genre station: made by Pandora"), (ic.own_station, "a station you made")]
-                {
-                    let y = lines.iter().position(|l| l.contains(what)).unwrap() as u16;
-                    let lit: Vec<u16> = (0..cols).filter(|&x| buffer[(x, y)].bg == fg).collect();
-                    let (first, last) = (lit[0], *lit.last().unwrap());
-                    let w = glyph.width().max(1) as u16;
-                    let ctx = format!("{set:?} {cols}x{rows} {what}");
-                    assert_eq!(last - first + 1, w + 2, "{ctx}: one cell either side of the glyph, nothing more");
-                    // (The second cell of a wide glyph carries no colour of its own.)
-                    assert!(lit.len() as u16 + 1 >= w + 2, "{ctx}: the highlight has no gaps");
-                    assert_eq!(buffer[(first, y)].symbol(), " ", "{ctx}");
-                    assert_eq!(buffer[(first + 1, y)].symbol(), glyph, "{ctx}: the glyph is first inside the block");
-                    assert_eq!(buffer[(last, y)].symbol(), " ", "{ctx}");
-                }
-            }
+            let s = help_sections(set);
+            let icons = s.iter().find(|s| s.title.starts_with("STATION ICONS")).unwrap();
+            assert_eq!(icons.keys[0].0, ic.genre_station, "{set:?}");
+            assert_eq!(icons.keys[1].0, ic.own_station, "{set:?}");
         }
     }
 
@@ -3585,7 +3478,10 @@ mod tests {
         for (cols, rows) in [(255u16, 70u16), (160, 40)] {
             let mut seen = Vec::new();
             for help in [false, true, false] {
-                app.help = help;
+                app.dialogs.clear();
+                if help {
+                    app.open_help();
+                }
                 app.art.set_overlay(help);
                 let (lines, buf) = screen(&app, cols, rows);
                 let cover = app.art.last_cover.get();
@@ -3629,7 +3525,7 @@ mod tests {
         }
         let old = app.now.as_ref().unwrap().cover_art_url.clone();
         assert_eq!(app.art.shown_cover(), Some((old.clone(), false)), "the picture");
-        app.help = true;
+        app.open_help();
         frame(&mut app);
         assert_eq!(app.art.shown_cover(), Some((old.clone(), true)), "half blocks under Help");
         app.demo_warm_up(1, std::time::Duration::ZERO);
@@ -3639,9 +3535,9 @@ mod tests {
             frame(&mut app);
             app.settle(std::time::Duration::from_millis(50));
         }
-        assert!(app.help, "Help still open");
+        assert!(app.help_open(), "Help still open");
         assert_eq!(app.art.shown_cover(), Some((new.clone(), true)), "the new cover, in half blocks");
-        app.help = false;
+        app.dialogs.clear();
         frame(&mut app);
         assert_eq!(app.art.shown_cover(), Some((new, false)), "the new picture once Help closes");
     }
@@ -3676,7 +3572,7 @@ mod tests {
         app.settle(std::time::Duration::from_millis(300));
         app.art.set_overlay(true);
         let (_, before) = screen(&app, 255, 70);
-        app.help = true;
+        app.open_help();
         let (lines, after) = screen(&app, 255, 70);
         let top = lines.iter().position(|l| l.contains("boxvibe Help")).unwrap() as u16;
         let left = lines[top as usize].chars().position(|c| c == '┌' || c == '╭').unwrap_or(0) as u16;
@@ -3744,15 +3640,19 @@ mod tests {
     #[test]
     fn help_fits_its_longest_line_and_its_keys_line_up() {
         let mut app = demo();
-        app.help = true;
+        app.open_help();
         for (cols, rows) in [(255u16, 70u16), (160, 40)] {
             let (lines, _) = screen(&app, cols, rows);
-            let all = lines.join("\n");
+            let mut end = demo();
+            end.open_help();
+            end.on_key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Char('G')));
+            let all = lines.join("\n") + "\n" + &screen(&end, cols, rows).0.join("\n");
             for whole in [
                 "play the station · open Settings / About",
                 "Now Playing: the pane gets the keys",
                 HELP_FOOTER.trim(),
-                "⌨  boxvibe Help · Any Key Closes",
+                "boxvibe Help",
+                "? or Esc close",
             ] {
                 assert!(all.contains(whole), "{cols}x{rows}: {whole:?} is cut off\n{all}");
             }
@@ -3827,8 +3727,8 @@ mod tests {
     /// Puts the app in one of [`contexts`] with a favorite in the menu.
     fn enter(app: &mut App, focus: crate::app::Focus, view: View, pane: Pane, favorite: bool) {
         app.rename = None;
-        app.confirm_delete = None;
-        app.details = None;
+        app.dialogs.clear();
+        app.dialogs.clear();
         app.add_station = None;
         app.editor = None;
         app.on_add_row = false;
@@ -3868,10 +3768,10 @@ mod tests {
                 app.on_key(KeyEvent::from(KeyCode::Char(key)));
                 let did = match key {
                     'r' => app.rename.is_some(),
-                    'x' => app.confirm_delete.is_some(),
+                    'x' => app.confirm_delete().is_some(),
                     'a' => app.add_station.is_some(),
                     'e' => app.editor.is_some(),
-                    _ => app.details.is_some(),
+                    _ => app.details().is_some(),
                 };
                 // v on a song is in the `.` menu: it works, unhinted.
                 let song_v = key == 'v' && view == View::Player && focus == Focus::Content;
@@ -4070,18 +3970,13 @@ mod tests {
     }
 
     #[test]
-    fn confirm_has_a_blank_line_above_and_below() {
+    fn the_quit_question_is_vibekits_confirm_with_a_blank_line_above_the_question() {
         let mut app = demo();
-        app.confirm_quit = true;
+        app.ask_quit();
         let (lines, _) = screen(&app, 120, 36);
-        let top = lines.iter().position(|l| l.contains(" Confirm ")).expect("confirm box");
-        let chars = |y: usize| lines[y].chars().collect::<Vec<char>>();
-        let left = lines[top].chars().position(|c| c == '┌').unwrap();
-        let bottom = (top + 1..lines.len()).find(|&y| chars(y)[left] == '└').expect("bottom");
-        let right = (left + 1..chars(top).len()).find(|&x| chars(top)[x] == '┐').unwrap();
-        let inner: Vec<String> =
-            (top + 1..bottom).map(|y| chars(y)[left + 1..right].iter().collect::<String>().trim().to_owned()).collect();
-        assert_eq!(inner, ["", "Quit boxvibe?", "y = yes · any other key = no", ""], "{inner:?}");
+        let top = lines.iter().position(|l| l.contains("┌ Quit ")).expect("quit box");
+        assert!(lines[top + 1].contains("│ ") && !lines[top + 1].contains("Quit boxvibe?"), "blank line first");
+        assert!(lines[top + 2].contains("Quit boxvibe?"), "{}", lines[top + 2]);
     }
 
     #[test]
@@ -4093,15 +3988,16 @@ mod tests {
     }
 
     #[test]
-    fn shift_q_shows_tubevibes_confirm_box() {
+    fn shift_q_shows_the_quit_box_and_says_q_again_quits() {
         let mut app = demo();
-        app.confirm_quit = true;
-        let (lines, _) = screen(&app, 120, 36);
-        let all = lines.join("\n");
-        assert!(all.contains(" Confirm "), "{all}");
-        assert!(all.contains("Quit boxvibe?"), "{all}");
-        assert!(all.contains("y = yes · any other key = no"), "{all}");
-        assert_eq!(key_caps(&app), vec![("y", "Yes, Quit"), ("Other Key", "No")]);
+        app.ask_quit();
+        let all = screen(&app, 120, 36).0.join("\n");
+        for want in ["Quit boxvibe?", "Quit (y)", "No (n)", "Q again to quit · Esc stay"] {
+            assert!(all.contains(want), "{want:?}\n{all}");
+        }
+        assert!(!all.contains("any other key"), "{all}");
+        let caps = key_caps(&app);
+        assert!(caps.contains(&("Q y", "Yes, Quit")), "{caps:?}");
     }
 
     #[test]
@@ -4126,20 +4022,12 @@ mod tests {
     }
 
     #[test]
-    fn help_title_uses_tubevibes_keyboard_and_the_logo_name() {
-        for set in [crate::config::IconSet::Unicode, crate::config::IconSet::Emoji, crate::config::IconSet::Nerd] {
-            let mut app = demo();
-            app.config.ui.icons = set;
-            app.help = true;
-            let (lines, buffer) = screen(&app, 120, 40);
-            let (y, row) = lines.iter().enumerate().find(|(_, l)| l.contains("Help · Any Key Closes")).unwrap();
-            assert!(row.contains("⌨  boxvibe Help · Any Key Closes"), "{row}");
-            let (p, y) = (app.palette, y as u16);
-            let x = row.chars().position(|c| c == '⌨').unwrap() as u16;
-            assert_eq!(buffer[(x, y)].fg, p.fg);
-            assert_eq!((buffer[(x + 3, y)].fg, buffer[(x + 6, y)].fg), (p.blue, p.fg));
-            assert!(buffer[(x + 6, y)].modifier.contains(ratatui::style::Modifier::BOLD));
-        }
+    fn help_is_titled_boxvibe_help_and_says_how_to_close() {
+        let mut app = demo();
+        app.open_help();
+        let all = screen(&app, 120, 40).0.join("\n");
+        assert!(all.contains("┌ boxvibe Help "), "{all}");
+        assert!(all.contains("? or Esc close") && !all.contains("Any Key"), "{all}");
     }
 
     #[test]
@@ -4728,7 +4616,7 @@ mod tests {
             notify_send: false,
             keychain: Some(false),
         });
-        assert!(app.system_open);
+        assert!(app.system_open());
         let all = screen(&app, 110, 30).0.join("\n");
         for want in [
             "System Check",
@@ -4741,7 +4629,7 @@ mod tests {
             "Secret Service keychain",
             "package: a Secret Service keychain, e.g. gnome-keyring or KeePassXC",
             "only sees fonts installed on this computer",
-            "Enter checks again · any other key closes",
+            "Enter checks again · Esc closes",
         ] {
             assert!(all.contains(want), "{want:?} is missing from:\n{all}");
         }
@@ -4749,7 +4637,7 @@ mod tests {
         for gone in ["Install", "y/n", "pacman", "Don't ask"] {
             assert!(!all.contains(gone), "{gone:?} should not be there:\n{all}");
         }
-        assert_eq!(key_caps(&app), [("Enter", "Check Again"), ("Any Other Key", "Close")]);
+        assert_eq!(key_caps(&app), [("Enter", "Check Again"), ("Esc", "Close")]);
         // The app is behind it, as with Help.
         assert!(all.contains("STATIONS") || all.contains("NOW PLAYING") || all.contains("Stations"), "{all}");
         // What is there gets a tick and no package line.
@@ -4762,10 +4650,12 @@ mod tests {
                 keychain: Some(true),
             },
         ));
+        app.system_changed();
         let all = screen(&app, 110, 30).0.join("\n");
         assert!(all.contains("✔ Nerd Font symbols") && !all.contains("package:"), "{all}");
         // While it looks again.
         app.system = None;
+        app.system_changed();
         assert!(screen(&app, 110, 30).0.join("\n").contains("Checking…"));
     }
 
@@ -4785,9 +4675,9 @@ mod tests {
         let private =
             |all: &str| all.chars().filter(|c| ('\u{e000}'..='\u{f8ff}').contains(c) || *c > '\u{f0000}').count();
         for (cols, rows) in [(110, 30), (60, 24), (40, 14)] {
-            app.system_open = false;
+            app.dialogs.clear();
             let without = private(&screen(&app, cols, rows).0.join(""));
-            app.system_open = true;
+            app.open_system();
             let with = private(&screen(&app, cols, rows).0.join(""));
             assert!(with <= without, "{cols}x{rows}");
         }

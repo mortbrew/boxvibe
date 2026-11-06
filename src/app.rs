@@ -30,7 +30,7 @@ mod editor;
 mod panel;
 mod themes;
 pub use ad::{AdPhase, AdView, End};
-pub use editor::{Editor, EditorTab, FeedState, Loaded};
+pub use editor::{Editor, EditorConfirm, EditorTab, FeedState, Loaded};
 pub use panel::{Panel, PanelKind};
 pub use themes::ThemePicker;
 
@@ -440,9 +440,9 @@ pub const KEYMAP: &[Binding] = &[
     Binding { code: KeyCode::Left, shift: true, cmd: Cmd::VolumeDown },
     bind(KeyCode::Char('{'), Cmd::MenuNarrower),
     bind(KeyCode::Char('}'), Cmd::MenuWider),
-    // Lowercase: the pane that has the keys.
-    bind(KeyCode::Char('p'), Cmd::Pause),
+    // Space pauses from anywhere; lowercase p is unbound (STYLE shared core).
     bind(KeyCode::Char(' '), Cmd::Pause),
+    // Lowercase: the pane that has the keys.
     bind(KeyCode::Char('l'), Cmd::LikePane),
     bind(KeyCode::Char('b'), Cmd::BadPane),
     bind(KeyCode::Char('a'), Cmd::Add),
@@ -1504,7 +1504,7 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => menu.cursor = step(menu.cursor, len, 1),
             KeyCode::Char('k') | KeyCode::Up => menu.cursor = step(menu.cursor, len, -1),
             KeyCode::Home | KeyCode::Char('g') => menu.cursor = 0,
-            KeyCode::End | KeyCode::Char('G') => menu.cursor = len - 1,
+            KeyCode::End => menu.cursor = len - 1,
             KeyCode::Enter => {
                 let action = SongAction::ALL[menu.cursor.min(len - 1)];
                 let Some(menu) = self.song_menu.take() else { return };
@@ -3593,6 +3593,34 @@ mod tests {
     }
 
     #[test]
+    fn space_pauses_from_anywhere_and_lowercase_p_does_not() {
+        let mut app = demo();
+        assert!(app.now.is_some() && !app.audio.is_paused());
+        app.focus = Focus::Menu;
+        app.on_key(key(KeyCode::Char('p')));
+        assert!(!app.audio.is_paused(), "p is unbound");
+        app.on_key(key(KeyCode::Char(' ')));
+        assert!(app.audio.is_paused(), "space pauses from the menu");
+        app.on_key(key(KeyCode::Char(' ')));
+        assert!(!app.audio.is_paused());
+    }
+
+    #[test]
+    fn g_in_a_list_is_not_end_so_shift_g_stays_genres() {
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::NowPlaying;
+        app.on_key(key(KeyCode::Char('.')));
+        assert!(app.song_menu.is_some());
+        app.on_key(key(KeyCode::Char('G')));
+        assert!(app.song_menu.is_some(), "G does not jump to the end of the song menu");
+        assert_eq!(app.song_menu.as_ref().unwrap().cursor, 0);
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::Char('G')));
+        assert_eq!(app.view, View::Genres, "G is Genres on the main screen");
+    }
+
+    #[test]
     fn lowercase_q_closes_neither_the_song_menu_nor_a_panel() {
         let mut app = demo();
         app.focus = Focus::Content;
@@ -3666,8 +3694,8 @@ mod tests {
         app.tick();
         assert!(app.audio.is_paused() && app.sleep.is_none());
         assert_eq!(app.audio.level(), full);
-        app.on_key(key(KeyCode::Char('p')));
-        assert!(!app.audio.is_paused(), "p plays on");
+        app.on_key(key(KeyCode::Char(' ')));
+        assert!(!app.audio.is_paused(), "space plays on");
         assert_eq!(clock_text(Duration::from_secs(14 * 60 + 59)), "14:59");
         assert_eq!(clock_text(Duration::from_secs(90 * 60)), "1:30:00");
     }
@@ -4063,7 +4091,7 @@ mod tests {
         assert!(app.status.contains("Deep Cuts"), "{}", app.status);
         assert_eq!(app.current_station.as_deref(), Some(playing.as_str()), "the same station plays on");
         // Artist Only is Premium in the demo: locked, nothing sent.
-        app.on_key(key(KeyCode::Char('G')));
+        app.on_key(key(KeyCode::End));
         app.on_key(key(KeyCode::Enter));
         assert!(app.status.contains("isn't available"), "{}", app.status);
         app.on_key(key(KeyCode::Esc));
@@ -4530,9 +4558,9 @@ mod tests {
         assert!(app.status.contains("can't be rated"), "{}", app.status);
         app.on_key(shift('D'));
         assert!(app.ad_break() && app.history.len() == history);
-        app.on_key(key(KeyCode::Char('p')));
+        app.on_key(key(KeyCode::Char(' ')));
         assert!(app.ad_view().unwrap().paused);
-        app.on_key(key(KeyCode::Char('p')));
+        app.on_key(key(KeyCode::Char(' ')));
         assert!(!app.ad_view().unwrap().paused);
         // The first ad ends, then the second, then the music.
         app.audio.seek_silent(Duration::from_secs(7));
@@ -5275,10 +5303,13 @@ mod tests {
         app.on_key(key(KeyCode::Char('k')));
         app.on_key(key(KeyCode::Enter));
         app.on_key(key(KeyCode::Char('x')));
-        assert_eq!(app.theme_picker.as_ref().unwrap().confirm_delete.as_deref(), Some("dracula"));
+        assert_eq!(app.theme_delete_asked(), Some("dracula"));
+        assert!(app.theme_picker.as_ref().unwrap().confirm_delete.is_none());
         app.on_key(key(KeyCode::Char('n')));
         assert!(dir.join("dracula.toml").is_file());
+        assert!(app.theme_delete_asked().is_none());
         app.on_key(key(KeyCode::Delete));
+        assert_eq!(app.theme_delete_asked(), Some("dracula"));
         app.on_key(key(KeyCode::Char('y')));
         assert!(!dir.join("dracula.toml").exists());
         assert_eq!(app.installed_themes(), ["solarized-dark"]);

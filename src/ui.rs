@@ -105,8 +105,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if let Some(panel) = &app.panel {
         draw_panel(frame, &p, body, panel);
     }
-    // Questions, Help, details and System Check (vibekit's dialog stack; the dim is ours, above).
-    app.dialogs.draw_dialogs(frame, &p);
     if let Some(rename) = &app.rename {
         draw_rename(frame, &p, area, rename);
     }
@@ -119,6 +117,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if let Some(picker) = &app.theme_picker {
         draw_theme_picker(frame, app, area, picker);
     }
+    // Questions (incl. editor / theme-delete), Help, details, System Check — on top of the popups above.
+    app.dialogs.draw_dialogs(frame, &p);
     if app.prompt == Some(Prompt::Password) {
         draw_password_box(frame, app, ic, area);
     }
@@ -197,20 +197,6 @@ struct BoxText<'a> {
     /// A line being typed, with its cursor.
     input: Option<TextInput>,
     hint: &'a str,
-}
-
-impl<'a> BoxText<'a> {
-    /// The yes/no box: red border, "y = yes · any other key = no".
-    fn confirm(question: &str) -> Self {
-        Self {
-            title: " Confirm ",
-            border: Color::Reset,
-            width: 40,
-            question: question.to_owned(),
-            input: None,
-            hint: "y = yes · any other key = no",
-        }
-    }
 }
 
 /// The question wrapped to `width` cells, at most `max` lines; a question
@@ -1552,9 +1538,6 @@ fn draw_editor(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, ed: &Ed
         };
         draw_search_box(frame, p, screen, &add.search, &look);
     }
-    if let Some(confirm) = &ed.confirm {
-        draw_box(frame, p, screen, &BoxText::confirm(&confirm.question(&clean(&ed.station.name))));
-    }
 }
 
 /// Settings → Theme Select, drawn by vibekit inside boxvibe's panel.
@@ -1564,10 +1547,6 @@ fn draw_theme_picker(frame: &mut Frame, app: &App, screen: Rect, picker: &crate:
     let block = panel(title("Theme Select".into(), p), p, true).style(Style::new().bg(p.background));
     let view = vibekit::picker::View { palette: p, installed: &installed, current: app.config.ui.theme(), block };
     vibekit::picker::draw(frame, screen, picker, view);
-    if let Some(name) = &picker.confirm_delete {
-        let question = format!("Delete the theme “{}”? Its file in ~/.config/boxvibe/themes/ goes too.", clean(name));
-        draw_box(frame, p, screen, &BoxText { title: " Delete theme ", ..BoxText::confirm(&question) });
-    }
 }
 
 // --- Player ---
@@ -2181,6 +2160,12 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.confirm_unpin().is_some() {
         return vec![("y", "Yes, Unpin"), ("n Esc", "No"), ("← → Enter", "Choose")];
     }
+    if app.theme_delete_asked().is_some() {
+        return vec![("y", "Yes, Delete"), ("n Esc", "No"), ("← → Enter", "Choose")];
+    }
+    if app.editor_confirm().is_some() {
+        return vec![("y", "Yes"), ("n Esc", "No"), ("← → Enter", "Choose")];
+    }
     if let Some(mode) = app.confirm_good_vibes {
         let yes = if mode == GoodVibes::Muted { "Mute Anyway" } else { "Turn Off Anyway" };
         return vec![("Enter", yes), ("Esc", "Keep As Is"), ("Ctrl+c", "Quit")];
@@ -2384,9 +2369,6 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
 
 /// The key bar while the station editor is open: its own keys only.
 fn editor_key_caps(ed: &Editor) -> Vec<(&'static str, &'static str)> {
-    if ed.confirm.is_some() {
-        return vec![("y", "Yes"), ("Other Key", "No")];
-    }
     if let Some(add) = &ed.add {
         let mut keys = match add.search.mode {
             SearchMode::Typing if add.search.hits.is_empty() => vec![("Enter", "Search")],
@@ -2461,7 +2443,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
     (
         "PLAYING (any pane)",
         &[
-            ("space p", "play / pause"),
+            ("space", "play / pause (from anywhere)"),
             ("N Z", "skip to the next song · tired of this song (a month off)"),
             ("U D", "thumbs up / down the playing song (down skips it) · the same thumb again takes it back"),
             ("Shift ← →", "volume down / up (saved)"),
@@ -2503,7 +2485,10 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
         &[
             ("P", "Now Playing: the pane gets the keys"),
             ("S", "Stations: every station, Enter plays one"),
-            ("G", "Genres: Pandora's genre stations, Enter adds and plays one"),
+            (
+                "G",
+                "Genres: Pandora's genre stations, Enter adds and plays one (global; End, not G, jumps to the end of a list)",
+            ),
             ("O A", "Settings / About · menu Notifications (between them): what the bottom bar said"),
             ("F", "jump to FAVORITES in the menu"),
             ("Tab Esc", "menu, Now Playing, Up Next, History (Shift+Tab: back) · Esc: back to the menu"),

@@ -112,7 +112,6 @@ pub struct Editor {
     pub up: ThumbList,
     pub down: ThumbList,
     pub add: Option<SeedAdd>,
-    pub confirm: Option<EditorConfirm>,
     /// A Pandora genre station: its seeds can't be changed, so only the
     /// Thumbs Up and Thumbs Down tabs show.
     pub thumbs_only: bool,
@@ -209,7 +208,6 @@ impl App {
             up: ThumbList::new(),
             down: ThumbList::new(),
             add: None,
-            confirm: None,
             thumbs_only,
         });
         self.ensure_thumbs();
@@ -248,15 +246,6 @@ impl App {
 
     pub(super) fn editor_key(&mut self, key: KeyEvent) {
         let Some(ed) = self.editor.as_mut() else { return };
-        if let Some(confirm) = ed.confirm.take() {
-            // y does it; any other key is no, like the other confirm boxes.
-            if matches!(key.code, KeyCode::Char('y' | 'Y')) {
-                self.editor_confirmed(confirm);
-            } else {
-                self.status = "Kept it".into();
-            }
-            return;
-        }
         if ed.add.is_some() {
             return self.seed_add_key(key);
         }
@@ -337,7 +326,7 @@ impl App {
         } else if seed.id.is_empty() {
             self.status = "Pandora gave this seed no id, so it can't be removed here".into();
         } else {
-            ed.confirm = Some(EditorConfirm::RemoveSeed(seed));
+            self.ask_editor(EditorConfirm::RemoveSeed(seed));
         }
     }
 
@@ -439,12 +428,12 @@ impl App {
         let Some(positive) = ed.tab.thumbs() else { return };
         let list = ed.list(positive);
         match list.items.get(list.cursor.min(list.items.len().saturating_sub(1))).cloned() {
-            Some(f) => ed.confirm = Some(EditorConfirm::DeleteThumb(f)),
+            Some(f) => self.ask_editor(EditorConfirm::DeleteThumb(f)),
             None => self.status = "No thumb to take back".into(),
         }
     }
 
-    fn editor_confirmed(&mut self, confirm: EditorConfirm) {
+    pub(super) fn editor_confirmed(&mut self, confirm: EditorConfirm) {
         let Some(ed) = &self.editor else { return };
         let station_id = ed.station.id.clone();
         match confirm {
@@ -776,13 +765,15 @@ mod tests {
     fn x_asks_what_will_happen_then_removes_and_the_last_seed_stays() {
         let mut app = editing();
         chr(&mut app, 'x');
-        let ed = app.editor.as_ref().unwrap();
-        let question = ed.confirm.as_ref().expect("asks first").question(&ed.station.name);
+        let station = app.editor.as_ref().unwrap().station.name.clone();
+        let question = app.editor_confirm().expect("asks first").question(&station);
         assert!(question.contains("Remove the artist seed “M83”"), "{question}");
         assert!(question.contains("stops picking songs"), "{question}");
-        // Any other key says no.
+        // n / Esc says no; stray keys leave the question open.
+        chr(&mut app, 'x');
+        assert!(app.editor_confirm().is_some());
         chr(&mut app, 'n');
-        assert!(app.editor.as_ref().unwrap().confirm.is_none());
+        assert!(app.editor_confirm().is_none());
         assert_eq!(seed_names(&app).len(), 2);
         chr(&mut app, 'x');
         chr(&mut app, 'y');
@@ -791,7 +782,7 @@ mod tests {
         assert!(app.status.contains("Removed"), "{}", app.status);
         // The only seed left cannot go: no question, a message.
         chr(&mut app, 'x');
-        assert!(app.editor.as_ref().unwrap().confirm.is_none());
+        assert!(app.editor_confirm().is_none());
         assert!(app.status.contains("at least one seed"), "{}", app.status);
         assert_eq!(seed_names(&app).len(), 1);
     }
@@ -853,8 +844,8 @@ mod tests {
         chr(&mut app, 'j');
         let gone = app.editor.as_ref().unwrap().up.items[1].clone();
         chr(&mut app, 'x');
-        let ed = app.editor.as_ref().unwrap();
-        let question = ed.confirm.as_ref().expect("asks first").question(&ed.station.name);
+        let station = app.editor.as_ref().unwrap().station.name.clone();
+        let question = app.editor_confirm().expect("asks first").question(&station);
         assert!(question.contains("Take back your thumbs up") && question.contains(&gone.title), "{question}");
         chr(&mut app, 'n');
         assert_eq!(app.editor.as_ref().unwrap().up.total, 37, "no: nothing changed");
@@ -872,8 +863,8 @@ mod tests {
         assert!(before > 0);
         let gone = app.editor.as_ref().unwrap().down.items[0].clone();
         chr(&mut app, 'x');
-        let ed = app.editor.as_ref().unwrap();
-        let question = ed.confirm.as_ref().unwrap().question(&ed.station.name);
+        let station = app.editor.as_ref().unwrap().station.name.clone();
+        let question = app.editor_confirm().unwrap().question(&station);
         assert!(question.contains("thumbs down") && question.contains("can play again"), "{question}");
         chr(&mut app, 'y');
         app.settle(WAIT);

@@ -190,7 +190,7 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => panel.cursor = step(panel.cursor, len, 1),
             KeyCode::Char('k') | KeyCode::Up => panel.cursor = step(panel.cursor, len, -1),
             KeyCode::Home | KeyCode::Char('g') => panel.cursor = 0,
-            KeyCode::End | KeyCode::Char('G') => panel.cursor = len.saturating_sub(1),
+            KeyCode::End => panel.cursor = len.saturating_sub(1),
             KeyCode::Enter => {
                 let Some(item) = panel.items.get(panel.cursor).cloned() else { return };
                 match panel.kind.clone() {

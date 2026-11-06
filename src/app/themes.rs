@@ -38,12 +38,17 @@ impl App {
                 self.status = format!("Downloading {}…", entry.name);
                 self.theme_job = Some(crate::theme_store::fetch_theme(entry, self.demo));
             }
-            Action::Delete(name) => self.delete_theme(&name),
+            // Answers come from DialogStack Confirm (ask_delete_theme), not here.
+            Action::Delete(_) => {}
+        }
+        // vibekit still stages the name on x; move it onto our Confirm stack.
+        if let Some(name) = self.theme_picker.as_mut().and_then(|p| p.confirm_delete.take()) {
+            self.ask_delete_theme(name);
         }
     }
 
     /// Deletes a saved theme; one in use falls back to the default.
-    fn delete_theme(&mut self, name: &str) {
+    pub(super) fn delete_theme(&mut self, name: &str) {
         if let Some(dir) = &self.themes_dir
             && let Err(e) = crate::theme_store::remove(dir, name)
         {

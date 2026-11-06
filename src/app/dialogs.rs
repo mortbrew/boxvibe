@@ -1,6 +1,6 @@
 //! boxvibe's modal dialogs on a `vibekit::dialog::DialogStack`: the quit,
-//! unpin and delete questions (`Confirm`), Help, a station's or song's
-//! details, and the System Check list.
+//! unpin, delete, editor and theme-delete questions (`Confirm`), Help, a
+//! station's or song's details, and the System Check list.
 //!
 //! The rules (vibekit STYLE.md, Global keys): Esc closes the top dialog,
 //! `?` also closes Help, confirms answer only on `y`/`n`/Enter/Esc (a
@@ -23,6 +23,9 @@ pub struct Quit;
 /// The unpin question: which pin.
 #[derive(Clone, Copy)]
 pub struct Unpin(pub usize);
+
+/// Theme Select: which saved theme to delete.
+pub struct ThemeDelete(pub String);
 
 impl<T: 'static> Dialog for Ask<T> {
     fn key(&mut self, key: KeyEvent) -> Response {
@@ -163,11 +166,41 @@ impl App {
         }
     }
 
+    /// Theme Select's delete question.
+    pub(super) fn ask_delete_theme(&mut self, name: String) {
+        let question =
+            format!("Delete the theme “{}”? Its file in ~/.config/boxvibe/themes/ goes too.", crate::ui::clean(&name));
+        let confirm = Confirm::new("theme-delete", question).title("Delete theme").labels("Delete", "Keep");
+        self.push_dialog(Ask { confirm, about: ThemeDelete(name) });
+    }
+
+    pub fn theme_delete_asked(&self) -> Option<&str> {
+        self.dialogs.find::<Ask<ThemeDelete>>().map(|a| a.about.0.as_str())
+    }
+
+    /// Station editor: remove a seed or take back a thumb.
+    pub(super) fn ask_editor(&mut self, about: EditorConfirm) {
+        let station = self.editor.as_ref().map(|e| e.station.name.clone()).unwrap_or_default();
+        let question = about.question(&station);
+        let (id, title, yes) = match &about {
+            EditorConfirm::RemoveSeed(_) => ("remove-seed", "Remove seed", "Remove"),
+            EditorConfirm::DeleteThumb(_) => ("delete-thumb", "Take back thumb", "Take Back"),
+        };
+        let confirm = Confirm::new(id, question).title(title).labels(yes, "Keep");
+        self.push_dialog(Ask { confirm, about });
+    }
+
+    pub fn editor_confirm(&self) -> Option<&EditorConfirm> {
+        self.dialogs.find::<Ask<EditorConfirm>>().map(|a| &a.about)
+    }
+
     /// A key for the open dialogs; false if none is open (the key is the app's).
     pub(super) fn dialog_key(&mut self, key: KeyEvent) -> bool {
         // What the top question is about: the stack drops it as it answers.
         let unpin = self.dialogs.top::<Ask<Unpin>>().map(|a| a.about);
         let delete = self.dialogs.top::<Ask<StationRef>>().map(|a| a.about.clone());
+        let theme = self.dialogs.top::<Ask<ThemeDelete>>().map(|a| a.about.0.clone());
+        let editor = self.dialogs.top::<Ask<EditorConfirm>>().map(|a| a.about.clone());
         let Some(response) = self.dialogs.key(key) else { return false };
         let yes = matches!(response, Response::Answer { yes: true, .. });
         let closed = response != Response::Keep;
@@ -187,6 +220,20 @@ impl App {
                 self.backend.send(Request::RemoveStation { station_id: station.id });
             } else {
                 self.status = "Kept the station".into();
+            }
+        }
+        if let Some(name) = theme.filter(|_| closed) {
+            if yes {
+                self.delete_theme(&name);
+            } else {
+                self.status = "Kept the theme".into();
+            }
+        }
+        if let Some(confirm) = editor.filter(|_| closed) {
+            if yes {
+                self.editor_confirmed(confirm);
+            } else {
+                self.status = "Kept it".into();
             }
         }
         if let Response::Answer { id, yes: true } = &response

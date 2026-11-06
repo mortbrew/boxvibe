@@ -66,8 +66,8 @@ impl std::fmt::Debug for Secret {
 }
 
 /// Known Browse directory sections (Settings labels and `[browse]` keys).
-/// Each key pins that section as its own main-menu item (default Off).
-/// Unknown future keys still work: On pins them; missing means Off.
+/// Each key pins that section as its own main-menu item (default On).
+/// Unknown future keys still work: On pins them; missing means On.
 pub const BROWSE_SECTIONS: &[(&str, &str)] = &[
     ("artists_picked_for_you", "Artists Picked For You"),
     ("new_music", "New Music"),
@@ -99,32 +99,30 @@ pub fn browse_section_key(title: &str) -> String {
     out
 }
 
-/// `[browse]`: master Browse toggle and per-section On/Off.
+/// `[browse]`: per-section On/Off pins on the main menu (no parent Browse entry).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BrowseConfig {
-    /// Browse in the menu (`[browse] browse`).
-    pub browse: bool,
-    /// Per-section toggles; missing keys default to Off (not on the main menu).
+    /// Per-section toggles; missing keys default to On (on the main menu).
     #[serde(flatten)]
     pub sections: std::collections::BTreeMap<String, bool>,
 }
 
 impl Default for BrowseConfig {
     fn default() -> Self {
-        Self { browse: true, sections: std::collections::BTreeMap::new() }
+        Self { sections: std::collections::BTreeMap::new() }
     }
 }
 
 impl BrowseConfig {
     /// Whether a directory section is pinned on the main menu (by title).
-    /// Missing keys default to Off; Browse itself always lists every section.
+    /// Missing keys default to On.
     pub fn pinned_on_menu(&self, title: &str) -> bool {
-        self.sections.get(&browse_section_key(title)).copied().unwrap_or(false)
+        self.sections.get(&browse_section_key(title)).copied().unwrap_or(true)
     }
 
     pub fn pinned_key(&self, key: &str) -> bool {
-        self.sections.get(key).copied().unwrap_or(false)
+        self.sections.get(key).copied().unwrap_or(true)
     }
 
     pub fn set_pinned(&mut self, title: &str, on: bool) {
@@ -732,7 +730,7 @@ impl ConfigWarning {
 /// and History became fixed at 10 songs (Now Playing takes the rest).
 /// `boxvibe.dependency_check` was a 0.4 beta setting for a startup check that
 /// is now always the same list, with no switch.
-const RETIRED_KEYS: &[&str] = &["ui.now_playing_size", "boxvibe.dependency_check"];
+const RETIRED_KEYS: &[&str] = &["ui.now_playing_size", "boxvibe.dependency_check", "browse.browse"];
 
 /// One `[section]`: each key is tried on its own, so an unknown or broken
 /// one is skipped (and reported) while the rest still apply.
@@ -796,7 +794,6 @@ pub const LAYOUT: &[(&str, &str, &str)] = &[
     ("look", "tint_art_with_theme_colors", "ui"),
     ("look", "animations", "ui"),
     ("look", "boot_screen", "ui"),
-    ("browse", "browse", "browse"),
     ("browse", "artists_picked_for_you", "browse"),
     ("browse", "new_music", "browse"),
     ("browse", "browse_genres", "browse"),
@@ -1389,13 +1386,13 @@ mod tests {
     }
 
     #[test]
-    fn browse_pins_default_off_and_keeps_unknown_section_keys() {
+    fn browse_pins_default_on_and_keeps_unknown_section_keys() {
         let (c, w) =
-            Config::parse("[browse]\nbrowse = true\nartists_picked_for_you = true\nfuture_shelf = true\n").unwrap();
-        assert!(c.browse.browse);
-        assert!(c.browse.pinned_on_menu("Artists Picked For You"));
-        assert!(!c.browse.pinned_on_menu("New Music"), "missing section pin defaults off");
+            Config::parse("[browse]\nbrowse = true\nartists_picked_for_you = false\nfuture_shelf = true\n").unwrap();
+        assert!(!c.browse.pinned_on_menu("Artists Picked For You"));
+        assert!(c.browse.pinned_on_menu("New Music"), "missing section pin defaults on");
         assert!(c.browse.pinned_key("future_shelf"));
+        // Retired master [browse] browse is ignored, not Unknown.
         assert!(w.iter().all(|x| !matches!(x, ConfigWarning::Unknown(_))), "{w:?}");
         assert_eq!(browse_section_key("Trendsetters: Artists on the rise"), "trendsetters_artists_on_the_rise");
     }

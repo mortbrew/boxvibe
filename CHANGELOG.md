@@ -12,9 +12,10 @@ Short and scannable; the git history has the details.
 - Keys follow the shared vibe shortcuts: a second `Q` confirms quit; questions answer only on y / n / Enter / Esc; Help closes on `?` or Esc; Details, System Check, panels and the song menu close on Esc only (lowercase `q` no longer closes anything, and no box closes on any key).
 - **Space** pauses from anywhere; lowercase `p` is unbound.
 - **G** is Genres globally; **End** (not G) jumps to the end of a list or popup.
+- Stations menu/page label is **My Stations**; the parent **Browse** menu entry and `[browse] browse` master toggle are removed (section pins default On).
 
 ### Added
-- **Browse** (menu; `[browse] browse` default On): Pandora's directory via `feed/getDirectory` — always every section. Settings → BROWSE section toggles **pin that section on the main menu** (default Off); Browse Off leaves pins. Standalone Genres menu entry removed; **G** opens Browse Genres. Enter starts a station when the row can.
+- **Browse sections** on the main menu via `feed/getDirectory`. Settings → BROWSE toggles each section (default On). No parent Browse menu entry; **G** opens Browse Genres. Enter starts a station when the row can.
 - **Song menu** (`.`): start a station from the artist or song, Tired, Share, Why This Song?, Similar Artists & Bio, Station Mode, Pin, thumbs, Details, Sleep.
 - **Station modes** (`m`): My Station, Crowd Faves, Discovery, Deep Cuts, Newly Released, Artist Only (Premium ones shown locked).
 - **Theme Select** browser: fuzzy-search ~900 iTerm2-Color-Schemes plus the built-ins; download, use, delete. **Theme Auto Mode** follows Omarchy.

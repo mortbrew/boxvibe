@@ -64,7 +64,7 @@ Covers download in the background and are cached in `~/.cache/boxvibe/art`
 
 ## Make and shape stations
 
-**Create a station** with `a` on the Stations page: type an artist or song,
+**Create a station** with `a` on the My Stations page: type an artist or song,
 `Enter` searches, pick a result, and `Enter` makes the station and plays it.
 
 ![Creating a station from a search](docs/screenshots/create-station.png)
@@ -87,7 +87,7 @@ details, and `G` browses Pandora's genre stations.
 `f` stars a station. Starred stations get their own **FAVORITES** section in
 the menu, one `Enter` from playing, and `F` jumps there from anywhere.
 
-![Favorites in the menu and on the Stations page](docs/screenshots/favorites.png)
+![Favorites in the menu and on the My Stations page](docs/screenshots/favorites.png)
 
 ## Settings
 
@@ -176,7 +176,7 @@ The bottom bar shows what works right now, and `?` lists everything.
 | `.` | song menu |
 | `Shift+←` `Shift+→` | volume |
 | `j` `k` `↑` `↓` · `Tab` · `Esc` | move · next pane · back to the menu |
-| `P` `S` `G` `O` `A` `F` | Now Playing, Stations, Genres, Settings, About, Favorites |
+| `P` `S` `G` `O` `A` `F` | Now Playing, My Stations, Genres, Settings, About, Favorites |
 | `a` `e` `r` `x` `v` `m` | add, edit, rename, delete, details, mode for a station |
 | `f` · `I` · `X` | favorite a station · pin a song · Shuffle |
 | `C` `R` `H` | album art on / off · Retro level · tint |

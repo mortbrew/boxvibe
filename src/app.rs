@@ -1,6 +1,6 @@
 //! The app's state and what each key does.
 //!
-//! Like tubevibe, the left panel is the menu: NOW PLAYING, Stations, the
+//! Like tubevibe, the left panel is the menu: NOW PLAYING, My Stations, the
 //! FAVORITES section (like tubevibe's tabs), then Settings, About and Quit.
 //! The right side shows what the menu entry opens: the player (Now Playing,
 //! Up Next and History), the station list, Settings or About. There is no
@@ -75,10 +75,8 @@ pub enum Focus {
 pub enum MenuItem {
     /// At the top once a station plays: back to the player.
     NowPlaying,
-    /// Opens the station list on the right.
+    /// Opens the station list on the right (UI: My Stations).
     Stations,
-    /// Opens Browse (`[browse] browse`): every getDirectory section.
-    Browse,
     /// A Browse section pinned on the main menu ([`App::browse_menu_pins`] index).
     BrowsePin(usize),
     /// The songs pinned with Shift+I (hidden by `[look] pinned_in_menu`).
@@ -142,8 +140,6 @@ pub enum Setting {
     CheckUpdates,
     GenrePopup,
     Splash,
-    /// Master: Browse in the menu (`[browse] browse`).
-    Browse,
     /// One of [`config::BROWSE_SECTIONS`] (`[browse] <key>`).
     BrowseSection(u8),
     EditFile,
@@ -152,7 +148,7 @@ pub enum Setting {
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 36] = [
+    pub const ALL: [(&'static str, Self); 35] = [
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
@@ -178,7 +174,6 @@ impl Setting {
         ("LOOK", Self::ArtTint),
         ("LOOK", Self::Animations),
         ("LOOK", Self::Splash),
-        ("BROWSE", Self::Browse),
         ("BROWSE", Self::BrowseSection(0)),
         ("BROWSE", Self::BrowseSection(1)),
         ("BROWSE", Self::BrowseSection(2)),
@@ -221,7 +216,6 @@ impl Setting {
             Self::CheckUpdates => "Look for new versions on startup",
             Self::GenrePopup => "Genre station edit popup",
             Self::Splash => "Boot screen",
-            Self::Browse => "Browse",
             Self::BrowseSection(i) => config::BROWSE_SECTIONS[i as usize].1,
             Self::EditFile => "Edit config.toml",
             Self::MenuEntry => "App menu entry",
@@ -237,7 +231,6 @@ impl Setting {
             Self::CheckUpdates => Some(("boxvibe", "look_for_new_versions_on_startup")),
             Self::GenrePopup => Some(("boxvibe", "genre_edit_popup")),
             Self::Splash => Some(("look", "boot_screen")),
-            Self::Browse => Some(("browse", "browse")),
             Self::BrowseSection(i) => Some(("browse", config::BROWSE_SECTIONS[i as usize].0)),
             Self::Email => Some(("account", "email_or_username")),
             Self::Quality => Some(("playback", "audio_quality")),
@@ -257,7 +250,6 @@ impl Setting {
             Self::ArtTint => Some(("look", "tint_art_with_theme_colors")),
             Self::Animations => Some(("look", "animations")),
             Self::Password | Self::LogIn | Self::LogOut | Self::EditFile | Self::MenuEntry => None,
-            // Browse* handled above
         }
     }
 
@@ -325,38 +317,17 @@ impl Setting {
             Self::Splash => {
                 "A two-second boxvibe logo screen when it opens; any key skips it (Animations off skips it too). Saved as [look] boot_screen."
             }
-            Self::Browse => {
-                "On: the menu has Browse (every getDirectory section). Off: hide Browse; pinned sections stay. Saved as [browse] browse."
-            }
             Self::BrowseSection(i) => match i {
-                0 => {
-                    "On: pin Artists Picked For You on the main menu. Browse still lists it either way. Saved as [browse] artists_picked_for_you."
-                }
-                1 => {
-                    "On: pin New Music on the main menu. Browse still lists it either way. Saved as [browse] new_music."
-                }
-                2 => {
-                    "On: pin Browse Genres on the main menu (G opens it too). Browse still lists it either way. Saved as [browse] browse_genres."
-                }
-                3 => {
-                    "On: pin Featured Playlists on the main menu. Browse still lists it either way. Saved as [browse] featured_playlists."
-                }
-                4 => {
-                    "On: pin Trendsetters on the main menu. Browse still lists it either way. Saved as [browse] trendsetters_artists_on_the_rise."
-                }
-                5 => "On: pin Decades on the main menu. Browse still lists it either way. Saved as [browse] decades.",
-                6 => {
-                    "On: pin Recommended Podcasts on the main menu. Browse still lists it either way. Saved as [browse] recommended_podcasts."
-                }
-                7 => {
-                    "On: pin Top artists on the main menu. Browse still lists it either way. Saved as [browse] top_artists."
-                }
-                8 => {
-                    "On: pin Moods and activities on the main menu. Browse still lists it either way. Saved as [browse] moods_and_activities."
-                }
-                _ => {
-                    "On: pin Top stations on the main menu. Browse still lists it either way. Saved as [browse] top_stations."
-                }
+                0 => "On: show Artists Picked For You on the main menu. Saved as [browse] artists_picked_for_you.",
+                1 => "On: show New Music on the main menu. Saved as [browse] new_music.",
+                2 => "On: show Browse Genres on the main menu (G opens it too). Saved as [browse] browse_genres.",
+                3 => "On: show Featured Playlists on the main menu. Saved as [browse] featured_playlists.",
+                4 => "On: show Trendsetters on the main menu. Saved as [browse] trendsetters_artists_on_the_rise.",
+                5 => "On: show Decades on the main menu. Saved as [browse] decades.",
+                6 => "On: show Recommended Podcasts on the main menu. Saved as [browse] recommended_podcasts.",
+                7 => "On: show Top artists on the main menu. Saved as [browse] top_artists.",
+                8 => "On: show Moods and activities on the main menu. Saved as [browse] moods_and_activities.",
+                _ => "On: show Top stations on the main menu. Saved as [browse] top_stations.",
             },
             Self::ThemeSelect => {
                 "With Theme Auto Mode off, Enter opens the theme picker: Search about 900 schemes (iTerm2-Color-Schemes and Omarchy's) as you type, or pick an Installed one. Downloads go to ~/.config/boxvibe/themes/. Saved as [look] theme_select."
@@ -1237,7 +1208,6 @@ impl App {
         let pins = (0..self.browse_menu_pins().len()).map(MenuItem::BrowsePin);
         top.into_iter()
             .chain([MenuItem::Stations])
-            .chain(self.config.browse.browse.then_some(MenuItem::Browse))
             .chain(pins)
             .chain(self.config.ui.pinned_in_menu.then_some(MenuItem::Pinned))
             .chain(
@@ -1257,7 +1227,6 @@ impl App {
         match self.menu_selected() {
             MenuItem::NowPlaying => self.show_now_playing(),
             MenuItem::Stations => self.show_stations(),
-            MenuItem::Browse => self.show_browse(),
             MenuItem::BrowsePin(i) => self.show_browse_pin(i),
             MenuItem::Pinned => self.show_page(View::Pinned),
             MenuItem::Favorite(i) => {
@@ -1315,7 +1284,7 @@ impl App {
         self.focus = Focus::Content;
     }
 
-    /// Stations (menu entry or `S`): the list, with the keys on it.
+    /// My Stations (menu entry or `S`): the list, with the keys on it.
     fn show_stations(&mut self) {
         self.view = View::Stations;
         self.focus = Focus::Content;
@@ -1429,7 +1398,7 @@ impl App {
             (true, _, _) => {}
             (_, true, _) => {
                 self.browse = BrowseState::Idle;
-                self.show_browse();
+                self.open_browse_view();
             }
             (_, _, Some((Some(id), name))) => self.create_station(&id, &name),
             (_, _, Some((None, name))) => {
@@ -1455,7 +1424,7 @@ impl App {
         if self.focus == Focus::Content && self.view == View::Stations {
             self.open_add_station();
         } else {
-            self.status = "a adds a station: open Stations (Shift+S) first".into();
+            self.status = "a adds a station: open My Stations (Shift+S) first".into();
         }
     }
 
@@ -1853,22 +1822,13 @@ impl App {
             View::About => Some(MenuItem::About),
             View::Notifications => Some(MenuItem::Notifications),
             View::Stations => Some(MenuItem::Stations),
-            View::Browse => {
-                if let Some(filter) = &self.browse_filter {
+            View::Browse => match &self.browse_filter {
+                Some(filter) => {
                     let pins = self.browse_menu_pins();
-                    if let Some(i) = pins.iter().position(|(k, t)| t == filter || k == filter) {
-                        Some(MenuItem::BrowsePin(i))
-                    } else if self.config.browse.browse {
-                        Some(MenuItem::Browse)
-                    } else {
-                        None
-                    }
-                } else if self.config.browse.browse {
-                    Some(MenuItem::Browse)
-                } else {
-                    None
+                    pins.iter().position(|(k, t)| t == filter || k == filter).map(MenuItem::BrowsePin)
                 }
-            }
+                None => None,
+            },
             View::Pinned => Some(MenuItem::Pinned),
             View::Player if self.has_now_playing() => Some(MenuItem::NowPlaying),
             View::Player => None,
@@ -2044,7 +2004,7 @@ impl App {
                     self.tune(self.stations_cursor);
                 } else if self.current_station.is_none() && self.status.is_empty() {
                     // Startup always stays on Now Playing (idle); Stations is opened by hand.
-                    self.status = "Nothing playing: open Stations (Shift+S) to pick one".into();
+                    self.status = "Nothing playing: open My Stations (Shift+S) to pick one".into();
                 }
             }
             Reply::StationRenamed { station_id, name } => {
@@ -2616,7 +2576,6 @@ impl App {
             Setting::CheckUpdates => on(self.config.ui.check_updates),
             Setting::GenrePopup => on(self.config.ui.genre_edit_popup),
             Setting::Splash => on(self.config.ui.splash),
-            Setting::Browse => on(self.config.browse.browse),
             Setting::BrowseSection(i) => {
                 let title = config::BROWSE_SECTIONS[i as usize].1;
                 on(self.config.browse.pinned_on_menu(title))
@@ -2732,15 +2691,6 @@ impl App {
                 self.config.ui.splash = on;
                 self.save(&[("look", "boot_screen", on.into())]);
                 self.status = format!("Boot screen: {}", if on { "on" } else { "off" });
-            }
-            Setting::Browse => {
-                let on = !self.config.browse.browse;
-                self.config.browse.browse = on;
-                self.save(&[("browse", "browse", on.into())]);
-                self.status = format!("Browse: {}", if on { "on" } else { "off" });
-                if !on && self.view == View::Browse {
-                    self.show_stations();
-                }
             }
             Setting::BrowseSection(i) => {
                 let (key, title) = config::BROWSE_SECTIONS[i as usize];
@@ -3024,7 +2974,7 @@ impl App {
             (Focus::Menu, MenuItem::Favorite(_)) => {
                 "That favorite isn't one of your stations any more (f removes it)".into()
             }
-            _ => format!("{what} works on a station: open Stations (Shift+S) or select a favorite"),
+            _ => format!("{what} works on a station: open My Stations (Shift+S) or select a favorite"),
         };
     }
 
@@ -3203,7 +3153,7 @@ impl App {
             };
             let Some(song) = song.cloned() else {
                 self.status =
-                    "No song to show details of: pick a station, or open Stations (Shift+S) for a station's".into();
+                    "No song to show details of: pick a station, or open My Stations (Shift+S) for a station's".into();
                 return;
             };
             return self.show_song_details(song, false);
@@ -3798,7 +3748,7 @@ mod tests {
     #[test]
     fn browse_menu_loads_directory_and_enter_starts_a_station() {
         let mut app = demo();
-        let at = app.menu_items().iter().position(|m| *m == MenuItem::Browse).unwrap();
+        let at = app.menu_items().iter().position(|m| *m == MenuItem::BrowsePin(0)).unwrap();
         app.focus = Focus::Menu;
         app.menu_cursor = at;
         app.on_key(key(KeyCode::Enter));
@@ -3823,30 +3773,19 @@ mod tests {
         let mut app = App::new(Config::default(), Some(path.clone()), &[], true);
         app.demo = false;
         app.config_path = Some(path.clone());
-        assert!(!app.menu_items().iter().any(|m| matches!(m, MenuItem::BrowsePin(_))));
+        assert!(app.browse_menu_pins().iter().any(|(_, t)| t == "Artists Picked For You"), "section pins default On");
         app.view = View::Settings;
         app.focus = Focus::Content;
         app.settings_cursor = Setting::at(Setting::BrowseSection(0));
         app.on_key(key(KeyCode::Enter));
-        assert!(app.config.browse.pinned_on_menu("Artists Picked For You"));
-        assert!(app.menu_items().contains(&MenuItem::BrowsePin(0)));
+        assert!(!app.config.browse.pinned_on_menu("Artists Picked For You"));
+        assert!(!app.browse_menu_pins().iter().any(|(_, t)| t == "Artists Picked For You"));
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("artists_picked_for_you = true"), "{text}");
-        // Browse Off leaves the pin.
-        app.config.browse.browse = false;
-        assert!(app.menu_items().contains(&MenuItem::BrowsePin(0)));
-        assert!(!app.menu_items().contains(&MenuItem::Browse));
+        assert!(text.contains("artists_picked_for_you = false"), "{text}");
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.config.browse.pinned_on_menu("Artists Picked For You"));
+        assert!(std::fs::read_to_string(&path).unwrap().contains("artists_picked_for_you = true"));
         let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn browse_master_off_removes_the_menu_entry_but_not_pins() {
-        let mut app = demo();
-        assert!(app.menu_items().contains(&MenuItem::Browse));
-        app.config.browse.set_pinned("Browse Genres", true);
-        app.config.browse.browse = false;
-        assert!(!app.menu_items().contains(&MenuItem::Browse));
-        assert!(app.menu_items().contains(&MenuItem::BrowsePin(0)));
     }
 
     #[test]
@@ -4043,8 +3982,11 @@ mod tests {
         let app = demo();
         let items = app.menu_items();
         assert_eq!(items[0], MenuItem::NowPlaying, "a station plays: NOW PLAYING on top");
-        assert_eq!((items[1], items[2], items[3]), (MenuItem::Stations, MenuItem::Browse, MenuItem::Pinned));
-        assert_eq!(items.len(), 8, "no favorites yet: no FAVORITES / section pins");
+        assert_eq!(items[1], MenuItem::Stations);
+        let pins = config::BROWSE_SECTIONS.len();
+        assert_eq!(&items[2..2 + pins], &(0..pins).map(MenuItem::BrowsePin).collect::<Vec<_>>()[..]);
+        assert_eq!(items[2 + pins], MenuItem::Pinned);
+        assert_eq!(items.len(), 2 + pins + 1 + 4, "NOW PLAYING, My Stations, all section pins, Pinned, no favorites");
         assert_eq!(
             &items[items.len() - 4..],
             [MenuItem::Settings, MenuItem::Notifications, MenuItem::About, MenuItem::Quit]
@@ -4132,19 +4074,17 @@ mod tests {
         app.on_key(key(KeyCode::Char('f')));
         let third = app.stations[2].clone();
         assert!(app.is_favorite(&third.id));
-        assert_eq!(
-            app.menu_items(),
-            [
-                MenuItem::Stations,
-                MenuItem::Browse,
-                MenuItem::Pinned,
-                MenuItem::Favorite(0),
-                MenuItem::Settings,
-                MenuItem::Notifications,
-                MenuItem::About,
-                MenuItem::Quit
-            ]
-        );
+        let mut want = vec![MenuItem::Stations];
+        want.extend((0..config::BROWSE_SECTIONS.len()).map(MenuItem::BrowsePin));
+        want.extend([
+            MenuItem::Pinned,
+            MenuItem::Favorite(0),
+            MenuItem::Settings,
+            MenuItem::Notifications,
+            MenuItem::About,
+            MenuItem::Quit,
+        ]);
+        assert_eq!(app.menu_items(), want);
         let saved = Config::load(&path).0.ui.favorites;
         assert_eq!(
             (saved.len(), saved[0].id.as_str(), saved[0].name.as_str()),
@@ -4152,11 +4092,8 @@ mod tests {
         );
         // Enter on the favorite in the menu plays it.
         app.on_key(key(KeyCode::Esc));
-        app.on_key(key(KeyCode::Char('j')));
-        assert_eq!(app.menu_selected(), MenuItem::Browse);
-        app.on_key(key(KeyCode::Char('j')));
-        assert_eq!(app.menu_selected(), MenuItem::Pinned);
-        app.on_key(key(KeyCode::Char('j')));
+        let fav_at = app.menu_items().iter().position(|m| *m == MenuItem::Favorite(0)).unwrap();
+        app.menu_cursor = fav_at;
         assert_eq!(app.menu_selected(), MenuItem::Favorite(0));
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.current_station.as_deref(), Some(third.id.as_str()));
@@ -6029,8 +5966,12 @@ mod tests {
         let app = demo();
         let items = app.menu_items();
         let at = items.iter().position(|m| *m == MenuItem::Stations).unwrap();
-        assert_eq!(items[at + 1], MenuItem::Browse);
-        assert!(!items.iter().any(|m| matches!(m, MenuItem::BrowsePin(_))), "pins default off");
+        assert_eq!(items[at + 1], MenuItem::BrowsePin(0), "section pins follow My Stations");
+        assert_eq!(
+            items.iter().filter(|m| matches!(m, MenuItem::BrowsePin(_))).count(),
+            config::BROWSE_SECTIONS.len(),
+            "pins default On"
+        );
         assert_eq!(command_for(KeyEvent::from(KeyCode::Char('a'))), Some(Cmd::Add));
         assert_eq!(command_for(shift('G')), Some(Cmd::Genres));
     }

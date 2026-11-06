@@ -673,11 +673,10 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let now_h = if app.has_now_playing() { 2 } else { 0 };
-    let browse = app.config.browse.browse;
     let section_pins = app.browse_menu_pins().len() as u16;
     let pinned = app.config.ui.pinned_in_menu;
-    // Stations, optional Browse, pinned Browse sections, optional Pinned songs.
-    let top_n = 1 + u16::from(browse) + section_pins + u16::from(pinned);
+    // My Stations, pinned Browse sections, optional Pinned songs.
+    let top_n = 1 + section_pins + u16::from(pinned);
     let [now_area, stations_row, favs_area, _, rule, app_area] = Layout::vertical([
         Constraint::Length(now_h),
         Constraint::Length(top_n),
@@ -697,7 +696,6 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         | (MenuItem::NowPlaying, View::Player)
         | (MenuItem::Stations, View::Stations)
         | (MenuItem::Pinned, View::Pinned) => true,
-        (MenuItem::Browse, View::Browse) => app.browse_filter.is_none(),
         (MenuItem::BrowsePin(i), View::Browse) => app
             .browse_filter
             .as_ref()
@@ -726,10 +724,7 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     }
     let count = if app.stations.is_empty() { String::new() } else { format!(" ({})", app.stations.len()) };
     let mut lines = Vec::new();
-    let mut top = vec![(MenuItem::Stations, ic.station, format!("Stations{count}"))];
-    if browse {
-        top.push((MenuItem::Browse, ic.browse, "Browse".into()));
-    }
+    let mut top = vec![(MenuItem::Stations, ic.station, format!("My Stations{count}"))];
     for (i, (_, title)) in app.browse_menu_pins().into_iter().enumerate() {
         let icon = if title == "Browse Genres" { ic.genre } else { ic.browse };
         top.push((MenuItem::BrowsePin(i), icon, title));
@@ -910,7 +905,7 @@ fn draw_stations(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let p = app.palette;
     let focused = app.focus == Focus::Content;
     let count = if app.stations.is_empty() { String::new() } else { format!(" ({})", app.stations.len()) };
-    let block = panel(title(format!("{} Stations{count}", ic.station), &p), &p, focused);
+    let block = panel(title(format!("{} My Stations{count}", ic.station), &p), &p, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if app.stations.is_empty() && app.session != Session::LoggedIn {
@@ -1634,7 +1629,7 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let Some(song) = &app.now else {
         let text = match (&app.session, &app.current_station) {
             (Session::LoggedIn, Some(_)) => format!("{} Getting songs from Pandora…", ic.loading),
-            (Session::LoggedIn, None) => "Open Stations on the left, pick one and press Enter".into(),
+            (Session::LoggedIn, None) => "Open My Stations on the left, pick one and press Enter".into(),
             (Session::SigningIn, _) => format!("{} Signing in…", ic.loading),
             _ => "Not logged in: open Settings to log in".into(),
         };
@@ -2491,7 +2486,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ),
             ("f", "star / unstar the selected station"),
             ("r x", "rename / delete the selected station (x asks first; on Now Playing r and e use the playing one)"),
-            ("a", "add a station: search artists and songs (Stations page)"),
+            ("a", "add a station: search artists and songs (My Stations page)"),
             ("v", "details: a song, or a station's seeds and thumbs"),
             (
                 "e",
@@ -2507,7 +2502,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
         "GOING PLACES",
         &[
             ("P", "Now Playing: the pane gets the keys"),
-            ("S", "Stations: every station, Enter plays one"),
+            ("S", "My Stations: every station, Enter plays one"),
             (
                 "G",
                 "Genres: Pandora's genre stations, Enter adds and plays one (global; End, not G, jumps to the end of a list)",
@@ -3367,6 +3362,10 @@ mod tests {
     fn turning_good_vibes_only_off_asks_first_in_a_risk_popup_that_fits_small_terminals() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = demo();
+        // Keep the menu short so the centered popup extraction is not clipped by section pins.
+        for &(key, _) in crate::config::BROWSE_SECTIONS {
+            app.config.browse.sections.insert(key.to_owned(), false);
+        }
         app.view = View::Settings;
         app.focus = crate::app::Focus::Content;
         app.settings_cursor = crate::app::Setting::at(crate::app::Setting::GoodVibesOnly);
@@ -4071,7 +4070,7 @@ mod tests {
         assert!(lines[1].starts_with("│ ▶  NOW PLAYING"), "{}", lines[1]);
         let menu: String = lines[2].chars().take(30).collect();
         assert!(menu.starts_with("│  ──") && menu.ends_with("──  │"), "inset rule: {menu:?}");
-        assert!(lines[3].contains("Stations ("), "{}", lines[3]);
+        assert!(lines[3].contains("My Stations ("), "{}", lines[3]);
         assert!(lines[35].contains(" P  Now Playing"), "key bar: {}", lines[35]);
     }
 
@@ -4121,7 +4120,7 @@ mod tests {
             lines.iter().any(|l| side(l, false).contains("⭐") && l.contains(&fav.name)),
             "starred on the page: {lines:#?}"
         );
-        assert!(lines[0].contains("Stations ("), "the page: {}", lines[0]);
+        assert!(lines[0].contains("My Stations ("), "the page: {}", lines[0]);
         assert!(lines[35].contains(" f  Favorite"), "key bar: {}", lines[35]);
     }
 
@@ -4221,7 +4220,7 @@ mod tests {
         let mut app = demo();
         app.config.ui.icons = crate::config::IconSet::Unicode;
         let (lines, _) = screen(&app, 120, 36);
-        for word in ["NOW PLAYING", "Stations", "Settings", "About", "Quit"] {
+        for word in ["NOW PLAYING", "My Stations", "Settings", "About", "Quit"] {
             let line = lines.iter().find(|l| l.chars().take(30).collect::<String>().contains(word)).expect(word);
             let menu: Vec<char> = line.chars().take(30).collect();
             assert_eq!(menu[1], ' ', "{word}: one space after the border: {line}");
@@ -4620,7 +4619,7 @@ mod tests {
         let highlight = app.palette.highlight;
         let (lines, buf) = screen(&app, 120, 40);
         let menu_w = 28u16;
-        let labels = ["Artists Picked For You", "New Music", "Browse Genres", "Decades", "Stations", "Pinned"];
+        let labels = ["Artists Picked For You", "New Music", "Browse Genres", "Decades", "My Stations", "Pinned"];
         let mut shaded = Vec::new();
         for (y, line) in lines.iter().enumerate() {
             let left: String = line.chars().take(menu_w as usize).collect();
@@ -4636,25 +4635,6 @@ mod tests {
             "only the open pin should be shaded when Content has focus: {shaded:?}\n{}",
             lines.iter().map(|l| l.chars().take(40).collect::<String>()).collect::<Vec<_>>().join("\n")
         );
-        // Full Browse shades Browse, not every pin.
-        app.config.browse.browse = true;
-        app.show_browse();
-        app.settle(std::time::Duration::from_millis(200));
-        let (lines, buf) = screen(&app, 120, 40);
-        let mut shaded = Vec::new();
-        for (y, line) in lines.iter().enumerate() {
-            let left: String = line.chars().take(menu_w as usize).collect();
-            let labels = ["Browse", "Artists Picked For You", "New Music", "Browse Genres", "Decades"];
-            let Some(label) = labels.iter().find(|l| left.contains(*l)) else { continue };
-            // Prefer the exact "Browse" row (not "Browse Genres").
-            if *label == "Browse" && left.contains("Browse Genres") {
-                continue;
-            }
-            if (0..menu_w).any(|x| buf[(x, y as u16)].bg == highlight) {
-                shaded.push((*label).to_owned());
-            }
-        }
-        assert_eq!(shaded, vec!["Browse".to_owned()], "full Browse shades only Browse: {shaded:?}");
     }
 
     #[test]
@@ -4700,7 +4680,13 @@ mod tests {
         }
         assert_eq!(key_caps(&app), [("Enter", "Check Again"), ("Esc", "Close")]);
         // The app is behind it, as with Help.
-        assert!(all.contains("STATIONS") || all.contains("NOW PLAYING") || all.contains("Stations"), "{all}");
+        assert!(
+            all.contains("STATIONS")
+                || all.contains("NOW PLAYING")
+                || all.contains("My Stations")
+                || all.contains("Stations"),
+            "{all}"
+        );
         // What is there gets a tick and no package line.
         app.system = Some(checks(
             true,

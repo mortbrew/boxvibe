@@ -689,18 +689,20 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     .areas(inner);
     let selected = app.menu_selected();
     // Without the keys, the entry of the page shown stays shaded.
-    let shown = |item: MenuItem| {
-        matches!(
-            (item, app.view),
-            (MenuItem::Settings, View::Settings)
-                | (MenuItem::About, View::About)
-                | (MenuItem::Notifications, View::Notifications)
-                | (MenuItem::NowPlaying, View::Player)
-                | (MenuItem::Stations, View::Stations)
-                | (MenuItem::Browse, View::Browse)
-                | (MenuItem::BrowsePin(_), View::Browse)
-                | (MenuItem::Pinned, View::Pinned)
-        )
+    // Browse pins share View::Browse; match browse_filter so only the active pin shades.
+    let shown = |item: MenuItem| match (item, app.view) {
+        (MenuItem::Settings, View::Settings)
+        | (MenuItem::About, View::About)
+        | (MenuItem::Notifications, View::Notifications)
+        | (MenuItem::NowPlaying, View::Player)
+        | (MenuItem::Stations, View::Stations)
+        | (MenuItem::Pinned, View::Pinned) => true,
+        (MenuItem::Browse, View::Browse) => app.browse_filter.is_none(),
+        (MenuItem::BrowsePin(i), View::Browse) => app
+            .browse_filter
+            .as_ref()
+            .is_some_and(|want| app.browse_menu_pins().get(i).is_some_and(|(_, title)| title == want)),
+        _ => false,
     };
     let row_style = |item: MenuItem| {
         if focused && item == selected {
@@ -4602,6 +4604,57 @@ mod tests {
         assert!(all_text(&screen(&app, 120, 36).0).contains("offline"));
         assert!(key_caps(&app).iter().any(|(_, w)| *w == "Try Again"));
         let _ = screen(&app, 30, 8);
+    }
+
+    #[test]
+    fn only_the_active_browse_pin_is_shaded_in_the_menu() {
+        let mut app = demo();
+        app.settle(std::time::Duration::from_millis(400));
+        for title in ["Artists Picked For You", "New Music", "Browse Genres", "Decades"] {
+            app.config.browse.set_pinned(title, true);
+        }
+        app.show_browse_section("Artists Picked For You");
+        app.settle(std::time::Duration::from_millis(300));
+        assert_eq!(app.focus, Focus::Content);
+        assert_eq!(app.browse_filter.as_deref(), Some("Artists Picked For You"));
+        let highlight = app.palette.highlight;
+        let (lines, buf) = screen(&app, 120, 40);
+        let menu_w = 28u16;
+        let labels = ["Artists Picked For You", "New Music", "Browse Genres", "Decades", "Stations", "Pinned"];
+        let mut shaded = Vec::new();
+        for (y, line) in lines.iter().enumerate() {
+            let left: String = line.chars().take(menu_w as usize).collect();
+            let Some(label) = labels.iter().find(|l| left.contains(*l)) else { continue };
+            let has_hl = (0..menu_w).any(|x| buf[(x, y as u16)].bg == highlight);
+            if has_hl {
+                shaded.push((*label).to_owned());
+            }
+        }
+        assert_eq!(
+            shaded,
+            vec!["Artists Picked For You".to_owned()],
+            "only the open pin should be shaded when Content has focus: {shaded:?}\n{}",
+            lines.iter().map(|l| l.chars().take(40).collect::<String>()).collect::<Vec<_>>().join("\n")
+        );
+        // Full Browse shades Browse, not every pin.
+        app.config.browse.browse = true;
+        app.show_browse();
+        app.settle(std::time::Duration::from_millis(200));
+        let (lines, buf) = screen(&app, 120, 40);
+        let mut shaded = Vec::new();
+        for (y, line) in lines.iter().enumerate() {
+            let left: String = line.chars().take(menu_w as usize).collect();
+            let labels = ["Browse", "Artists Picked For You", "New Music", "Browse Genres", "Decades"];
+            let Some(label) = labels.iter().find(|l| left.contains(*l)) else { continue };
+            // Prefer the exact "Browse" row (not "Browse Genres").
+            if *label == "Browse" && left.contains("Browse Genres") {
+                continue;
+            }
+            if (0..menu_w).any(|x| buf[(x, y as u16)].bg == highlight) {
+                shaded.push((*label).to_owned());
+            }
+        }
+        assert_eq!(shaded, vec!["Browse".to_owned()], "full Browse shades only Browse: {shaded:?}");
     }
 
     #[test]

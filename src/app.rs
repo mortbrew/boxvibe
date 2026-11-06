@@ -1356,7 +1356,7 @@ impl App {
     }
 
     /// Full Browse (every getDirectory section).
-    fn show_browse(&mut self) {
+    pub(crate) fn show_browse(&mut self) {
         self.browse_filter = None;
         self.open_browse_view();
     }

@@ -20,7 +20,9 @@ use crate::backend::{Backend, KeychainJob, KeychainReply, Reply, Request};
 use crate::config::{self, AlbumArt, Config, ConfigWarning, GoodVibes, Secret};
 use crate::input::TextInput;
 use crate::keychain::{self, Keychain, NO_KEYCHAIN};
-use crate::pandora::{GenreCategory, Quality, Rating, SearchHit, Song, Station, StationDetails};
+use crate::pandora::{
+    BrowseItem, BrowseSection, GenreCategory, Quality, Rating, SearchHit, Song, Station, StationDetails,
+};
 use crate::theme::{self, Palette};
 use crate::update::{Progress, Replace, Update};
 
@@ -55,6 +57,8 @@ pub enum View {
     Stations,
     /// Pandora's genre stations, to add one (`Enter`).
     Genres,
+    /// Browse directory (`feed/getDirectory`).
+    Browse,
     /// Songs pinned with Shift+I.
     Pinned,
     Settings,
@@ -79,6 +83,8 @@ pub enum MenuItem {
     Stations,
     /// Opens Pandora's genre stations on the right.
     Genres,
+    /// Opens Browse (`[browse] browse`).
+    Browse,
     /// The songs pinned with Shift+I (hidden by `[look] pinned_in_menu`).
     Pinned,
     /// A starred station, by its index in `[playback] favorites`.
@@ -140,13 +146,17 @@ pub enum Setting {
     CheckUpdates,
     GenrePopup,
     Splash,
+    /// Master: Browse in the menu (`[browse] browse`).
+    Browse,
+    /// One of [`config::BROWSE_SECTIONS`] (`[browse] <key>`).
+    BrowseSection(u8),
     EditFile,
     MenuEntry,
 }
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 25] = [
+    pub const ALL: [(&'static str, Self); 36] = [
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
@@ -172,6 +182,17 @@ impl Setting {
         ("LOOK", Self::ArtTint),
         ("LOOK", Self::Animations),
         ("LOOK", Self::Splash),
+        ("BROWSE", Self::Browse),
+        ("BROWSE", Self::BrowseSection(0)),
+        ("BROWSE", Self::BrowseSection(1)),
+        ("BROWSE", Self::BrowseSection(2)),
+        ("BROWSE", Self::BrowseSection(3)),
+        ("BROWSE", Self::BrowseSection(4)),
+        ("BROWSE", Self::BrowseSection(5)),
+        ("BROWSE", Self::BrowseSection(6)),
+        ("BROWSE", Self::BrowseSection(7)),
+        ("BROWSE", Self::BrowseSection(8)),
+        ("BROWSE", Self::BrowseSection(9)),
     ];
 
     /// Where `setting` is in [`Setting::ALL`] (the Settings cursor).
@@ -204,6 +225,8 @@ impl Setting {
             Self::CheckUpdates => "Look for new versions on startup",
             Self::GenrePopup => "Genre station edit popup",
             Self::Splash => "Boot screen",
+            Self::Browse => "Browse",
+            Self::BrowseSection(i) => config::BROWSE_SECTIONS[i as usize].1,
             Self::EditFile => "Edit config.toml",
             Self::MenuEntry => "App menu entry",
         }
@@ -218,6 +241,8 @@ impl Setting {
             Self::CheckUpdates => Some(("boxvibe", "look_for_new_versions_on_startup")),
             Self::GenrePopup => Some(("boxvibe", "genre_edit_popup")),
             Self::Splash => Some(("look", "boot_screen")),
+            Self::Browse => Some(("browse", "browse")),
+            Self::BrowseSection(i) => Some(("browse", config::BROWSE_SECTIONS[i as usize].0)),
             Self::Email => Some(("account", "email_or_username")),
             Self::Quality => Some(("playback", "audio_quality")),
             Self::Volume => Some(("playback", "volume")),
@@ -236,6 +261,7 @@ impl Setting {
             Self::ArtTint => Some(("look", "tint_art_with_theme_colors")),
             Self::Animations => Some(("look", "animations")),
             Self::Password | Self::LogIn | Self::LogOut | Self::EditFile | Self::MenuEntry => None,
+            // Browse* handled above
         }
     }
 
@@ -303,6 +329,29 @@ impl Setting {
             Self::Splash => {
                 "A two-second boxvibe logo screen when it opens; any key skips it (Animations off skips it too). Saved as [look] boot_screen."
             }
+            Self::Browse => {
+                "On: the menu has Browse (Pandora's directory: artists, new music, genres, …). Off: hidden. Saved as [browse] browse."
+            }
+            Self::BrowseSection(i) => match i {
+                0 => {
+                    "Artists Pandora picks for you. Off hides the section in Browse. Saved as [browse] artists_picked_for_you."
+                }
+                1 => "New albums and singles. Off hides the section in Browse. Saved as [browse] new_music.",
+                2 => {
+                    "Genre stations to add and play. Off hides the section in Browse. Saved as [browse] browse_genres."
+                }
+                3 => "Featured playlists. Off hides the section in Browse. Saved as [browse] featured_playlists.",
+                4 => {
+                    "Artists on the rise. Off hides the section in Browse. Saved as [browse] trendsetters_artists_on_the_rise."
+                }
+                5 => "Decades genre stations. Off hides the section in Browse. Saved as [browse] decades.",
+                6 => {
+                    "Podcasts Pandora recommends. Off hides the section in Browse. Saved as [browse] recommended_podcasts."
+                }
+                7 => "Top artists. Off hides the section in Browse. Saved as [browse] top_artists.",
+                8 => "Moods and activities. Off hides the section in Browse. Saved as [browse] moods_and_activities.",
+                _ => "Top stations. Off hides the section in Browse. Saved as [browse] top_stations.",
+            },
             Self::ThemeSelect => {
                 "With Theme Auto Mode off, Enter opens the theme picker: Search about 900 schemes (iTerm2-Color-Schemes and Omarchy's) as you type, or pick an Installed one. Downloads go to ~/.config/boxvibe/themes/. Saved as [look] theme_select."
             }
@@ -528,6 +577,23 @@ pub enum GenresState {
     Loading,
     Loaded(Vec<GenreCategory>),
     Failed(String),
+}
+
+/// Pandora Browse directory (`feed/getDirectory`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum BrowseState {
+    #[default]
+    Idle,
+    Loading,
+    Loaded(Vec<BrowseSection>),
+    Failed(String),
+}
+
+/// One line on the Browse page: a section title or an item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowseRow<'a> {
+    Header(&'a str),
+    Item(&'a BrowseItem),
 }
 
 /// A station to rename or delete.
@@ -892,6 +958,9 @@ pub struct App {
     pub add_station: Option<StationSearch>,
     /// Pandora's genre stations (the Genres page).
     pub genres: GenresState,
+    /// Browse directory.
+    pub browse: BrowseState,
+    pub browse_cursor: usize,
     /// Selected genre station, counted over the stations only (not the headings).
     pub genres_cursor: usize,
     /// A station is being made: a second Enter waits for it.
@@ -1006,6 +1075,8 @@ impl App {
             rename: None,
             add_station: None,
             genres: GenresState::Idle,
+            browse: BrowseState::Idle,
+            browse_cursor: 0,
             genres_cursor: 0,
             creating: false,
             editor: None,
@@ -1172,6 +1243,7 @@ impl App {
         let top = self.has_now_playing().then_some(MenuItem::NowPlaying);
         top.into_iter()
             .chain([MenuItem::Stations, MenuItem::Genres])
+            .chain(self.config.browse.browse.then_some(MenuItem::Browse))
             .chain(self.config.ui.pinned_in_menu.then_some(MenuItem::Pinned))
             .chain(
                 (0..if self.config.ui.favorites_in_menu { self.config.ui.favorites.len() } else { 0 })
@@ -1191,6 +1263,7 @@ impl App {
             MenuItem::NowPlaying => self.show_now_playing(),
             MenuItem::Stations => self.show_stations(),
             MenuItem::Genres => self.show_genres(),
+            MenuItem::Browse => self.show_browse(),
             MenuItem::Pinned => self.show_page(View::Pinned),
             MenuItem::Favorite(i) => {
                 let Some(fav) = self.config.ui.favorites.get(i).cloned() else { return };
@@ -1296,6 +1369,65 @@ impl App {
                 self.genres = GenresState::Idle;
                 self.show_genres();
             }
+        }
+    }
+
+    /// Browse (menu): Pandora's directory, loaded the first time (and again after a failure).
+    fn show_browse(&mut self) {
+        self.view = View::Browse;
+        self.focus = Focus::Content;
+        self.point_menu_at_view();
+        if matches!(self.browse, BrowseState::Idle | BrowseState::Failed(_)) {
+            if self.session != Session::LoggedIn {
+                self.status = "Log in first (Settings, Shift+O) to browse".into();
+                return;
+            }
+            self.browse = BrowseState::Loading;
+            self.backend.send(Request::Browse);
+        }
+    }
+
+    /// Rows the Browse page lists: enabled sections' items, with section headers as navigation targets skipped — flat item list with section markers via [`browse_rows`].
+    pub fn browse_rows(&self) -> Vec<BrowseRow<'_>> {
+        let BrowseState::Loaded(sections) = &self.browse else {
+            return Vec::new();
+        };
+        let mut rows = Vec::new();
+        for section in sections {
+            if !self.config.browse.section_on(&section.title) {
+                continue;
+            }
+            rows.push(BrowseRow::Header(&section.title));
+            for item in &section.items {
+                rows.push(BrowseRow::Item(item));
+            }
+        }
+        rows
+    }
+
+    pub fn browse_index(&self) -> usize {
+        self.browse_cursor.min(self.browse_rows().len().saturating_sub(1))
+    }
+
+    /// Enter on a Browse item: create+play when the row can start a station.
+    fn activate_browse_row(&mut self) {
+        let retry = matches!(self.browse, BrowseState::Idle | BrowseState::Failed(_));
+        let loading = matches!(self.browse, BrowseState::Loading);
+        let picked = self.browse_rows().get(self.browse_index()).and_then(|row| match row {
+            BrowseRow::Item(item) => Some((item.create_id().map(str::to_owned), item.name.clone())),
+            BrowseRow::Header(_) => None,
+        });
+        match (loading, retry, picked) {
+            (true, _, _) => {}
+            (_, true, _) => {
+                self.browse = BrowseState::Idle;
+                self.show_browse();
+            }
+            (_, _, Some((Some(id), name))) => self.create_station(&id, &name),
+            (_, _, Some((None, name))) => {
+                self.status = format!("“{name}” can't start a station here (playlist, podcast, album or mood)");
+            }
+            _ => {}
         }
     }
 
@@ -1714,6 +1846,7 @@ impl App {
             View::Notifications => Some(MenuItem::Notifications),
             View::Stations => Some(MenuItem::Stations),
             View::Genres => Some(MenuItem::Genres),
+            View::Browse => Some(MenuItem::Browse),
             View::Pinned => Some(MenuItem::Pinned),
             View::Player if self.has_now_playing() => Some(MenuItem::NowPlaying),
             View::Player => None,
@@ -1930,6 +2063,11 @@ impl App {
             Reply::Artist(info) => self.artist_loaded(info),
             Reply::Shuffle(station) => self.shuffle_arrived(station),
             Reply::StationModes { station_id, modes, set } => self.modes_loaded(&station_id, modes, set),
+            Reply::Browse(sections) => {
+                self.browse = BrowseState::Loaded(sections);
+                self.browse_cursor =
+                    self.browse_rows().iter().position(|r| matches!(r, BrowseRow::Item(_))).unwrap_or(0);
+            }
             Reply::Genres(categories) => {
                 self.genres = GenresState::Loaded(categories);
                 self.genres_cursor = 0;
@@ -2026,6 +2164,9 @@ impl App {
                 }
                 if what == "create station" {
                     self.creating = false;
+                }
+                if what == "browse" {
+                    self.browse = BrowseState::Failed(message.clone());
                 }
                 if what == "genres" {
                     self.genres = GenresState::Failed(message.clone());
@@ -2460,6 +2601,11 @@ impl App {
             Setting::CheckUpdates => on(self.config.ui.check_updates),
             Setting::GenrePopup => on(self.config.ui.genre_edit_popup),
             Setting::Splash => on(self.config.ui.splash),
+            Setting::Browse => on(self.config.browse.browse),
+            Setting::BrowseSection(i) => {
+                let title = config::BROWSE_SECTIONS[i as usize].1;
+                on(self.config.browse.section_on(title))
+            }
             Setting::EditFile => self
                 .config_path
                 .as_ref()
@@ -2571,6 +2717,22 @@ impl App {
                 self.config.ui.splash = on;
                 self.save(&[("look", "boot_screen", on.into())]);
                 self.status = format!("Boot screen: {}", if on { "on" } else { "off" });
+            }
+            Setting::Browse => {
+                let on = !self.config.browse.browse;
+                self.config.browse.browse = on;
+                self.save(&[("browse", "browse", on.into())]);
+                self.status = format!("Browse: {}", if on { "on" } else { "off" });
+                if !on && self.view == View::Browse {
+                    self.show_stations();
+                }
+            }
+            Setting::BrowseSection(i) => {
+                let (key, title) = config::BROWSE_SECTIONS[i as usize];
+                let on = !self.config.browse.section_on(title);
+                self.config.browse.set_section(title, on);
+                self.save(&[("browse", key, on.into())]);
+                self.status = format!("{title}: {}", if on { "on" } else { "off" });
             }
             Setting::EditFile => {
                 if self.demo {
@@ -3082,6 +3244,7 @@ impl App {
                 self.tune(self.stations_index());
             }
             (Focus::Content, View::Genres) => self.add_genre_station(),
+            (Focus::Content, View::Browse) => self.activate_browse_row(),
             (Focus::Content, View::Pinned) => self.open_pin(),
             (Focus::Content, View::Notifications) => {}
             (Focus::Content, View::Player) => {}
@@ -3105,6 +3268,22 @@ impl App {
             }
             (Focus::Content, View::Genres) => {
                 self.genres_cursor = clamp(self.genres_index(), self.genre_rows().len().max(1))
+            }
+            (Focus::Content, View::Browse) => {
+                let rows = self.browse_rows();
+                let len = rows.len();
+                if len == 0 {
+                    return;
+                }
+                let mut at = step(self.browse_index(), len, by);
+                // Prefer landing on an item, not a section header.
+                for _ in 0..len {
+                    if matches!(rows[at], BrowseRow::Item(_)) {
+                        break;
+                    }
+                    at = step(at, len, if by < 0 { -1 } else { 1 });
+                }
+                self.browse_cursor = at;
             }
             (Focus::Content, View::About) => {}
             (Focus::Content, View::Notifications) => {
@@ -3439,7 +3618,7 @@ mod tests {
     fn settings_start_with_account_then_boxvibe_playback_look() {
         let mut groups: Vec<&str> = Setting::ALL.iter().map(|(g, _)| *g).collect();
         groups.dedup();
-        assert_eq!(groups, ["ACCOUNT", "BOXVIBE", "PLAYBACK", "LOOK"]);
+        assert_eq!(groups, ["ACCOUNT", "BOXVIBE", "PLAYBACK", "LOOK", "BROWSE"]);
         assert_eq!(Setting::ALL[0].1, Setting::Email, "the account is on top");
         assert!(Setting::at(Setting::Splash) > Setting::at(Setting::ThemeAutoMode), "the boot screen is under LOOK");
         assert_eq!(App::new(Config::default(), None, &[], true).setting(), Setting::Email, "the cursor starts on it");
@@ -3603,6 +3782,52 @@ mod tests {
         assert!(app.audio.is_paused(), "space pauses from the menu");
         app.on_key(key(KeyCode::Char(' ')));
         assert!(!app.audio.is_paused());
+    }
+
+    #[test]
+    fn browse_menu_loads_directory_and_enter_starts_a_station() {
+        let mut app = demo();
+        let at = app.menu_items().iter().position(|m| *m == MenuItem::Browse).unwrap();
+        app.focus = Focus::Menu;
+        app.menu_cursor = at;
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.view, View::Browse);
+        app.settle(Duration::from_millis(150));
+        assert!(matches!(app.browse, BrowseState::Loaded(_)), "{:?}", app.browse);
+        assert!(app.browse_rows().iter().any(|r| matches!(r, BrowseRow::Item(_))));
+        // Land on M83 (first playable) and start it.
+        while !matches!(app.browse_rows().get(app.browse_index()), Some(BrowseRow::Item(i)) if i.name == "M83") {
+            app.on_key(key(KeyCode::Char('j')));
+        }
+        let before = app.stations.len();
+        app.on_key(key(KeyCode::Enter));
+        app.settle(Duration::from_millis(150));
+        assert!(app.stations.len() > before || app.now.is_some(), "{}", app.status);
+    }
+
+    #[test]
+    fn browse_section_toggle_hides_a_section_and_is_saved() {
+        let dir = config::temp_dir("browse-section");
+        let path = dir.join("config.toml");
+        let mut app = App::new(Config::default(), Some(path.clone()), &[], true);
+        app.demo = false;
+        app.config_path = Some(path.clone());
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.settings_cursor = Setting::at(Setting::BrowseSection(0));
+        app.on_key(key(KeyCode::Enter));
+        assert!(!app.config.browse.section_on("Artists Picked For You"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("artists_picked_for_you = false"), "{text}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn browse_master_off_removes_the_menu_entry() {
+        let mut app = demo();
+        assert!(app.menu_items().contains(&MenuItem::Browse));
+        app.config.browse.browse = false;
+        assert!(!app.menu_items().contains(&MenuItem::Browse));
     }
 
     #[test]
@@ -3780,8 +4005,11 @@ mod tests {
         let app = demo();
         let items = app.menu_items();
         assert_eq!(items[0], MenuItem::NowPlaying, "a station plays: NOW PLAYING on top");
-        assert_eq!((items[1], items[2], items[3]), (MenuItem::Stations, MenuItem::Genres, MenuItem::Pinned));
-        assert_eq!(items.len(), 8, "no favorites yet: no FAVORITES entries");
+        assert_eq!(
+            (items[1], items[2], items[3], items[4]),
+            (MenuItem::Stations, MenuItem::Genres, MenuItem::Browse, MenuItem::Pinned)
+        );
+        assert_eq!(items.len(), 9, "no favorites yet: no FAVORITES entries");
         assert_eq!(
             &items[items.len() - 4..],
             [MenuItem::Settings, MenuItem::Notifications, MenuItem::About, MenuItem::Quit]
@@ -3792,7 +4020,7 @@ mod tests {
     fn enter_on_settings_and_about_opens_them() {
         let mut app = demo();
         app.focus = Focus::Menu;
-        app.menu_cursor = 4;
+        app.menu_cursor = app.menu_items().iter().position(|m| *m == MenuItem::Settings).unwrap();
         app.on_key(key(KeyCode::Enter));
         assert_eq!((app.view, app.focus), (View::Settings, Focus::Content));
         app.on_key(key(KeyCode::Esc));
@@ -3874,6 +4102,7 @@ mod tests {
             [
                 MenuItem::Stations,
                 MenuItem::Genres,
+                MenuItem::Browse,
                 MenuItem::Pinned,
                 MenuItem::Favorite(0),
                 MenuItem::Settings,
@@ -3891,6 +4120,8 @@ mod tests {
         app.on_key(key(KeyCode::Esc));
         app.on_key(key(KeyCode::Char('j')));
         assert_eq!(app.menu_selected(), MenuItem::Genres);
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(app.menu_selected(), MenuItem::Browse);
         app.on_key(key(KeyCode::Char('j')));
         assert_eq!(app.menu_selected(), MenuItem::Pinned);
         app.on_key(key(KeyCode::Char('j')));

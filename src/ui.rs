@@ -16,8 +16,8 @@ use ratatui::widgets::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
-    App, Details, Editor, EditorTab, FeedState, Focus, GenresState, Loaded, MenuItem, Pane, Prompt, Rename, SearchMode,
-    Session, Setting, SongAction, StationSearch, View,
+    App, BrowseRow, BrowseState, Details, Editor, EditorTab, FeedState, Focus, GenresState, Loaded, MenuItem, Pane,
+    Prompt, Rename, SearchMode, Session, Setting, SongAction, StationSearch, View,
 };
 use crate::art::Cover;
 use crate::config::{AlbumArt, BorderStyle, GoodVibes};
@@ -89,6 +89,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         View::Player => draw_player(frame, app, ic, right),
         View::Stations => draw_stations(frame, app, ic, right),
         View::Genres => draw_genres(frame, app, ic, right),
+        View::Browse => draw_browse(frame, app, ic, right),
         View::Pinned => draw_pinned(frame, app, ic, right),
         View::Settings => draw_settings(frame, app, ic, right),
         View::About => draw_about(frame, app, ic, right),
@@ -673,10 +674,13 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let now_h = if app.has_now_playing() { 2 } else { 0 };
+    let browse = app.config.browse.browse;
     let pinned = app.config.ui.pinned_in_menu;
+    // Stations, Genres, optional Browse, optional Pinned.
+    let top_n = 2 + u16::from(browse) + u16::from(pinned);
     let [now_area, stations_row, favs_area, _, rule, app_area] = Layout::vertical([
         Constraint::Length(now_h),
-        Constraint::Length(2 + u16::from(pinned)),
+        Constraint::Length(top_n),
         Constraint::Fill(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -694,6 +698,7 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
                 | (MenuItem::NowPlaying, View::Player)
                 | (MenuItem::Stations, View::Stations)
                 | (MenuItem::Genres, View::Genres)
+                | (MenuItem::Browse, View::Browse)
                 | (MenuItem::Pinned, View::Pinned)
         )
     };
@@ -723,6 +728,9 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         (MenuItem::Stations, ic.station, format!("Stations{count}")),
         (MenuItem::Genres, ic.genre, "Genres".into()),
     ];
+    if browse {
+        top.push((MenuItem::Browse, ic.browse, "Browse".into()));
+    }
     if pinned {
         let n = if app.pins.is_empty() { String::new() } else { format!(" ({})", app.pins.len()) };
         top.push((MenuItem::Pinned, ic.pin, format!("Pinned{n}")));
@@ -1004,6 +1012,68 @@ fn draw_genres(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         }
     }
     let list = List::new(items).highlight_style(selection(&p, focused));
+    let mut state = ListState::default().with_selected(Some(selected_row));
+    frame.render_stateful_widget(list, inner, &mut state);
+}
+
+fn draw_browse(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
+    let p = &app.palette;
+    let focused = app.focus == Focus::Content;
+    let block = panel(title(format!("{} Browse", ic.browse), p), p, focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let message = match &app.browse {
+        BrowseState::Idle if app.session != Session::LoggedIn => {
+            Some(" Log in (Settings, Shift+O) to browse".to_owned())
+        }
+        BrowseState::Idle | BrowseState::Loading => Some(format!(" {} Loading Browse…", ic.loading)),
+        BrowseState::Failed(why) => Some(format!(" {} {}  (Enter tries again)", ic.warn, clean(why))),
+        BrowseState::Loaded(sections)
+            if sections.is_empty() || app.browse_rows().iter().all(|r| matches!(r, BrowseRow::Header(_))) =>
+        {
+            Some(" Nothing to show (every section is off in Settings, or Pandora sent none)".to_owned())
+        }
+        BrowseState::Loaded(_) => None,
+    };
+    if let Some(text) = message {
+        frame.render_widget(Paragraph::new(text).fg(p.muted), inner);
+        return;
+    }
+    let rows = app.browse_rows();
+    let width = inner.width as usize;
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut selected_row = 0;
+    for (i, row) in rows.iter().enumerate() {
+        if i == app.browse_index() {
+            selected_row = items.len();
+        }
+        match row {
+            BrowseRow::Header(title) => {
+                items.push(ListItem::new(Line::from(Span::styled(
+                    format!(" {}", clean(title).to_uppercase()),
+                    Style::new().fg(p.orange).bold(),
+                ))));
+            }
+            BrowseRow::Item(item) => {
+                let mark = if item.create_id().is_some() { "▶" } else { "·" };
+                let head = format!("   {mark} ");
+                let name = clean(&item.name);
+                let mut line = vec![Span::styled(format!("{head}{name}"), Style::new().fg(p.fg))];
+                if !item.detail.is_empty() {
+                    let used = safe_width(&head) + safe_width(&name) + 3;
+                    let room = width.saturating_sub(used);
+                    if room > 8 {
+                        line.push(Span::styled(
+                            format!("  {}", fit(&clean(&item.detail), room - 2)),
+                            Style::new().fg(p.muted),
+                        ));
+                    }
+                }
+                items.push(ListItem::new(Line::from(line)));
+            }
+        }
+    }
+    let list = List::new(items).highlight_style(selection(p, focused));
     let mut state = ListState::default().with_selected(Some(selected_row));
     frame.render_stateful_widget(list, inner, &mut state);
 }
@@ -2242,7 +2312,8 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         || app.view == View::Notifications && app.focus == Focus::Content && app.notes.len() < 2
         || app.view == View::Pinned && app.focus == Focus::Content && app.pins.len() < 2
         || in_songs && app.pane == Pane::NowPlaying
-        || app.view == View::Genres && app.focus == Focus::Content && app.genre_rows().is_empty();
+        || app.view == View::Genres && app.focus == Focus::Content && app.genre_rows().is_empty()
+        || app.view == View::Browse && app.focus == Focus::Content && app.browse_rows().is_empty();
     if !nothing_to_move {
         keys.push(("j/k ↑↓", "Move"));
     }
@@ -2332,6 +2403,16 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
             match &app.genres {
                 GenresState::Loaded(_) if !app.genre_rows().is_empty() => keys.push(("Enter", "Add & Play")),
                 GenresState::Failed(_) => keys.push(("Enter", "Try Again")),
+                _ => {}
+            }
+            keys.push(("Esc", "Menu"));
+        }
+        (Focus::Content, View::Browse) => {
+            match &app.browse {
+                BrowseState::Loaded(_) if app.browse_rows().iter().any(|r| matches!(r, BrowseRow::Item(_))) => {
+                    keys.push(("Enter", "Start Station"));
+                }
+                BrowseState::Failed(_) => keys.push(("Enter", "Try Again")),
                 _ => {}
             }
             keys.push(("Esc", "Menu"));

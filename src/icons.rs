@@ -10,6 +10,8 @@ pub struct Icons {
     pub station: &'static str,
     /// The Genres page.
     pub genre: &'static str,
+    /// Browse directory.
+    pub browse: &'static str,
     pub shuffle: &'static str,
     pub shared: &'static str,
     /// A favorite station.
@@ -39,12 +41,13 @@ pub struct Icons {
     pub update: &'static str,
     pub ok: &'static str,
     /// One per [`crate::app::Setting::ALL`] row.
-    pub setting: [&'static str; 25],
+    pub setting: [&'static str; 36],
 }
 
 const EMOJI: Icons = Icons {
     station: "📻",
     genre: "🎼",
+    browse: "🧭",
     shuffle: "🔀",
     shared: "👥",
     favorite: "⭐",
@@ -71,13 +74,14 @@ const EMOJI: Icons = Icons {
     ok: "✅",
     setting: [
         "👤", "🔑", "🔓", "🚪", "🆕", "💬", "📝", "📌", "🎧", "🔊", "🎶", "🔔", "📢", "🎨", "🖌", "😀", "🔲", "📐",
-        "⭐", "📌", "💿", "👾", "🌈", "✨", "🚀",
+        "⭐", "📌", "💿", "👾", "🌈", "✨", "🚀", "🧭", "👤", "🆕", "🎼", "📜", "📈", "📅", "🎙️", "⭐", "😊", "📻",
     ],
 };
 
 const NERD: Icons = Icons {
     station: "\u{f0439}",
     genre: "\u{f001}",
+    browse: "\u{f0a9}",
     shuffle: "\u{f074}",
     shared: "\u{f0c0}",
     favorite: "\u{f005}",
@@ -104,13 +108,15 @@ const NERD: Icons = Icons {
     setting: [
         "\u{f007}", "\u{f084}", "\u{f09c}", "\u{f08b}", "\u{f0aa}", "\u{f075}", "\u{f044}", "\u{f0c9}", "\u{f025}",
         "\u{f028}", "\u{f04b}", "\u{f0f3}", "\u{f0a1}", "\u{f1fc}", "\u{f019}", "\u{f118}", "\u{f0c8}", "\u{f07e}",
-        "\u{f005}", "\u{f08d}", "\u{f03e}", "\u{f00a}", "\u{f53f}", "\u{f0d0}", "\u{f135}",
+        "\u{f005}", "\u{f08d}", "\u{f03e}", "\u{f00a}", "\u{f53f}", "\u{f0d0}", "\u{f135}", "\u{f0a9}", "\u{f007}",
+        "\u{f0a1}", "\u{f001}", "\u{f0cb}", "\u{f201}", "\u{f073}", "\u{f130}", "\u{f005}", "\u{f118}", "\u{f001}",
     ],
 };
 
 const UNICODE: Icons = Icons {
     station: "◉",
     genre: "♬",
+    browse: "◎",
     shuffle: "⇄",
     shared: "⚇",
     favorite: "★",
@@ -137,7 +143,7 @@ const UNICODE: Icons = Icons {
     ok: "✔",
     setting: [
         "@", "*", "→", "⏻", "↑", "!", "✎", "☰", "♫", "◖", "▶", "♪", "♡", "◐", "⇩", "☺", "▢", "↔", "★", "⚑", "▦", "▩",
-        "◑", "✦", "◈",
+        "◑", "✦", "◈", "◎", "@", "N", "♬", "P", "↑", "D", "🎙", "★", "☺", "◉",
     ],
 };
 

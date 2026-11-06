@@ -1,7 +1,7 @@
 //! User configuration, `~/.config/boxvibe/config.toml`.
 //!
-//! The tables are the Settings groups: `[boxvibe]`, `[account]`, `[playback]`
-//! and `[look]` (see [`LAYOUT`]). The 0.1–0.3 tables `[pandora]`, `[player]`
+//! The tables are the Settings groups: `[boxvibe]`, `[account]`, `[playback]`,
+//! `[look]` and `[browse]` (see [`LAYOUT`]). The 0.1–0.3 tables `[pandora]`, `[player]`
 //! and `[ui]` still load (the new place wins when a key is in both) and are
 //! emptied into the new tables the next time anything is saved.
 //!
@@ -31,6 +31,7 @@ pub struct Config {
     pub pandora: PandoraConfig,
     pub player: PlayerConfig,
     pub ui: UiConfig,
+    pub browse: BrowseConfig,
 }
 
 /// A password. It prints as `<hidden>` in `{:?}` (so it can't end up in a log
@@ -61,6 +62,68 @@ impl Secret {
 impl std::fmt::Debug for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(if self.0.is_empty() { "<empty>" } else { "<hidden>" })
+    }
+}
+
+/// Known Browse directory sections (Settings labels and `[browse]` keys).
+/// Unknown future sections still show in Browse (default On) until turned off.
+pub const BROWSE_SECTIONS: &[(&str, &str)] = &[
+    ("artists_picked_for_you", "Artists Picked For You"),
+    ("new_music", "New Music"),
+    ("browse_genres", "Browse Genres"),
+    ("featured_playlists", "Featured Playlists"),
+    ("trendsetters_artists_on_the_rise", "Trendsetters: Artists on the rise"),
+    ("decades", "Decades"),
+    ("recommended_podcasts", "Recommended Podcasts"),
+    ("top_artists", "Top artists"),
+    ("moods_and_activities", "Moods and activities"),
+    ("top_stations", "Top stations"),
+];
+
+/// Snake_case `[browse]` key for a section title (known or future).
+pub fn browse_section_key(title: &str) -> String {
+    let mut out = String::new();
+    let mut gap = false;
+    for c in title.chars() {
+        if c.is_ascii_alphanumeric() {
+            if gap && !out.is_empty() {
+                out.push('_');
+            }
+            gap = false;
+            out.push(c.to_ascii_lowercase());
+        } else {
+            gap = !out.is_empty();
+        }
+    }
+    out
+}
+
+/// `[browse]`: master Browse toggle and per-section On/Off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BrowseConfig {
+    /// Browse in the menu (`[browse] browse`).
+    pub browse: bool,
+    /// Per-section toggles; missing keys default to On.
+    #[serde(flatten)]
+    pub sections: std::collections::BTreeMap<String, bool>,
+}
+
+impl Default for BrowseConfig {
+    fn default() -> Self {
+        Self { browse: true, sections: std::collections::BTreeMap::new() }
+    }
+}
+
+impl BrowseConfig {
+    /// Whether a directory section (by its title) is shown.
+    pub fn section_on(&self, title: &str) -> bool {
+        let key = browse_section_key(title);
+        self.sections.get(&key).copied().unwrap_or(true)
+    }
+
+    pub fn set_section(&mut self, title: &str, on: bool) {
+        self.sections.insert(browse_section_key(title), on);
     }
 }
 
@@ -728,6 +791,17 @@ pub const LAYOUT: &[(&str, &str, &str)] = &[
     ("look", "tint_art_with_theme_colors", "ui"),
     ("look", "animations", "ui"),
     ("look", "boot_screen", "ui"),
+    ("browse", "browse", "browse"),
+    ("browse", "artists_picked_for_you", "browse"),
+    ("browse", "new_music", "browse"),
+    ("browse", "browse_genres", "browse"),
+    ("browse", "featured_playlists", "browse"),
+    ("browse", "trendsetters_artists_on_the_rise", "browse"),
+    ("browse", "decades", "browse"),
+    ("browse", "recommended_podcasts", "browse"),
+    ("browse", "top_artists", "browse"),
+    ("browse", "moods_and_activities", "browse"),
+    ("browse", "top_stations", "browse"),
 ];
 
 // REMOVE AT 1.0: the old-config migration is `OLD_NAMES`, `OLD_TABLES`, `age`,
@@ -840,6 +914,7 @@ fn new_path(old: &str) -> String {
 fn gather(table: toml::Table, warnings: &mut Vec<ConfigWarning>) -> toml::Table {
     let mut internal: toml::Table =
         OLD_TABLES.iter().map(|t| ((*t).to_owned(), toml::Value::Table(toml::Table::new()))).collect();
+    internal.insert("browse".into(), toml::Value::Table(toml::Table::new()));
     let mut rank: std::collections::HashMap<(&str, String), u16> = std::collections::HashMap::new();
     let mut put = |internal: &mut toml::Table, old_table: &'static str, key: String, value: toml::Value, level: u16| {
         if rank.get(&(old_table, key.clone())).is_some_and(|have| *have >= level) {
@@ -878,6 +953,8 @@ fn gather(table: toml::Table, warnings: &mut Vec<ConfigWarning>) -> toml::Table 
                         put(&mut internal, old, (*new_key).to_owned(), value, age(&name, &key).unwrap_or(1));
                     }
                     (None, None) if RETIRED_KEYS.contains(&path.as_str()) => {}
+                    // Future Browse sections: keep under [browse], default handled in BrowseConfig.
+                    (None, None) if name == "browse" => put(&mut internal, "browse", key, value, OWN_PLACE),
                     (None, None) => warnings.push(ConfigWarning::Unknown(path)),
                 }
             } else if LAYOUT.iter().any(|(_, k, t)| *t == name && *k == key) {
@@ -928,6 +1005,7 @@ impl Config {
                 "pandora" => c.pandora = section(&name, value, &mut checked),
                 "player" => c.player = section(&name, value, &mut checked),
                 "ui" => c.ui = section(&name, value, &mut checked),
+                "browse" => c.browse = section(&name, value, &mut checked),
                 _ => {}
             }
         }
@@ -1129,7 +1207,10 @@ pub fn set_values(path: &Path, values: &[(&str, &str, toml_edit::Value)]) -> Res
         if *key == "password" {
             continue;
         }
-        debug_assert!(LAYOUT.iter().any(|(t, k, _)| t == table && k == key), "{table}.{key} is not in LAYOUT");
+        debug_assert!(
+            LAYOUT.iter().any(|(t, k, _)| t == table && k == key) || *table == "browse",
+            "{table}.{key} is not in LAYOUT"
+        );
         let section = doc
             .entry(table)
             .or_insert_with(toml_edit::table)
@@ -1300,6 +1381,18 @@ mod tests {
         assert_eq!(text.matches("[ui]").count(), 1, "{text}");
         let (c, _) = Config::load(&path);
         assert!((c.player.good_vibes_only == GoodVibes::Off) && c.ui.theme() == "gruvbox" && !c.ui.animations);
+    }
+
+    #[test]
+    fn browse_defaults_on_and_keeps_unknown_section_keys() {
+        let (c, w) =
+            Config::parse("[browse]\nbrowse = true\nartists_picked_for_you = false\nfuture_shelf = false\n").unwrap();
+        assert!(c.browse.browse);
+        assert!(!c.browse.section_on("Artists Picked For You"));
+        assert!(c.browse.section_on("New Music"), "missing section defaults on");
+        assert!(!c.browse.section_on("Future Shelf"));
+        assert!(w.iter().all(|x| !matches!(x, ConfigWarning::Unknown(_))), "{w:?}");
+        assert_eq!(browse_section_key("Trendsetters: Artists on the rise"), "trendsetters_artists_on_the_rise");
     }
 
     /// (old table, old key, a non-default value, new table, new key, is that value read?)
@@ -1726,7 +1819,11 @@ mod tests {
             }
             all
         });
-        assert_eq!(tables, ["account", "boxvibe", "playback", "look"], "ACCOUNT, BOXVIBE, PLAYBACK, LOOK");
+        assert_eq!(
+            tables,
+            ["account", "boxvibe", "playback", "look", "browse"],
+            "ACCOUNT, BOXVIBE, PLAYBACK, LOOK, BROWSE"
+        );
     }
 
     #[test]

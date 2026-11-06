@@ -29,6 +29,8 @@
 //! requests and answers libepimetheusKotlin (GPL-3.0) sends and reads. Only
 //! those request and answer shapes were taken, as facts; no code was copied.
 
+mod browse;
+pub use browse::{BrowseItem, BrowseSection};
 use std::collections::HashSet;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

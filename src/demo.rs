@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 
 use crate::pandora::{
-    ArtistInfo, AudioFormat, FEEDBACK_PAGE, Feedback, FeedbackPage, Genre, GenreCategory, HitKind, Rating, SearchHit,
-    Seed, Song, Station, StationDetails, StationMode, StationModes,
+    ArtistInfo, AudioFormat, BrowseItem, BrowseSection, FEEDBACK_PAGE, Feedback, FeedbackPage, Genre, GenreCategory,
+    HitKind, Rating, SearchHit, Seed, Song, Station, StationDetails, StationMode, StationModes,
 };
 
 pub fn stations() -> Vec<Station> {
@@ -303,6 +303,112 @@ pub fn genres() -> Vec<GenreCategory> {
                 .collect(),
         })
         .collect()
+}
+
+/// A small Browse directory for the demo (same section titles as live Pandora).
+pub fn browse() -> Vec<BrowseSection> {
+    vec![
+        BrowseSection {
+            id: "BS:1:3:1".into(),
+            title: "Artists Picked For You".into(),
+            items: vec![BrowseItem {
+                name: "M83".into(),
+                detail: String::new(),
+                pandora_id: "AR:demo-m83".into(),
+                station_factory: "SF:16722:demo-m83".into(),
+            }],
+        },
+        BrowseSection {
+            id: "BS:1:8".into(),
+            title: "New Music".into(),
+            items: vec![BrowseItem {
+                name: "Midnight City".into(),
+                detail: "M83".into(),
+                pandora_id: "AL:demo-album".into(),
+                station_factory: String::new(),
+            }],
+        },
+        BrowseSection {
+            id: "BS:1:2:1".into(),
+            title: "Browse Genres".into(),
+            items: vec![BrowseItem {
+                name: "Synthwave".into(),
+                detail: "1.2M Listeners".into(),
+                pandora_id: "GE:demo-synthwave".into(),
+                station_factory: "SF:18245:demo-synthwave".into(),
+            }],
+        },
+        BrowseSection {
+            id: "BS:1:12".into(),
+            title: "Featured Playlists".into(),
+            items: vec![BrowseItem {
+                name: "The Drop".into(),
+                detail: "9 songs".into(),
+                pandora_id: "PL:demo:1".into(),
+                station_factory: String::new(),
+            }],
+        },
+        BrowseSection {
+            id: "BS:1:15".into(),
+            title: "Trendsetters: Artists on the rise".into(),
+            items: vec![BrowseItem {
+                name: "MGMT".into(),
+                detail: "#1 This Week".into(),
+                pandora_id: "AR:demo-mgmt".into(),
+                station_factory: "SF:16722:demo-mgmt".into(),
+            }],
+        },
+        BrowseSection {
+            id: "BS:1:6:1".into(),
+            title: "Decades".into(),
+            items: vec![BrowseItem {
+                name: "2010s".into(),
+                detail: String::new(),
+                pandora_id: "GE:demo-2010s".into(),
+                station_factory: "SF:18245:demo-2010s".into(),
+            }],
+        },
+        BrowseSection {
+            id: "BS:1:38".into(),
+            title: "Recommended Podcasts".into(),
+            items: vec![BrowseItem {
+                name: "Crime Junkie".into(),
+                detail: "Audiochuck".into(),
+                pandora_id: "PC:demo".into(),
+                station_factory: String::new(),
+            }],
+        },
+        BrowseSection {
+            id: "BS:1:13".into(),
+            title: "Top artists".into(),
+            items: vec![BrowseItem {
+                name: "Tame Impala".into(),
+                detail: "30M listeners".into(),
+                pandora_id: "AR:demo-tame".into(),
+                station_factory: "SF:16722:demo-tame".into(),
+            }],
+        },
+        BrowseSection {
+            id: "BS:1:7".into(),
+            title: "Moods and activities".into(),
+            items: vec![BrowseItem {
+                name: "Happy".into(),
+                detail: String::new(),
+                pandora_id: "BR:demo:happy".into(),
+                station_factory: String::new(),
+            }],
+        },
+        BrowseSection {
+            id: "BS:1:14".into(),
+            title: "Top stations".into(),
+            items: vec![BrowseItem {
+                name: "Today's Hits".into(),
+                detail: "870K listeners".into(),
+                pandora_id: "GE:demo-hits".into(),
+                station_factory: "SF:18245:demo-hits".into(),
+            }],
+        },
+    ]
 }
 
 /// The station Pandora would make from a hit or a genre (`None`: not in the demo catalogue).

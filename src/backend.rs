@@ -12,8 +12,8 @@ use crate::ads::{self, Ad};
 use crate::demo;
 use crate::keychain::Keychain;
 use crate::pandora::{
-    self, AdAsk, ArtistInfo, Client, Error, FeedbackPage, GenreCategory, Quality, SearchHit, Seed, Song, Station,
-    StationDetails, StationModes,
+    self, AdAsk, ArtistInfo, BrowseSection, Client, Error, FeedbackPage, GenreCategory, Quality, SearchHit, Seed, Song,
+    Station, StationDetails, StationModes,
 };
 use crate::update::{self, Checked, Update};
 
@@ -94,6 +94,8 @@ pub enum Request {
     },
     /// Pandora's genre categories and their stations.
     Genres,
+    /// Browse directory (`feed/getDirectory`).
+    Browse,
     Playlist {
         station_id: String,
     },
@@ -201,6 +203,7 @@ pub enum Reply {
         set: bool,
     },
     Genres(Vec<GenreCategory>),
+    Browse(Vec<BrowseSection>),
     Playlist {
         station_id: String,
         songs: Vec<Song>,
@@ -449,6 +452,7 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
                 }
             }
             Request::Genres => Reply::Genres(demo::genres()),
+            Request::Browse => Reply::Browse(demo::browse()),
             Request::Playlist { station_id } => {
                 round += 1;
                 Reply::Playlist { songs: demo::playlist(&station_id, round - 1), station_id }
@@ -568,6 +572,7 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                 })
             }),
             Request::Genres => run(&mut client, &login, &mut took_over, "genres", |c| c.genres().map(Reply::Genres)),
+            Request::Browse => run(&mut client, &login, &mut took_over, "browse", |c| c.directory().map(Reply::Browse)),
             Request::Playlist { station_id } => run(&mut client, &login, &mut took_over, "playlist", |c| {
                 c.fragment(&station_id).map(|songs| Reply::Playlist { station_id: station_id.clone(), songs })
             }),

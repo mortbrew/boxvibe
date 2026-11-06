@@ -66,7 +66,8 @@ impl std::fmt::Debug for Secret {
 }
 
 /// Known Browse directory sections (Settings labels and `[browse]` keys).
-/// Unknown future sections still show in Browse (default On) until turned off.
+/// Each key pins that section as its own main-menu item (default Off).
+/// Unknown future keys still work: On pins them; missing means Off.
 pub const BROWSE_SECTIONS: &[(&str, &str)] = &[
     ("artists_picked_for_you", "Artists Picked For You"),
     ("new_music", "New Music"),
@@ -104,7 +105,7 @@ pub fn browse_section_key(title: &str) -> String {
 pub struct BrowseConfig {
     /// Browse in the menu (`[browse] browse`).
     pub browse: bool,
-    /// Per-section toggles; missing keys default to On.
+    /// Per-section toggles; missing keys default to Off (not on the main menu).
     #[serde(flatten)]
     pub sections: std::collections::BTreeMap<String, bool>,
 }
@@ -116,13 +117,17 @@ impl Default for BrowseConfig {
 }
 
 impl BrowseConfig {
-    /// Whether a directory section (by its title) is shown.
-    pub fn section_on(&self, title: &str) -> bool {
-        let key = browse_section_key(title);
-        self.sections.get(&key).copied().unwrap_or(true)
+    /// Whether a directory section is pinned on the main menu (by title).
+    /// Missing keys default to Off; Browse itself always lists every section.
+    pub fn pinned_on_menu(&self, title: &str) -> bool {
+        self.sections.get(&browse_section_key(title)).copied().unwrap_or(false)
     }
 
-    pub fn set_section(&mut self, title: &str, on: bool) {
+    pub fn pinned_key(&self, key: &str) -> bool {
+        self.sections.get(key).copied().unwrap_or(false)
+    }
+
+    pub fn set_pinned(&mut self, title: &str, on: bool) {
         self.sections.insert(browse_section_key(title), on);
     }
 }
@@ -1384,13 +1389,13 @@ mod tests {
     }
 
     #[test]
-    fn browse_defaults_on_and_keeps_unknown_section_keys() {
+    fn browse_pins_default_off_and_keeps_unknown_section_keys() {
         let (c, w) =
-            Config::parse("[browse]\nbrowse = true\nartists_picked_for_you = false\nfuture_shelf = false\n").unwrap();
+            Config::parse("[browse]\nbrowse = true\nartists_picked_for_you = true\nfuture_shelf = true\n").unwrap();
         assert!(c.browse.browse);
-        assert!(!c.browse.section_on("Artists Picked For You"));
-        assert!(c.browse.section_on("New Music"), "missing section defaults on");
-        assert!(!c.browse.section_on("Future Shelf"));
+        assert!(c.browse.pinned_on_menu("Artists Picked For You"));
+        assert!(!c.browse.pinned_on_menu("New Music"), "missing section pin defaults off");
+        assert!(c.browse.pinned_key("future_shelf"));
         assert!(w.iter().all(|x| !matches!(x, ConfigWarning::Unknown(_))), "{w:?}");
         assert_eq!(browse_section_key("Trendsetters: Artists on the rise"), "trendsetters_artists_on_the_rise");
     }

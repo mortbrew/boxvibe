@@ -153,6 +153,7 @@ pub struct SearchHit {
 
 /// A genre station Pandora offers (`v1/music/genres`).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // listed via Browse getDirectory now; still parsed for Client::genres tests.
 pub struct Genre {
     /// `pandoraId` (`GE:…`): what `createStation` takes.
     pub id: String,
@@ -162,6 +163,7 @@ pub struct Genre {
 
 /// A genre category and its stations.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub struct GenreCategory {
     pub name: String,
     pub genres: Vec<Genre>,
@@ -668,7 +670,8 @@ pub fn parse_search(v: &Value) -> Vec<SearchHit> {
 }
 
 /// `v1/music/genrecategories`: `(name, categoryToken)` pairs.
-pub fn parse_genre_categories(v: &Value) -> Vec<(String, String)> {
+#[allow(dead_code)]
+fn parse_genre_categories(v: &Value) -> Vec<(String, String)> {
     v.get("categories")
         .and_then(Value::as_array)
         .into_iter()
@@ -682,6 +685,7 @@ pub fn parse_genre_categories(v: &Value) -> Vec<(String, String)> {
 }
 
 /// `v1/music/genres`: the genre stations of one category.
+#[allow(dead_code)]
 pub fn parse_genres(v: &Value) -> Vec<Genre> {
     v.get("genres")
         .and_then(Value::as_array)
@@ -1150,6 +1154,7 @@ impl Client {
     /// `v1/music/genrecategories`, then `v1/music/genres` for each category.
     /// A category whose list fails is left out; the first error is returned
     /// only when nothing could be listed.
+    #[allow(dead_code)]
     pub fn genres(&mut self) -> Result<Vec<GenreCategory>, Error> {
         let v = self.post("/api/v1/music/genrecategories", &json!({}))?;
         let mut out = Vec::new();

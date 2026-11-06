@@ -288,6 +288,7 @@ const GENRES: [(&str, &[DemoGenre]); 3] = [
     ),
 ];
 
+#[allow(dead_code)] // Browse uses getDirectory; kept for Client::genres / tests.
 pub fn genres() -> Vec<GenreCategory> {
     GENRES
         .iter()

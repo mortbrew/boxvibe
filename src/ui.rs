@@ -16,8 +16,8 @@ use ratatui::widgets::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
-    App, BrowseRow, BrowseState, Details, Editor, EditorTab, FeedState, Focus, GenresState, Loaded, MenuItem, Pane,
-    Prompt, Rename, SearchMode, Session, Setting, SongAction, StationSearch, View,
+    App, BrowseRow, BrowseState, Details, Editor, EditorTab, FeedState, Focus, Loaded, MenuItem, Pane, Prompt, Rename,
+    SearchMode, Session, Setting, SongAction, StationSearch, View,
 };
 use crate::art::Cover;
 use crate::config::{AlbumArt, BorderStyle, GoodVibes};
@@ -88,7 +88,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
     match app.view {
         View::Player => draw_player(frame, app, ic, right),
         View::Stations => draw_stations(frame, app, ic, right),
-        View::Genres => draw_genres(frame, app, ic, right),
         View::Browse => draw_browse(frame, app, ic, right),
         View::Pinned => draw_pinned(frame, app, ic, right),
         View::Settings => draw_settings(frame, app, ic, right),
@@ -675,9 +674,10 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     frame.render_widget(block, area);
     let now_h = if app.has_now_playing() { 2 } else { 0 };
     let browse = app.config.browse.browse;
+    let section_pins = app.browse_menu_pins().len() as u16;
     let pinned = app.config.ui.pinned_in_menu;
-    // Stations, Genres, optional Browse, optional Pinned.
-    let top_n = 2 + u16::from(browse) + u16::from(pinned);
+    // Stations, optional Browse, pinned Browse sections, optional Pinned songs.
+    let top_n = 1 + u16::from(browse) + section_pins + u16::from(pinned);
     let [now_area, stations_row, favs_area, _, rule, app_area] = Layout::vertical([
         Constraint::Length(now_h),
         Constraint::Length(top_n),
@@ -697,8 +697,8 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
                 | (MenuItem::Notifications, View::Notifications)
                 | (MenuItem::NowPlaying, View::Player)
                 | (MenuItem::Stations, View::Stations)
-                | (MenuItem::Genres, View::Genres)
                 | (MenuItem::Browse, View::Browse)
+                | (MenuItem::BrowsePin(_), View::Browse)
                 | (MenuItem::Pinned, View::Pinned)
         )
     };
@@ -724,12 +724,13 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     }
     let count = if app.stations.is_empty() { String::new() } else { format!(" ({})", app.stations.len()) };
     let mut lines = Vec::new();
-    let mut top = vec![
-        (MenuItem::Stations, ic.station, format!("Stations{count}")),
-        (MenuItem::Genres, ic.genre, "Genres".into()),
-    ];
+    let mut top = vec![(MenuItem::Stations, ic.station, format!("Stations{count}"))];
     if browse {
         top.push((MenuItem::Browse, ic.browse, "Browse".into()));
+    }
+    for (i, (_, title)) in app.browse_menu_pins().into_iter().enumerate() {
+        let icon = if title == "Browse Genres" { ic.genre } else { ic.browse };
+        top.push((MenuItem::BrowsePin(i), icon, title));
     }
     if pinned {
         let n = if app.pins.is_empty() { String::new() } else { format!(" ({})", app.pins.len()) };
@@ -961,65 +962,14 @@ fn draw_stations(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 
 // --- Genres ---
 
-fn draw_genres(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
-    let p = app.palette;
-    let focused = app.focus == Focus::Content;
-    let block = panel(title(format!("{} Genres", ic.genre), &p), &p, focused);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let message = match &app.genres {
-        GenresState::Idle if app.session != Session::LoggedIn => {
-            Some(" Log in from Settings to browse genres".to_owned())
-        }
-        GenresState::Idle | GenresState::Loading => Some(format!(" {} Loading genres…", ic.loading)),
-        GenresState::Failed(why) => Some(format!(" {} {}  (Enter tries again)", ic.warn, clean(why))),
-        GenresState::Loaded(categories) if categories.is_empty() => Some(" Pandora listed no genres".to_owned()),
-        GenresState::Loaded(_) => None,
-    };
-    if let Some(text) = message {
-        frame.render_widget(Paragraph::new(text).fg(p.muted), inner);
-        return;
-    }
-    let GenresState::Loaded(categories) = &app.genres else { return };
-    let width = inner.width as usize;
-    let mut items: Vec<ListItem> = Vec::new();
-    let mut selected_row = 0;
-    let mut at = 0;
-    for category in categories {
-        items.push(ListItem::new(Line::from(Span::styled(
-            format!(" {}", clean(&category.name).to_uppercase()),
-            Style::new().fg(p.orange).bold(),
-        ))));
-        for genre in &category.genres {
-            if at == app.genres_index() {
-                selected_row = items.len();
-            }
-            at += 1;
-            let head = format!("   {} ", icon_cell(ic.genre));
-            let name = clean(&genre.name);
-            let mut line = vec![Span::styled(format!("{head}{name}"), Style::new().fg(p.fg))];
-            if !genre.description.is_empty() {
-                let used = safe_width(&head) + safe_width(&name) + 3;
-                let room = width.saturating_sub(used);
-                if room > 8 {
-                    line.push(Span::styled(
-                        format!("  {}", fit(&clean(&genre.description), room - 2)),
-                        Style::new().fg(p.muted),
-                    ));
-                }
-            }
-            items.push(ListItem::new(Line::from(line)));
-        }
-    }
-    let list = List::new(items).highlight_style(selection(&p, focused));
-    let mut state = ListState::default().with_selected(Some(selected_row));
-    frame.render_stateful_widget(list, inner, &mut state);
-}
-
 fn draw_browse(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let p = &app.palette;
     let focused = app.focus == Focus::Content;
-    let block = panel(title(format!("{} Browse", ic.browse), p), p, focused);
+    let heading = match &app.browse_filter {
+        Some(section) => format!("{} {section}", if section == "Browse Genres" { ic.genre } else { ic.browse }),
+        None => format!("{} Browse", ic.browse),
+    };
+    let block = panel(title(heading, p), p, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let message = match &app.browse {
@@ -2312,7 +2262,6 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         || app.view == View::Notifications && app.focus == Focus::Content && app.notes.len() < 2
         || app.view == View::Pinned && app.focus == Focus::Content && app.pins.len() < 2
         || in_songs && app.pane == Pane::NowPlaying
-        || app.view == View::Genres && app.focus == Focus::Content && app.genre_rows().is_empty()
         || app.view == View::Browse && app.focus == Focus::Content && app.browse_rows().is_empty();
     if !nothing_to_move {
         keys.push(("j/k ↑↓", "Move"));
@@ -2395,15 +2344,6 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
                 station_keys(&mut keys, false);
                 keys.push(("a", "Add Station"));
                 keys.push(("X", "Shuffle"));
-            }
-            keys.push(("Esc", "Menu"));
-        }
-        (Focus::Content, View::Genres) => {
-            // Enter adds the genre's station, or asks again when the list failed.
-            match &app.genres {
-                GenresState::Loaded(_) if !app.genre_rows().is_empty() => keys.push(("Enter", "Add & Play")),
-                GenresState::Failed(_) => keys.push(("Enter", "Try Again")),
-                _ => {}
             }
             keys.push(("Esc", "Menu"));
         }
@@ -3774,7 +3714,7 @@ mod tests {
     fn contexts(app: &mut App) -> Vec<(String, crate::app::Focus, View, Pane, bool)> {
         use crate::app::Focus;
         let mut all = Vec::new();
-        for view in [View::Player, View::Stations, View::Genres, View::Settings, View::About] {
+        for view in [View::Player, View::Stations, View::Browse, View::Settings, View::About] {
             for (focus, favorite) in [(Focus::Menu, false), (Focus::Menu, true), (Focus::Content, false)] {
                 let panes = if view == View::Player && focus == Focus::Content {
                     vec![Pane::NowPlaying, Pane::UpNext, Pane::History]
@@ -3823,7 +3763,7 @@ mod tests {
             key_caps(app).iter().any(|(k, _)| k.split('/').any(|part| part == key) && *k != "j/k ↑↓")
         };
         for (name, focus, view, pane, favorite) in contexts(&mut app) {
-            if favorite && !matches!(view, View::Player | View::Stations | View::Genres | View::Settings | View::About)
+            if favorite && !matches!(view, View::Player | View::Stations | View::Browse | View::Settings | View::About)
             {
                 continue;
             }
@@ -4240,11 +4180,10 @@ mod tests {
     }
 
     #[test]
-    fn the_genres_page_shows_neither_station_icon() {
+    fn the_browse_genres_page_shows_neither_station_icon() {
         use crate::config::IconSet;
         let mut app = demo();
-        app.view = View::Genres;
-        app.focus = crate::app::Focus::Content;
+        app.show_browse_section("Browse Genres");
         app.settle(std::time::Duration::from_millis(300));
         for set in [IconSet::Emoji, IconSet::Nerd, IconSet::Unicode] {
             app.config.ui.icons = set;
@@ -4252,7 +4191,7 @@ mod tests {
             let (lines, _) = screen(&app, 120, 36);
             let page: String =
                 lines.iter().map(|l| l.chars().skip(30).collect::<String>()).collect::<Vec<_>>().join("\n");
-            assert!(page.contains("Genres"), "{page}");
+            assert!(page.contains("Browse Genres") || page.contains("Synthwave"), "{page}");
             assert!(!page.contains(ic.genre_station) && !page.contains(ic.own_station), "{set:?}: {page}");
         }
     }
@@ -4633,7 +4572,7 @@ mod tests {
     }
 
     #[test]
-    fn the_genres_page_lists_categories_and_stations_and_the_menu_has_it() {
+    fn the_browse_genres_page_lists_items_and_pins_on_the_menu() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = demo();
         app.settle(std::time::Duration::from_millis(400));
@@ -4641,22 +4580,25 @@ mod tests {
         app.settle(std::time::Duration::from_millis(300));
         let (lines, _) = screen(&app, 120, 36);
         let text = all_text(&lines);
-        for word in ["Genres", "POP", "ELECTRONIC", "ROCK", "Today's Hits", "Synthwave", "Classic Rock"] {
-            assert!(text.contains(word), "{word}: {text}");
-        }
-        assert!(text.contains("Neon, night drives"), "descriptions: {text}");
-        let genre_icon = crate::icons::icons(app.config.ui.icons).genre;
-        let menu: Vec<String> = lines.iter().map(|l| l.chars().take(30).collect()).collect();
-        assert!(menu.iter().any(|l| l.contains("Genres") && l.contains(genre_icon)), "in the menu with its icon");
+        assert!(text.contains("Browse Genres") && text.contains("Synthwave"), "{text}");
+        assert!(text.contains("1.2M Listeners"), "detail: {text}");
         let caps = key_caps(&app);
-        assert!(caps.iter().any(|(k, w)| *k == "Enter" && *w == "Add & Play"), "{caps:?}");
+        assert!(caps.iter().any(|(k, w)| *k == "Enter" && *w == "Start Station"), "{caps:?}");
         assert!(caps.iter().any(|(k, _)| k.contains("j/k")), "{caps:?}");
-        // Before it has loaded there is nothing to move through.
-        app.genres = crate::app::GenresState::Loading;
+        // Pin Browse Genres on the main menu.
+        app.config.browse.set_pinned("Browse Genres", true);
+        let genre_icon = crate::icons::icons(app.config.ui.icons).genre;
+        let menu: Vec<String> = screen(&app, 120, 36).0.iter().map(|l| l.chars().take(30).collect()).collect();
+        assert!(
+            menu.iter().any(|l| l.contains("Browse Genres") && l.contains(genre_icon)),
+            "pinned in the menu with its icon: {menu:#?}"
+        );
+        // Loading / failed use the Browse directory state.
+        app.browse = crate::app::BrowseState::Loading;
         let (lines, _) = screen(&app, 120, 36);
         assert!(all_text(&lines).contains("Loading"), "{}", all_text(&lines));
         assert!(!key_caps(&app).iter().any(|(k, _)| k.contains("j/k")));
-        app.genres = crate::app::GenresState::Failed("offline".into());
+        app.browse = crate::app::BrowseState::Failed("offline".into());
         assert!(all_text(&screen(&app, 120, 36).0).contains("offline"));
         assert!(key_caps(&app).iter().any(|(_, w)| *w == "Try Again"));
         let _ = screen(&app, 30, 8);

@@ -20,9 +20,7 @@ use crate::backend::{Backend, KeychainJob, KeychainReply, Reply, Request};
 use crate::config::{self, AlbumArt, Config, ConfigWarning, GoodVibes, Secret};
 use crate::input::TextInput;
 use crate::keychain::{self, Keychain, NO_KEYCHAIN};
-use crate::pandora::{
-    BrowseItem, BrowseSection, GenreCategory, Quality, Rating, SearchHit, Song, Station, StationDetails,
-};
+use crate::pandora::{BrowseItem, BrowseSection, Quality, Rating, SearchHit, Song, Station, StationDetails};
 use crate::theme::{self, Palette};
 use crate::update::{Progress, Replace, Update};
 
@@ -55,9 +53,7 @@ pub enum View {
     Player,
     /// Every station, to pick one (`Enter`) or star it (`f`).
     Stations,
-    /// Pandora's genre stations, to add one (`Enter`).
-    Genres,
-    /// Browse directory (`feed/getDirectory`).
+    /// Browse directory (`feed/getDirectory`), or one pinned section.
     Browse,
     /// Songs pinned with Shift+I.
     Pinned,
@@ -81,10 +77,10 @@ pub enum MenuItem {
     NowPlaying,
     /// Opens the station list on the right.
     Stations,
-    /// Opens Pandora's genre stations on the right.
-    Genres,
-    /// Opens Browse (`[browse] browse`).
+    /// Opens Browse (`[browse] browse`): every getDirectory section.
     Browse,
+    /// A Browse section pinned on the main menu ([`App::browse_menu_pins`] index).
+    BrowsePin(usize),
     /// The songs pinned with Shift+I (hidden by `[look] pinned_in_menu`).
     Pinned,
     /// A starred station, by its index in `[playback] favorites`.
@@ -330,27 +326,37 @@ impl Setting {
                 "A two-second boxvibe logo screen when it opens; any key skips it (Animations off skips it too). Saved as [look] boot_screen."
             }
             Self::Browse => {
-                "On: the menu has Browse (Pandora's directory: artists, new music, genres, …). Off: hidden. Saved as [browse] browse."
+                "On: the menu has Browse (every getDirectory section). Off: hide Browse; pinned sections stay. Saved as [browse] browse."
             }
             Self::BrowseSection(i) => match i {
                 0 => {
-                    "Artists Pandora picks for you. Off hides the section in Browse. Saved as [browse] artists_picked_for_you."
+                    "On: pin Artists Picked For You on the main menu. Browse still lists it either way. Saved as [browse] artists_picked_for_you."
                 }
-                1 => "New albums and singles. Off hides the section in Browse. Saved as [browse] new_music.",
+                1 => {
+                    "On: pin New Music on the main menu. Browse still lists it either way. Saved as [browse] new_music."
+                }
                 2 => {
-                    "Genre stations to add and play. Off hides the section in Browse. Saved as [browse] browse_genres."
+                    "On: pin Browse Genres on the main menu (G opens it too). Browse still lists it either way. Saved as [browse] browse_genres."
                 }
-                3 => "Featured playlists. Off hides the section in Browse. Saved as [browse] featured_playlists.",
+                3 => {
+                    "On: pin Featured Playlists on the main menu. Browse still lists it either way. Saved as [browse] featured_playlists."
+                }
                 4 => {
-                    "Artists on the rise. Off hides the section in Browse. Saved as [browse] trendsetters_artists_on_the_rise."
+                    "On: pin Trendsetters on the main menu. Browse still lists it either way. Saved as [browse] trendsetters_artists_on_the_rise."
                 }
-                5 => "Decades genre stations. Off hides the section in Browse. Saved as [browse] decades.",
+                5 => "On: pin Decades on the main menu. Browse still lists it either way. Saved as [browse] decades.",
                 6 => {
-                    "Podcasts Pandora recommends. Off hides the section in Browse. Saved as [browse] recommended_podcasts."
+                    "On: pin Recommended Podcasts on the main menu. Browse still lists it either way. Saved as [browse] recommended_podcasts."
                 }
-                7 => "Top artists. Off hides the section in Browse. Saved as [browse] top_artists.",
-                8 => "Moods and activities. Off hides the section in Browse. Saved as [browse] moods_and_activities.",
-                _ => "Top stations. Off hides the section in Browse. Saved as [browse] top_stations.",
+                7 => {
+                    "On: pin Top artists on the main menu. Browse still lists it either way. Saved as [browse] top_artists."
+                }
+                8 => {
+                    "On: pin Moods and activities on the main menu. Browse still lists it either way. Saved as [browse] moods_and_activities."
+                }
+                _ => {
+                    "On: pin Top stations on the main menu. Browse still lists it either way. Saved as [browse] top_stations."
+                }
             },
             Self::ThemeSelect => {
                 "With Theme Auto Mode off, Enter opens the theme picker: Search about 900 schemes (iTerm2-Color-Schemes and Omarchy's) as you type, or pick an Installed one. Downloads go to ~/.config/boxvibe/themes/. Saved as [look] theme_select."
@@ -566,17 +572,6 @@ impl StationSearch {
     pub fn selected(&self) -> Option<&SearchHit> {
         self.hits.get(self.cursor.min(self.hits.len().saturating_sub(1)))
     }
-}
-
-/// Pandora's genre stations, loaded once per session.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum GenresState {
-    /// Not asked for yet.
-    #[default]
-    Idle,
-    Loading,
-    Loaded(Vec<GenreCategory>),
-    Failed(String),
 }
 
 /// Pandora Browse directory (`feed/getDirectory`).
@@ -956,13 +951,12 @@ pub struct App {
     pub rename: Option<Rename>,
     /// `a`: the add-station search box.
     pub add_station: Option<StationSearch>,
-    /// Pandora's genre stations (the Genres page).
-    pub genres: GenresState,
     /// Browse directory.
     pub browse: BrowseState,
     pub browse_cursor: usize,
+    /// `None`: full Browse (every section). `Some(title)`: one pinned section's page.
+    pub browse_filter: Option<String>,
     /// Selected genre station, counted over the stations only (not the headings).
-    pub genres_cursor: usize,
     /// A station is being made: a second Enter waits for it.
     creating: bool,
     /// `v`: the details popup.
@@ -1074,10 +1068,9 @@ impl App {
             confirm_good_vibes: None,
             rename: None,
             add_station: None,
-            genres: GenresState::Idle,
             browse: BrowseState::Idle,
             browse_cursor: 0,
-            genres_cursor: 0,
+            browse_filter: None,
             creating: false,
             editor: None,
             ad: AdPhase::Off,
@@ -1241,9 +1234,11 @@ impl App {
 
     pub fn menu_items(&self) -> Vec<MenuItem> {
         let top = self.has_now_playing().then_some(MenuItem::NowPlaying);
+        let pins = (0..self.browse_menu_pins().len()).map(MenuItem::BrowsePin);
         top.into_iter()
-            .chain([MenuItem::Stations, MenuItem::Genres])
+            .chain([MenuItem::Stations])
             .chain(self.config.browse.browse.then_some(MenuItem::Browse))
+            .chain(pins)
             .chain(self.config.ui.pinned_in_menu.then_some(MenuItem::Pinned))
             .chain(
                 (0..if self.config.ui.favorites_in_menu { self.config.ui.favorites.len() } else { 0 })
@@ -1262,8 +1257,8 @@ impl App {
         match self.menu_selected() {
             MenuItem::NowPlaying => self.show_now_playing(),
             MenuItem::Stations => self.show_stations(),
-            MenuItem::Genres => self.show_genres(),
             MenuItem::Browse => self.show_browse(),
+            MenuItem::BrowsePin(i) => self.show_browse_pin(i),
             MenuItem::Pinned => self.show_page(View::Pinned),
             MenuItem::Favorite(i) => {
                 let Some(fav) = self.config.ui.favorites.get(i).cloned() else { return };
@@ -1330,50 +1325,57 @@ impl App {
         }
     }
 
-    /// Genres (menu entry or `G`): Pandora's genre stations, loaded the
-    /// first time (and again after a failure).
-    fn show_genres(&mut self) {
-        self.view = View::Genres;
-        self.focus = Focus::Content;
-        self.point_menu_at_view();
-        if matches!(self.genres, GenresState::Idle | GenresState::Failed(_)) {
-            if self.session != Session::LoggedIn {
-                self.status = "Log in first (Settings, Shift+O) to browse genres".into();
-                return;
-            }
-            self.genres = GenresState::Loading;
-            self.backend.send(Request::Genres);
-        }
-    }
-
-    /// Every genre station, in the order the page lists them.
-    pub fn genre_rows(&self) -> Vec<&crate::pandora::Genre> {
-        match &self.genres {
-            GenresState::Loaded(categories) => categories.iter().flat_map(|c| c.genres.iter()).collect(),
-            _ => Vec::new(),
-        }
-    }
-
-    pub fn genres_index(&self) -> usize {
-        self.genres_cursor.min(self.genre_rows().len().saturating_sub(1))
-    }
-
-    /// Enter on a genre: Pandora makes the station and it plays; on a
-    /// failed or empty page, Enter asks again.
-    fn add_genre_station(&mut self) {
-        let genre = self.genre_rows().get(self.genres_index()).map(|g| (g.id.clone(), g.name.clone()));
-        match (genre, &self.genres) {
-            (Some((id, name)), _) => self.create_station(&id, &name),
-            (None, GenresState::Loading) => {}
-            (None, _) => {
-                self.genres = GenresState::Idle;
-                self.show_genres();
+    /// Browse sections pinned on the main menu: `(key, title)`, known first then extras.
+    pub fn browse_menu_pins(&self) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for &(key, title) in config::BROWSE_SECTIONS {
+            if self.config.browse.pinned_key(key) {
+                out.push((key.to_owned(), title.to_owned()));
+                seen.insert(key);
             }
         }
+        for (key, on) in &self.config.browse.sections {
+            if *on && !seen.contains(key.as_str()) {
+                let title = key
+                    .split('_')
+                    .filter(|p| !p.is_empty())
+                    .map(|p| {
+                        let mut c = p.chars();
+                        match c.next() {
+                            Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                            None => String::new(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                out.push((key.clone(), title));
+            }
+        }
+        out
     }
 
-    /// Browse (menu): Pandora's directory, loaded the first time (and again after a failure).
+    /// Full Browse (every getDirectory section).
     fn show_browse(&mut self) {
+        self.browse_filter = None;
+        self.open_browse_view();
+    }
+
+    /// Main-menu pin (or `G` for Browse Genres): one section's list.
+    fn show_browse_pin(&mut self, at: usize) {
+        let Some((_, title)) = self.browse_menu_pins().get(at).cloned() else {
+            return;
+        };
+        self.show_browse_section(&title);
+    }
+
+    /// Open Browse filtered to one section title (`G` → Browse Genres).
+    pub(crate) fn show_browse_section(&mut self, title: &str) {
+        self.browse_filter = Some(title.to_owned());
+        self.open_browse_view();
+    }
+
+    fn open_browse_view(&mut self) {
         self.view = View::Browse;
         self.focus = Focus::Content;
         self.point_menu_at_view();
@@ -1384,18 +1386,24 @@ impl App {
             }
             self.browse = BrowseState::Loading;
             self.backend.send(Request::Browse);
+        } else {
+            self.browse_cursor = self.browse_rows().iter().position(|r| matches!(r, BrowseRow::Item(_))).unwrap_or(0);
         }
     }
 
-    /// Rows the Browse page lists: enabled sections' items, with section headers as navigation targets skipped — flat item list with section markers via [`browse_rows`].
+    /// Rows for the Browse page. Full Browse lists every section; a pin lists one.
+    /// Settings pins never hide rows inside full Browse.
     pub fn browse_rows(&self) -> Vec<BrowseRow<'_>> {
         let BrowseState::Loaded(sections) = &self.browse else {
             return Vec::new();
         };
         let mut rows = Vec::new();
         for section in sections {
-            if !self.config.browse.section_on(&section.title) {
-                continue;
+            if let Some(want) = &self.browse_filter {
+                let key = config::browse_section_key(&section.title);
+                if section.title != *want && key != *want {
+                    continue;
+                }
             }
             rows.push(BrowseRow::Header(&section.title));
             for item in &section.items {
@@ -1845,8 +1853,22 @@ impl App {
             View::About => Some(MenuItem::About),
             View::Notifications => Some(MenuItem::Notifications),
             View::Stations => Some(MenuItem::Stations),
-            View::Genres => Some(MenuItem::Genres),
-            View::Browse => Some(MenuItem::Browse),
+            View::Browse => {
+                if let Some(filter) = &self.browse_filter {
+                    let pins = self.browse_menu_pins();
+                    if let Some(i) = pins.iter().position(|(k, t)| t == filter || k == filter) {
+                        Some(MenuItem::BrowsePin(i))
+                    } else if self.config.browse.browse {
+                        Some(MenuItem::Browse)
+                    } else {
+                        None
+                    }
+                } else if self.config.browse.browse {
+                    Some(MenuItem::Browse)
+                } else {
+                    None
+                }
+            }
             View::Pinned => Some(MenuItem::Pinned),
             View::Player if self.has_now_playing() => Some(MenuItem::NowPlaying),
             View::Player => None,
@@ -2068,10 +2090,6 @@ impl App {
                 self.browse_cursor =
                     self.browse_rows().iter().position(|r| matches!(r, BrowseRow::Item(_))).unwrap_or(0);
             }
-            Reply::Genres(categories) => {
-                self.genres = GenresState::Loaded(categories);
-                self.genres_cursor = 0;
-            }
             Reply::Playlist { station_id, songs } => {
                 if self.current_station.as_deref() != Some(&station_id) {
                     return;
@@ -2167,9 +2185,6 @@ impl App {
                 }
                 if what == "browse" {
                     self.browse = BrowseState::Failed(message.clone());
-                }
-                if what == "genres" {
-                    self.genres = GenresState::Failed(message.clone());
                 }
                 if what == "details"
                     && let Some(d) = self.details_mut().filter(|d| d.from_pandora.is_none())
@@ -2604,7 +2619,7 @@ impl App {
             Setting::Browse => on(self.config.browse.browse),
             Setting::BrowseSection(i) => {
                 let title = config::BROWSE_SECTIONS[i as usize].1;
-                on(self.config.browse.section_on(title))
+                on(self.config.browse.pinned_on_menu(title))
             }
             Setting::EditFile => self
                 .config_path
@@ -2729,10 +2744,10 @@ impl App {
             }
             Setting::BrowseSection(i) => {
                 let (key, title) = config::BROWSE_SECTIONS[i as usize];
-                let on = !self.config.browse.section_on(title);
-                self.config.browse.set_section(title, on);
+                let on = !self.config.browse.pinned_on_menu(title);
+                self.config.browse.set_pinned(title, on);
                 self.save(&[("browse", key, on.into())]);
-                self.status = format!("{title}: {}", if on { "on" } else { "off" });
+                self.status = format!("{title} on main menu: {}", if on { "on" } else { "off" });
             }
             Setting::EditFile => {
                 if self.demo {
@@ -2912,7 +2927,7 @@ impl App {
             Cmd::Skip => self.skip(),
             Cmd::NowPlaying => self.show_now_playing(),
             Cmd::Stations => self.show_stations(),
-            Cmd::Genres => self.show_genres(),
+            Cmd::Genres => self.show_browse_section("Browse Genres"),
             Cmd::Add => self.ask_add_station(),
             Cmd::Settings => self.show_page(View::Settings),
             Cmd::About => self.show_page(View::About),
@@ -3243,7 +3258,6 @@ impl App {
                 }
                 self.tune(self.stations_index());
             }
-            (Focus::Content, View::Genres) => self.add_genre_station(),
             (Focus::Content, View::Browse) => self.activate_browse_row(),
             (Focus::Content, View::Pinned) => self.open_pin(),
             (Focus::Content, View::Notifications) => {}
@@ -3265,9 +3279,6 @@ impl App {
                 if to > 0 {
                     self.stations_cursor = to - 1;
                 }
-            }
-            (Focus::Content, View::Genres) => {
-                self.genres_cursor = clamp(self.genres_index(), self.genre_rows().len().max(1))
             }
             (Focus::Content, View::Browse) => {
                 let rows = self.browse_rows();
@@ -3806,28 +3817,54 @@ mod tests {
     }
 
     #[test]
-    fn browse_section_toggle_hides_a_section_and_is_saved() {
+    fn browse_section_toggle_pins_on_the_main_menu_and_is_saved() {
         let dir = config::temp_dir("browse-section");
         let path = dir.join("config.toml");
         let mut app = App::new(Config::default(), Some(path.clone()), &[], true);
         app.demo = false;
         app.config_path = Some(path.clone());
+        assert!(!app.menu_items().iter().any(|m| matches!(m, MenuItem::BrowsePin(_))));
         app.view = View::Settings;
         app.focus = Focus::Content;
         app.settings_cursor = Setting::at(Setting::BrowseSection(0));
         app.on_key(key(KeyCode::Enter));
-        assert!(!app.config.browse.section_on("Artists Picked For You"));
+        assert!(app.config.browse.pinned_on_menu("Artists Picked For You"));
+        assert!(app.menu_items().contains(&MenuItem::BrowsePin(0)));
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("artists_picked_for_you = false"), "{text}");
+        assert!(text.contains("artists_picked_for_you = true"), "{text}");
+        // Browse Off leaves the pin.
+        app.config.browse.browse = false;
+        assert!(app.menu_items().contains(&MenuItem::BrowsePin(0)));
+        assert!(!app.menu_items().contains(&MenuItem::Browse));
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn browse_master_off_removes_the_menu_entry() {
+    fn browse_master_off_removes_the_menu_entry_but_not_pins() {
         let mut app = demo();
         assert!(app.menu_items().contains(&MenuItem::Browse));
+        app.config.browse.set_pinned("Browse Genres", true);
         app.config.browse.browse = false;
         assert!(!app.menu_items().contains(&MenuItem::Browse));
+        assert!(app.menu_items().contains(&MenuItem::BrowsePin(0)));
+    }
+
+    #[test]
+    fn browse_lists_every_section_even_when_pins_are_off() {
+        let mut app = demo();
+        app.show_browse();
+        app.settle(Duration::from_millis(150));
+        let titles: Vec<_> = app
+            .browse_rows()
+            .iter()
+            .filter_map(|r| match r {
+                BrowseRow::Header(t) => Some(*t),
+                _ => None,
+            })
+            .collect();
+        assert!(titles.contains(&"Artists Picked For You"));
+        assert!(titles.contains(&"Browse Genres"));
+        assert!(titles.len() >= 10, "{titles:?}");
     }
 
     #[test]
@@ -3842,7 +3879,8 @@ mod tests {
         assert_eq!(app.song_menu.as_ref().unwrap().cursor, 0);
         app.on_key(key(KeyCode::Esc));
         app.on_key(key(KeyCode::Char('G')));
-        assert_eq!(app.view, View::Genres, "G is Genres on the main screen");
+        assert_eq!(app.view, View::Browse, "G opens Browse Genres");
+        assert_eq!(app.browse_filter.as_deref(), Some("Browse Genres"));
     }
 
     #[test]
@@ -4005,11 +4043,8 @@ mod tests {
         let app = demo();
         let items = app.menu_items();
         assert_eq!(items[0], MenuItem::NowPlaying, "a station plays: NOW PLAYING on top");
-        assert_eq!(
-            (items[1], items[2], items[3], items[4]),
-            (MenuItem::Stations, MenuItem::Genres, MenuItem::Browse, MenuItem::Pinned)
-        );
-        assert_eq!(items.len(), 9, "no favorites yet: no FAVORITES entries");
+        assert_eq!((items[1], items[2], items[3]), (MenuItem::Stations, MenuItem::Browse, MenuItem::Pinned));
+        assert_eq!(items.len(), 8, "no favorites yet: no FAVORITES / section pins");
         assert_eq!(
             &items[items.len() - 4..],
             [MenuItem::Settings, MenuItem::Notifications, MenuItem::About, MenuItem::Quit]
@@ -4101,7 +4136,6 @@ mod tests {
             app.menu_items(),
             [
                 MenuItem::Stations,
-                MenuItem::Genres,
                 MenuItem::Browse,
                 MenuItem::Pinned,
                 MenuItem::Favorite(0),
@@ -4118,8 +4152,6 @@ mod tests {
         );
         // Enter on the favorite in the menu plays it.
         app.on_key(key(KeyCode::Esc));
-        app.on_key(key(KeyCode::Char('j')));
-        assert_eq!(app.menu_selected(), MenuItem::Genres);
         app.on_key(key(KeyCode::Char('j')));
         assert_eq!(app.menu_selected(), MenuItem::Browse);
         app.on_key(key(KeyCode::Char('j')));
@@ -5939,34 +5971,35 @@ mod tests {
     }
 
     #[test]
-    fn shift_g_opens_genres_loads_them_once_and_enter_adds_and_plays() {
+    fn shift_g_opens_browse_genres_loads_once_and_enter_adds_and_plays() {
         let mut app = demo();
         app.settle(Duration::from_millis(300));
         app.on_key(shift('G'));
-        assert_eq!((app.view, app.focus), (View::Genres, Focus::Content));
-        assert_eq!(app.menu_selected(), MenuItem::Genres);
-        assert_eq!(app.genres, GenresState::Loading);
+        assert_eq!((app.view, app.focus), (View::Browse, Focus::Content));
+        assert_eq!(app.browse_filter.as_deref(), Some("Browse Genres"));
+        assert_eq!(app.browse, BrowseState::Loading);
         app.settle(Duration::from_millis(300));
-        let GenresState::Loaded(categories) = &app.genres else { panic!("{:?}", app.genres) };
-        assert_eq!(categories.len(), 3);
-        // Moving, wrapping.
-        let rows = app.genre_rows().len();
-        assert_eq!(rows, 5);
-        app.on_key(key(KeyCode::Char('j')));
-        app.on_key(key(KeyCode::Down));
-        assert_eq!(app.genres_index(), 2);
-        app.on_key(key(KeyCode::Char('k')));
-        app.on_key(key(KeyCode::Up));
-        app.on_key(key(KeyCode::Up));
-        assert_eq!(app.genres_index(), rows - 1);
-        // Leaving and coming back does not ask again (it is cached).
+        assert!(matches!(app.browse, BrowseState::Loaded(_)));
+        // Only the Browse Genres section.
+        let headers: Vec<_> = app
+            .browse_rows()
+            .iter()
+            .filter_map(|r| match r {
+                BrowseRow::Header(t) => Some(*t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(headers, ["Browse Genres"]);
+        // Leaving and coming back does not ask again (directory is cached).
         app.on_key(shift('S'));
-        let loaded = app.genres.clone();
+        let loaded = app.browse.clone();
         app.on_key(shift('G'));
-        assert_eq!(app.genres, loaded);
+        assert_eq!(app.browse, loaded);
         assert!(app.backend.replies.recv_timeout(Duration::from_millis(100)).is_err(), "no second request");
         // Enter on Synthwave.
-        app.genres_cursor = 2;
+        while !matches!(app.browse_rows().get(app.browse_index()), Some(BrowseRow::Item(i)) if i.name == "Synthwave") {
+            app.on_key(key(KeyCode::Char('j')));
+        }
         let before = app.stations.len();
         app.on_key(key(KeyCode::Enter));
         app.settle(Duration::from_millis(400));
@@ -5977,26 +6010,27 @@ mod tests {
     }
 
     #[test]
-    fn a_genre_list_that_failed_is_asked_for_again_and_logged_out_says_so() {
+    fn a_browse_list_that_failed_is_asked_for_again_and_logged_out_says_so() {
         let mut app = demo();
         app.settle(Duration::from_millis(300));
-        app.on_reply(Reply::Failed { what: "genres", message: "no".into() });
-        assert_eq!(app.genres, GenresState::Failed("no".into()));
-        app.on_key(key(KeyCode::Enter)); // not on the page yet: this is the menu/other view
         app.on_key(shift('G'));
-        assert_eq!(app.genres, GenresState::Loading, "G tries again");
+        app.on_reply(Reply::Failed { what: "browse", message: "no".into() });
+        assert_eq!(app.browse, BrowseState::Failed("no".into()));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.browse, BrowseState::Loading, "Enter tries again");
         let mut out = App::new(Config::default(), None, &[], false);
         out.prompt = None;
         out.on_key(shift('G'));
-        assert!(out.status.contains("Log in") && out.genres == GenresState::Idle, "{}", out.status);
+        assert!(out.status.contains("Log in") && out.browse == BrowseState::Idle, "{}", out.status);
     }
 
     #[test]
-    fn genres_is_in_the_menu_under_stations_and_a_g_are_bound_once() {
+    fn browse_follows_stations_in_the_menu_and_g_opens_browse_genres() {
         let app = demo();
         let items = app.menu_items();
         let at = items.iter().position(|m| *m == MenuItem::Stations).unwrap();
-        assert_eq!(items[at + 1], MenuItem::Genres);
+        assert_eq!(items[at + 1], MenuItem::Browse);
+        assert!(!items.iter().any(|m| matches!(m, MenuItem::BrowsePin(_))), "pins default off");
         assert_eq!(command_for(KeyEvent::from(KeyCode::Char('a'))), Some(Cmd::Add));
         assert_eq!(command_for(shift('G')), Some(Cmd::Genres));
     }

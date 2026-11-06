@@ -830,3 +830,36 @@ fn every_modes_guess_missing_is_a_plain_error() {
     let e = c.station_modes("9").unwrap_err();
     assert!(e.to_string().contains("station modes") || e.to_string().contains("not found"), "{e}");
 }
+
+#[test]
+fn directory_posts_an_empty_body_and_view_all_posts_the_path() {
+    let page = json!({
+        "sections": [{
+            "id": "BS:1:8",
+            "title": {"labels": [{"text": "New Music", "style": "header"}]},
+            "viewAll": {"webUrl": "/browse/music/new-music"},
+            "subsections": [{"items": [{
+                "pandoraId": "AL:1",
+                "labels": [{"text": "Teaser", "style": "title"}]
+            }]}]
+        }]
+    });
+    let body = page.to_string();
+    let (base, seen) = fake_pandora(Box::new(move |r| match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        "/api/v1/feed/getDirectory" => (200, body.clone()),
+        _ => (200, "{}".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    let teaser = c.directory().unwrap();
+    assert_eq!(teaser[0].view_all_path.as_deref(), Some("/browse/music/new-music"));
+    assert_eq!(teaser[0].items[0].name, "Teaser");
+    let full = c.directory_at("/browse/music/new-music").unwrap();
+    assert_eq!(full[0].title, "New Music");
+    let seen = seen.lock().unwrap();
+    let bodies: Vec<&Value> = seen.iter().filter(|s| s.path == "/api/v1/feed/getDirectory").map(|s| &s.body).collect();
+    assert_eq!(bodies.len(), 2, "{bodies:?}");
+    assert_eq!(bodies[0], &json!({}), "main Browse still posts {{}}");
+    assert_eq!(bodies[1], &json!({"deviceType": "web", "path": "/browse/music/new-music", "feedType": "browse"}));
+}

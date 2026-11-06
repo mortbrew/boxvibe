@@ -13,6 +13,7 @@ Short and scannable; the git history has the details.
 - **Space** pauses from anywhere; lowercase `p` is unbound.
 - **G** is Genres globally; **End** (not G) jumps to the end of a list or popup.
 - Stations menu/page label is **My Stations**; the parent **Browse** menu entry and `[browse] browse` master toggle are removed (section pins default On).
+- A Browse section pin opens that section's full View-all page (`feed/getDirectory` with `deviceType` / `path` / `feedType`), not the short teaser. New Music shows every section the page returns (stations, recommended new releases, all new albums) with no row cap. Artists Picked For You has no View-all, so it stays the teaser. A failed View-all falls back to the teaser and says so.
 
 ### Added
 - **Browse sections** on the main menu via `feed/getDirectory`. Settings → BROWSE toggles each section (default On). No parent Browse menu entry; **G** opens Browse Genres. Enter starts a station when the row can.

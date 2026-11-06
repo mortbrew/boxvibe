@@ -545,7 +545,7 @@ impl StationSearch {
     }
 }
 
-/// Pandora Browse directory (`feed/getDirectory`).
+/// Pandora Browse directory (`feed/getDirectory`): the main teaser or one View-all page.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum BrowseState {
     #[default]
@@ -560,6 +560,10 @@ pub enum BrowseState {
 pub enum BrowseRow<'a> {
     Header(&'a str),
     Item(&'a BrowseItem),
+}
+
+fn same_browse_section(section: &BrowseSection, want: &str) -> bool {
+    section.title == want || config::browse_section_key(&section.title) == want
 }
 
 /// A station to rename or delete.
@@ -922,11 +926,17 @@ pub struct App {
     pub rename: Option<Rename>,
     /// `a`: the add-station search box.
     pub add_station: Option<StationSearch>,
-    /// Browse directory.
+    /// What the Browse page is showing: the teaser, or one View-all page.
     pub browse: BrowseState,
     pub browse_cursor: usize,
-    /// `None`: full Browse (every section). `Some(title)`: one pinned section's page.
+    /// `None`: full teaser (every section). `Some(title)`: one pinned section's page.
     pub browse_filter: Option<String>,
+    /// Main `/browse` teaser. View-all paths are read from here.
+    browse_directory: BrowseState,
+    /// View-all pages already fetched, keyed by `viewAll.webUrl`.
+    view_all: HashMap<String, Vec<BrowseSection>>,
+    /// View-all path on screen or in flight. `None`: the page is the teaser.
+    browse_path: Option<String>,
     /// Selected genre station, counted over the stations only (not the headings).
     /// A station is being made: a second Enter waits for it.
     creating: bool,
@@ -1042,6 +1052,9 @@ impl App {
             browse: BrowseState::Idle,
             browse_cursor: 0,
             browse_filter: None,
+            browse_directory: BrowseState::Idle,
+            view_all: HashMap::new(),
+            browse_path: None,
             creating: false,
             editor: None,
             ad: AdPhase::Off,
@@ -1324,7 +1337,8 @@ impl App {
         out
     }
 
-    /// Full Browse (every getDirectory section).
+    /// Full teaser (every section). No menu entry; tests use it to check pins do not hide rows.
+    #[cfg(test)]
     pub(crate) fn show_browse(&mut self) {
         self.browse_filter = None;
         self.open_browse_view();
@@ -1338,7 +1352,7 @@ impl App {
         self.show_browse_section(&title);
     }
 
-    /// Open Browse filtered to one section title (`G` → Browse Genres).
+    /// Open one section (`G` → Browse Genres). A `view_all_path` loads that full page.
     pub(crate) fn show_browse_section(&mut self, title: &str) {
         self.browse_filter = Some(title.to_owned());
         self.open_browse_view();
@@ -1348,31 +1362,146 @@ impl App {
         self.view = View::Browse;
         self.focus = Focus::Content;
         self.point_menu_at_view();
-        if matches!(self.browse, BrowseState::Idle | BrowseState::Failed(_)) {
-            if self.session != Session::LoggedIn {
-                self.status = "Log in first (Settings, Shift+O) to browse".into();
-                return;
+        self.sync_browse_page();
+    }
+
+    /// Show the teaser, or fetch the section's View-all page once the teaser is known.
+    fn sync_browse_page(&mut self) {
+        match &self.browse_directory {
+            BrowseState::Idle => self.start_directory_fetch(),
+            BrowseState::Loading => {
+                self.browse_path = None;
+                self.browse = BrowseState::Loading;
             }
-            self.browse = BrowseState::Loading;
-            self.backend.send(Request::Browse);
-        } else {
-            self.browse_cursor = self.browse_rows().iter().position(|r| matches!(r, BrowseRow::Item(_))).unwrap_or(0);
+            BrowseState::Failed(why) => {
+                self.browse_path = None;
+                self.browse = BrowseState::Failed(why.clone());
+            }
+            BrowseState::Loaded(_) => {
+                if let Some(path) = self.wanted_view_all_path() {
+                    self.fetch_view_all(path);
+                } else {
+                    self.show_directory_rows();
+                }
+            }
         }
     }
 
-    /// Rows for the Browse page. Full Browse lists every section; a pin lists one.
-    /// Settings pins never hide rows inside full Browse.
+    fn start_directory_fetch(&mut self) {
+        if self.session != Session::LoggedIn {
+            self.status = "Log in first (Settings, Shift+O) to browse".into();
+            self.browse = BrowseState::Idle;
+            return;
+        }
+        self.browse_directory = BrowseState::Loading;
+        self.browse_path = None;
+        self.browse = BrowseState::Loading;
+        self.backend.send(Request::Browse { path: None });
+    }
+
+    /// The open pin's `viewAll.webUrl`, once the main teaser has been parsed.
+    fn wanted_view_all_path(&self) -> Option<String> {
+        let want = self.browse_filter.as_ref()?;
+        let BrowseState::Loaded(sections) = &self.browse_directory else { return None };
+        sections.iter().find(|s| same_browse_section(s, want)).and_then(|s| s.view_all_path.clone())
+    }
+
+    fn show_directory_rows(&mut self) {
+        self.browse_path = None;
+        if let BrowseState::Loaded(sections) = &self.browse_directory {
+            self.browse = BrowseState::Loaded(sections.clone());
+        }
+        self.place_browse_cursor();
+    }
+
+    fn fetch_view_all(&mut self, path: String) {
+        if let Some(sections) = self.view_all.get(&path) {
+            self.browse_path = Some(path);
+            self.browse = BrowseState::Loaded(sections.clone());
+            self.place_browse_cursor();
+            return;
+        }
+        if self.browse_path.as_deref() == Some(path.as_str()) && matches!(self.browse, BrowseState::Loading) {
+            return;
+        }
+        self.browse_path = Some(path.clone());
+        self.browse = BrowseState::Loading;
+        self.backend.send(Request::Browse { path: Some(path) });
+    }
+
+    fn place_browse_cursor(&mut self) {
+        self.browse_cursor = self.browse_rows().iter().position(|r| matches!(r, BrowseRow::Item(_))).unwrap_or(0);
+    }
+
+    fn browse_loaded(&mut self, path: Option<String>, sections: Vec<BrowseSection>) {
+        match path {
+            None => {
+                self.browse_directory = BrowseState::Loaded(sections);
+                if self.view == View::Browse {
+                    self.sync_browse_page();
+                }
+            }
+            Some(path) => {
+                self.view_all.insert(path.clone(), sections.clone());
+                if self.browse_path.as_deref() == Some(path.as_str()) {
+                    self.browse = BrowseState::Loaded(sections);
+                    self.place_browse_cursor();
+                }
+            }
+        }
+    }
+
+    fn note_browse_failure(&mut self, path: Option<String>, message: String) {
+        match path {
+            None => {
+                self.browse_directory = BrowseState::Failed(message.clone());
+                if self.view == View::Browse && self.browse_path.is_none() {
+                    self.browse = BrowseState::Failed(message);
+                }
+            }
+            Some(path) => {
+                if self.browse_path.as_deref() != Some(path.as_str()) {
+                    return;
+                }
+                if let BrowseState::Loaded(sections) = &self.browse_directory {
+                    self.browse_path = None;
+                    self.browse = BrowseState::Loaded(sections.clone());
+                    self.place_browse_cursor();
+                    self.status = format!("View-all didn't load ({message}): showing the short list");
+                } else {
+                    self.browse = BrowseState::Failed(message);
+                }
+            }
+        }
+    }
+
+    fn retry_browse(&mut self) {
+        if let Some(path) = self.browse_path.clone() {
+            self.view_all.remove(&path);
+            self.browse = BrowseState::Idle;
+            self.fetch_view_all(path);
+            return;
+        }
+        self.browse_directory = BrowseState::Idle;
+        self.browse = BrowseState::Idle;
+        self.open_browse_view();
+    }
+
+    /// Rows for the Browse page.
+    ///
+    /// A View-all page lists every section it returned (New Music is several).
+    /// The teaser lists every section, or one pin's rows when a pin has no View-all.
     pub fn browse_rows(&self) -> Vec<BrowseRow<'_>> {
         let BrowseState::Loaded(sections) = &self.browse else {
             return Vec::new();
         };
         let mut rows = Vec::new();
         for section in sections {
-            if let Some(want) = &self.browse_filter {
-                let key = config::browse_section_key(&section.title);
-                if section.title != *want && key != *want {
-                    continue;
-                }
+            if self.browse_path.is_none()
+                && let Some(want) = &self.browse_filter
+                && !same_browse_section(section, want)
+            {
+                continue;
             }
             rows.push(BrowseRow::Header(&section.title));
             for item in &section.items {
@@ -1396,13 +1525,11 @@ impl App {
         });
         match (loading, retry, picked) {
             (true, _, _) => {}
-            (_, true, _) => {
-                self.browse = BrowseState::Idle;
-                self.open_browse_view();
-            }
+            (_, true, _) => self.retry_browse(),
             (_, _, Some((Some(id), name))) => self.create_station(&id, &name),
             (_, _, Some((None, name))) => {
-                self.status = format!("“{name}” can't start a station here (playlist, podcast, album or mood)");
+                self.status =
+                    format!("“{name}” can't start a station here (playlist, podcast, album, mood or category)");
             }
             _ => {}
         }
@@ -2045,10 +2172,13 @@ impl App {
             Reply::Artist(info) => self.artist_loaded(info),
             Reply::Shuffle(station) => self.shuffle_arrived(station),
             Reply::StationModes { station_id, modes, set } => self.modes_loaded(&station_id, modes, set),
-            Reply::Browse(sections) => {
-                self.browse = BrowseState::Loaded(sections);
-                self.browse_cursor =
-                    self.browse_rows().iter().position(|r| matches!(r, BrowseRow::Item(_))).unwrap_or(0);
+            Reply::Browse { path, sections } => self.browse_loaded(path, sections),
+            Reply::BrowseFailed { path, message } => {
+                let index = path.is_none();
+                self.note_browse_failure(path, message.clone());
+                if index {
+                    self.status = format!("⚠ browse: {message}");
+                }
             }
             Reply::Playlist { station_id, songs } => {
                 if self.current_station.as_deref() != Some(&station_id) {
@@ -2144,7 +2274,7 @@ impl App {
                     self.creating = false;
                 }
                 if what == "browse" {
-                    self.browse = BrowseState::Failed(message.clone());
+                    self.note_browse_failure(None, message.clone());
                 }
                 if what == "details"
                     && let Some(d) = self.details_mut().filter(|d| d.from_pandora.is_none())
@@ -5907,43 +6037,153 @@ mod tests {
         assert!(!app.creating);
     }
 
+    fn browse_headers(app: &App) -> Vec<&str> {
+        app.browse_rows()
+            .iter()
+            .filter_map(|r| match r {
+                BrowseRow::Header(t) => Some(*t),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn browse_item_count(app: &App) -> usize {
+        app.browse_rows().iter().filter(|r| matches!(r, BrowseRow::Item(_))).count()
+    }
+
     #[test]
-    fn shift_g_opens_browse_genres_loads_once_and_enter_adds_and_plays() {
+    fn shift_g_opens_genres_view_all_caches_it_and_enter_plays_synthwave() {
         let mut app = demo();
         app.settle(Duration::from_millis(300));
         app.on_key(shift('G'));
         assert_eq!((app.view, app.focus), (View::Browse, Focus::Content));
         assert_eq!(app.browse_filter.as_deref(), Some("Browse Genres"));
         assert_eq!(app.browse, BrowseState::Loading);
-        app.settle(Duration::from_millis(300));
+        app.settle(Duration::from_millis(400));
         assert!(matches!(app.browse, BrowseState::Loaded(_)));
-        // Only the Browse Genres section.
-        let headers: Vec<_> = app
+        assert_eq!(app.browse_path.as_deref(), Some("/browse/music/genres"));
+        assert_eq!(browse_headers(&app), ["Browse Genres"]);
+        let shelves = app
             .browse_rows()
             .iter()
-            .filter_map(|r| match r {
-                BrowseRow::Header(t) => Some(*t),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(headers, ["Browse Genres"]);
-        // Leaving and coming back does not ask again (directory is cached).
+            .filter(|r| matches!(r, BrowseRow::Item(i) if i.pandora_id.starts_with("BR:50:")))
+            .count();
+        assert_eq!(shelves, 27, "genres View-all is the BR:50 rows, not the one-row teaser");
+        // A BR:50 row does not start a station.
+        while !matches!(app.browse_rows().get(app.browse_index()), Some(BrowseRow::Item(i)) if i.pandora_id.starts_with("BR:50:"))
+        {
+            app.on_key(key(KeyCode::Char('j')));
+        }
+        let before = app.stations.len();
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.stations.len(), before);
+        assert!(app.status.contains("can't start a station"), "{}", app.status);
+        // Leaving and coming back uses the cache (no second View-all fetch).
         app.on_key(shift('S'));
         let loaded = app.browse.clone();
         app.on_key(shift('G'));
         assert_eq!(app.browse, loaded);
-        assert!(app.backend.replies.recv_timeout(Duration::from_millis(100)).is_err(), "no second request");
-        // Enter on Synthwave.
+        assert!(app.backend.replies.recv_timeout(Duration::from_millis(100)).is_err(), "view-all is cached");
+        // Enter on Synthwave (the one playable genre on the demo page).
         while !matches!(app.browse_rows().get(app.browse_index()), Some(BrowseRow::Item(i)) if i.name == "Synthwave") {
             app.on_key(key(KeyCode::Char('j')));
         }
-        let before = app.stations.len();
         app.on_key(key(KeyCode::Enter));
         app.settle(Duration::from_millis(400));
         assert_eq!(app.stations.len(), before + 1);
         let at = usize::from(app.stations[0].is_shuffle);
         assert_eq!(app.stations[at].name, "Synthwave");
         assert_eq!(app.current_station.as_deref(), Some(app.stations[at].id.as_str()));
+    }
+
+    #[test]
+    fn new_music_pin_shows_every_view_all_section_with_no_cap() {
+        let mut app = demo();
+        let pins = app.browse_menu_pins();
+        let i = pins.iter().position(|(_, t)| t == "New Music").unwrap();
+        let at = app.menu_items().iter().position(|m| *m == MenuItem::BrowsePin(i)).unwrap();
+        app.focus = Focus::Menu;
+        app.menu_cursor = at;
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.browse_filter.as_deref(), Some("New Music"));
+        app.settle(Duration::from_millis(400));
+        assert_eq!(browse_headers(&app), ["New Music Stations", "Recommended new releases", "All New Albums"]);
+        let expected: usize =
+            crate::demo::browse_at(Some("/browse/music/new-music")).iter().map(|s| s.items.len()).sum();
+        assert!(expected > 8, "the fixture itself is past the teaser size");
+        assert_eq!(browse_item_count(&app), expected, "every View-all row is listed");
+        let albums = app
+            .browse_rows()
+            .iter()
+            .filter(|r| matches!(r, BrowseRow::Item(i) if i.name.starts_with("New Album")))
+            .count();
+        assert_eq!(albums, 10);
+        // Coming back does not fetch again.
+        app.on_key(shift('S'));
+        app.show_browse_section("New Music");
+        assert!(matches!(app.browse, BrowseState::Loaded(_)));
+        assert_eq!(browse_headers(&app), ["New Music Stations", "Recommended new releases", "All New Albums"]);
+        assert!(app.backend.replies.recv_timeout(Duration::from_millis(80)).is_err(), "cached");
+    }
+
+    #[test]
+    fn other_view_all_pins_use_their_path_and_artists_stay_a_teaser() {
+        let mut app = demo();
+        for title in ["Trendsetters: Artists on the rise", "Decades", "Featured Playlists", "Top stations"] {
+            app.show_browse_section(title);
+            app.settle(Duration::from_millis(400));
+            let teaser = crate::demo::browse().into_iter().find(|s| s.title == title).unwrap();
+            assert_eq!(app.browse_path.as_deref(), teaser.view_all_path.as_deref(), "{title}");
+            assert!(browse_item_count(&app) > teaser.items.len(), "{title} should be the View-all list");
+            let names: Vec<_> = app
+                .browse_rows()
+                .iter()
+                .filter_map(|r| match r {
+                    BrowseRow::Item(i) => Some(i.name.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert!(names.iter().any(|n| n.contains("extra")), "{title}: {names:?}");
+        }
+        app.show_browse_section("Artists Picked For You");
+        assert_eq!(app.browse_path, None, "no viewAll: stay on the teaser");
+        assert!(matches!(app.browse, BrowseState::Loaded(_)), "the teaser is already cached");
+        assert_eq!(browse_headers(&app), ["Artists Picked For You"]);
+        assert_eq!(browse_item_count(&app), 1);
+        assert!(matches!(app.browse_rows().get(app.browse_index()), Some(BrowseRow::Item(i)) if i.name == "M83"));
+        assert!(app.backend.replies.recv_timeout(Duration::from_millis(80)).is_err(), "no View-all request");
+    }
+
+    #[test]
+    fn a_failed_view_all_falls_back_to_the_teaser_and_a_late_page_is_not_shown() {
+        let mut app = demo();
+        app.show_browse_section("New Music");
+        app.on_reply(Reply::Browse { path: None, sections: crate::demo::browse() });
+        assert!(matches!(app.browse, BrowseState::Loading));
+        assert_eq!(app.browse_path.as_deref(), Some("/browse/music/new-music"));
+        app.on_reply(Reply::BrowseFailed { path: Some("/browse/music/new-music".into()), message: "offline".into() });
+        assert!(app.status.contains("short list") && app.status.contains("offline"), "{}", app.status);
+        assert_eq!(app.browse_path, None);
+        assert_eq!(browse_headers(&app), ["New Music"]);
+        assert!(app.browse_rows().iter().any(|r| matches!(r, BrowseRow::Item(i) if i.name == "Midnight City")));
+        assert!(!browse_headers(&app).contains(&"Recommended new releases"));
+
+        // A late page for a section the user already left is cached, not shown.
+        app.show_browse_section("Browse Genres");
+        assert_eq!(app.browse_path.as_deref(), Some("/browse/music/genres"));
+        assert!(matches!(app.browse, BrowseState::Loading));
+        app.on_reply(Reply::Browse {
+            path: Some("/browse/music/new-music".into()),
+            sections: crate::demo::browse_at(Some("/browse/music/new-music")),
+        });
+        assert!(matches!(app.browse, BrowseState::Loading), "still waiting on genres");
+        assert!(!browse_headers(&app).contains(&"Recommended new releases"));
+        app.on_reply(Reply::Browse {
+            path: Some("/browse/music/genres".into()),
+            sections: crate::demo::browse_at(Some("/browse/music/genres")),
+        });
+        assert_eq!(browse_headers(&app), ["Browse Genres"]);
+        assert!(browse_item_count(&app) > 1);
     }
 
     #[test]

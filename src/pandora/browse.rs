@@ -1,8 +1,11 @@
 //! Pandora Browse: `POST /api/v1/feed/getDirectory`.
 //!
-//! One response feeds every Browse row (Artists Picked For You, New Music,
-//! genres, playlists, …). Sections have a title and items; annotations fill
-//! in names when a row is sparse.
+//! The main directory (`{}`) is a short teaser of every section. A section
+//! may include `viewAll.webUrl`; that page is the same call with
+//! `{"deviceType":"web","path":…,"feedType":"browse"}` and can hold many
+//! sections (New Music: stations, recommended releases, all new albums).
+//! Every item is kept — nothing is capped. Annotations fill in names when
+//! a row is sparse.
 
 use serde_json::{Value, json};
 
@@ -14,6 +17,9 @@ pub struct BrowseSection {
     pub id: String,
     pub title: String,
     pub items: Vec<BrowseItem>,
+    /// `viewAll.webUrl` on the main teaser (`/browse/music/new-music`, …).
+    /// `None`: this section has no View-all page (Artists Picked For You).
+    pub view_all_path: Option<String>,
 }
 
 /// One row under a Browse section.
@@ -43,14 +49,31 @@ impl BrowseItem {
 }
 
 impl Client {
-    /// `v1/feed/getDirectory`: every Browse section and its rows.
+    /// Main Browse (`/browse`): body `{}`. Sections may carry [`BrowseSection::view_all_path`].
     pub fn directory(&mut self) -> Result<Vec<BrowseSection>, Error> {
         let v = self.post("/api/v1/feed/getDirectory", &json!({}))?;
+        Ok(parse_directory(&v))
+    }
+
+    /// One View-all page. `path` is that section's `viewAll.webUrl`.
+    ///
+    /// Body is `{"deviceType":"web","path":…,"feedType":"browse"}`. Only `path` changes.
+    pub fn directory_at(&mut self, path: &str) -> Result<Vec<BrowseSection>, Error> {
+        let v = self.post(
+            "/api/v1/feed/getDirectory",
+            &json!({
+                "deviceType": "web",
+                "path": path,
+                "feedType": "browse",
+            }),
+        )?;
         Ok(parse_directory(&v))
     }
 }
 
 /// Sections and items from a getDirectory body (annotations fill sparse names).
+///
+/// Every item is returned. A View-all page can be hundreds of rows; the list scrolls.
 pub fn parse_directory(v: &Value) -> Vec<BrowseSection> {
     let anns = v.get("annotations").and_then(Value::as_object);
     let Some(sections) = v.get("sections").and_then(Value::as_array) else {
@@ -77,7 +100,21 @@ fn parse_section(s: &Value, anns: Option<&serde_json::Map<String, Value>>) -> Op
             }
         }
     }
-    Some(BrowseSection { id, title, items })
+    Some(BrowseSection { id, title, items, view_all_path: section_view_all_path(s) })
+}
+
+/// `viewAll.webUrl`, as a site path (`/browse/music/new-music`).
+fn section_view_all_path(section: &Value) -> Option<String> {
+    let raw = section.get("viewAll")?.get("webUrl")?.as_str()?.trim();
+    let raw = raw.split(['?', '#']).next().unwrap_or(raw).trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let path = raw
+        .strip_prefix("https://www.pandora.com")
+        .or_else(|| raw.strip_prefix("http://www.pandora.com"))
+        .unwrap_or(raw);
+    path.starts_with('/').then(|| path.to_owned())
 }
 
 fn parse_item(it: &Value, anns: Option<&serde_json::Map<String, Value>>) -> Option<BrowseItem> {
@@ -157,5 +194,55 @@ mod tests {
         assert_eq!(sections[1].items[0].name, "Sparse Album");
         assert_eq!(sections[1].items[0].detail, "Someone");
         assert!(sections[1].items[0].create_id().is_none());
+        assert_eq!(sections[0].view_all_path, None);
+        assert_eq!(sections[1].view_all_path, None);
+        let shelf = BrowseItem {
+            name: "Country".into(),
+            detail: String::new(),
+            pandora_id: "BR:50:7".into(),
+            station_factory: String::new(),
+        };
+        assert!(shelf.create_id().is_none(), "BR:50 rows do not start a station");
+    }
+
+    #[test]
+    fn view_all_path_is_kept_and_every_item_is_kept() {
+        let items: Vec<_> = (0..40)
+            .map(|n| {
+                json!({
+                    "pandoraId": format!("AL:{n}"),
+                    "labels": [{"text": format!("Album {n}"), "style": "title"}]
+                })
+            })
+            .collect();
+        let v = json!({
+            "sections": [{
+                "id": "BS:1:3:1",
+                "title": {"labels": [{"text": "Artists Picked For You", "style": "header"}]},
+                "subsections": [{"items": [{
+                    "pandoraId": "AR:1",
+                    "labels": [{"text": "M83", "style": "title"}]
+                }]}]
+            }, {
+                "id": "BS:8:61",
+                "title": {"labels": [{"text": "All New Albums", "style": "header"}]},
+                "viewAll": {
+                    "webUrl": "https://www.pandora.com/browse/music/new-music?ref=1",
+                    "labels": [{"text": "View all new music", "style": "title"}]
+                },
+                "subsections": [{"items": items}]
+            }, {
+                "id": "BS:blank",
+                "title": {"labels": [{"text": "No Link", "style": "header"}]},
+                "viewAll": {"webUrl": "  "},
+                "subsections": []
+            }]
+        });
+        let sections = parse_directory(&v);
+        assert_eq!(sections[0].view_all_path, None, "Artists Picked For You has no viewAll");
+        assert_eq!(sections[1].view_all_path.as_deref(), Some("/browse/music/new-music"));
+        assert_eq!(sections[1].items.len(), 40, "no silent cap");
+        assert_eq!(sections[1].items[39].name, "Album 39");
+        assert_eq!(sections[2].view_all_path, None);
     }
 }

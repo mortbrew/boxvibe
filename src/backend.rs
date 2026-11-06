@@ -93,7 +93,10 @@ pub enum Request {
         pandora_id: String,
     },
     /// Browse directory (`feed/getDirectory`).
-    Browse,
+    /// `path`: `None` is the main teaser (`{}`); `Some` is a View-all page.
+    Browse {
+        path: Option<String>,
+    },
     Playlist {
         station_id: String,
     },
@@ -200,7 +203,16 @@ pub enum Reply {
         modes: StationModes,
         set: bool,
     },
-    Browse(Vec<BrowseSection>),
+    /// `path`: `None` is the main teaser; `Some` is that View-all page.
+    Browse {
+        path: Option<String>,
+        sections: Vec<BrowseSection>,
+    },
+    /// `getDirectory` failed. `path`: `None` is the main teaser.
+    BrowseFailed {
+        path: Option<String>,
+        message: String,
+    },
     Playlist {
         station_id: String,
         songs: Vec<Song>,
@@ -448,7 +460,7 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
                     None => Reply::Failed { what: "mode", message: "no such mode".into() },
                 }
             }
-            Request::Browse => Reply::Browse(demo::browse()),
+            Request::Browse { path } => Reply::Browse { sections: demo::browse_at(path.as_deref()), path },
             Request::Playlist { station_id } => {
                 round += 1;
                 Reply::Playlist { songs: demo::playlist(&station_id, round - 1), station_id }
@@ -567,7 +579,16 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                     set: true,
                 })
             }),
-            Request::Browse => run(&mut client, &login, &mut took_over, "browse", |c| c.directory().map(Reply::Browse)),
+            Request::Browse { path } => {
+                let outcome = pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| match &path {
+                    Some(p) => c.directory_at(p),
+                    None => c.directory(),
+                });
+                match outcome {
+                    Ok(sections) => Reply::Browse { path, sections },
+                    Err(e) => Reply::BrowseFailed { path, message: e.to_string() },
+                }
+            }
             Request::Playlist { station_id } => run(&mut client, &login, &mut took_over, "playlist", |c| {
                 c.fragment(&station_id).map(|songs| Reply::Playlist { station_id: station_id.clone(), songs })
             }),

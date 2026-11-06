@@ -100,18 +100,12 @@ pub fn browse_section_key(title: &str) -> String {
 }
 
 /// `[browse]`: per-section On/Off pins on the main menu (no parent Browse entry).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct BrowseConfig {
     /// Per-section toggles; missing keys default to On (on the main menu).
     #[serde(flatten)]
     pub sections: std::collections::BTreeMap<String, bool>,
-}
-
-impl Default for BrowseConfig {
-    fn default() -> Self {
-        Self { sections: std::collections::BTreeMap::new() }
-    }
 }
 
 impl BrowseConfig {

@@ -4,9 +4,9 @@ name: audit
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   schedule:
     - cron: "37 4 * * 1"
 

@@ -1186,7 +1186,6 @@ impl Client {
     }
 
     /// `v1/station/deleteFeedback`: takes one thumb back.
-
     pub fn delete_feedback(&mut self, feedback_id: &str, positive: bool) -> Result<(), Error> {
         self.post("/api/v1/station/deleteFeedback", &json!({ "feedbackId": feedback_id, "isPositive": positive }))?;
         Ok(())

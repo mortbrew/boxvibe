@@ -1221,8 +1221,10 @@ impl App {
         let pins = (0..self.browse_menu_pins().len()).map(MenuItem::BrowsePin);
         top.into_iter()
             .chain([MenuItem::Stations])
-            .chain(pins)
+            // Pinned keeps a row of its own above the Browse sections, which
+            // the menu draws under a "BROWSE (n)" heading.
             .chain(self.config.ui.pinned_in_menu.then_some(MenuItem::Pinned))
+            .chain(pins)
             .chain(
                 (0..if self.config.ui.favorites_in_menu { self.config.ui.favorites.len() } else { 0 })
                     .map(MenuItem::Favorite),
@@ -4113,10 +4115,10 @@ mod tests {
         let items = app.menu_items();
         assert_eq!(items[0], MenuItem::NowPlaying, "a station plays: NOW PLAYING on top");
         assert_eq!(items[1], MenuItem::Stations);
+        assert_eq!(items[2], MenuItem::Pinned);
         let pins = config::BROWSE_SECTIONS.len();
-        assert_eq!(&items[2..2 + pins], &(0..pins).map(MenuItem::BrowsePin).collect::<Vec<_>>()[..]);
-        assert_eq!(items[2 + pins], MenuItem::Pinned);
-        assert_eq!(items.len(), 2 + pins + 1 + 4, "NOW PLAYING, My Stations, all section pins, Pinned, no favorites");
+        assert_eq!(&items[3..3 + pins], &(0..pins).map(MenuItem::BrowsePin).collect::<Vec<_>>()[..]);
+        assert_eq!(items.len(), 2 + 1 + pins + 4, "NOW PLAYING, My Stations, Pinned, all section pins, no favorites");
         assert_eq!(
             &items[items.len() - 4..],
             [MenuItem::Settings, MenuItem::Notifications, MenuItem::About, MenuItem::Quit]
@@ -4204,10 +4206,9 @@ mod tests {
         app.on_key(key(KeyCode::Char('f')));
         let third = app.stations[2].clone();
         assert!(app.is_favorite(&third.id));
-        let mut want = vec![MenuItem::Stations];
+        let mut want = vec![MenuItem::Stations, MenuItem::Pinned];
         want.extend((0..config::BROWSE_SECTIONS.len()).map(MenuItem::BrowsePin));
         want.extend([
-            MenuItem::Pinned,
             MenuItem::Favorite(0),
             MenuItem::Settings,
             MenuItem::Notifications,
@@ -6206,7 +6207,8 @@ mod tests {
         let app = demo();
         let items = app.menu_items();
         let at = items.iter().position(|m| *m == MenuItem::Stations).unwrap();
-        assert_eq!(items[at + 1], MenuItem::BrowsePin(0), "section pins follow My Stations");
+        assert_eq!(items[at + 1], MenuItem::Pinned, "Pinned keeps a row above the Browse sections");
+        assert_eq!(items[at + 2], MenuItem::BrowsePin(0), "section pins follow My Stations");
         assert_eq!(
             items.iter().filter(|m| matches!(m, MenuItem::BrowsePin(_))).count(),
             config::BROWSE_SECTIONS.len(),

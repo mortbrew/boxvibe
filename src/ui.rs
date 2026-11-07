@@ -675,13 +675,19 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let now_h = if app.has_now_playing() { 2 } else { 0 };
     let section_pins = app.browse_menu_pins().len() as u16;
     let pinned = app.config.ui.pinned_in_menu;
-    // My Stations and the optional Pinned songs, then the pinned Browse
-    // sections under a "BROWSE (n)" heading, ruled like FAVORITES.
-    let top_n = 1 + u16::from(pinned);
+    // MY COLLECTION groups the personal rows -- My Stations and the optional
+    // Pinned songs -- ruled and headed like FAVORITES. The pinned Browse
+    // sections follow under their own "BROWSE (n)" heading.
+    let personal_n = 1 + u16::from(pinned);
+    // Hidden while it has nothing of its own, the way FAVORITES hides.
+    let collection_head = !app.stations.is_empty() || (pinned && !app.pins.is_empty());
+    // NOW PLAYING already draws an inset rule above it, so skip the one here.
+    let collection_gap = u16::from(now_h == 0);
+    let collection_n = personal_n + if collection_head { 1 + collection_gap } else { 0 };
     let browse_n = if section_pins == 0 { 0 } else { section_pins + 2 };
-    let [now_area, stations_row, browse_area, favs_area, _, rule, app_area] = Layout::vertical([
+    let [now_area, collection_area, browse_area, favs_area, _, rule, app_area] = Layout::vertical([
         Constraint::Length(now_h),
-        Constraint::Length(top_n),
+        Constraint::Length(collection_n),
         Constraint::Length(browse_n),
         Constraint::Fill(1),
         Constraint::Length(1),
@@ -725,6 +731,28 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         frame.render_widget(Paragraph::new(Line::from(pad(&text, entry.width as usize)).style(style)), entry);
         frame.render_widget(inset_rule(&p, line.width), line);
     }
+    // The heading and the rows it covers; without a heading the rows take the
+    // whole area.
+    let (rows_area, head_area) = if collection_head {
+        let [gap, head, rows] = Layout::vertical([
+            Constraint::Length(collection_gap),
+            Constraint::Length(1),
+            Constraint::Length(personal_n),
+        ])
+        .areas(collection_area);
+        if collection_gap > 0 {
+            frame.render_widget(inset_rule(&p, gap.width), gap);
+        }
+        (rows, Some(head))
+    } else {
+        (collection_area, None)
+    };
+    if let Some(head) = head_area {
+        frame.render_widget(
+            Paragraph::new(Span::styled(" MY COLLECTION", Style::new().fg(p.orange).bold())),
+            head,
+        );
+    }
     let count = if app.stations.is_empty() { String::new() } else { format!(" ({})", app.stations.len()) };
     let mut lines = Vec::new();
     let mut top = vec![(MenuItem::Stations, ic.station, format!("My Stations{count}"))];
@@ -738,9 +766,9 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             style = style.patch(sel);
         }
         let text = format!(" {} {label}", pad(icon, 2));
-        lines.push(Line::from(pad(&text, stations_row.width as usize)).style(style));
+        lines.push(Line::from(pad(&text, rows_area.width as usize)).style(style));
     }
-    frame.render_widget(Paragraph::new(lines), stations_row);
+    frame.render_widget(Paragraph::new(lines), rows_area);
     // The pinned Browse sections, under a heading that matches FAVORITES: a
     // rule, "BROWSE (n)", then one row each.
     if section_pins > 0 {
@@ -4092,7 +4120,9 @@ mod tests {
         assert!(lines[1].starts_with("│ ▶  NOW PLAYING"), "{}", lines[1]);
         let menu: String = lines[2].chars().take(30).collect();
         assert!(menu.starts_with("│  ──") && menu.ends_with("──  │"), "inset rule: {menu:?}");
-        assert!(lines[3].contains("My Stations ("), "{}", lines[3]);
+        // That rule doubles as MY COLLECTION's, so its heading sits right under it.
+        assert!(lines[3].starts_with("│ MY COLLECTION"), "{}", lines[3]);
+        assert!(lines[4].contains("My Stations ("), "{}", lines[4]);
         assert!(lines[35].contains(" P  Now Playing"), "key bar: {}", lines[35]);
     }
 
@@ -4641,6 +4671,38 @@ mod tests {
             "Pinned, then BROWSE (n), then the sections:\n{}",
             lines.iter().map(|l| menu(l)).collect::<Vec<_>>().join("\n")
         );
+    }
+
+    #[test]
+    fn my_collection_heads_the_personal_rows_and_hides_when_empty() {
+        let app = demo();
+        let (lines, _) = screen(&app, 120, 40);
+        let menu = |l: &str| -> String { l.chars().take(30).collect() };
+        let at = |want: &dyn Fn(&str) -> bool| lines.iter().map(|l| menu(l)).position(|l| want(&l));
+        let head = at(&|l| l.starts_with("│ MY COLLECTION")).expect("the MY COLLECTION heading");
+        let stations = at(&|l| l.contains("My Stations")).expect("My Stations");
+        let pinned = at(&|l| l.contains("Pinned")).expect("Pinned");
+        let browse = at(&|l| l.starts_with("│ BROWSE (10)")).expect("the BROWSE heading");
+        let first = at(&|l| l.contains("Artists Picked For You")).expect("the first section");
+        assert!(
+            head < stations && stations < pinned && pinned < browse && browse < first,
+            "MY COLLECTION, My Stations, Pinned, then BROWSE and its sections:\n{}",
+            lines.iter().map(|l| menu(l)).collect::<Vec<_>>().join("\n")
+        );
+        // An empty collection draws no heading, the way an empty FAVORITES does.
+        let mut empty = App::new(Config::default(), None, &[], true);
+        empty.config.ui.icons = crate::config::IconSet::Emoji;
+        let (lines, _) = screen(&empty, 120, 40);
+        assert!(
+            !lines.iter().any(|l| l.contains("MY COLLECTION")),
+            "hidden while empty:\n{}",
+            lines.iter().map(|l| menu(l)).collect::<Vec<_>>().join("\n")
+        );
+        assert!(lines.iter().any(|l| l.contains("My Stations")), "the row itself stays");
+        // Short and narrow windows still draw it without panicking.
+        for (c, r) in [(40, 10), (20, 6), (120, 8)] {
+            let _ = screen(&app, c, r);
+        }
     }
 
     #[test]

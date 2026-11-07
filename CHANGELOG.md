@@ -2,7 +2,7 @@
 
 Short and scannable; the git history has the details.
 
-## 0.5.0 (unreleased)
+## 0.5.0 (2026-11-06)
 
 ### Internal
 - Themes, Theme Select (state, keys and drawing), the theme store and self-update now live in the shared `vibekit` crate (path dependency).

@@ -1,6 +1,6 @@
 //! `--snapshot FILE`: draws one demo frame with ratatui's TestBackend and
 //! writes it as HTML (each cell coloured as in a terminal), which a headless
-//! browser turns into a PNG (see `tools/screenshots.sh`).
+//! browser can turn into a PNG (the README screenshots use `scripts/screenshots.py`).
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -22,7 +22,7 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
     let mut app = App::new(config, Config::default_path(), &[], true);
     app.demo_warm_up(3, Duration::from_secs(102));
     match screen {
-        "help" => app.help = true,
+        "help" => app.open_help(),
         // The System Check list for a missing Nerd Font and notify-send.
         "system" => {
             app.system_checked(&crate::deps::Facts { families: Some("DejaVu Sans\n".into()), ..Default::default() });
@@ -95,7 +95,7 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
         // a few seconds in.
         "ad" => {
             use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-            app.config.player.good_vibes_only = true;
+            app.config.player.good_vibes_only = crate::config::GoodVibes::On;
             for _ in 0..9 {
                 if app.ad_view().is_some() {
                     break;

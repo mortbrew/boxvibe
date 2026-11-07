@@ -112,7 +112,9 @@ pub struct Editor {
     pub up: ThumbList,
     pub down: ThumbList,
     pub add: Option<SeedAdd>,
-    pub confirm: Option<EditorConfirm>,
+    /// A Pandora genre station: its seeds can't be changed, so only the
+    /// Thumbs Up and Thumbs Down tabs show.
+    pub thumbs_only: bool,
 }
 
 impl Editor {
@@ -174,7 +176,10 @@ impl App {
         let Some((station, favorite)) = self.station_to_change() else {
             return self.no_station_here("e edits");
         };
-        if !station.allow_edit_seeds {
+        // A genre station's seeds are Pandora's, but its thumbs are yours:
+        // the editor opens on Thumbs Up only. Shuffle has neither.
+        let thumbs_only = !station.allow_edit_seeds && station.is_locked() && !station.is_shuffle;
+        if !station.allow_edit_seeds && !thumbs_only {
             let message = format!("Pandora doesn't let you edit the seeds of “{}”", station.name);
             self.blocked(&station, "edited", message);
             return;
@@ -183,21 +188,29 @@ impl App {
             self.status = "Log in first (Settings, Shift+O) to edit a station".into();
             return;
         }
-        self.backend.send(Request::Seeds { station_id: station.id.clone() });
+        if thumbs_only {
+            self.status = format!(
+                "“{}” is a genre station: Pandora keeps its seeds, but your thumbs on it are here",
+                station.name
+            );
+        } else {
+            self.backend.send(Request::Seeds { station_id: station.id.clone() });
+        }
         let current = self.current_station.as_deref() == Some(station.id.as_str());
         self.backend.send(Request::StationDetails { station_id: station.id.clone(), current });
         self.editor = Some(Editor {
             station: StationRef { id: station.id, name: station.name, favorite },
-            tab: EditorTab::Seeds,
-            seeds: Loaded::Loading,
+            tab: if thumbs_only { EditorTab::ThumbsUp } else { EditorTab::Seeds },
+            seeds: if thumbs_only { Loaded::Ready(Vec::new()) } else { Loaded::Loading },
             seed_cursor: 0,
             thumbs_up: None,
             thumbs_down: None,
             up: ThumbList::new(),
             down: ThumbList::new(),
             add: None,
-            confirm: None,
+            thumbs_only,
         });
+        self.ensure_thumbs();
     }
 
     fn ask_seeds(&mut self) {
@@ -233,15 +246,6 @@ impl App {
 
     pub(super) fn editor_key(&mut self, key: KeyEvent) {
         let Some(ed) = self.editor.as_mut() else { return };
-        if let Some(confirm) = ed.confirm.take() {
-            // y does it; any other key is no, like the other confirm boxes.
-            if matches!(key.code, KeyCode::Char('y' | 'Y')) {
-                self.editor_confirmed(confirm);
-            } else {
-                self.status = "Kept it".into();
-            }
-            return;
-        }
         if ed.add.is_some() {
             return self.seed_add_key(key);
         }
@@ -252,10 +256,16 @@ impl App {
             }
             KeyCode::Tab | KeyCode::Right => {
                 ed.tab = ed.tab.next();
+                if ed.thumbs_only && ed.tab == EditorTab::Seeds {
+                    ed.tab = ed.tab.next();
+                }
                 self.ensure_thumbs();
             }
             KeyCode::BackTab | KeyCode::Left => {
                 ed.tab = ed.tab.previous();
+                if ed.thumbs_only && ed.tab == EditorTab::Seeds {
+                    ed.tab = ed.tab.previous();
+                }
                 self.ensure_thumbs();
             }
             KeyCode::Char('j') | KeyCode::Down => self.editor_move(1),
@@ -263,6 +273,10 @@ impl App {
             KeyCode::Char('a') if ed.tab == EditorTab::Seeds => self.open_seed_add(),
             KeyCode::Char('x') if ed.tab == EditorTab::Seeds => self.ask_remove_seed(),
             KeyCode::Char('x') => self.ask_delete_thumb(),
+            KeyCode::Char('m') => {
+                let station = ed.station.clone();
+                self.open_modes(Some(station));
+            }
             _ => {}
         }
     }
@@ -312,7 +326,7 @@ impl App {
         } else if seed.id.is_empty() {
             self.status = "Pandora gave this seed no id, so it can't be removed here".into();
         } else {
-            ed.confirm = Some(EditorConfirm::RemoveSeed(seed));
+            self.ask_editor(EditorConfirm::RemoveSeed(seed));
         }
     }
 
@@ -414,12 +428,12 @@ impl App {
         let Some(positive) = ed.tab.thumbs() else { return };
         let list = ed.list(positive);
         match list.items.get(list.cursor.min(list.items.len().saturating_sub(1))).cloned() {
-            Some(f) => ed.confirm = Some(EditorConfirm::DeleteThumb(f)),
+            Some(f) => self.ask_editor(EditorConfirm::DeleteThumb(f)),
             None => self.status = "No thumb to take back".into(),
         }
     }
 
-    fn editor_confirmed(&mut self, confirm: EditorConfirm) {
+    pub(super) fn editor_confirmed(&mut self, confirm: EditorConfirm) {
         let Some(ed) = &self.editor else { return };
         let station_id = ed.station.id.clone();
         match confirm {
@@ -505,6 +519,22 @@ impl App {
     /// no status line (the editor shows it).
     pub(super) fn editor_failed(&mut self, what: &str, message: &str) -> bool {
         let Some(ed) = self.editor.as_mut() else { return false };
+        // A genre station: Pandora may not share or change its thumbs. Say so kindly.
+        let friendly;
+        let message = if ed.thumbs_only && matches!(what, "thumbs history" | "delete thumb") {
+            friendly = format!(
+                "Pandora didn't {} the thumbs of genre station “{}” ({message})",
+                if what == "delete thumb" { "let boxvibe take back" } else { "share" },
+                ed.station.name
+            );
+            if what == "delete thumb" {
+                self.status = friendly;
+                return true;
+            }
+            friendly.as_str()
+        } else {
+            message
+        };
         match what {
             "seeds" => ed.seeds = Loaded::Failed(message.to_owned()),
             "thumbs history" => {
@@ -613,11 +643,28 @@ mod tests {
             assert!(wanted(&app), "a station without seeds to edit exists");
             let name = app.station_in_reach().unwrap().0.name;
             chr(&mut app, 'e');
-            assert!(app.editor.is_none(), "{name}");
-            assert!(app.status.contains("doesn't let you edit") && app.status.contains(&name), "{}", app.status);
-            if !locked {
-                break;
+            if locked {
+                assert!(app.editor.is_none(), "{name}");
+                assert!(app.status.contains("doesn't let you edit") && app.status.contains(&name), "{}", app.status);
+                continue;
             }
+            // A genre station opens on its thumbs only: no Seeds tab, no seed keys.
+            app.settle(Duration::from_millis(300));
+            let ed = app.editor.as_ref().expect("genre stations open on their thumbs");
+            assert!(ed.thumbs_only, "{name}");
+            assert_eq!(ed.tab, EditorTab::ThumbsUp);
+            assert!(app.status.contains("genre station"), "{}", app.status);
+            for _ in 0..3 {
+                press(&mut app, KeyCode::Tab);
+                assert_ne!(app.editor.as_ref().unwrap().tab, EditorTab::Seeds);
+                press(&mut app, KeyCode::Left);
+                assert_ne!(app.editor.as_ref().unwrap().tab, EditorTab::Seeds);
+            }
+            chr(&mut app, 'a');
+            assert!(app.editor.as_ref().unwrap().add.is_none(), "no seeds to add on a genre station");
+            press(&mut app, KeyCode::Esc);
+            assert!(app.editor.is_none());
+            break;
         }
         let app = editing();
         let ed = app.editor.as_ref().unwrap();
@@ -718,13 +765,15 @@ mod tests {
     fn x_asks_what_will_happen_then_removes_and_the_last_seed_stays() {
         let mut app = editing();
         chr(&mut app, 'x');
-        let ed = app.editor.as_ref().unwrap();
-        let question = ed.confirm.as_ref().expect("asks first").question(&ed.station.name);
+        let station = app.editor.as_ref().unwrap().station.name.clone();
+        let question = app.editor_confirm().expect("asks first").question(&station);
         assert!(question.contains("Remove the artist seed “M83”"), "{question}");
         assert!(question.contains("stops picking songs"), "{question}");
-        // Any other key says no.
+        // n / Esc says no; stray keys leave the question open.
+        chr(&mut app, 'x');
+        assert!(app.editor_confirm().is_some());
         chr(&mut app, 'n');
-        assert!(app.editor.as_ref().unwrap().confirm.is_none());
+        assert!(app.editor_confirm().is_none());
         assert_eq!(seed_names(&app).len(), 2);
         chr(&mut app, 'x');
         chr(&mut app, 'y');
@@ -733,7 +782,7 @@ mod tests {
         assert!(app.status.contains("Removed"), "{}", app.status);
         // The only seed left cannot go: no question, a message.
         chr(&mut app, 'x');
-        assert!(app.editor.as_ref().unwrap().confirm.is_none());
+        assert!(app.editor_confirm().is_none());
         assert!(app.status.contains("at least one seed"), "{}", app.status);
         assert_eq!(seed_names(&app).len(), 1);
     }
@@ -795,8 +844,8 @@ mod tests {
         chr(&mut app, 'j');
         let gone = app.editor.as_ref().unwrap().up.items[1].clone();
         chr(&mut app, 'x');
-        let ed = app.editor.as_ref().unwrap();
-        let question = ed.confirm.as_ref().expect("asks first").question(&ed.station.name);
+        let station = app.editor.as_ref().unwrap().station.name.clone();
+        let question = app.editor_confirm().expect("asks first").question(&station);
         assert!(question.contains("Take back your thumbs up") && question.contains(&gone.title), "{question}");
         chr(&mut app, 'n');
         assert_eq!(app.editor.as_ref().unwrap().up.total, 37, "no: nothing changed");
@@ -814,8 +863,8 @@ mod tests {
         assert!(before > 0);
         let gone = app.editor.as_ref().unwrap().down.items[0].clone();
         chr(&mut app, 'x');
-        let ed = app.editor.as_ref().unwrap();
-        let question = ed.confirm.as_ref().unwrap().question(&ed.station.name);
+        let station = app.editor.as_ref().unwrap().station.name.clone();
+        let question = app.editor_confirm().unwrap().question(&station);
         assert!(question.contains("thumbs down") && question.contains("can play again"), "{question}");
         chr(&mut app, 'y');
         app.settle(WAIT);

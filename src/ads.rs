@@ -271,7 +271,7 @@ fn clock(at: Duration) -> String {
 }
 
 /// `2026-10-25T14:03:05.123Z`.
-fn iso_utc(at: SystemTime) -> String {
+pub(crate) fn iso_utc(at: SystemTime) -> String {
     let d = at.duration_since(UNIX_EPOCH).unwrap_or_default();
     let (days, rest) = (d.as_secs() / 86_400, d.as_secs() % 86_400);
     // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).

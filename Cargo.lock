@@ -391,29 +391,28 @@ dependencies = [
 
 [[package]]
 name = "boxvibe"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
  "crossterm",
  "directories",
- "flate2",
  "image",
  "ratatui",
  "ratatui-image",
  "rodio",
  "rustfft",
  "secret-service",
- "self-replace",
  "serde",
  "serde_ignored",
  "serde_json",
- "tar",
  "thiserror 2.0.21",
  "toml",
  "toml_edit",
  "unicode-width",
  "ureq",
+ "vibekit",
+ "zbus",
 ]
 
 [[package]]
@@ -1676,6 +1675,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleo-matcher"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf33f538733d1a5a3494b836ba913207f14d9d4a1d3cd67030c5061bdd2cac85"
+dependencies = [
+ "memchr",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "num"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2670,13 +2679,13 @@ dependencies = [
 
 [[package]]
 name = "self-replace"
-version = "1.5.0"
+version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03ec815b5eab420ab893f63393878d89c90fdd94c0bcc44c07abb8ad95552fb7"
+checksum = "609c5606d9d357b26e4ee1a7a01beac396628d0fa01ebbade2a09cefb88e65af"
 dependencies = [
  "fastrand",
  "tempfile",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3347,9 +3356,9 @@ dependencies = [
 
 [[package]]
 name = "unicode-width"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
+checksum = "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557"
 
 [[package]]
 name = "untrusted"
@@ -3416,6 +3425,22 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vibekit"
+version = "0.2.0"
+source = "git+https://github.com/mortbrew/vibekit?tag=v0.2.0#ec47b36c8df6539179414549ca399d90215befd2"
+dependencies = [
+ "flate2",
+ "nucleo-matcher",
+ "ratatui",
+ "self-replace",
+ "serde_json",
+ "tar",
+ "toml",
+ "unicode-width",
+ "ureq",
+]
 
 [[package]]
 name = "vsimd"

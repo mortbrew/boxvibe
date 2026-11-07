@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 
 use crate::pandora::{
-    AudioFormat, FEEDBACK_PAGE, Feedback, FeedbackPage, Genre, GenreCategory, HitKind, Rating, SearchHit, Seed, Song,
-    Station, StationDetails,
+    ArtistInfo, AudioFormat, BrowseItem, BrowseSection, FEEDBACK_PAGE, Feedback, FeedbackPage, Genre, GenreCategory,
+    HitKind, Rating, SearchHit, Seed, Song, Station, StationDetails, StationMode, StationModes,
 };
 
 pub fn stations() -> Vec<Station> {
@@ -91,9 +91,11 @@ pub fn playlist(station_id: &str, round: usize) -> Vec<Song> {
                 audio_format: AudioFormat::Mp3,
                 cover_art_url: format!("https://example.invalid/art/{n}.jpg"),
                 detail_url: String::new(),
+                artist_music_id: format!("R-demo-{}", artist.to_lowercase().replace(' ', "-")),
                 length,
                 gain: 0.0,
                 rating: if n == 0 { Rating::Up } else { Rating::None },
+                feedback_id: if n == 0 { format!("demo-fb-{round}-{i}") } else { String::new() },
             }
         })
         .collect()
@@ -286,6 +288,7 @@ const GENRES: [(&str, &[DemoGenre]); 3] = [
     ),
 ];
 
+#[allow(dead_code)] // Browse uses getDirectory; kept for Client::genres / tests.
 pub fn genres() -> Vec<GenreCategory> {
     GENRES
         .iter()
@@ -301,6 +304,154 @@ pub fn genres() -> Vec<GenreCategory> {
                 .collect(),
         })
         .collect()
+}
+
+fn browse_item(name: &str, detail: &str, pandora_id: &str, station_factory: &str) -> BrowseItem {
+    BrowseItem {
+        name: name.into(),
+        detail: detail.into(),
+        pandora_id: pandora_id.into(),
+        station_factory: station_factory.into(),
+    }
+}
+
+fn browse_section(id: &str, title: &str, view_all_path: Option<&str>, items: Vec<BrowseItem>) -> BrowseSection {
+    BrowseSection { id: id.into(), title: title.into(), items, view_all_path: view_all_path.map(str::to_owned) }
+}
+
+/// A small Browse directory for the demo (same section titles as live Pandora).
+///
+/// `view_all_path` matches the live teaser's `viewAll.webUrl`. Artists Picked
+/// For You has none.
+pub fn browse() -> Vec<BrowseSection> {
+    vec![
+        browse_section(
+            "BS:1:3:1",
+            "Artists Picked For You",
+            None,
+            vec![browse_item("M83", "", "AR:demo-m83", "SF:16722:demo-m83")],
+        ),
+        browse_section(
+            "BS:1:8",
+            "New Music",
+            Some("/browse/music/new-music"),
+            vec![browse_item("Midnight City", "M83", "AL:demo-album", "")],
+        ),
+        browse_section(
+            "BS:1:2:1",
+            "Browse Genres",
+            Some("/browse/music/genres"),
+            vec![browse_item("Synthwave", "1.2M Listeners", "GE:demo-synthwave", "SF:18245:demo-synthwave")],
+        ),
+        browse_section(
+            "BS:1:12",
+            "Featured Playlists",
+            Some("/browse/music/featured-playlists"),
+            vec![browse_item("The Drop", "9 songs", "PL:demo:1", "")],
+        ),
+        browse_section(
+            "BS:1:15",
+            "Trendsetters: Artists on the rise",
+            Some("/browse/music/artists-on-the-rise"),
+            vec![browse_item("MGMT", "#1 This Week", "AR:demo-mgmt", "SF:16722:demo-mgmt")],
+        ),
+        browse_section(
+            "BS:1:6:1",
+            "Decades",
+            Some("/browse/music/decades"),
+            vec![browse_item("2010s", "", "GE:demo-2010s", "SF:18245:demo-2010s")],
+        ),
+        browse_section(
+            "BS:1:38",
+            "Recommended Podcasts",
+            Some("/browse/podcasts"),
+            vec![browse_item("Crime Junkie", "Audiochuck", "PC:demo", "")],
+        ),
+        browse_section(
+            "BS:1:13",
+            "Top artists",
+            Some("/browse/music/top-artists"),
+            vec![browse_item("Tame Impala", "30M listeners", "AR:demo-tame", "SF:16722:demo-tame")],
+        ),
+        browse_section(
+            "BS:1:7",
+            "Moods and activities",
+            Some("/browse/music/activities"),
+            vec![browse_item("Happy", "", "BR:demo:happy", "")],
+        ),
+        browse_section(
+            "BS:1:14",
+            "Top stations",
+            Some("/browse/music/top-stations"),
+            vec![browse_item("Today's Hits", "870K listeners", "GE:demo-hits", "SF:18245:demo-hits")],
+        ),
+    ]
+}
+
+/// `None`: the main teaser. `Some(path)`: that section's View-all page.
+pub fn browse_at(path: Option<&str>) -> Vec<BrowseSection> {
+    let Some(path) = path else { return browse() };
+    match path {
+        "/browse/music/new-music" => new_music_view_all(),
+        "/browse/music/genres" => genres_view_all(),
+        other => match browse().into_iter().find(|s| s.view_all_path.as_deref() == Some(other)) {
+            Some(section) => vec![expand_view_all(section)],
+            None => Vec::new(),
+        },
+    }
+}
+
+/// New Music's View-all is several sections, longer than the one-row teaser.
+fn new_music_view_all() -> Vec<BrowseSection> {
+    // Ids are demo genres so Enter can start them. Live rows are real GE: ids.
+    let stations = [
+        ("Today's Hits", "GE:demo-hits"),
+        ("Indie Pop", "GE:demo-indie"),
+        ("Synthwave", "GE:demo-synthwave"),
+        ("Classic Rock", "GE:demo-classic"),
+        ("90s Alternative", "GE:demo-alt90s"),
+    ];
+    let recommended = ["Queen", "Tom Petty", "Bryan Adams", "Madonna", "Prince"];
+    vec![
+        browse_section(
+            "BS:8:2",
+            "New Music Stations",
+            None,
+            stations.iter().map(|(name, id)| browse_item(name, "", id, "")).collect(),
+        ),
+        browse_section(
+            "BS:8:40",
+            "Recommended new releases",
+            None,
+            recommended.iter().map(|name| browse_item(name, "Album", "AL:demo-rec", "")).collect(),
+        ),
+        browse_section(
+            "BS:8:61",
+            "All New Albums",
+            None,
+            (0..10)
+                .map(|n| browse_item(&format!("New Album {n}"), "This week", &format!("AL:demo-new-{n}"), ""))
+                .collect(),
+        ),
+    ]
+}
+
+/// Genres View-all: one playable genre (so the demo can still start it) plus
+/// the live page's `BR:50:*` rows, which do not create stations.
+fn genres_view_all() -> Vec<BrowseSection> {
+    let mut items = vec![browse_item("Synthwave", "1.2M Listeners", "GE:demo-synthwave", "SF:18245:demo-synthwave")];
+    for n in 1..=27 {
+        items.push(browse_item(&format!("Genre shelf {n}"), "", &format!("BR:50:{n}"), ""));
+    }
+    vec![browse_section("BS:50", "Browse Genres", None, items)]
+}
+
+fn expand_view_all(section: BrowseSection) -> BrowseSection {
+    let mut items = section.items.clone();
+    let title = section.title.clone();
+    items.push(browse_item(&format!("{title} extra"), "View all", "AR:view-all-extra", "SF:16722:view-all-extra"));
+    items.push(browse_item(&format!("{title} also"), "View all", "AR:view-all-also", "SF:16722:view-all-also"));
+    BrowseSection { items, view_all_path: None, ..section }
 }
 
 /// The station Pandora would make from a hit or a genre (`None`: not in the demo catalogue).
@@ -320,4 +471,48 @@ pub fn new_station(pandora_id: &str, existing: usize) -> Option<Station> {
         allow_delete: true,
         allow_edit_seeds: !name_is_genre,
     })
+}
+
+/// A demo artist page: a short bio and four similar artists from the catalogue.
+pub fn artist(name: &str) -> ArtistInfo {
+    ArtistInfo {
+        name: name.to_owned(),
+        bio: format!(
+            "{name} is a demo artist: boxvibe made this bio up so the panel can be tried without an account. \
+             Real bios come from Pandora's artist pages when it sends one."
+        ),
+        detail_url: format!("https://www.pandora.com/artist/{}", name.to_lowercase().replace(' ', "-")),
+        similar: CATALOGUE
+            .iter()
+            .filter(|(_, kind, n, _)| *kind == HitKind::Artist && !n.eq_ignore_ascii_case(name))
+            .take(4)
+            .map(|(id, kind, n, by)| SearchHit { id: (*id).into(), kind: *kind, name: (*n).into(), by: (*by).into() })
+            .collect(),
+    }
+}
+
+/// Pandora's six modes, as the old app API listed them; `current` is on.
+pub fn modes(current: i64) -> StationModes {
+    let all: [(&str, &str, bool); 6] = [
+        ("My Station", "The station experience you know and love.", false),
+        ("Crowd Faves", "You'll hear the most Thumbed Up songs by other listeners.", false),
+        ("Discovery", "You'll hear more artists who don't usually play on this station.", false),
+        ("Deep Cuts", "You'll hear less familiar songs from station artists.", false),
+        ("Newly Released", "You'll hear the newest releases from station artists.", false),
+        ("Artist Only", "You'll only hear songs from the station artist.", true),
+    ];
+    StationModes {
+        current: Some(current),
+        modes: all
+            .iter()
+            .enumerate()
+            .map(|(i, (name, description, premium))| StationMode {
+                id: i as i64,
+                name: (*name).into(),
+                description: (*description).into(),
+                available: !premium,
+                premium_only: *premium,
+            })
+            .collect(),
+    }
 }

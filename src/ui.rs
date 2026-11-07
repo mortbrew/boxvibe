@@ -16,17 +16,18 @@ use ratatui::widgets::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
-    App, Details, Editor, EditorTab, FeedState, Focus, GenresState, Loaded, MenuItem, Pane, Prompt, Rename, SearchMode,
-    Session, Setting, StationRef, StationSearch, View,
+    App, BrowseRow, BrowseState, Details, Editor, EditorTab, FeedState, Focus, Loaded, MenuItem, Pane, Prompt, Rename,
+    SearchMode, Session, Setting, SongAction, StationSearch, View,
 };
 use crate::art::Cover;
-use crate::config::{AlbumArt, BorderStyle};
+use crate::config::{AlbumArt, BorderStyle, GoodVibes};
 use crate::icons::{Icons, icons};
 use crate::input::TextInput;
 use crate::pandora::{Rating, Song};
 use crate::theme::Palette;
 use crate::update::{Progress, Replace};
 use ratatui_image::{Resize, StatefulImage};
+use vibekit::dialog::Section;
 
 thread_local! {
     /// `[look] border_style` of the frame being drawn (set by [`draw`]), like tubevibe.
@@ -87,29 +88,22 @@ pub fn draw(frame: &mut Frame, app: &App) {
     match app.view {
         View::Player => draw_player(frame, app, ic, right),
         View::Stations => draw_stations(frame, app, ic, right),
-        View::Genres => draw_genres(frame, app, ic, right),
+        View::Browse => draw_browse(frame, app, ic, right),
+        View::Pinned => draw_pinned(frame, app, ic, right),
         View::Settings => draw_settings(frame, app, ic, right),
         View::About => draw_about(frame, app, ic, right),
+        View::Notifications => draw_notes(frame, app, ic, right),
     }
     draw_status(frame, app, status);
     draw_keys(frame, &p, &key_caps(app), keys);
     if app.overlay_open() {
         dim(frame.buffer_mut(), p.background);
     }
-    if app.help {
-        draw_help(frame, app, body);
+    if let Some(menu) = &app.song_menu {
+        draw_song_menu(frame, &p, body, menu);
     }
-    if app.system_open {
-        draw_system(frame, app, body);
-    }
-    if let Some(d) = &app.details {
-        draw_details(frame, &p, body, d);
-    }
-    if app.confirm_quit {
-        draw_confirm_quit(frame, &p, area);
-    }
-    if let Some(station) = &app.confirm_delete {
-        draw_confirm_delete(frame, &p, area, station);
+    if let Some(panel) = &app.panel {
+        draw_panel(frame, &p, body, panel);
     }
     if let Some(rename) = &app.rename {
         draw_rename(frame, &p, area, rename);
@@ -120,14 +114,19 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if let Some(ed) = &app.editor {
         draw_editor(frame, &p, ic, area, ed);
     }
+    if let Some(picker) = &app.theme_picker {
+        draw_theme_picker(frame, app, area, picker);
+    }
+    // Questions (incl. editor / theme-delete), Help, details, System Check — on top of the popups above.
+    app.dialogs.draw_dialogs(frame, &p);
     if app.prompt == Some(Prompt::Password) {
         draw_password_box(frame, app, ic, area);
     }
     if let Some(notice) = &app.genre_notice {
         draw_genre_notice(frame, &p, ic, area, notice);
     }
-    if app.confirm_good_vibes_off {
-        draw_good_vibes_off(frame, &p, area);
+    if let Some(mode) = app.confirm_good_vibes {
+        draw_good_vibes_off(frame, &p, area, mode);
     }
 }
 
@@ -170,23 +169,6 @@ fn dim_color(color: Color, background: Color) -> Color {
     }
 }
 
-/// tubevibe's confirm box: " Confirm " on a red border; a blank line, the
-/// question, the keys and a blank line, so it sits evenly in the frame.
-fn draw_confirm_quit(frame: &mut Frame, p: &Palette, screen: Rect) {
-    draw_box(frame, p, screen, &BoxText::confirm("Quit boxvibe?"));
-}
-
-/// `x` on a station: the same box, naming the station and what happens.
-fn draw_confirm_delete(frame: &mut Frame, p: &Palette, screen: Rect, station: &StationRef) {
-    let name = clean(&station.name);
-    let question = if station.favorite {
-        format!("Delete the station “{name}” (the one this favorite plays)? It removes it from your Pandora account.")
-    } else {
-        format!("Delete the station “{name}”? It removes it from your Pandora account.")
-    };
-    draw_box(frame, p, screen, &BoxText::confirm(&question));
-}
-
 /// `r` on a station: a box asking for the new name, in the same style.
 fn draw_rename(frame: &mut Frame, p: &Palette, screen: Rect, rename: &Rename) {
     let name = clean(&rename.station.name);
@@ -215,20 +197,6 @@ struct BoxText<'a> {
     /// A line being typed, with its cursor.
     input: Option<TextInput>,
     hint: &'a str,
-}
-
-impl<'a> BoxText<'a> {
-    /// The yes/no box: red border, "y = yes · any other key = no".
-    fn confirm(question: &str) -> Self {
-        Self {
-            title: " Confirm ",
-            border: Color::Reset,
-            width: 40,
-            question: question.to_owned(),
-            input: None,
-            hint: "y = yes · any other key = no",
-        }
-    }
 }
 
 /// The question wrapped to `width` cells, at most `max` lines; a question
@@ -287,9 +255,98 @@ fn draw_box(frame: &mut Frame, p: &Palette, screen: Rect, text: &BoxText) {
     }
 }
 
+/// `.`: what can be done with a song, its own key (if any) on the right.
+fn draw_song_menu(frame: &mut Frame, p: &Palette, area: Rect, menu: &crate::app::SongMenu) {
+    let width = 44.min(area.width.saturating_sub(2)).max(area.width.min(20));
+    let inner_w = usize::from(width.saturating_sub(2));
+    let mut lines = vec![Line::from(Span::styled(
+        format!(" {}", fit(&format!("{} · {}", menu.song.title, menu.song.artist), inner_w.saturating_sub(1))),
+        Style::new().fg(p.muted),
+    ))];
+    lines.push(Line::raw(""));
+    for (i, action) in SongAction::ALL.iter().enumerate() {
+        let key = action.key();
+        let label = action.label();
+        let gap = inner_w.saturating_sub(label.width() + key.width() + 3);
+        let text = format!(" {label}{}{key}  ", " ".repeat(gap));
+        let style = if i == menu.cursor { selection(p, true) } else { Style::new().fg(p.fg) };
+        lines.push(Line::from(Span::styled(pad(&text, inner_w), style)));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(" Enter picks · Esc closes", Style::new().fg(p.muted))));
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let box_area = centered(area, width, height);
+    frame.render_widget(Clear, box_area);
+    let block = panel(title("Song".into(), p), p, true).style(Style::new().bg(p.background));
+    frame.render_widget(Paragraph::new(lines).block(block), box_area);
+}
+
+/// The artist page (bio, similar artists) or a station's modes: intro text
+/// on top, then a list with a cursor; long lists scroll with it.
+fn draw_panel(frame: &mut Frame, p: &Palette, area: Rect, panel: &crate::app::Panel) {
+    let width = 64.min(area.width.saturating_sub(2)).max(area.width.min(20));
+    let inner_w = usize::from(width.saturating_sub(2));
+    let text_w = inner_w.saturating_sub(2).max(1);
+    let mut lines: Vec<Line> = Vec::new();
+    let intro_style = if panel.loading { Style::new().fg(p.muted) } else { Style::new().fg(p.fg) };
+    for part in wrap_question(&clean(&panel.intro), text_w, 8) {
+        lines.push(Line::from(Span::styled(format!(" {part}"), intro_style)));
+    }
+    if !panel.link.is_empty() {
+        lines.push(Line::from(Span::styled(format!(" {}", fit(&panel.link, text_w)), Style::new().fg(p.muted))));
+    }
+    if !panel.items.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(format!(" {}", panel.list_heading()), Style::new().fg(p.muted))));
+    }
+    // The list gets what is left of the screen; it scrolls to keep the cursor in view.
+    let fixed = lines.len() + 2 + 2;
+    let room = usize::from(area.height).saturating_sub(fixed + 2).max(1);
+    let per_item = if panel.items.iter().any(|i| !i.note.is_empty()) { 2 } else { 1 };
+    let shown = (room / per_item).max(1);
+    let first = panel.cursor.saturating_sub(shown - 1);
+    for (i, item) in panel.items.iter().enumerate().skip(first).take(shown) {
+        let mark = if item.current { "● " } else { "  " };
+        let style = if i == panel.cursor {
+            selection(p, true)
+        } else if item.locked {
+            Style::new().fg(p.muted)
+        } else {
+            Style::new().fg(p.fg)
+        };
+        lines.push(Line::from(Span::styled(
+            pad(&format!(" {mark}{}", fit(&item.label, text_w.saturating_sub(2))), inner_w),
+            style,
+        )));
+        if !item.note.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("    {}", fit(&item.note, text_w.saturating_sub(3))),
+                Style::new().fg(p.muted),
+            )));
+        }
+    }
+    lines.push(Line::raw(""));
+    let hint = match panel.kind {
+        crate::app::PanelKind::Artist { .. } if !panel.items.is_empty() => " Enter starts a station · Esc closes",
+        crate::app::PanelKind::Modes { .. } if !panel.items.is_empty() => " Enter switches mode · Esc closes",
+        _ => " Esc closes",
+    };
+    lines.push(Line::from(Span::styled(fit(hint, inner_w.saturating_sub(2)), Style::new().fg(p.muted))));
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let box_area = centered(area, width, height);
+    frame.render_widget(Clear, box_area);
+    let heading = fit(&panel.title(), inner_w.saturating_sub(4));
+    let block = panel_block(heading, p).style(Style::new().bg(p.background));
+    frame.render_widget(Paragraph::new(lines).block(block), box_area);
+}
+
+fn panel_block<'a>(heading: String, p: &Palette) -> Block<'a> {
+    panel(title(heading, p), p, true)
+}
+
 /// `v`: what Pandora tells about a song or station: label and value rows,
 /// the values wrapped, nothing the API did not send.
-fn draw_details(frame: &mut Frame, p: &Palette, area: Rect, d: &Details) {
+pub(crate) fn draw_details(frame: &mut Frame, p: &Palette, area: Rect, d: &Details) {
     let rows = d.rows();
     let label_w = rows.iter().map(|(l, _)| l.width()).max().unwrap_or(0) + 2;
     let width = 72.min(area.width.saturating_sub(2)).max(area.width.min(20));
@@ -420,7 +477,7 @@ fn is_zero_width(c: char) -> bool {
 /// as two-cell emoji, Nerd Font glyphs) go too, since a glyph drawn wider
 /// than measured shifts the rest of the row, the rating included.
 /// Two-cell emoji (🎵) stay: every terminal agrees on those.
-fn clean(text: &str) -> String {
+pub(crate) fn clean(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         if c.is_control() {
@@ -497,21 +554,77 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette;
     let color = if app.status.starts_with('⚠') { p.yellow } else { p.fg };
     frame.render_widget(Block::new().bg(p.highlight), area);
-    // The account gets at most half the bar, and never less than the status.
+    // The right side (sleep timer, look, account) gets at most half the bar,
+    // and never less than the status.
     let room = (area.width / 2).saturating_sub(3) as usize;
     let account = account_label(app, room);
-    let want = account.as_ref().map_or(0, |a| safe_width(a) as u16 + 3);
+    let used = |extra: &[String]| -> usize {
+        let parts = extra.iter().map(|s| safe_width(s) + 3).sum::<usize>();
+        parts + account.as_ref().map_or(0, |a| safe_width(a))
+    };
+    // The look labels go first (from the last) when the bar is narrow, then the timer.
+    let mut extra: Vec<String> = sleep_label(app).into_iter().chain(look_labels(app)).collect();
+    while !extra.is_empty() && used(&extra) > room {
+        extra.pop();
+    }
+    let extra_w = extra.iter().map(|s| safe_width(s) + 3).sum::<usize>();
+    let want = match &account {
+        Some(a) => extra_w + safe_width(a) + 3,
+        None if extra.is_empty() => 0,
+        None => extra_w,
+    } as u16;
     let right_w = want.min(area.width / 2);
     let [left, right] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(right_w)]).areas(area);
     let status = fit(&format!(" {}", app.status), left.width.saturating_sub(1) as usize);
     frame.render_widget(Paragraph::new(Span::styled(status, Style::new().fg(color))), left);
-    if let Some(account) = account
-        && right.width > 2
-    {
-        // tubevibe's colour for its account: the palette's `blue` (Gruvbox's aqua).
-        let text = format!("{} ", fit(&account, right.width as usize - 2));
-        frame.render_widget(Paragraph::new(text).fg(p.blue).alignment(Alignment::Right), right);
+    if right.width <= 2 {
+        return;
     }
+    let mut spans = Vec::new();
+    for (i, label) in extra.iter().enumerate() {
+        // The look labels share the account's colour; the sleep timer stays yellow.
+        let color = if i == 0 && app.sleep.is_some() { p.yellow } else { p.blue };
+        spans.push(Span::styled(label.clone(), Style::new().fg(color)));
+        spans.push(Span::styled(" · ", Style::new().fg(p.muted)));
+    }
+    match &account {
+        // tubevibe's colour for its account: the palette's `blue` (Gruvbox's aqua).
+        Some(account) => {
+            let room = (right.width as usize - 2).saturating_sub(extra_w);
+            spans.push(Span::styled(fit(account, room), Style::new().fg(p.blue)));
+        }
+        None => {
+            spans.pop();
+        }
+    }
+    spans.push(Span::raw(" "));
+    frame.render_widget(Paragraph::new(Line::from(spans)).alignment(Alignment::Right), right);
+}
+
+/// "☾ 14:59" (or "☾ end of song") while the sleep timer runs.
+fn sleep_label(app: &App) -> Option<String> {
+    match app.sleep? {
+        crate::app::Sleep::Minutes(..) => app.sleep_left().map(|d| format!("☾ {}", crate::app::clock_text(d))),
+        crate::app::Sleep::EndOfSong => Some("☾ end of song".into()),
+    }
+}
+
+/// The look in a few words, in the order they are dropped last to first:
+/// theme, album art, retro mode, tint.
+fn look_labels(app: &App) -> Vec<String> {
+    let ui = &app.config.ui;
+    // Following Omarchy: "omarchy: Tokyo Night" (just "Omarchy" if its name is unknown).
+    let theme = if ui.theme() == "omarchy" {
+        app.omarchy_theme.as_ref().map_or_else(|| "Omarchy".to_owned(), |n| format!("omarchy: {n}"))
+    } else {
+        crate::theme::label(ui.theme())
+    };
+    vec![
+        theme,
+        format!("Art {}", ui.album_art.label()),
+        ui.retro_mode.label().to_owned(),
+        format!("Tint {}", ui.art_tint.label()),
+    ]
 }
 
 /// "Logged In As: me@example.com" while logged in; nothing otherwise. When
@@ -533,14 +646,6 @@ pub fn logo_title<'a>(p: &Palette) -> Line<'a> {
     logo_line_with(p, Span::styled(format!(" {} ", crate::icons::LOGO), Style::new().fg(p.blue).bold()), "")
 }
 
-/// tubevibe's Help icon: the little keyboard, the same in every icon set,
-/// in the text colour with two spaces after it, like tubevibe's title.
-const HELP_ICON: &str = "⌨";
-
-fn help_title<'a>(p: &Palette) -> Line<'a> {
-    logo_line_with(p, Span::styled(format!(" {HELP_ICON}  "), Style::new().fg(p.fg).bold()), HELP_TITLE_REST)
-}
-
 fn logo_line_with<'a>(p: &Palette, icon: Span<'a>, rest: &str) -> Line<'a> {
     Line::from(vec![
         icon,
@@ -548,9 +653,6 @@ fn logo_line_with<'a>(p: &Palette, icon: Span<'a>, rest: &str) -> Line<'a> {
         Span::styled(format!("vibe{rest} "), Style::new().fg(p.fg).bold()),
     ])
 }
-
-/// The Help window's title: "⌨  boxvibe Help · Any Key Closes".
-const HELP_TITLE_REST: &str = " Help · Any Key Closes";
 
 // --- Menu ---
 
@@ -571,26 +673,34 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let now_h = if app.has_now_playing() { 2 } else { 0 };
+    let section_pins = app.browse_menu_pins().len() as u16;
+    let pinned = app.config.ui.pinned_in_menu;
+    // My Stations, pinned Browse sections, optional Pinned songs.
+    let top_n = 1 + section_pins + u16::from(pinned);
     let [now_area, stations_row, favs_area, _, rule, app_area] = Layout::vertical([
         Constraint::Length(now_h),
-        Constraint::Length(2),
+        Constraint::Length(top_n),
         Constraint::Fill(1),
         Constraint::Length(1),
         Constraint::Length(1),
-        Constraint::Length(3),
+        Constraint::Length(4),
     ])
     .areas(inner);
     let selected = app.menu_selected();
     // Without the keys, the entry of the page shown stays shaded.
-    let shown = |item: MenuItem| {
-        matches!(
-            (item, app.view),
-            (MenuItem::Settings, View::Settings)
-                | (MenuItem::About, View::About)
-                | (MenuItem::NowPlaying, View::Player)
-                | (MenuItem::Stations, View::Stations)
-                | (MenuItem::Genres, View::Genres)
-        )
+    // Browse pins share View::Browse; match browse_filter so only the active pin shades.
+    let shown = |item: MenuItem| match (item, app.view) {
+        (MenuItem::Settings, View::Settings)
+        | (MenuItem::About, View::About)
+        | (MenuItem::Notifications, View::Notifications)
+        | (MenuItem::NowPlaying, View::Player)
+        | (MenuItem::Stations, View::Stations)
+        | (MenuItem::Pinned, View::Pinned) => true,
+        (MenuItem::BrowsePin(i), View::Browse) => app
+            .browse_filter
+            .as_ref()
+            .is_some_and(|want| app.browse_menu_pins().get(i).is_some_and(|(_, title)| title == want)),
+        _ => false,
     };
     let row_style = |item: MenuItem| {
         if focused && item == selected {
@@ -614,9 +724,16 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     }
     let count = if app.stations.is_empty() { String::new() } else { format!(" ({})", app.stations.len()) };
     let mut lines = Vec::new();
-    for (item, icon, label) in
-        [(MenuItem::Stations, ic.station, format!("Stations{count}")), (MenuItem::Genres, ic.genre, "Genres".into())]
-    {
+    let mut top = vec![(MenuItem::Stations, ic.station, format!("My Stations{count}"))];
+    for (i, (_, title)) in app.browse_menu_pins().into_iter().enumerate() {
+        let icon = if title == "Browse Genres" { ic.genre } else { ic.browse };
+        top.push((MenuItem::BrowsePin(i), icon, title));
+    }
+    if pinned {
+        let n = if app.pins.is_empty() { String::new() } else { format!(" ({})", app.pins.len()) };
+        top.push((MenuItem::Pinned, ic.pin, format!("Pinned{n}")));
+    }
+    for (item, icon, label) in top {
         let mut style = Style::new().fg(p.fg);
         if let Some(sel) = row_style(item) {
             style = style.patch(sel);
@@ -627,7 +744,7 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     frame.render_widget(Paragraph::new(lines), stations_row);
     // FAVORITES, like tubevibe's tabs: only once a station is starred.
     let favorites = &app.config.ui.favorites;
-    if !favorites.is_empty() && favs_area.height > 1 {
+    if app.config.ui.favorites_in_menu && !favorites.is_empty() && favs_area.height > 1 {
         let [gap, head, list_area] =
             Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(favs_area);
         frame.render_widget(inset_rule(&p, gap.width), gap);
@@ -665,6 +782,7 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     frame.render_widget(inset_rule(&p, rule.width), rule);
     let entries = [
         (MenuItem::Settings, ic.settings, "Settings"),
+        (MenuItem::Notifications, ic.bell, "Notifications"),
         (MenuItem::About, ic.about, "About"),
         (MenuItem::Quit, ic.quit, "Quit"),
     ];
@@ -681,6 +799,90 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         lines.push(Line::from(pad(&text, app_area.width as usize)).style(style));
     }
     frame.render_widget(Paragraph::new(lines), app_area);
+}
+
+// --- Notifications ---
+
+/// "just now", "4 min ago", "2 h ago".
+fn ago(secs: u64) -> String {
+    match secs {
+        0..60 => "just now".into(),
+        60..3600 => format!("{} min ago", secs / 60),
+        _ => format!("{} h ago", secs / 3600),
+    }
+}
+
+/// What the bottom bar said, newest first, with how long ago.
+fn draw_notes(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
+    let p = app.palette;
+    let focused = app.focus == Focus::Content;
+    let block = panel(title(format!("{} Notifications", ic.bell), &p), &p, focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if app.notes.is_empty() {
+        let text = " Nothing yet. What the bottom bar says lands here, newest first.";
+        frame.render_widget(Paragraph::new(text).fg(p.muted).wrap(Wrap { trim: false }), inner);
+        return;
+    }
+    let when_w = 12;
+    let text_w = usize::from(inner.width).saturating_sub(when_w + 3);
+    let items: Vec<ListItem> = app
+        .notes
+        .iter()
+        .map(|(at, text)| {
+            ListItem::new(Line::from(vec![
+                Span::styled(format!(" {}", pad(&ago(at.elapsed().as_secs()), when_w)), Style::new().fg(p.muted)),
+                Span::styled(fit(text, text_w), Style::new().fg(p.fg)),
+            ]))
+        })
+        .collect();
+    let mut state = ListState::default().with_selected(Some(app.notes_cursor.min(app.notes.len() - 1)));
+    let list = List::new(items).highlight_style(selection(&p, focused));
+    frame.render_stateful_widget(list, inner, &mut state);
+}
+
+// --- Pinned ---
+
+/// The songs Shift+I pinned, newest first: title, artist · album, the day.
+fn draw_pinned(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
+    let p = app.palette;
+    let focused = app.focus == Focus::Content;
+    let count = if app.pins.is_empty() { String::new() } else { format!(" ({})", app.pins.len()) };
+    let block = panel(title(format!("{} Pinned{count}", ic.pin), &p), &p, focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if app.pins.is_empty() {
+        let text = " Nothing pinned yet. Shift+I pins the selected or playing song: its title, artist, album, cover and Pandora page (never the audio).";
+        frame.render_widget(Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: false }).fg(p.muted), inner);
+        return;
+    }
+    let width = inner.width as usize;
+    let items: Vec<ListItem> = app
+        .pins
+        .iter()
+        .map(|pin| {
+            let head = format!(" {} ", icon_cell(ic.pin));
+            let date = format!("  {} ", pin.pinned);
+            let by = if pin.album.is_empty() {
+                clean(&pin.artist)
+            } else {
+                format!("{} · {}", clean(&pin.artist), clean(&pin.album))
+            };
+            let room = width.saturating_sub(safe_width(&head) + safe_width(&date));
+            let name = truncate(&clean(&pin.title), room);
+            let rest = truncate(&format!("  {by}"), room.saturating_sub(safe_width(&name)));
+            let gap = room.saturating_sub(safe_width(&name) + safe_width(&rest));
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{head}{name}"), Style::new().fg(p.fg).bold()),
+                Span::styled(rest, Style::new().fg(p.muted)),
+                Span::raw(" ".repeat(gap)),
+                Span::styled(date, Style::new().fg(p.muted)),
+            ]))
+        })
+        .collect();
+    let list = List::new(items).highlight_style(selection(&p, focused));
+    let mut state = ListState::default().with_selected(Some(app.pinned_cursor.min(app.pins.len() - 1)));
+    frame.render_stateful_widget(list, inner, &mut state);
 }
 
 // --- Stations ---
@@ -703,7 +905,7 @@ fn draw_stations(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let p = app.palette;
     let focused = app.focus == Focus::Content;
     let count = if app.stations.is_empty() { String::new() } else { format!(" ({})", app.stations.len()) };
-    let block = panel(title(format!("{} Stations{count}", ic.station), &p), &p, focused);
+    let block = panel(title(format!("{} My Stations{count}", ic.station), &p), &p, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if app.stations.is_empty() && app.session != Session::LoggedIn {
@@ -757,57 +959,68 @@ fn draw_stations(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 
 // --- Genres ---
 
-fn draw_genres(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
-    let p = app.palette;
+fn draw_browse(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
+    let p = &app.palette;
     let focused = app.focus == Focus::Content;
-    let block = panel(title(format!("{} Genres", ic.genre), &p), &p, focused);
+    let heading = match &app.browse_filter {
+        Some(section) => format!("{} {section}", if section == "Browse Genres" { ic.genre } else { ic.browse }),
+        None => format!("{} Browse", ic.browse),
+    };
+    let block = panel(title(heading, p), p, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let message = match &app.genres {
-        GenresState::Idle if app.session != Session::LoggedIn => {
-            Some(" Log in from Settings to browse genres".to_owned())
+    let message = match &app.browse {
+        BrowseState::Idle if app.session != Session::LoggedIn => {
+            Some(" Log in (Settings, Shift+O) to browse".to_owned())
         }
-        GenresState::Idle | GenresState::Loading => Some(format!(" {} Loading genres…", ic.loading)),
-        GenresState::Failed(why) => Some(format!(" {} {}  (Enter tries again)", ic.warn, clean(why))),
-        GenresState::Loaded(categories) if categories.is_empty() => Some(" Pandora listed no genres".to_owned()),
-        GenresState::Loaded(_) => None,
+        BrowseState::Idle | BrowseState::Loading => Some(format!(" {} Loading Browse…", ic.loading)),
+        BrowseState::Failed(why) => Some(format!(" {} {}  (Enter tries again)", ic.warn, clean(why))),
+        BrowseState::Loaded(sections)
+            if sections.is_empty() || app.browse_rows().iter().all(|r| matches!(r, BrowseRow::Header(_))) =>
+        {
+            Some(" Nothing to show (every section is off in Settings, or Pandora sent none)".to_owned())
+        }
+        BrowseState::Loaded(_) => None,
     };
     if let Some(text) = message {
         frame.render_widget(Paragraph::new(text).fg(p.muted), inner);
         return;
     }
-    let GenresState::Loaded(categories) = &app.genres else { return };
+    let rows = app.browse_rows();
     let width = inner.width as usize;
     let mut items: Vec<ListItem> = Vec::new();
     let mut selected_row = 0;
-    let mut at = 0;
-    for category in categories {
-        items.push(ListItem::new(Line::from(Span::styled(
-            format!(" {}", clean(&category.name).to_uppercase()),
-            Style::new().fg(p.orange).bold(),
-        ))));
-        for genre in &category.genres {
-            if at == app.genres_index() {
-                selected_row = items.len();
+    for (i, row) in rows.iter().enumerate() {
+        if i == app.browse_index() {
+            selected_row = items.len();
+        }
+        match row {
+            BrowseRow::Header(title) => {
+                items.push(ListItem::new(Line::from(Span::styled(
+                    format!(" {}", clean(title).to_uppercase()),
+                    Style::new().fg(p.orange).bold(),
+                ))));
             }
-            at += 1;
-            let head = format!("   {} ", icon_cell(ic.genre));
-            let name = clean(&genre.name);
-            let mut line = vec![Span::styled(format!("{head}{name}"), Style::new().fg(p.fg))];
-            if !genre.description.is_empty() {
-                let used = safe_width(&head) + safe_width(&name) + 3;
-                let room = width.saturating_sub(used);
-                if room > 8 {
-                    line.push(Span::styled(
-                        format!("  {}", fit(&clean(&genre.description), room - 2)),
-                        Style::new().fg(p.muted),
-                    ));
+            BrowseRow::Item(item) => {
+                let mark = if item.create_id().is_some() { "▶" } else { "·" };
+                let head = format!("   {mark} ");
+                let name = clean(&item.name);
+                let mut line = vec![Span::styled(format!("{head}{name}"), Style::new().fg(p.fg))];
+                if !item.detail.is_empty() {
+                    let used = safe_width(&head) + safe_width(&name) + 3;
+                    let room = width.saturating_sub(used);
+                    if room > 8 {
+                        line.push(Span::styled(
+                            format!("  {}", fit(&clean(&item.detail), room - 2)),
+                            Style::new().fg(p.muted),
+                        ));
+                    }
                 }
+                items.push(ListItem::new(Line::from(line)));
             }
-            items.push(ListItem::new(Line::from(line)));
         }
     }
-    let list = List::new(items).highlight_style(selection(&p, focused));
+    let list = List::new(items).highlight_style(selection(p, focused));
     let mut state = ListState::default().with_selected(Some(selected_row));
     frame.render_stateful_widget(list, inner, &mut state);
 }
@@ -830,7 +1043,7 @@ fn draw_genre_notice(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, n
     }
     lines.push(Line::raw(""));
     let meanings = [
-        (ic.genre_station, p.accent, "Genre station: made by Pandora. It can't be renamed or edited."),
+        (ic.genre_station, p.accent, "Genre station: made by Pandora. Not renamed or edited; e shows your thumbs."),
         (ic.own_station, p.green, "Your own station: you made it. You can rename, edit and delete it."),
     ];
     for (glyph, color, text) in meanings {
@@ -880,6 +1093,7 @@ pub const PASSWORD_DISCLAIMER: &str = "Use at your own risk: boxvibe is not made
 
 /// Said in the popup that asks before Good Vibes Only is turned off, the
 /// README and the CHANGELOG.
+pub const GOOD_VIBES_MUTED_DISCLAIMER: &str = "Muting Pandora's ads is a gray area under Pandora's terms of service. Use at your own risk: neither boxvibe nor its creator is responsible if Pandora limits or bans your account.";
 pub const GOOD_VIBES_DISCLAIMER: &str = "Skipping Pandora's ads could violate Pandora's terms of service. Use at your own risk: neither boxvibe nor its creator is responsible if Pandora limits or bans your account.";
 
 /// What the password popup says, by what is known about the keychain.
@@ -995,7 +1209,8 @@ fn draw_password_box(frame: &mut Frame, app: &App, ic: &Icons, screen: Rect) {
 
 /// Settings: turning Good Vibes Only off. Styled like the password popup,
 /// with the same yellow risk notice; Enter turns it off, Esc keeps it on.
-fn draw_good_vibes_off(frame: &mut Frame, p: &Palette, screen: Rect) {
+fn draw_good_vibes_off(frame: &mut Frame, p: &Palette, screen: Rect, mode: GoodVibes) {
+    let muted = mode == GoodVibes::Muted;
     let width = 66.min(screen.width.saturating_sub(4)).max(screen.width.min(8));
     let inner_w = usize::from(width.saturating_sub(2 + 4));
     let text_lines = |text: &str, color: Color| -> Vec<Line<'static>> {
@@ -1005,16 +1220,21 @@ fn draw_good_vibes_off(frame: &mut Frame, p: &Palette, screen: Rect) {
             .collect()
     };
     let intro = text_lines(
-        "Good Vibes Only plays Pandora's audio ads, like the website does. Turning it off skips them.",
+        if muted {
+            "Muted still plays Pandora's audio ads and reports them like the website does, at volume 0. Your volume comes back when the ad ends."
+        } else {
+            "Good Vibes Only plays Pandora's audio ads, like the website does. Turning it off skips them."
+        },
         p.fg,
     );
     // The risk notice, set apart in yellow like the one in the password popup; never shortened.
-    let risk = text_lines(GOOD_VIBES_DISCLAIMER, p.yellow);
-    let hint = if "Enter = turn it off anyway · Esc = keep it on".width() <= inner_w {
-        "Enter = turn it off anyway · Esc = keep it on"
+    let risk = text_lines(if muted { GOOD_VIBES_MUTED_DISCLAIMER } else { GOOD_VIBES_DISCLAIMER }, p.yellow);
+    let (long, short) = if muted {
+        ("Enter = mute them anyway · Esc = keep it on", "Enter = mute · Esc = keep on")
     } else {
-        "Enter = turn off · Esc = keep on"
+        ("Enter = turn it off anyway · Esc = keep it as it was", "Enter = turn off · Esc = keep")
     };
+    let hint = if long.width() <= inner_w { long } else { short };
     let hint = Line::from(Span::styled(hint, Style::new().fg(p.muted))).centered();
     let build = |with_intro: bool, spaced: bool| {
         let gap = || spaced.then(|| Line::raw(""));
@@ -1047,7 +1267,10 @@ fn draw_good_vibes_off(frame: &mut Frame, p: &Palette, screen: Rect) {
     frame.render_widget(Clear, area);
     let block = framed()
         .border_style(Style::new().fg(p.yellow))
-        .title(Span::styled(" Turn off Good Vibes Only? ", Style::new().fg(p.yellow).bold()))
+        .title(Span::styled(
+            if muted { " Mute Pandora's ads? " } else { " Turn off Good Vibes Only? " },
+            Style::new().fg(p.yellow).bold(),
+        ))
         .style(Style::new().bg(p.background));
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
@@ -1059,10 +1282,14 @@ fn draw_add_station(frame: &mut Frame, p: &Palette, screen: Rect, search: &Stati
         title: " Add station ",
         prompt: "Type an artist or a song",
         suggested: false,
-        results_hint: "Enter = make the station · j/k = move · / = edit · Esc = cancel",
+        results_hint: ADD_RESULTS_HINT,
     };
     draw_search_box(frame, p, screen, search, &look);
 }
+
+/// The hints under the add boxes' results; they fit the 62 cells inside the box.
+pub const ADD_RESULTS_HINT: &str = "Enter make station · j/k move · / edit · Esc cancel";
+pub const SEED_RESULTS_HINT: &str = "Enter add seed · j/k move · / edit · Esc cancel";
 
 /// What differs between the add-station box and the editor's add-a-seed box.
 struct AddLook<'a> {
@@ -1127,14 +1354,15 @@ fn draw_search_box(frame: &mut Frame, p: &Palette, screen: Rect, search: &Statio
     lines.push(Line::from(""));
     let hint = if typing {
         match (len > 0, look.suggested && search.text.text().trim().is_empty()) {
-            (true, true) => "Enter = add the suggestion · ↓ = pick another · Esc = cancel",
-            (true, false) => "Enter = search · ↓ = results · Esc = cancel",
-            (false, _) => "Enter = search · Esc = cancel",
+            (true, true) => "Enter add suggestion · ↓ pick another · Esc cancel",
+            (true, false) => "Enter search · ↓ results · Esc cancel",
+            (false, _) => "Enter search · Esc cancel",
         }
     } else {
         look.results_hint
     };
-    lines.push(Line::from(Span::styled(hint, Style::new().fg(p.muted))));
+    // Short like the theme picker's, and cut with "…" rather than mid-word on a tiny screen.
+    lines.push(Line::from(Span::styled(fit(hint, inner_w), Style::new().fg(p.muted))));
     lines.push(Line::from(""));
     let area = centered(screen, width, (lines.len() as u16 + 2).min(screen.height));
     frame.render_widget(Clear, area);
@@ -1194,19 +1422,17 @@ fn draw_editor(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, ed: &Ed
     if safe_width(&seeds_label) + safe_width(&titles.0) + safe_width(&titles.1) + 12 > inner_w {
         titles = thumbs_titles(false);
     }
-    let mut lines = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::raw(" "),
-            tab(seeds_label, ed.tab == EditorTab::Seeds),
-            Span::raw("  "),
-            tab(titles.0, ed.tab == EditorTab::ThumbsUp),
-            Span::raw("  "),
-            tab(titles.1, ed.tab == EditorTab::ThumbsDown),
-        ])
-        .left_aligned(),
-        Line::from(""),
-    ];
+    // A genre station has no Seeds tab: Pandora keeps those.
+    let mut tabs = vec![Span::raw(" ")];
+    if !ed.thumbs_only {
+        tabs.extend([tab(seeds_label, ed.tab == EditorTab::Seeds), Span::raw("  ")]);
+    }
+    tabs.extend([
+        tab(titles.0, ed.tab == EditorTab::ThumbsUp),
+        Span::raw("  "),
+        tab(titles.1, ed.tab == EditorTab::ThumbsDown),
+    ]);
+    let mut lines = vec![Line::from(""), Line::from(tabs).left_aligned(), Line::from("")];
     let row = |text: String, selected: bool| {
         let style = if selected { selection(p, true) } else { Style::new().fg(p.fg) };
         Line::from(Span::styled(pad(&fit(&text, inner_w), inner_w), style)).left_aligned()
@@ -1248,7 +1474,11 @@ fn draw_editor(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, ed: &Ed
         hint = if positive {
             "x = take back · Tab = Thumbs Down · Esc = close"
         } else {
-            "x = take back · Tab = Seeds · Esc = close"
+            if ed.thumbs_only {
+                "x = take back · Tab = Thumbs Up · Esc = close"
+            } else {
+                "x = take back · Tab = Seeds · Esc = close"
+            }
         };
         let list = ed.list(positive);
         let arrow = if positive { ic.up } else { ic.down };
@@ -1321,13 +1551,19 @@ fn draw_editor(frame: &mut Frame, p: &Palette, ic: &Icons, screen: Rect, ed: &Ed
             title: " Add a seed ",
             prompt: "Type an artist or a song",
             suggested: add.suggested || add.suggesting || !add.suggestions.is_empty(),
-            results_hint: "Enter = add it as a seed · j/k = move · / = edit · Esc = cancel",
+            results_hint: SEED_RESULTS_HINT,
         };
         draw_search_box(frame, p, screen, &add.search, &look);
     }
-    if let Some(confirm) = &ed.confirm {
-        draw_box(frame, p, screen, &BoxText::confirm(&confirm.question(&clean(&ed.station.name))));
-    }
+}
+
+/// Settings → Theme Select, drawn by vibekit inside boxvibe's panel.
+fn draw_theme_picker(frame: &mut Frame, app: &App, screen: Rect, picker: &crate::app::ThemePicker) {
+    let p = &app.palette;
+    let installed = app.installed_themes();
+    let block = panel(title("Theme Select".into(), p), p, true).style(Style::new().bg(p.background));
+    let view = vibekit::picker::View { palette: p, installed: &installed, current: app.config.ui.theme(), block };
+    vibekit::picker::draw(frame, screen, picker, view);
 }
 
 // --- Player ---
@@ -1377,11 +1613,13 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let block = panel(title(format!("Now Playing · {station}"), &p), &p, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    // The same blank space on all four sides of the card's content.
+    // A blank row above and below the card's content, and three columns at each side
+    // (fewer on a narrow card, so the text keeps its room).
+    let side = if inner.width >= 40 { NOW_PLAYING_SIDE_PAD } else { NOW_PLAYING_PAD };
     let inner = Rect {
-        x: inner.x + NOW_PLAYING_PAD,
+        x: inner.x + side,
         y: inner.y + NOW_PLAYING_PAD,
-        width: inner.width.saturating_sub(2 * NOW_PLAYING_PAD),
+        width: inner.width.saturating_sub(2 * side),
         height: inner.height.saturating_sub(2 * NOW_PLAYING_PAD),
     };
     if let Some(ad) = app.ad_view() {
@@ -1391,7 +1629,7 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let Some(song) = &app.now else {
         let text = match (&app.session, &app.current_station) {
             (Session::LoggedIn, Some(_)) => format!("{} Getting songs from Pandora…", ic.loading),
-            (Session::LoggedIn, None) => "Open Stations on the left, pick one and press Enter".into(),
+            (Session::LoggedIn, None) => "Open My Stations on the left, pick one and press Enter".into(),
             (Session::SigningIn, _) => format!("{} Signing in…", ic.loading),
             _ => "Not logged in: open Settings to log in".into(),
         };
@@ -1486,8 +1724,10 @@ fn draw_ad(frame: &mut Frame, app: &App, ic: &Icons, ad: &crate::app::AdView, ar
 /// Rows Now Playing needs before the buttons join the stack.
 pub const STACK_WITH_BUTTONS: u16 = 11;
 
-/// Blank cells between Now Playing's border and what it holds, on every side.
+/// Blank rows between Now Playing's border and what it holds, top and bottom (and the side pad on a narrow card).
 pub const NOW_PLAYING_PAD: u16 = 1;
+/// Blank columns left and right of the Now Playing content.
+pub const NOW_PLAYING_SIDE_PAD: u16 = 3;
 
 /// Draws the cover, or a message that there is none, and returns where it went.
 fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) -> Rect {
@@ -1767,11 +2007,19 @@ fn draw_settings(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
                 Style::new().fg(p.muted)
             }
             (Setting::EditFile, _) => Style::new().fg(p.cyan),
+            (Setting::ThemeSelect, _) if app.theme_select_greyed() => Style::new().fg(p.muted),
             _ => Style::new().fg(p.yellow).bold(),
         };
         items.push(ListItem::new(Line::from(vec![
             Span::raw(format!("   {} ", pad(ic.setting[i], 2))),
-            Span::styled(pad(setting.label(), label_w), Style::new().fg(p.fg)),
+            Span::styled(
+                pad(setting.label(), label_w),
+                Style::new().fg(if *setting == Setting::ThemeSelect && app.theme_select_greyed() {
+                    p.muted
+                } else {
+                    p.fg
+                }),
+            ),
             Span::styled(value, value_style),
         ])));
     }
@@ -1917,20 +2165,45 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.splash.is_some() {
         return Vec::new();
     }
-    if app.system_open {
-        return vec![("Enter", "Check Again"), ("Any Other Key", "Close")];
+    if app.system_open() {
+        return vec![("Enter", "Check Again"), ("Esc", "Close")];
     }
     if app.rename.is_some() {
         return vec![("Enter", "Rename"), ("Esc", "Cancel"), ("← →", "Move"), ("Ctrl+u", "Clear"), ("Ctrl+c", "Quit")];
     }
-    if app.confirm_delete.is_some() {
-        return vec![("y", "Yes, Delete"), ("Other Key", "No")];
+    if app.confirm_delete().is_some() {
+        return vec![("y", "Yes, Delete"), ("n Esc", "No"), ("← → Enter", "Choose")];
     }
-    if app.confirm_good_vibes_off {
-        return vec![("Enter", "Turn Off Anyway"), ("Esc", "Keep On"), ("Ctrl+c", "Quit")];
+    if app.confirm_unpin().is_some() {
+        return vec![("y", "Yes, Unpin"), ("n Esc", "No"), ("← → Enter", "Choose")];
+    }
+    if app.theme_delete_asked().is_some() {
+        return vec![("y", "Yes, Delete"), ("n Esc", "No"), ("← → Enter", "Choose")];
+    }
+    if app.editor_confirm().is_some() {
+        return vec![("y", "Yes"), ("n Esc", "No"), ("← → Enter", "Choose")];
+    }
+    if let Some(mode) = app.confirm_good_vibes {
+        let yes = if mode == GoodVibes::Muted { "Mute Anyway" } else { "Turn Off Anyway" };
+        return vec![("Enter", yes), ("Esc", "Keep As Is"), ("Ctrl+c", "Quit")];
     }
     if app.genre_notice.is_some() {
         return vec![("Space", "Tick Box"), ("Enter", "OK"), ("Esc", "Close"), ("Ctrl+c", "Quit")];
+    }
+    if let Some(panel) = &app.panel {
+        let enter = match panel.kind {
+            crate::app::PanelKind::Artist { .. } => "Start Station",
+            crate::app::PanelKind::Modes { .. } => "Switch Mode",
+        };
+        let mut keys = vec![];
+        if !panel.items.is_empty() {
+            keys.extend([("j/k ↑↓", "Move"), ("Enter", enter)]);
+        }
+        keys.push(("Esc", "Close"));
+        return keys;
+    }
+    if let Some(picker) = &app.theme_picker {
+        return picker.key_caps();
     }
     if let Some(ed) = &app.editor {
         return editor_key_caps(ed);
@@ -1962,14 +2235,14 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.prompt.is_some() {
         return vec![("Enter", "Save"), ("Esc", "Cancel"), ("← →", "Move"), ("Ctrl+u", "Clear"), ("Ctrl+c", "Quit")];
     }
-    if app.confirm_quit {
-        return vec![("y", "Yes, Quit"), ("Other Key", "No")];
+    if app.quit_asked() {
+        return vec![("Q y", "Yes, Quit"), ("n Esc", "No"), ("← → Enter", "Choose")];
     }
-    if app.details.is_some() {
-        return vec![("Any Key", "Close")];
+    if app.details().is_some() {
+        return vec![("Esc", "Close")];
     }
-    if app.help {
-        return vec![("Esc", "Close"), ("?", "Close")];
+    if app.help_open() {
+        return vec![("j/k ↑↓", "Scroll"), ("? Esc", "Close")];
     }
     let pause = if app.audio.is_paused() { "Play" } else { "Pause" };
     // A key is hinted only where it does something: what each one acts on
@@ -1983,8 +2256,10 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     let mut keys = Vec::new();
     // Rows to move over: not on Now Playing (one song) or About (text).
     let nothing_to_move = app.view == View::About
+        || app.view == View::Notifications && app.focus == Focus::Content && app.notes.len() < 2
+        || app.view == View::Pinned && app.focus == Focus::Content && app.pins.len() < 2
         || in_songs && app.pane == Pane::NowPlaying
-        || app.view == View::Genres && app.focus == Focus::Content && app.genre_rows().is_empty();
+        || app.view == View::Browse && app.focus == Focus::Content && app.browse_rows().is_empty();
     if !nothing_to_move {
         keys.push(("j/k ↑↓", "Move"));
     }
@@ -2002,6 +2277,12 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         }
         if station.allow_edit_seeds {
             keys.push(("e", "Edit"));
+        } else if station.is_locked() && !station.is_shuffle {
+            // A genre station: e shows (and takes back) your thumbs on it.
+            keys.push(("e", "Thumbs"));
+        }
+        if !station.is_shuffle {
+            keys.push(("m", "Mode"));
         }
         keys.push(("v", "Details"));
     };
@@ -2013,8 +2294,17 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         }
         if station.allow_edit_seeds {
             keys.push(("e", "Edit"));
+        } else if station.is_locked() && !station.is_shuffle {
+            keys.push(("e", "Thumbs"));
+        }
+        // With a song playing, Station Mode is in the `.` menu (m still works).
+        if !station.is_shuffle && app.now.is_none() {
+            keys.push(("m", "Mode"));
         }
     };
+    // Keys the `.` song menu also offers (U/D, l/b, I, v on a song, m, B, Z)
+    // are left off the bar once `.` works; they still work and Help lists them.
+    let song_menu_here = app.now.is_some() || in_songs && row_here;
     match (app.focus, app.view) {
         (Focus::Menu, _) if matches!(app.menu_selected(), MenuItem::Favorite(_)) => {
             if app.station_in_reach().is_some() {
@@ -2032,9 +2322,6 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         (Focus::Content, View::Player) if app.pane == Pane::NowPlaying => {
             keys.push(("Tab", "Up Next"));
             playing_keys(&mut keys);
-            if app.now.is_some() {
-                keys.push(("v", "Details"));
-            }
             keys.push(("Esc", "Menu"));
         }
         (Focus::Menu, _) => {
@@ -2044,9 +2331,6 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         }
         (Focus::Content, View::Player) => {
             keys.push(("Tab", if app.pane == Pane::UpNext { "History" } else { "Menu" }));
-            if row_here {
-                keys.push(("v", "Details"));
-            }
             keys.push(("Esc", "Menu"));
         }
         (Focus::Content, View::Settings) => keys.extend([("Enter", "Change"), ("Esc", "Menu")]),
@@ -2056,18 +2340,30 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
             } else {
                 station_keys(&mut keys, false);
                 keys.push(("a", "Add Station"));
+                keys.push(("X", "Shuffle"));
             }
             keys.push(("Esc", "Menu"));
         }
-        (Focus::Content, View::Genres) => {
-            // Enter adds the genre's station, or asks again when the list failed.
-            match &app.genres {
-                GenresState::Loaded(_) if !app.genre_rows().is_empty() => keys.push(("Enter", "Add & Play")),
-                GenresState::Failed(_) => keys.push(("Enter", "Try Again")),
+        (Focus::Content, View::Browse) => {
+            match &app.browse {
+                BrowseState::Loaded(_) if app.browse_rows().iter().any(|r| matches!(r, BrowseRow::Item(_))) => {
+                    keys.push(("Enter", "Start Station"));
+                }
+                BrowseState::Failed(_) => keys.push(("Enter", "Try Again")),
                 _ => {}
             }
             keys.push(("Esc", "Menu"));
         }
+        (Focus::Content, View::Pinned) => {
+            if let Some(pin) = app.pins.get(app.pinned_cursor) {
+                if !pin.link.is_empty() {
+                    keys.push(("Enter", "Open Page"));
+                }
+                keys.push(("x", "Unpin"));
+            }
+            keys.push(("Esc", "Menu"));
+        }
+        (Focus::Content, View::Notifications) => keys.push(("Esc", "Menu")),
         (Focus::Content, View::About) => {
             if app.update_button_ready() {
                 keys.push(("Enter", if app.restart_ready() { "Restart Now" } else { "Update Now" }));
@@ -2078,13 +2374,12 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.view != View::Player && app.has_now_playing() {
         keys.push(("P", "Now Playing"));
     }
-    // Pause, skip and thumbs act on the playing song: only once there is one.
+    // Pause and skip act on the playing song: only once there is one.
     if app.now.is_some() {
-        keys.extend([("space", pause), ("N", "Skip"), ("U/D", "Thumbs")]);
+        keys.extend([("space", pause), ("N", "Skip")]);
     }
-    // l and b rate the selected row: Up Next and History only (Now Playing has U/D).
-    if in_songs && row_here {
-        keys.push(("l/b", "Like/Bad"));
+    if song_menu_here {
+        keys.push((".", "Song Menu"));
     }
     keys.extend([("⇧←→", "Volume"), ("?", "Help"), ("Q", "Quit")]);
     keys
@@ -2092,9 +2387,6 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
 
 /// The key bar while the station editor is open: its own keys only.
 fn editor_key_caps(ed: &Editor) -> Vec<(&'static str, &'static str)> {
-    if ed.confirm.is_some() {
-        return vec![("y", "Yes"), ("Other Key", "No")];
-    }
     if let Some(add) = &ed.add {
         let mut keys = match add.search.mode {
             SearchMode::Typing if add.search.hits.is_empty() => vec![("Enter", "Search")],
@@ -2111,6 +2403,7 @@ fn editor_key_caps(ed: &Editor) -> Vec<(&'static str, &'static str)> {
     let next = match ed.tab {
         EditorTab::Seeds => "Thumbs Up",
         EditorTab::ThumbsUp => "Thumbs Down",
+        EditorTab::ThumbsDown if ed.thumbs_only => "Thumbs Up",
         EditorTab::ThumbsDown => "Seeds",
     };
     let mut keys = vec![("j/k ↑↓", "Move"), ("Tab", next)];
@@ -2118,6 +2411,7 @@ fn editor_key_caps(ed: &Editor) -> Vec<(&'static str, &'static str)> {
         EditorTab::Seeds => keys.extend([("a", "Add Seed"), ("x", "Remove")]),
         EditorTab::ThumbsUp | EditorTab::ThumbsDown => keys.push(("x", "Take Back")),
     }
+    keys.push(("m", "Mode"));
     keys.push(("Esc", "Close"));
     keys
 }
@@ -2167,24 +2461,36 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
     (
         "PLAYING (any pane)",
         &[
-            ("space p", "play / pause"),
-            ("N", "skip to the next song"),
-            ("U D", "thumbs up / down the playing song (down skips it)"),
-            ("Z", "tired of this song (a month off)"),
+            ("space", "play / pause (from anywhere)"),
+            ("N Z", "skip to the next song · tired of this song (a month off)"),
+            ("U D", "thumbs up / down the playing song (down skips it) · the same thumb again takes it back"),
             ("Shift ← →", "volume down / up (saved)"),
+            ("I", "pin the selected or playing song (menu: Pinned; Enter opens its Pandora page, x unpins)"),
+            ("B", "sleep timer: 15, 30, 60, 90 min, end of this song, off (fades out, then pauses)"),
+            (
+                ".",
+                "song menu: station from artist / song, tired, share, why, pin, thumbs, artist bio & similar artists…",
+            ),
+            (
+                "m X",
+                "station mode (Deep Cuts, Discovery, Crowd Faves…; also in e) · X plays Shuffle: your stations mixed",
+            ),
         ],
     ),
     (
         "THE PANE YOU ARE IN",
         &[
-            ("l b", "like / bad the selected row (Now Playing: its song)"),
+            (
+                "l b",
+                "like / bad the selected row (Now Playing: its song) · Up Next b waits for its turn, b again cancels",
+            ),
             ("f", "star / unstar the selected station"),
             ("r x", "rename / delete the selected station (x asks first; on Now Playing r and e use the playing one)"),
-            ("a", "add a station: search artists and songs (Stations page)"),
+            ("a", "add a station: search artists and songs (My Stations page)"),
             ("v", "details: a song, or a station's seeds and thumbs"),
             (
                 "e",
-                "edit the station: Tab / Shift+Tab switch Seeds / Thumbs Up / Thumbs Down, Esc closes (removing asks first)",
+                "edit the station: Tab / Shift+Tab switch Seeds / Thumbs Up / Thumbs Down, Esc closes (genre: thumbs only)",
             ),
             ("", "Seeds: the artists, songs and genres it plays music like; a adds one, x removes one (one stays)"),
             ("", "Thumbs Up / Down: songs you rated and the day you thumbed each, one list each; x takes one back"),
@@ -2196,99 +2502,53 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
         "GOING PLACES",
         &[
             ("P", "Now Playing: the pane gets the keys"),
-            ("S", "Stations: every station, Enter plays one"),
-            ("G", "Genres: Pandora's genre stations, Enter adds and plays one"),
-            ("O A", "Settings / About"),
+            ("S", "My Stations: every station, Enter plays one"),
+            (
+                "G",
+                "Genres: Pandora's genre stations, Enter adds and plays one (global; End, not G, jumps to the end of a list)",
+            ),
+            ("O A", "Settings / About · menu Notifications (between them): what the bottom bar said"),
             ("F", "jump to FAVORITES in the menu"),
-            ("Tab", "menu, Now Playing, Up Next, History (Shift+Tab: back)"),
-            ("Esc", "back to the menu"),
+            ("Tab Esc", "menu, Now Playing, Up Next, History (Shift+Tab: back) · Esc: back to the menu"),
         ],
     ),
     (
         "LOOK AND BOXVIBE",
         &[
-            ("C", "album art: picture / off (saved)"),
-            ("R", "retro level: HD, 64-bit … 2-bit (saved)"),
-            ("H", "tint: off / duotone / palette (saved)"),
+            ("C R H", "album art picture / off · retro HD, 64-bit … 2-bit · tint off / duotone / palette (saved)"),
             ("{ }", "menu narrower / wider (saved)"),
             ("?", "this help"),
-            ("Q Ctrl+c", "quit (asks first) / quit now"),
+            ("Q Ctrl+c", "quit (asks first; Q again confirms) / quit now"),
         ],
     ),
 ];
 
-fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
-    let p = app.palette;
-    // Every key pill is padded to the widest one, so the descriptions line up.
-    let key_w = HELP.iter().flat_map(|(_, keys)| keys.iter()).map(|(k, _)| k.width()).max().unwrap_or(0);
-    let mut lines = Vec::new();
-    for (name, keys) in HELP {
-        lines.push(Line::from(Span::styled(format!(" {name}"), Style::new().fg(p.orange).bold())));
-        for (key, what) in keys {
-            // A row with no key goes on explaining the one above it.
-            let pill = if key.is_empty() {
-                Span::raw("  ")
-            } else {
-                Span::styled(format!(" {key} "), Style::new().fg(p.background).bg(p.fg).bold())
-            };
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                pill,
-                Span::raw(" ".repeat(if key.is_empty() { key_w + 2 } else { key_w - key.width() + 2 })),
-                Span::styled((*what).to_owned(), Style::new().fg(p.fg)),
-            ]));
-        }
-        lines.push(Line::raw(""));
-    }
-    // The station icons, in the glyphs the icon set in use draws.
-    let ic = icons(app.config.ui.icons);
-    lines.push(Line::from(Span::styled(" STATION ICONS (right after the star)", Style::new().fg(p.orange).bold())));
-    let station_icons = [
-        (ic.genre_station, "genre station: made by Pandora, so it can't be renamed or edited (it can be deleted)"),
-        (ic.own_station, "a station you made: you can rename, edit and delete it"),
-    ];
-    for (glyph, what) in station_icons {
-        // Only the glyph and one cell either side wear the pill colour, so the
-        // glyph sits in the middle of it; the room the glyph may need (and the
-        // gap to the text) is plain background, never highlighted.
-        let pill = format!(" {glyph} ");
-        let gap = (key_w + 4).saturating_sub(safe_width(&pill));
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(pill, Style::new().fg(p.background).bg(p.fg).bold()),
-            Span::raw(" ".repeat(gap)),
-            Span::styled(what.to_owned(), Style::new().fg(p.fg)),
-        ]));
-    }
-    lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(HELP_FOOTER, Style::new().fg(p.muted))));
-    // A short terminal: the blank rows between the sections go first.
-    if lines.len() as u16 + 2 > area.height {
-        lines.retain(|l| l.width() > 0);
-    }
-    // As wide as the longest line (and the title), plus the borders and one
-    // blank cell; only a terminal too narrow for that wraps the lines.
-    let title_w = help_title(&p).width() + 2;
-    let text_w = lines.iter().map(Line::width).max().unwrap_or(0).max(title_w) as u16;
-    let width = (text_w + 3).min(area.width);
-    let inner_w = width.saturating_sub(2).max(1) as usize;
-    let rows: usize = lines.iter().map(|l| l.width().max(1).div_ceil(inner_w)).sum();
-    let box_area = centered(area, width, (rows as u16 + 2).min(area.height));
-    frame.render_widget(Clear, box_area);
-    let block = panel(help_title(&p), &p, true).style(Style::new().bg(p.background));
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), box_area);
+/// Help, for vibekit's `Help`: every key in `HELP`, the station icons in the
+/// glyphs of the icon set in use, and where the rest lives.
+pub fn help_sections(icon_set: crate::config::IconSet) -> Vec<Section> {
+    let mut sections: Vec<Section> = HELP.iter().map(|(name, keys)| Section::new(*name, keys)).collect();
+    let ic = icons(icon_set);
+    sections.push(Section::new(
+        "STATION ICONS (right after the star)",
+        &[
+            (ic.genre_station, "genre station: made by Pandora, so it can't be renamed or edited (it can be deleted)"),
+            (ic.own_station, "a station you made: you can rename, edit and delete it"),
+        ],
+    ));
+    sections.push(Section::new("MORE", &[("Shift+O", HELP_FOOTER.trim())]));
+    sections
 }
 
 /// What boxvibe uses from the system and whether it is there, like tubevibe's
 /// System Check: a mark, the name, what it is for, and under a missing one the
 /// package. Plain characters only: it has to read without the font it may lack.
-fn draw_system(frame: &mut Frame, app: &App, area: Rect) {
+pub(crate) fn draw_system(frame: &mut Frame, p: &Palette, checks: Option<&[crate::deps::Check]>, area: Rect) {
     use crate::deps::Presence;
-    let p = app.palette;
+    let p = *p;
     let text = Style::new().fg(p.fg);
     let muted = Style::new().fg(p.muted);
     let mut lines = vec![Line::raw("")];
-    let Some(checks) = &app.system else {
+    let Some(checks) = checks else {
         lines.push(Line::from(Span::styled(" Checking…", Style::new().fg(p.orange))));
         return draw_system_box(frame, &p, lines, area);
     };
@@ -2329,7 +2589,7 @@ fn draw_system(frame: &mut Frame, app: &App, area: Rect) {
         )));
     }
     lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled("  Enter checks again · any other key closes", muted)));
+    lines.push(Line::from(Span::styled("  Enter checks again · Esc closes", muted)));
     draw_system_box(frame, &p, lines, area);
 }
 
@@ -2343,7 +2603,7 @@ fn draw_system_box(frame: &mut Frame, p: &Palette, lines: Vec<Line<'static>>, ar
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), box_area);
 }
 
-const HELP_FOOTER: &str = " Theme, account, animations, boot screen and more: Settings (Shift+O)";
+const HELP_FOOTER: &str = " Themes (fuzzy-search 900 more), account, boot screen and more: Settings (Shift+O)";
 
 #[cfg(test)]
 mod tests {
@@ -2351,6 +2611,49 @@ mod tests {
     use crate::config::Config;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    #[test]
+    fn the_theme_picker_never_cuts_its_tags_or_hints() {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.themes_dir = Some(crate::config::temp_dir("picker-draw"));
+        app.config.ui.set_theme("gruvbox");
+        app.view = crate::app::View::Settings;
+        app.focus = crate::app::Focus::Content;
+        app.settings_cursor = crate::app::Setting::at(crate::app::Setting::ThemeSelect);
+        app.on_key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Enter));
+        for cols in [80, 100, 160] {
+            let (lines, _) = screen(&app, cols, 32);
+            let all = lines.join("\n");
+            assert!(all.contains(vibekit::picker::SEARCH_HINT), "{cols}: search hint cut\n{all}");
+            assert!(all.contains("in use "), "{cols}: tag cut\n{all}");
+            assert!(!all.contains("installed"), "{cols}\n{all}");
+        }
+        app.on_key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Tab));
+        for cols in [80, 160] {
+            let all = screen(&app, cols, 32).0.join("\n");
+            assert!(all.contains(vibekit::picker::INSTALLED_HINT), "{cols}: installed hint cut\n{all}");
+        }
+    }
+
+    #[test]
+    fn the_add_station_hint_always_fits() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.demo_warm_up(3, std::time::Duration::ZERO);
+        for k in [KeyCode::Char('S'), KeyCode::Char('a'), KeyCode::Char('m'), KeyCode::Char('8'), KeyCode::Char('3')] {
+            app.on_key(KeyEvent::from(k));
+        }
+        for cols in [80, 100, 160] {
+            let all = screen(&app, cols, 40).0.join("\n");
+            assert!(all.contains("Enter search · Esc cancel"), "{cols}: typing hint cut\n{all}");
+        }
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        app.settle(std::time::Duration::from_millis(300));
+        for cols in [80, 100, 160] {
+            let all = screen(&app, cols, 40).0.join("\n");
+            assert!(all.contains(ADD_RESULTS_HINT), "{cols}: results hint cut\n{all}");
+        }
+    }
 
     fn screen(app: &App, cols: u16, rows: u16) -> (Vec<String>, ratatui::buffer::Buffer) {
         let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
@@ -2445,6 +2748,23 @@ mod tests {
 
     /// A demo app on Now Playing, playing the station called `name`, with the
     /// keys on the Now Playing pane (`menu` false) or the menu on NOW PLAYING.
+    #[test]
+    fn the_notifications_page_lists_messages_under_its_menu_entry() {
+        let mut app = demo();
+        app.status = "Thumb taken back: Song".into();
+        app.note_status();
+        app.view = View::Notifications;
+        app.focus = Focus::Content;
+        let (lines, _) = screen(&app, 120, 30);
+        let text = lines.join("\n");
+        assert!(text.contains("Notifications"), "{text}");
+        assert!(text.contains("just now"), "{text}");
+        assert!(text.contains("Thumb taken back: Song"), "{text}");
+        let settings = lines.iter().position(|l| l.contains("Settings")).unwrap();
+        let about = lines.iter().position(|l| l.contains("About")).unwrap();
+        assert!(lines[settings + 1].contains("Notifications") && about == settings + 2);
+    }
+
     fn playing_demo(name: &str, menu: bool) -> App {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = demo();
@@ -2480,7 +2800,7 @@ mod tests {
             assert_eq!(ed.station.name, "M83 Radio");
             // Delete stays refused here, with its old message.
             press(&mut app, 'x');
-            assert!(app.confirm_delete.is_none() && app.genre_notice.is_none());
+            assert!(app.confirm_delete().is_none() && app.genre_notice.is_none());
             assert!(app.status.starts_with("x deletes works on a station"), "{}", app.status);
         }
     }
@@ -2519,10 +2839,12 @@ mod tests {
     #[test]
     fn on_now_playing_a_genre_station_gets_the_popup_and_shuffle_just_the_message() {
         for menu in [false, true] {
-            for key in ['r', 'e'] {
+            {
+                let key = 'r';
                 let mut app = playing_demo("Today's Hits", menu);
                 let keys: Vec<&str> = key_caps(&app).iter().map(|(k, _)| *k).collect();
-                assert!(!keys.contains(&"r") && !keys.contains(&"e"), "not hinted for a genre station: {keys:?}");
+                assert!(!keys.contains(&"r"), "not hinted for a genre station: {keys:?}");
+                assert!(keys.contains(&"e"), "e shows a genre station's thumbs: {keys:?}");
                 press(&mut app, key);
                 assert!(app.rename.is_none() && app.editor.is_none());
                 let notice = app.genre_notice.as_ref().expect("the genre popup");
@@ -2652,6 +2974,43 @@ mod tests {
     }
 
     #[test]
+    fn now_playing_keeps_three_blank_columns_inside_each_side() {
+        let app = playing_demo("Today's Hits", false);
+        let lines = screen(&app, 160, 40).0;
+        let top = lines.iter().position(|l| l.contains("Now Playing ·")).expect("the card");
+        let chars: Vec<char> = lines[top].chars().collect();
+        let title_at = lines[top].find("Now Playing").map(|b| lines[top][..b].chars().count()).unwrap();
+        let left = (0..title_at).rev().find(|&x| matches!(chars[x], '╭' | '┌' | '┏')).expect("left corner");
+        let right = (title_at..chars.len()).find(|&x| matches!(chars[x], '╮' | '┐' | '┓')).expect("right corner");
+        let mut rows = 0;
+        for line in &lines[top + 1..] {
+            let c: Vec<char> = line.chars().collect();
+            if matches!(c[left], '╰' | '└' | '┗') {
+                break;
+            }
+            rows += 1;
+            assert!(c[left + 1..=left + 3].iter().all(|&ch| ch == ' '), "left pad: {line}");
+            assert!(c[right - 3..right].iter().all(|&ch| ch == ' '), "right pad: {line}");
+        }
+        assert!(rows > 3, "the card has rows");
+        assert!(lines.join("\n").contains(app.now.as_ref().unwrap().title.as_str()), "the song still shows");
+    }
+
+    #[test]
+    fn a_genre_station_editor_shows_only_the_two_thumbs_tabs() {
+        let mut app = editor_demo();
+        let ed = app.editor.as_mut().unwrap();
+        ed.thumbs_only = true;
+        ed.tab = EditorTab::ThumbsDown;
+        let row = editor_tab_row(&app, 120, 40);
+        assert!(!row.contains("Seeds") && row.contains("Thumbs Up") && row.contains("Thumbs Down"), "{row}");
+        let bar = key_bar_line(&app, 120);
+        assert!(bar.contains("Tab  Thumbs Up") && !bar.contains("Add Seed"), "{bar}");
+        let text = screen(&app, 120, 40).0.join("\n");
+        assert!(text.contains("x = take back · Tab = Thumbs Up"), "{text}");
+    }
+
+    #[test]
     fn the_editor_has_three_tabs_with_the_thumb_icons_and_counts_in_their_titles() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let press = |app: &mut App, code| {
@@ -2713,7 +3072,7 @@ mod tests {
     fn help_explains_seeds_and_thumbs_under_the_editor() {
         for (cols, rows) in [(255u16, 70u16), (160, 40)] {
             let mut app = demo();
-            app.help = true;
+            app.open_help();
             let text = screen(&app, cols, rows).0.join("\n");
             assert!(text.contains("Seeds: the artists, songs and genres it plays music like"), "{cols}x{rows}\n{text}");
             assert!(
@@ -2871,7 +3230,9 @@ mod tests {
             let ic = icons(set);
             let mut app = demo();
             app.config.ui.icons = set;
-            app.help = true;
+            app.open_help();
+            // Short screens scroll Help; the icons and footer are at its end.
+            app.on_key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Char('G')));
             for (cols, rows) in [(160u16, 40u16), (255, 70)] {
                 let lines = screen(&app, cols, rows).0;
                 let all = lines.join("\n");
@@ -2891,33 +3252,14 @@ mod tests {
     }
 
     #[test]
-    fn help_icons_sit_in_the_middle_of_their_highlight_with_no_extra_colour_on_the_right() {
+    fn help_keeps_the_station_icons_its_text_cleaning_would_drop() {
         use crate::config::IconSet;
-        use unicode_width::UnicodeWidthStr;
         for set in [IconSet::Emoji, IconSet::Nerd, IconSet::Unicode] {
             let ic = icons(set);
-            let mut app = demo();
-            app.config.ui.icons = set;
-            app.help = true;
-            let fg = app.palette.fg;
-            for (cols, rows) in [(160u16, 40u16), (255, 70)] {
-                let (lines, buffer) = screen(&app, cols, rows);
-                for (glyph, what) in
-                    [(ic.genre_station, "genre station: made by Pandora"), (ic.own_station, "a station you made")]
-                {
-                    let y = lines.iter().position(|l| l.contains(what)).unwrap() as u16;
-                    let lit: Vec<u16> = (0..cols).filter(|&x| buffer[(x, y)].bg == fg).collect();
-                    let (first, last) = (lit[0], *lit.last().unwrap());
-                    let w = glyph.width().max(1) as u16;
-                    let ctx = format!("{set:?} {cols}x{rows} {what}");
-                    assert_eq!(last - first + 1, w + 2, "{ctx}: one cell either side of the glyph, nothing more");
-                    // (The second cell of a wide glyph carries no colour of its own.)
-                    assert!(lit.len() as u16 + 1 >= w + 2, "{ctx}: the highlight has no gaps");
-                    assert_eq!(buffer[(first, y)].symbol(), " ", "{ctx}");
-                    assert_eq!(buffer[(first + 1, y)].symbol(), glyph, "{ctx}: the glyph is first inside the block");
-                    assert_eq!(buffer[(last, y)].symbol(), " ", "{ctx}");
-                }
-            }
+            let s = help_sections(set);
+            let icons = s.iter().find(|s| s.title.starts_with("STATION ICONS")).unwrap();
+            assert_eq!(icons.keys[0].0, ic.genre_station, "{set:?}");
+            assert_eq!(icons.keys[1].0, ic.own_station, "{set:?}");
         }
     }
 
@@ -3020,6 +3362,10 @@ mod tests {
     fn turning_good_vibes_only_off_asks_first_in_a_risk_popup_that_fits_small_terminals() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = demo();
+        // Keep the menu short so the centered popup extraction is not clipped by section pins.
+        for &(key, _) in crate::config::BROWSE_SECTIONS {
+            app.config.browse.sections.insert(key.to_owned(), false);
+        }
         app.view = View::Settings;
         app.focus = crate::app::Focus::Content;
         app.settings_cursor = crate::app::Setting::at(crate::app::Setting::GoodVibesOnly);
@@ -3027,17 +3373,27 @@ mod tests {
         let text = screen(&app, 120, 40).0.join("\n");
         assert!(text.contains("Good Vibes Only") && !text.contains("Good Guy"), "{text}");
         assert!(good_vibes_popup_words(&app, 120, 40).is_none(), "no popup yet");
+        // On → Muted asks first, with its own gray-area notice.
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(app.confirm_good_vibes_off && app.overlay_open() && app.config.player.good_vibes_only);
+        assert_eq!(app.confirm_good_vibes, Some(GoodVibes::Muted));
+        let text = screen(&app, 120, 40).0.join("\n");
+        assert!(text.contains("Mute Pandora's ads?") && text.contains("Enter = mute them anyway"), "{text}");
+        assert!(text.contains("gray area") && text.contains("Mute Anyway"), "{text}");
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.config.player.good_vibes_only, GoodVibes::Muted);
+        // Muted → Off asks too.
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.confirm_good_vibes == Some(GoodVibes::Off) && app.overlay_open());
+        assert_eq!(app.config.player.good_vibes_only, GoodVibes::Muted);
         let text = screen(&app, 120, 40).0.join("\n");
         assert!(text.contains("Turn off Good Vibes Only?") && text.contains("Enter = turn it off anyway"), "{text}");
-        assert!(text.contains("Esc = keep it on") && !text.contains("http"), "{text}");
-        assert!(text.contains("Turn Off Anyway") && text.contains("Keep On"), "the key bar: {text}");
+        assert!(text.contains("Esc = keep it as it was") && !text.contains("http"), "{text}");
+        assert!(text.contains("Turn Off Anyway") && text.contains("Keep As Is"), "the key bar: {text}");
         // The whole risk notice is there, at any size that has room for it.
         for (cols, rows) in [(120u16, 40u16), (80, 24), (60, 20), (50, 16), (40, 16), (40, 14)] {
             let words = good_vibes_popup_words(&app, cols, rows).unwrap_or_default();
             assert!(words.contains(GOOD_VIBES_DISCLAIMER), "{cols}x{rows}: {words}");
-            assert!(words.contains("Esc = keep it on") || words.contains("Esc = keep on"), "{cols}x{rows}: {words}");
+            assert!(words.contains("Esc = keep"), "{cols}x{rows}: {words}");
         }
         // A tiny terminal still draws a popup inside the screen, from the start of the notice.
         for (cols, rows) in [(30u16, 8u16), (24, 6)] {
@@ -3047,7 +3403,7 @@ mod tests {
         }
         // Esc leaves it on, closes the popup; Enter in a second round turns it off.
         app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(!app.confirm_good_vibes_off && app.config.player.good_vibes_only);
+        assert!(app.confirm_good_vibes.is_none() && app.config.player.good_vibes_only == GoodVibes::Muted);
         assert!(!screen(&app, 120, 40).0.join("\n").contains("Turn off Good Vibes Only?"));
     }
 
@@ -3129,7 +3485,10 @@ mod tests {
         for (cols, rows) in [(255u16, 70u16), (160, 40)] {
             let mut seen = Vec::new();
             for help in [false, true, false] {
-                app.help = help;
+                app.dialogs.clear();
+                if help {
+                    app.open_help();
+                }
                 app.art.set_overlay(help);
                 let (lines, buf) = screen(&app, cols, rows);
                 let cover = app.art.last_cover.get();
@@ -3173,7 +3532,7 @@ mod tests {
         }
         let old = app.now.as_ref().unwrap().cover_art_url.clone();
         assert_eq!(app.art.shown_cover(), Some((old.clone(), false)), "the picture");
-        app.help = true;
+        app.open_help();
         frame(&mut app);
         assert_eq!(app.art.shown_cover(), Some((old.clone(), true)), "half blocks under Help");
         app.demo_warm_up(1, std::time::Duration::ZERO);
@@ -3183,9 +3542,9 @@ mod tests {
             frame(&mut app);
             app.settle(std::time::Duration::from_millis(50));
         }
-        assert!(app.help, "Help still open");
+        assert!(app.help_open(), "Help still open");
         assert_eq!(app.art.shown_cover(), Some((new.clone(), true)), "the new cover, in half blocks");
-        app.help = false;
+        app.dialogs.clear();
         frame(&mut app);
         assert_eq!(app.art.shown_cover(), Some((new, false)), "the new picture once Help closes");
     }
@@ -3220,7 +3579,7 @@ mod tests {
         app.settle(std::time::Duration::from_millis(300));
         app.art.set_overlay(true);
         let (_, before) = screen(&app, 255, 70);
-        app.help = true;
+        app.open_help();
         let (lines, after) = screen(&app, 255, 70);
         let top = lines.iter().position(|l| l.contains("boxvibe Help")).unwrap() as u16;
         let left = lines[top as usize].chars().position(|c| c == '┌' || c == '╭').unwrap_or(0) as u16;
@@ -3288,15 +3647,19 @@ mod tests {
     #[test]
     fn help_fits_its_longest_line_and_its_keys_line_up() {
         let mut app = demo();
-        app.help = true;
+        app.open_help();
         for (cols, rows) in [(255u16, 70u16), (160, 40)] {
             let (lines, _) = screen(&app, cols, rows);
-            let all = lines.join("\n");
+            let mut end = demo();
+            end.open_help();
+            end.on_key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Char('G')));
+            let all = lines.join("\n") + "\n" + &screen(&end, cols, rows).0.join("\n");
             for whole in [
                 "play the station · open Settings / About",
                 "Now Playing: the pane gets the keys",
                 HELP_FOOTER.trim(),
-                "⌨  boxvibe Help · Any Key Closes",
+                "boxvibe Help",
+                "? or Esc close",
             ] {
                 assert!(all.contains(whole), "{cols}x{rows}: {whole:?} is cut off\n{all}");
             }
@@ -3313,20 +3676,46 @@ mod tests {
     }
 
     #[test]
+    fn the_pinned_page_lists_the_pins_and_the_menu_has_its_entry() {
+        let mut app = demo();
+        let (lines, _) = screen(&app, 140, 40);
+        assert!(lines.iter().any(|l| l.contains("Pinned")), "the menu entry, shown by default");
+        // I still pins, but the bar leaves it to the `.` menu.
+        assert!(!key_caps(&app).iter().any(|(k, _)| *k == "I"));
+        assert!(key_caps(&app).iter().any(|(k, v)| *k == "." && *v == "Song Menu"));
+        app.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('I'),
+            crossterm::event::KeyModifiers::SHIFT,
+        ));
+        let title = app.pins[0].title.clone();
+        app.view = View::Pinned;
+        app.focus = Focus::Content;
+        let (lines, _) = screen(&app, 140, 40);
+        let all = lines.join("\n");
+        assert!(all.contains("Pinned (1)") && all.contains(&title) && all.contains(&app.pins[0].pinned), "{all}");
+        assert!(key_caps(&app).iter().any(|(k, v)| *k == "x" && *v == "Unpin"));
+        app.config.ui.pinned_in_menu = false;
+        app.view = View::Player;
+        app.status.clear();
+        let (lines, _) = screen(&app, 140, 40);
+        assert!(!lines.iter().any(|l| l.contains("Pinned")), "hidden");
+    }
+
+    #[test]
     fn the_key_bar_leaves_out_theme_and_icons_and_t_does_nothing() {
         let mut app = demo();
         let caps = key_caps(&app);
-        assert!(!caps.iter().any(|(k, _)| matches!(*k, "t" | "i" | "T" | "I")), "{caps:?}");
-        let theme = app.config.ui.theme.clone();
+        assert!(!caps.iter().any(|(k, _)| matches!(*k, "t" | "i" | "T")), "{caps:?}");
+        let theme = app.config.ui.theme().to_owned();
         app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('t')));
-        assert_eq!(app.config.ui.theme, theme, "t no longer switches the theme");
+        assert_eq!(app.config.ui.theme(), theme, "t no longer switches the theme");
     }
 
     /// Every place the keys can be: (focus, view, pane), plus the menu on a favorite.
     fn contexts(app: &mut App) -> Vec<(String, crate::app::Focus, View, Pane, bool)> {
         use crate::app::Focus;
         let mut all = Vec::new();
-        for view in [View::Player, View::Stations, View::Genres, View::Settings, View::About] {
+        for view in [View::Player, View::Stations, View::Browse, View::Settings, View::About] {
             for (focus, favorite) in [(Focus::Menu, false), (Focus::Menu, true), (Focus::Content, false)] {
                 let panes = if view == View::Player && focus == Focus::Content {
                     vec![Pane::NowPlaying, Pane::UpNext, Pane::History]
@@ -3345,8 +3734,8 @@ mod tests {
     /// Puts the app in one of [`contexts`] with a favorite in the menu.
     fn enter(app: &mut App, focus: crate::app::Focus, view: View, pane: Pane, favorite: bool) {
         app.rename = None;
-        app.confirm_delete = None;
-        app.details = None;
+        app.dialogs.clear();
+        app.dialogs.clear();
         app.add_station = None;
         app.editor = None;
         app.on_add_row = false;
@@ -3375,7 +3764,7 @@ mod tests {
             key_caps(app).iter().any(|(k, _)| k.split('/').any(|part| part == key) && *k != "j/k ↑↓")
         };
         for (name, focus, view, pane, favorite) in contexts(&mut app) {
-            if favorite && !matches!(view, View::Player | View::Stations | View::Genres | View::Settings | View::About)
+            if favorite && !matches!(view, View::Player | View::Stations | View::Browse | View::Settings | View::About)
             {
                 continue;
             }
@@ -3386,18 +3775,25 @@ mod tests {
                 app.on_key(KeyEvent::from(KeyCode::Char(key)));
                 let did = match key {
                     'r' => app.rename.is_some(),
-                    'x' => app.confirm_delete.is_some(),
+                    'x' => app.confirm_delete().is_some(),
                     'a' => app.add_station.is_some(),
                     'e' => app.editor.is_some(),
-                    _ => app.details.is_some(),
+                    _ => app.details().is_some(),
                 };
-                assert_eq!(shown, did, "{key} in {name}: hinted {shown}, acts {did}");
+                // v on a song is in the `.` menu: it works, unhinted.
+                let song_v = key == 'v' && view == View::Player && focus == Focus::Content;
+                if song_v {
+                    assert!(!shown, "v in {name} is left to the . menu");
+                } else {
+                    assert_eq!(shown, did, "{key} in {name}: hinted {shown}, acts {did}");
+                }
             }
-            // l/b only where they rate a row, never beside Now Playing's U/D.
+            // l/b, U/D, I, B: in the `.` menu, so never on the bar; `.` is, with a song.
             enter(&mut app, focus, view, pane, favorite);
-            let rows = view == View::Player && focus == Focus::Content && pane != Pane::NowPlaying;
-            assert_eq!(hinted(&app, "l"), rows, "l/b in {name}");
-            assert_eq!(hinted(&app, "b"), rows, "l/b in {name}");
+            for k in ["l", "b", "U", "D", "I", "B", "Z"] {
+                assert!(!hinted(&app, k), "{k} in {name}");
+            }
+            assert!(hinted(&app, "."), ". in {name}");
             // f: stars a station row, or unstars the favorite the menu is on.
             let stars = (view == View::Stations && focus == Focus::Content) || (focus == Focus::Menu && favorite);
             assert_eq!(hinted(&app, "f"), stars, "f in {name}");
@@ -3424,7 +3820,8 @@ mod tests {
             let caps = keys(&app);
             assert_eq!(caps.contains(&"r"), s.allow_rename, "r on {}", s.name);
             assert_eq!(caps.contains(&"x"), s.allow_delete, "x on {}", s.name);
-            assert_eq!(caps.contains(&"e"), s.allow_edit_seeds, "e on {}", s.name);
+            let thumbs = s.is_locked() && !s.is_shuffle;
+            assert_eq!(caps.contains(&"e"), s.allow_edit_seeds || thumbs, "e on {}", s.name);
         }
         // No stations yet: nothing to play, favorite, rename, delete or show.
         app.stations.clear();
@@ -3433,20 +3830,24 @@ mod tests {
     }
 
     #[test]
-    fn thumbs_pause_and_skip_are_hinted_only_with_a_song_to_act_on() {
+    fn pause_skip_and_the_song_menu_are_hinted_only_with_a_song_to_act_on() {
         let mut app = App::new(Config::default(), None, &[], true);
         let has = |app: &App, key: &str| key_caps(app).iter().any(|(k, _)| *k == key);
         // Nothing playing yet.
         assert!(app.now.is_none());
-        for key in ["space", "N", "U/D"] {
+        for key in ["space", "N", "."] {
             assert!(!has(&app, key), "{key} with nothing playing");
         }
         app.settle(std::time::Duration::from_millis(400));
         app.demo_warm_up(3, std::time::Duration::ZERO);
         app.settle(std::time::Duration::from_millis(400));
         assert!(app.now.is_some());
-        for key in ["space", "N", "U/D"] {
+        for key in ["space", "N", "."] {
             assert!(has(&app, key), "{key} while playing");
+        }
+        // Thumbs, pin, sleep and mode are in the `.` menu, not the bar.
+        for key in ["U/D", "I", "B", "l/b", "m"] {
+            assert!(!has(&app, key), "{key} is left to the . menu");
         }
     }
 
@@ -3576,18 +3977,13 @@ mod tests {
     }
 
     #[test]
-    fn confirm_has_a_blank_line_above_and_below() {
+    fn the_quit_question_is_vibekits_confirm_with_a_blank_line_above_the_question() {
         let mut app = demo();
-        app.confirm_quit = true;
+        app.ask_quit();
         let (lines, _) = screen(&app, 120, 36);
-        let top = lines.iter().position(|l| l.contains(" Confirm ")).expect("confirm box");
-        let chars = |y: usize| lines[y].chars().collect::<Vec<char>>();
-        let left = lines[top].chars().position(|c| c == '┌').unwrap();
-        let bottom = (top + 1..lines.len()).find(|&y| chars(y)[left] == '└').expect("bottom");
-        let right = (left + 1..chars(top).len()).find(|&x| chars(top)[x] == '┐').unwrap();
-        let inner: Vec<String> =
-            (top + 1..bottom).map(|y| chars(y)[left + 1..right].iter().collect::<String>().trim().to_owned()).collect();
-        assert_eq!(inner, ["", "Quit boxvibe?", "y = yes · any other key = no", ""], "{inner:?}");
+        let top = lines.iter().position(|l| l.contains("┌ Quit ")).expect("quit box");
+        assert!(lines[top + 1].contains("│ ") && !lines[top + 1].contains("Quit boxvibe?"), "blank line first");
+        assert!(lines[top + 2].contains("Quit boxvibe?"), "{}", lines[top + 2]);
     }
 
     #[test]
@@ -3599,15 +3995,16 @@ mod tests {
     }
 
     #[test]
-    fn shift_q_shows_tubevibes_confirm_box() {
+    fn shift_q_shows_the_quit_box_and_says_q_again_quits() {
         let mut app = demo();
-        app.confirm_quit = true;
-        let (lines, _) = screen(&app, 120, 36);
-        let all = lines.join("\n");
-        assert!(all.contains(" Confirm "), "{all}");
-        assert!(all.contains("Quit boxvibe?"), "{all}");
-        assert!(all.contains("y = yes · any other key = no"), "{all}");
-        assert_eq!(key_caps(&app), vec![("y", "Yes, Quit"), ("Other Key", "No")]);
+        app.ask_quit();
+        let all = screen(&app, 120, 36).0.join("\n");
+        for want in ["Quit boxvibe?", "Quit (y)", "No (n)", "Q again to quit · Esc stay"] {
+            assert!(all.contains(want), "{want:?}\n{all}");
+        }
+        assert!(!all.contains("any other key"), "{all}");
+        let caps = key_caps(&app);
+        assert!(caps.contains(&("Q y", "Yes, Quit")), "{caps:?}");
     }
 
     #[test]
@@ -3632,20 +4029,12 @@ mod tests {
     }
 
     #[test]
-    fn help_title_uses_tubevibes_keyboard_and_the_logo_name() {
-        for set in [crate::config::IconSet::Unicode, crate::config::IconSet::Emoji, crate::config::IconSet::Nerd] {
-            let mut app = demo();
-            app.config.ui.icons = set;
-            app.help = true;
-            let (lines, buffer) = screen(&app, 120, 40);
-            let (y, row) = lines.iter().enumerate().find(|(_, l)| l.contains("Help · Any Key Closes")).unwrap();
-            assert!(row.contains("⌨  boxvibe Help · Any Key Closes"), "{row}");
-            let (p, y) = (app.palette, y as u16);
-            let x = row.chars().position(|c| c == '⌨').unwrap() as u16;
-            assert_eq!(buffer[(x, y)].fg, p.fg);
-            assert_eq!((buffer[(x + 3, y)].fg, buffer[(x + 6, y)].fg), (p.blue, p.fg));
-            assert!(buffer[(x + 6, y)].modifier.contains(ratatui::style::Modifier::BOLD));
-        }
+    fn help_is_titled_boxvibe_help_and_says_how_to_close() {
+        let mut app = demo();
+        app.open_help();
+        let all = screen(&app, 120, 40).0.join("\n");
+        assert!(all.contains("┌ boxvibe Help "), "{all}");
+        assert!(all.contains("? or Esc close") && !all.contains("Any Key"), "{all}");
     }
 
     #[test]
@@ -3681,7 +4070,7 @@ mod tests {
         assert!(lines[1].starts_with("│ ▶  NOW PLAYING"), "{}", lines[1]);
         let menu: String = lines[2].chars().take(30).collect();
         assert!(menu.starts_with("│  ──") && menu.ends_with("──  │"), "inset rule: {menu:?}");
-        assert!(lines[3].contains("Stations ("), "{}", lines[3]);
+        assert!(lines[3].contains("My Stations ("), "{}", lines[3]);
         assert!(lines[35].contains(" P  Now Playing"), "key bar: {}", lines[35]);
     }
 
@@ -3731,7 +4120,7 @@ mod tests {
             lines.iter().any(|l| side(l, false).contains("⭐") && l.contains(&fav.name)),
             "starred on the page: {lines:#?}"
         );
-        assert!(lines[0].contains("Stations ("), "the page: {}", lines[0]);
+        assert!(lines[0].contains("My Stations ("), "the page: {}", lines[0]);
         assert!(lines[35].contains(" f  Favorite"), "key bar: {}", lines[35]);
     }
 
@@ -3792,11 +4181,10 @@ mod tests {
     }
 
     #[test]
-    fn the_genres_page_shows_neither_station_icon() {
+    fn the_browse_genres_page_shows_neither_station_icon() {
         use crate::config::IconSet;
         let mut app = demo();
-        app.view = View::Genres;
-        app.focus = crate::app::Focus::Content;
+        app.show_browse_section("Browse Genres");
         app.settle(std::time::Duration::from_millis(300));
         for set in [IconSet::Emoji, IconSet::Nerd, IconSet::Unicode] {
             app.config.ui.icons = set;
@@ -3804,7 +4192,7 @@ mod tests {
             let (lines, _) = screen(&app, 120, 36);
             let page: String =
                 lines.iter().map(|l| l.chars().skip(30).collect::<String>()).collect::<Vec<_>>().join("\n");
-            assert!(page.contains("Genres"), "{page}");
+            assert!(page.contains("Browse Genres") || page.contains("Synthwave"), "{page}");
             assert!(!page.contains(ic.genre_station) && !page.contains(ic.own_station), "{set:?}: {page}");
         }
     }
@@ -3832,7 +4220,7 @@ mod tests {
         let mut app = demo();
         app.config.ui.icons = crate::config::IconSet::Unicode;
         let (lines, _) = screen(&app, 120, 36);
-        for word in ["NOW PLAYING", "Stations", "Settings", "About", "Quit"] {
+        for word in ["NOW PLAYING", "My Stations", "Settings", "About", "Quit"] {
             let line = lines.iter().find(|l| l.chars().take(30).collect::<String>().contains(word)).expect(word);
             let menu: Vec<char> = line.chars().take(30).collect();
             assert_eq!(menu[1], ' ', "{word}: one space after the border: {line}");
@@ -3901,6 +4289,62 @@ mod tests {
         app.session = Session::LoggedOut;
         let (lines, _) = screen(&app, 120, 36);
         assert!(!lines[34].contains("toby@"), "{}", lines[34]);
+    }
+
+    #[test]
+    fn the_status_bar_shows_the_look_and_the_sleep_timer_left_of_the_account_and_drops_the_look_first() {
+        let mut app = demo();
+        app.config.ui.icons = crate::config::IconSet::Unicode;
+        app.config.pandora.username = "toby@example.com".into();
+        app.config.ui.set_theme("gruvbox");
+        app.config.ui.album_art = AlbumArt::Picture;
+        app.config.ui.retro_mode = crate::config::RetroMode::Bit8;
+        app.config.ui.art_tint = crate::config::ArtTint::Duotone;
+        app.session = Session::LoggedIn;
+        app.status = "hi".into();
+        let bar = screen(&app, 200, 36).0[34].clone();
+        assert!(
+            bar.trim_end().ends_with("Gruvbox · Art Picture · 8-bit · Tint Duotone · Logged In As: toby@example.com"),
+            "{bar}"
+        );
+        // The look is in the account's colour; the separators stay muted.
+        let (lines, buffer) = screen(&app, 200, 36);
+        let col = |s: &str| lines[34].chars().take(lines[34].find(s).unwrap()).count() as u16;
+        for label in ["Gruvbox", "Art Picture", "8-bit", "Tint Duotone", "Logged In As"] {
+            assert_eq!(buffer[(col(label), 34)].fg, app.palette.blue, "{label}");
+        }
+        assert_eq!(buffer[(col("Gruvbox") + 8, 34)].fg, app.palette.muted);
+        app.sleep = Some(crate::app::Sleep::Minutes(15, std::time::Instant::now()));
+        let bar = screen(&app, 200, 36).0[34].clone();
+        assert!(bar.contains("☾ 15:00 · Gruvbox") || bar.contains("☾ 14:59 · Gruvbox"), "{bar}");
+        // Narrower: the tint goes first, then the rest of the look; the timer stays.
+        let bar = screen(&app, 150, 36).0[34].clone();
+        assert!(bar.contains("☾ 1") && bar.contains("Logged In As") && !bar.contains("Tint"), "{bar}");
+        let bar = screen(&app, 96, 36).0[34].clone();
+        assert!(bar.contains("☾ 1") && !bar.contains("Gruvbox") && bar.contains("toby@example.com"), "{bar}");
+        app.sleep = Some(crate::app::Sleep::EndOfSong);
+        assert!(screen(&app, 200, 36).0[34].contains("☾ end of song"));
+    }
+
+    #[test]
+    fn following_omarchy_the_status_bar_names_its_theme_in_the_account_colour() {
+        let mut app = demo();
+        app.config.pandora.username = "toby@example.com".into();
+        app.session = Session::LoggedIn;
+        app.config.ui.set_theme("omarchy");
+        app.omarchy_theme = Some("Tokyo Night".into());
+        let (lines, buffer) = screen(&app, 200, 36);
+        let bar = &lines[34];
+        assert!(bar.contains("omarchy: Tokyo Night · Art"), "{bar}");
+        let x = bar.chars().take(bar.find("omarchy: Tokyo").unwrap()).count() as u16;
+        assert_eq!((buffer[(x, 34)].fg, buffer[(x + 12, 34)].fg), (app.palette.blue, app.palette.blue));
+        // Its name not known yet: just "Omarchy"; a picked theme: its own name.
+        app.omarchy_theme = None;
+        assert!(screen(&app, 200, 36).0[34].contains("Omarchy · Art"));
+        app.config.ui.set_theme("gruvbox");
+        app.omarchy_theme = Some("Tokyo Night".into());
+        let bar = screen(&app, 200, 36).0[34].clone();
+        assert!(bar.contains("Gruvbox · Art") && !bar.contains("omarchy:"), "{bar}");
     }
 
     #[test]
@@ -4129,7 +4573,7 @@ mod tests {
     }
 
     #[test]
-    fn the_genres_page_lists_categories_and_stations_and_the_menu_has_it() {
+    fn the_browse_genres_page_lists_items_and_pins_on_the_menu() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = demo();
         app.settle(std::time::Duration::from_millis(400));
@@ -4137,25 +4581,60 @@ mod tests {
         app.settle(std::time::Duration::from_millis(300));
         let (lines, _) = screen(&app, 120, 36);
         let text = all_text(&lines);
-        for word in ["Genres", "POP", "ELECTRONIC", "ROCK", "Today's Hits", "Synthwave", "Classic Rock"] {
-            assert!(text.contains(word), "{word}: {text}");
-        }
-        assert!(text.contains("Neon, night drives"), "descriptions: {text}");
-        let genre_icon = crate::icons::icons(app.config.ui.icons).genre;
-        let menu: Vec<String> = lines.iter().map(|l| l.chars().take(30).collect()).collect();
-        assert!(menu.iter().any(|l| l.contains("Genres") && l.contains(genre_icon)), "in the menu with its icon");
+        assert!(text.contains("Browse Genres") && text.contains("Synthwave"), "{text}");
+        assert!(text.contains("1.2M Listeners"), "detail: {text}");
         let caps = key_caps(&app);
-        assert!(caps.iter().any(|(k, w)| *k == "Enter" && *w == "Add & Play"), "{caps:?}");
+        assert!(caps.iter().any(|(k, w)| *k == "Enter" && *w == "Start Station"), "{caps:?}");
         assert!(caps.iter().any(|(k, _)| k.contains("j/k")), "{caps:?}");
-        // Before it has loaded there is nothing to move through.
-        app.genres = crate::app::GenresState::Loading;
+        // Pin Browse Genres on the main menu.
+        app.config.browse.set_pinned("Browse Genres", true);
+        let genre_icon = crate::icons::icons(app.config.ui.icons).genre;
+        let menu: Vec<String> = screen(&app, 120, 36).0.iter().map(|l| l.chars().take(30).collect()).collect();
+        assert!(
+            menu.iter().any(|l| l.contains("Browse Genres") && l.contains(genre_icon)),
+            "pinned in the menu with its icon: {menu:#?}"
+        );
+        // Loading / failed use the Browse directory state.
+        app.browse = crate::app::BrowseState::Loading;
         let (lines, _) = screen(&app, 120, 36);
         assert!(all_text(&lines).contains("Loading"), "{}", all_text(&lines));
         assert!(!key_caps(&app).iter().any(|(k, _)| k.contains("j/k")));
-        app.genres = crate::app::GenresState::Failed("offline".into());
+        app.browse = crate::app::BrowseState::Failed("offline".into());
         assert!(all_text(&screen(&app, 120, 36).0).contains("offline"));
         assert!(key_caps(&app).iter().any(|(_, w)| *w == "Try Again"));
         let _ = screen(&app, 30, 8);
+    }
+
+    #[test]
+    fn only_the_active_browse_pin_is_shaded_in_the_menu() {
+        let mut app = demo();
+        app.settle(std::time::Duration::from_millis(400));
+        for title in ["Artists Picked For You", "New Music", "Browse Genres", "Decades"] {
+            app.config.browse.set_pinned(title, true);
+        }
+        app.show_browse_section("Artists Picked For You");
+        app.settle(std::time::Duration::from_millis(300));
+        assert_eq!(app.focus, Focus::Content);
+        assert_eq!(app.browse_filter.as_deref(), Some("Artists Picked For You"));
+        let highlight = app.palette.highlight;
+        let (lines, buf) = screen(&app, 120, 40);
+        let menu_w = 28u16;
+        let labels = ["Artists Picked For You", "New Music", "Browse Genres", "Decades", "My Stations", "Pinned"];
+        let mut shaded = Vec::new();
+        for (y, line) in lines.iter().enumerate() {
+            let left: String = line.chars().take(menu_w as usize).collect();
+            let Some(label) = labels.iter().find(|l| left.contains(*l)) else { continue };
+            let has_hl = (0..menu_w).any(|x| buf[(x, y as u16)].bg == highlight);
+            if has_hl {
+                shaded.push((*label).to_owned());
+            }
+        }
+        assert_eq!(
+            shaded,
+            vec!["Artists Picked For You".to_owned()],
+            "only the open pin should be shaded when Content has focus: {shaded:?}\n{}",
+            lines.iter().map(|l| l.chars().take(40).collect::<String>()).collect::<Vec<_>>().join("\n")
+        );
     }
 
     #[test]
@@ -4178,7 +4657,7 @@ mod tests {
             notify_send: false,
             keychain: Some(false),
         });
-        assert!(app.system_open);
+        assert!(app.system_open());
         let all = screen(&app, 110, 30).0.join("\n");
         for want in [
             "System Check",
@@ -4191,7 +4670,7 @@ mod tests {
             "Secret Service keychain",
             "package: a Secret Service keychain, e.g. gnome-keyring or KeePassXC",
             "only sees fonts installed on this computer",
-            "Enter checks again · any other key closes",
+            "Enter checks again · Esc closes",
         ] {
             assert!(all.contains(want), "{want:?} is missing from:\n{all}");
         }
@@ -4199,9 +4678,15 @@ mod tests {
         for gone in ["Install", "y/n", "pacman", "Don't ask"] {
             assert!(!all.contains(gone), "{gone:?} should not be there:\n{all}");
         }
-        assert_eq!(key_caps(&app), [("Enter", "Check Again"), ("Any Other Key", "Close")]);
+        assert_eq!(key_caps(&app), [("Enter", "Check Again"), ("Esc", "Close")]);
         // The app is behind it, as with Help.
-        assert!(all.contains("STATIONS") || all.contains("NOW PLAYING") || all.contains("Stations"), "{all}");
+        assert!(
+            all.contains("STATIONS")
+                || all.contains("NOW PLAYING")
+                || all.contains("My Stations")
+                || all.contains("Stations"),
+            "{all}"
+        );
         // What is there gets a tick and no package line.
         app.system = Some(checks(
             true,
@@ -4212,10 +4697,12 @@ mod tests {
                 keychain: Some(true),
             },
         ));
+        app.system_changed();
         let all = screen(&app, 110, 30).0.join("\n");
         assert!(all.contains("✔ Nerd Font symbols") && !all.contains("package:"), "{all}");
         // While it looks again.
         app.system = None;
+        app.system_changed();
         assert!(screen(&app, 110, 30).0.join("\n").contains("Checking…"));
     }
 
@@ -4235,11 +4722,179 @@ mod tests {
         let private =
             |all: &str| all.chars().filter(|c| ('\u{e000}'..='\u{f8ff}').contains(c) || *c > '\u{f0000}').count();
         for (cols, rows) in [(110, 30), (60, 24), (40, 14)] {
-            app.system_open = false;
+            app.dialogs.clear();
             let without = private(&screen(&app, cols, rows).0.join(""));
-            app.system_open = true;
+            app.open_system();
             let with = private(&screen(&app, cols, rows).0.join(""));
             assert!(with <= without, "{cols}x{rows}");
         }
+    }
+}
+
+/// The README's screenshots: `cargo test --release screenshots -- --ignored`
+/// writes each screen (demo mode, no account) as cells to
+/// `target/screenshots/*.json`; `scripts/screenshots.py` draws them to PNG.
+#[cfg(test)]
+mod screenshots {
+    use super::*;
+    use crate::config::{AlbumArt, ArtTint, Config, RetroMode};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::style::Color;
+
+    const COLS: u16 = 160;
+    const ROWS: u16 = 40;
+
+    fn app() -> App {
+        let mut app = App::new(Config::default(), None, &[], true);
+        app.config.ui.set_theme("tokyo-night");
+        app.apply_theme();
+        app.demo_warm_up(3, std::time::Duration::ZERO);
+        app.settle(std::time::Duration::from_millis(400));
+        let station = app.playing_station_in_reach().map(|s| s.name).unwrap_or_default();
+        app.status = format!("Playing {station}");
+        cover(&mut app);
+        app
+    }
+
+    /// A made-up synthwave cover with detail, so the art styles show their difference.
+    fn cover(app: &mut App) {
+        use image::{DynamicImage, Rgb, RgbImage};
+        let Some(song) = app.now.clone() else { return };
+        let n = 256u32;
+        let img = RgbImage::from_fn(n, n, |x, y| {
+            let (fx, fy) = (x as f32 / n as f32, y as f32 / n as f32);
+            let horizon = 0.62;
+            if fy < horizon {
+                // Sky: deep purple to orange, a striped sun, a mountain ridge.
+                let t = fy / horizon;
+                let mut c = [40.0 + 215.0 * t, 20.0 + 70.0 * t, 90.0 - 30.0 * t];
+                let (dx, dy) = (fx - 0.5, fy - 0.42);
+                if (dx * dx + dy * dy).sqrt() < 0.2 && !(fy > 0.42 && ((fy * 60.0) as u32).is_multiple_of(3)) {
+                    c = [255.0, 200.0 - 160.0 * (fy / 0.62), 80.0 + 60.0 * (1.0 - fy)];
+                }
+                let ridge = horizon - 0.08 - 0.07 * ((fx * 9.0).sin() * 0.6 + (fx * 23.0).cos() * 0.4).abs();
+                if fy > ridge {
+                    c = [30.0, 15.0, 55.0];
+                }
+                if fy <= ridge && (x * 7 + y * 13) % 97 == 0 && fy < 0.3 {
+                    c = [255.0, 255.0, 255.0];
+                }
+                Rgb(c.map(|v| v.clamp(0.0, 255.0) as u8))
+            } else {
+                // A neon grid floor.
+                let d = (fy - horizon) / (1.0 - horizon);
+                let gx = ((fx - 0.5) / (d + 0.05) * 4.0).fract().abs();
+                let gy = (1.0 / (d + 0.08)).fract();
+                if gx < 0.08 || gy < 0.12 {
+                    Rgb([255, 60, 200])
+                } else {
+                    Rgb([(25.0 + 30.0 * d) as u8, 10, (50.0 + 40.0 * d) as u8])
+                }
+            }
+        });
+        app.art.arrived(song.cover_art_url.clone(), Some(DynamicImage::ImageRgb8(img)));
+    }
+
+    fn key(app: &mut App, code: KeyCode) {
+        let mods = match code {
+            KeyCode::Char(c) if c.is_ascii_uppercase() => KeyModifiers::SHIFT,
+            _ => KeyModifiers::NONE,
+        };
+        app.on_key(KeyEvent::new(code, mods));
+        app.settle(std::time::Duration::from_millis(300));
+    }
+
+    fn hex(c: Color, reset: Color) -> String {
+        match c {
+            Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+            Color::Reset => hex(reset, Color::Rgb(0, 0, 0)),
+            other => format!("{other:?}"),
+        }
+    }
+
+    fn shot(app: &App, name: &str) {
+        let mut terminal = Terminal::new(TestBackend::new(COLS, ROWS)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let p = app.palette;
+        let cells: Vec<serde_json::Value> = buffer
+            .content()
+            .iter()
+            .map(|c| {
+                let bold = c.modifier.contains(ratatui::style::Modifier::BOLD);
+                let rev = c.modifier.contains(ratatui::style::Modifier::REVERSED);
+                let (fg, bg) = (hex(c.fg, p.fg), hex(c.bg, p.background));
+                let (fg, bg) = if rev { (bg, fg) } else { (fg, bg) };
+                serde_json::json!([c.symbol(), fg, bg, bold])
+            })
+            .collect();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/screenshots");
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = serde_json::json!({ "cols": COLS, "rows": ROWS, "cells": cells });
+        std::fs::write(dir.join(format!("{name}.json")), doc.to_string()).unwrap();
+    }
+
+    #[test]
+    #[ignore = "writes the README screenshots"]
+    fn screenshots() {
+        shot(&app(), "now-playing");
+
+        let styles = [
+            ("hd", RetroMode::Hd, ArtTint::Off),
+            ("64bit", RetroMode::Bit64, ArtTint::Off),
+            ("32bit", RetroMode::Bit32, ArtTint::Off),
+            ("16bit", RetroMode::Bit16, ArtTint::Off),
+            ("8bit", RetroMode::Bit8, ArtTint::Off),
+            ("4bit", RetroMode::Bit4, ArtTint::Off),
+            ("2bit", RetroMode::Bit2, ArtTint::Off),
+            ("duotone", RetroMode::Hd, ArtTint::Duotone),
+            ("palette", RetroMode::Bit16, ArtTint::Palette),
+        ];
+        for (name, retro, tint) in styles {
+            let mut a = app();
+            a.config.ui.album_art = AlbumArt::Picture;
+            a.config.ui.retro_mode = retro;
+            a.config.ui.art_tint = tint;
+            shot(&a, &format!("art-{name}"));
+        }
+        let mut a = app();
+        a.config.ui.album_art = AlbumArt::Off;
+        shot(&a, "art-off");
+
+        // The station editor: seeds, then thumbs up.
+        let mut a = app();
+        a.view = View::Stations;
+        a.focus = crate::app::Focus::Content;
+        a.stations_cursor = a.stations.iter().position(|s| s.name == "M83 Radio").unwrap();
+        key(&mut a, KeyCode::Char('e'));
+        shot(&a, "editor-seeds");
+        key(&mut a, KeyCode::Tab);
+        shot(&a, "editor-thumbs");
+
+        // Creating a station from a search.
+        let mut a = app();
+        key(&mut a, KeyCode::Char('S'));
+        key(&mut a, KeyCode::Char('a'));
+        for c in "m83".chars() {
+            a.on_key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        key(&mut a, KeyCode::Enter);
+        shot(&a, "create-station");
+
+        // Favorites: a few starred stations in the menu and on the Stations page.
+        let mut a = app();
+        for s in a.stations.iter().skip(1).take(3).cloned().collect::<Vec<_>>() {
+            a.config.ui.favorites.push(crate::config::Favorite { id: s.id, name: s.name });
+        }
+        a.view = View::Stations;
+        a.focus = crate::app::Focus::Content;
+        shot(&a, "favorites");
+
+        let mut a = app();
+        a.view = View::Settings;
+        a.focus = crate::app::Focus::Content;
+        shot(&a, "settings");
     }
 }

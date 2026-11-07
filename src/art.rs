@@ -28,6 +28,11 @@ const MAX_PIXELS: u32 = 640;
 /// How long to wait before each new try at a cover that failed to download
 /// (so a failed cover is tried [`RETRY_WAITS`]`.len() + 1` times in all).
 pub const RETRY_WAITS: [Duration; 3] = [Duration::from_secs(2), Duration::from_secs(6), Duration::from_secs(15)];
+/// After those quick tries, a cover still missing is tried again this often
+/// (for as long as its song is playing or next), showing "no cover" between tries.
+pub const SLOW_RETRY: Duration = Duration::from_secs(60);
+/// The art log is started afresh (the old one kept as `art.log.old`) past this size.
+const LOG_CAP: u64 = 256 * 1024;
 
 /// A cover that failed: how many times, and when it may be asked for again.
 #[derive(Debug, Clone, Copy)]
@@ -164,7 +169,7 @@ impl Art {
             return false;
         }
         if let Some(failure) = self.failed.get(url)
-            && (failure.tries > RETRY_WAITS.len() || now < failure.retry_at)
+            && now < failure.retry_at
         {
             return false;
         }
@@ -185,7 +190,7 @@ impl Art {
         self.requested.remove(&url);
         let Some(image) = image else {
             let tries = self.failed.get(&url).map_or(0, |f| f.tries) + 1;
-            let wait = RETRY_WAITS.get(tries - 1).copied().unwrap_or_default();
+            let wait = RETRY_WAITS.get(tries - 1).copied().unwrap_or(SLOW_RETRY);
             self.failed.insert(url, Failure { tries, retry_at: now + wait });
             return;
         };
@@ -395,6 +400,30 @@ fn hash(text: &str) -> u64 {
     text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
 }
 
+/// Where cover download failures are written (never to the terminal):
+/// `~/.cache/boxvibe/art.log` (XDG).
+pub fn log_path() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "boxvibe").map(|d| d.cache_dir().join("art.log"))
+}
+
+/// Adds a line to the art log: when (UTC), the cover (without any query string)
+/// and why it failed. Past [`LOG_CAP`] the log moves to `.old` and starts again.
+/// Errors writing the log are ignored: a cover is not worth a crash or a message.
+pub fn log_failure(path: &std::path::Path, url: &str, why: &str) {
+    use std::io::Write;
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > LOG_CAP) {
+        let _ = std::fs::rename(path, path.with_extension("log.old"));
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let url = url.split(['?', '#']).next().unwrap_or_default();
+    let why: String = why.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{} {url}: {why}", crate::ads::iso_utc(std::time::SystemTime::now()));
+    }
+}
+
 /// `~/.cache/boxvibe/art` (XDG).
 pub fn cache_dir() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "boxvibe").map(|d| d.cache_dir().join("art"))
@@ -555,7 +584,31 @@ mod tests {
         }
         art.arrived_at("u".into(), None, now);
         assert!(matches!(art.status("u"), Cover::None), "four tries, then no cover");
-        assert!(!art.want_at("u", now + Duration::from_secs(3600)), "and no more asking");
+        // Then about once a minute, for as long as it is wanted.
+        for _ in 0..3 {
+            assert!(!art.want_at("u", now + SLOW_RETRY - Duration::from_millis(1)), "not before a minute");
+            now += SLOW_RETRY;
+            assert!(art.want_at("u", now), "a minute later, again");
+            assert!(matches!(art.status("u"), Cover::Loading));
+            art.arrived_at("u".into(), None, now);
+            assert!(matches!(art.status("u"), Cover::None), "no cover between the slow tries");
+        }
+        art.arrived_at("u".into(), Some(demo_cover("u")), now);
+        assert!(!art.want_at("u", now + SLOW_RETRY), "a cover that came is kept");
+    }
+
+    #[test]
+    fn cover_failures_go_to_the_log_file_without_query_strings_and_it_rolls_over() {
+        let dir = crate::config::temp_dir("art-log");
+        let log = dir.join("art.log");
+        log_failure(&log, "https://cdn.example/a.jpg?token=abc", "HTTP 404\nnot found");
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(text.contains("https://cdn.example/a.jpg: HTTP 404 not found") && !text.contains("token"), "{text}");
+        assert_eq!(text.lines().count(), 1);
+        std::fs::write(&log, vec![b'x'; LOG_CAP as usize + 1]).unwrap();
+        log_failure(&log, "https://cdn.example/b.jpg", "timed out");
+        assert!(dir.join("art.log.old").exists());
+        assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 1, "a fresh log");
     }
 
     #[test]
@@ -565,9 +618,9 @@ mod tests {
         for _ in 0..=RETRY_WAITS.len() {
             art.arrived_at("u".into(), None, t0);
         }
-        assert!(!art.want_at("u", t0 + Duration::from_secs(3600)));
+        assert!(!art.want_at("u", t0 + Duration::from_secs(30)));
         art.set_overlay(true);
-        assert!(!art.want_at("u", t0 + Duration::from_secs(3600)), "not while it is open");
+        assert!(!art.want_at("u", t0 + Duration::from_secs(30)), "not while it is open");
         art.set_overlay(false);
         assert!(art.want_at("u", t0), "right away, when it closes");
         art.arrived_at("u".into(), Some(demo_cover("u")), t0);

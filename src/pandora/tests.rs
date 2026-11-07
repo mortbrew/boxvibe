@@ -895,6 +895,8 @@ fn recently_played_asks_the_graphql_path_with_the_sites_types() {
     let seen = seen.lock().unwrap();
     let call = seen.iter().find(|s| s.path.ends_with("graphql/graphql")).expect("no graphql call");
     assert_eq!(call.header("X-AuthToken"), Some("tok"));
+    // The site's Apollo client sends this on its GraphQL calls.
+    assert_eq!(call.header("apollographql-client-name"), Some("web"));
     assert_eq!(call.body["operationName"], "GetRecentlyPlayedSourcesWeb");
     // `variables` is a JSON string, not an object: the site sends it that way.
     let vars = call.body["variables"].as_str().expect("variables must be a string");
@@ -905,6 +907,19 @@ fn recently_played_asks_the_graphql_path_with_the_sites_types() {
     let query = call.body["query"].as_str().unwrap();
     assert!(query.contains("fragment ArtFragment on Art"), "spread fragment missing");
     assert!(query.contains("fragment RightsFragment on Rights"), "spread fragment missing");
+}
+
+#[test]
+fn the_apollo_client_name_is_only_sent_on_graphql_calls() {
+    let (base, seen) = fake_pandora(Box::new(|_r| (200, "{}".into())));
+    let mut c = Client::with_base(&base, "");
+    c.auth = Some("tok".into());
+    let _ = c.station_feedback("1", true, 0);
+    let seen = seen.lock().unwrap();
+    let rest = seen.iter().find(|s| s.path == "/api/v1/station/getStationFeedback").expect("no REST call");
+    assert_eq!(rest.header("apollographql-client-name"), None, "REST calls must not start sending it");
+    assert_eq!(rest.header("X-AuthToken"), Some("tok"));
+    assert!(seen.iter().all(|s| s.header("apollographql-client-name").is_none()), "{seen:?}");
 }
 
 #[test]

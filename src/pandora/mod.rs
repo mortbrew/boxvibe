@@ -613,8 +613,6 @@ pub fn parse_seed_suggestions(v: &Value) -> Vec<SearchHit> {
         .collect()
 }
 
-/// `getStationFeedback`: `total` and the `feedback` list. Entries without an
-/// id are skipped (they could not be deleted).
 /// The entries of a `recentlyPlayedSources` answer: one `RecentSource` per
 /// `items[].sourceEntity` that has an `id`, skipping null or empty ones.
 pub fn parse_recently_played(v: &Value) -> Vec<RecentSource> {
@@ -640,6 +638,8 @@ pub fn parse_recently_played(v: &Value) -> Vec<RecentSource> {
         .collect()
 }
 
+/// `getStationFeedback`: `total` and the `feedback` list. Entries without an
+/// id are skipped (they could not be deleted).
 pub fn parse_feedback(v: &Value) -> FeedbackPage {
     let items: Vec<Feedback> = v
         .get("feedback")
@@ -894,6 +894,12 @@ impl Client {
 
     /// POSTs `body` as JSON to `path` (`/api/v1/...`) with the site's headers.
     fn post(&mut self, path: &str, body: &Value) -> Result<Value, Error> {
+        self.post_with(path, body, None)
+    }
+
+    /// `post`, plus the Apollo client name the site's GraphQL calls carry. Only
+    /// the GraphQL calls are seen sending it, so it is opt-in, not global.
+    fn post_with(&mut self, path: &str, body: &Value, client_name: Option<&str>) -> Result<Value, Error> {
         let csrf = match &self.csrf {
             Some(c) => c.clone(),
             None => self.fetch_csrf(),
@@ -911,6 +917,9 @@ impl Client {
             .header("Cookie", format!("csrftoken={csrf}"));
         if let Some(auth) = &self.auth {
             request = request.header("X-AuthToken", auth);
+        }
+        if let Some(name) = client_name {
+            request = request.header("apollographql-client-name", name);
         }
         let mut response = request.send(body.to_string()).map_err(|e| Error::Http(e.to_string()))?;
         let status = response.status().as_u16();
@@ -1208,7 +1217,7 @@ impl Client {
             "query": RECENT_QUERY,
             "variables": variables,
         });
-        let v = self.post("/api/v1/graphql/graphql", &body)?;
+        let v = self.post_with("/api/v1/graphql/graphql", &body, Some("web"))?;
         if let Some(first) = v.get("errors").and_then(Value::as_array).and_then(|e| e.first()) {
             let message = str_of(first, "message");
             return Err(Error::Api {

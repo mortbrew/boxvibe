@@ -124,6 +124,31 @@ pub struct FeedbackPage {
 /// How many thumbs one page asks for.
 pub const FEEDBACK_PAGE: usize = 30;
 
+/// How many recently played entries one call asks for.
+#[allow(dead_code)] // its menu row lands once a live answer is captured.
+pub const RECENT_PAGE: usize = 20;
+
+/// The `RecentlyPlayedSourceType` values the site's own web client asks for,
+/// read from its bundle rather than guessed: `ALBUM`, `SONG`, `PLAYLIST`,
+/// `STATION`, `ARTIST_TOP_SONGS`, `PODCAST`. `TRACK` is not one of them.
+#[allow(dead_code)]
+pub const RECENT_TYPES: [&str; 6] = ["ALBUM", "SONG", "PLAYLIST", "STATION", "ARTIST_TOP_SONGS", "PODCAST"];
+
+/// One entry of the account's recently played list.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[allow(dead_code)] // drawn once a live answer is captured.
+pub struct RecentSource {
+    /// `id` (`ST:0:...`, `TR:...`): what replaying it takes.
+    pub id: String,
+    /// `type` exactly as the site sends it, left unmapped: nothing here has
+    /// seen a live value yet, so no guess is baked in.
+    pub kind: String,
+    /// `name`: empty for a station, whose fragment selects no name.
+    pub name: String,
+    /// The artist's name, when the entity has one (songs, albums).
+    pub by: String,
+}
+
 /// What a search hit is: only artists and songs can seed a station here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HitKind {
@@ -590,6 +615,31 @@ pub fn parse_seed_suggestions(v: &Value) -> Vec<SearchHit> {
 
 /// `getStationFeedback`: `total` and the `feedback` list. Entries without an
 /// id are skipped (they could not be deleted).
+/// The entries of a `recentlyPlayedSources` answer: one `RecentSource` per
+/// `items[].sourceEntity` that has an `id`, skipping null or empty ones.
+pub fn parse_recently_played(v: &Value) -> Vec<RecentSource> {
+    v.pointer("/data/recentlyPlayedSources/items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("sourceEntity"))
+        .filter(|entity| entity.is_object())
+        .filter_map(|entity| {
+            let id = str_of(entity, "id");
+            if id.is_empty() {
+                return None;
+            }
+            let by = entity.pointer("/artist/name").and_then(Value::as_str).unwrap_or_default();
+            Some(RecentSource {
+                id,
+                kind: str_of(entity, "type"),
+                name: str_of(entity, "name").trim().to_owned(),
+                by: by.trim().to_owned(),
+            })
+        })
+        .collect()
+}
+
 pub fn parse_feedback(v: &Value) -> FeedbackPage {
     let items: Vec<Feedback> = v
         .get("feedback")
@@ -1130,9 +1180,46 @@ impl Client {
     }
 
     /// `v1/station/deleteFeedback`: takes one thumb back.
+
+    /// The site's own `GetRecentlyPlayedSources` document, copied from its bundle
+    /// (`web-app.c532b8d045d20ffdc585.js`). It carries the `ArtFragment` and
+    /// `RightsFragment` it names, because a raw POST has to define every fragment
+    /// it spreads -- Apollo merges them for the site, a bare request does not.
+    const RECENT_QUERY: &str = r#"query GetRecentlyPlayedSourcesWeb($limit: Int, $types: [RecentlyPlayedSourceType!]!, $playedAfter: DateTime) {   recentlyPlayedSources(pagination: {limit: $limit}, types: $types, playedAfter: $playedAfter) {     items {       sourceEntity {         ...RecentlyPlayedSourceFragment       }     }   } }  fragment RecentlyPlayedSourceFragment on IEntity {   ... on Station {     id     type     isCollected     stationType   }   ... on Album {     id     type     name     isCollected     shareableUrlPath: urlPath     artist {       id       name       shareableUrlPath: urlPath     }     icon: art {       ...ArtFragment     }     rightsInfo: rights {       ...RightsFragment     }   }   ... on Track {     id     type     name     isCollected     shareableUrlPath: urlPath     artist {       id       name       shareableUrlPath: urlPath     }     album {       id       type       name       shareableUrlPath: urlPath     }     icon: art {       ...ArtFragment     }     rightsInfo: rights {       ...RightsFragment     }   }   ... on Playlist {     id     type     name     totalTracks     isEditable     isCollected     shareableUrlPath: urlPath     hasVoiceTrack: includesAny(types: [AM])     listenerIdInfo: owner {       id       displayName       isMe     }     icon: art {       ...ArtFragment     }   }   ... on Podcast {     id     type     name     publisherName     isCollected     shareableUrlPath: urlPath     icon: art {       ...ArtFragment     }     rightsInfo: rights {       ...RightsFragment     }   }   ... on ArtistPlay {     id     type     artist {       id       name       shareableUrlPath: urlPath       icon: art {         ...ArtFragment       }     }   } }  fragment ArtFragment on Art {   artId   dominantColor   artUrl: url(size: WIDTH_500) }  fragment RightsFragment on Rights {   expirationTime   hasInteractive   hasRadioRights   hasOffline } "#;
+
     pub fn delete_feedback(&mut self, feedback_id: &str, positive: bool) -> Result<(), Error> {
         self.post("/api/v1/station/deleteFeedback", &json!({ "feedbackId": feedback_id, "isPositive": positive }))?;
         Ok(())
+    }
+
+    /// The account's recently played list: one `GetRecentlyPlayedSourcesWeb`
+    /// call to `v1/graphql/graphql`, the path the site's client builds as
+    /// `'/api/' + 'v1/graphql/graphql'`. `types` are `RecentlyPlayedSourceType`
+    /// values; an empty slice asks for the six the site asks for.
+    ///
+    /// The answer's shape is not captured yet (introspection is closed), so the
+    /// parser reads what it can and the caller hides an empty list.
+    #[allow(dead_code)] // wired to the menu once a live answer is captured.
+    pub fn recently_played(&mut self, limit: usize, types: &[&str]) -> Result<Vec<RecentSource>, Error> {
+        let types: Vec<&str> = if types.is_empty() { RECENT_TYPES.to_vec() } else { types.to_vec() };
+        // The site sends `variables` as a JSON string, as the seed mutations do.
+        let variables = json!({ "limit": limit, "types": types }).to_string();
+        let body = json!({
+            "operationName": "GetRecentlyPlayedSourcesWeb",
+            "query": RECENT_QUERY,
+            "variables": variables,
+        });
+        let v = self.post("/api/v1/graphql/graphql", &body)?;
+        if let Some(first) = v.get("errors").and_then(Value::as_array).and_then(|e| e.first()) {
+            let message = str_of(first, "message");
+            return Err(Error::Api {
+                status: 200,
+                code: None,
+                kind: "GRAPHQL".into(),
+                message: if message.is_empty() { "Pandora refused the recently played list".into() } else { message },
+            });
+        }
+        Ok(parse_recently_played(&v))
     }
 
     /// `v3/sod/search`: artists and songs matching `query`.

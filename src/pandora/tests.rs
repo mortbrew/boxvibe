@@ -863,3 +863,67 @@ fn directory_posts_an_empty_body_and_view_all_posts_the_path() {
     assert_eq!(bodies[0], &json!({}), "main Browse still posts {{}}");
     assert_eq!(bodies[1], &json!({"deviceType": "web", "path": "/browse/music/new-music", "feedType": "browse"}));
 }
+
+#[test]
+fn recently_played_asks_the_graphql_path_with_the_sites_types() {
+    let (base, seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        "/api/v1/graphql/graphql" => (
+            200,
+            json!({ "data": { "recentlyPlayedSources": { "items": [
+                { "sourceEntity": { "id": "TR:1", "type": "TR", "name": " Kids ",
+                                    "artist": { "id": "AR:2", "name": "MGMT" } } },
+                { "sourceEntity": { "id": "ST:0:9", "type": "ST" } },
+                { "sourceEntity": { "id": "" } },
+                { "sourceEntity": null },
+            ] } } })
+            .to_string(),
+        ),
+        _ => (200, "{}".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    let items = c.recently_played(20, &[]).unwrap();
+    assert_eq!(items.len(), 2, "{items:#?}");
+    assert_eq!(
+        (items[0].id.as_str(), items[0].kind.as_str(), items[0].name.as_str(), items[0].by.as_str()),
+        ("TR:1", "TR", "Kids", "MGMT")
+    );
+    // A station's fragment selects no name, so an empty one must not panic.
+    assert_eq!((items[1].id.as_str(), items[1].name.as_str()), ("ST:0:9", ""));
+    let seen = seen.lock().unwrap();
+    let call = seen.iter().find(|s| s.path.ends_with("graphql/graphql")).expect("no graphql call");
+    assert_eq!(call.header("X-AuthToken"), Some("tok"));
+    assert_eq!(call.body["operationName"], "GetRecentlyPlayedSourcesWeb");
+    // `variables` is a JSON string, not an object: the site sends it that way.
+    let vars = call.body["variables"].as_str().expect("variables must be a string");
+    let vars: Value = serde_json::from_str(vars).unwrap();
+    assert_eq!(vars["limit"], 20);
+    assert_eq!(vars["types"], json!(["ALBUM", "SONG", "PLAYLIST", "STATION", "ARTIST_TOP_SONGS", "PODCAST"]));
+    // The document has to carry the fragments it spreads.
+    let query = call.body["query"].as_str().unwrap();
+    assert!(query.contains("fragment ArtFragment on Art"), "spread fragment missing");
+    assert!(query.contains("fragment RightsFragment on Rights"), "spread fragment missing");
+}
+
+#[test]
+fn recently_played_parse_is_tolerant_and_reports_graphql_errors() {
+    assert!(parse_recently_played(&json!({})).is_empty());
+    assert!(parse_recently_played(&json!({ "data": { "recentlyPlayedSources": { "items": null } } })).is_empty());
+    assert!(parse_recently_played(&json!({ "data": null })).is_empty());
+    let one = parse_recently_played(&json!({ "data": { "recentlyPlayedSources": { "items": [
+        { "sourceEntity": { "id": "AL:3", "type": "AL", "name": "Oracular" } }
+    ] } } }));
+    assert_eq!(one.len(), 1);
+    assert_eq!((one[0].id.as_str(), one[0].by.as_str()), ("AL:3", ""), "no artist in this answer");
+
+    let (base, _seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        "/api/v1/graphql/graphql" => (200, json!({ "errors": [{ "message": "no such field" }] }).to_string()),
+        _ => (200, "{}".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    let err = c.recently_played(20, &[]).unwrap_err().to_string();
+    assert!(err.contains("no such field"), "{err}");
+}

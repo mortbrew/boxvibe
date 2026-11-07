@@ -841,6 +841,12 @@ pub struct Client {
     aac_only: bool,
 }
 
+/// The site's own `GetRecentlyPlayedSources` document, copied from its bundle
+/// (`web-app.c532b8d045d20ffdc585.js`). It carries the `ArtFragment` and
+/// `RightsFragment` it names, because a raw POST has to define every fragment
+/// it spreads -- Apollo merges them for the site, a bare request does not.
+const RECENT_QUERY: &str = r#"query GetRecentlyPlayedSourcesWeb($limit: Int, $types: [RecentlyPlayedSourceType!]!, $playedAfter: DateTime) {   recentlyPlayedSources(pagination: {limit: $limit}, types: $types, playedAfter: $playedAfter) {     items {       sourceEntity {         ...RecentlyPlayedSourceFragment       }     }   } }  fragment RecentlyPlayedSourceFragment on IEntity {   ... on Station {     id     type     isCollected     stationType   }   ... on Album {     id     type     name     isCollected     shareableUrlPath: urlPath     artist {       id       name       shareableUrlPath: urlPath     }     icon: art {       ...ArtFragment     }     rightsInfo: rights {       ...RightsFragment     }   }   ... on Track {     id     type     name     isCollected     shareableUrlPath: urlPath     artist {       id       name       shareableUrlPath: urlPath     }     album {       id       type       name       shareableUrlPath: urlPath     }     icon: art {       ...ArtFragment     }     rightsInfo: rights {       ...RightsFragment     }   }   ... on Playlist {     id     type     name     totalTracks     isEditable     isCollected     shareableUrlPath: urlPath     hasVoiceTrack: includesAny(types: [AM])     listenerIdInfo: owner {       id       displayName       isMe     }     icon: art {       ...ArtFragment     }   }   ... on Podcast {     id     type     name     publisherName     isCollected     shareableUrlPath: urlPath     icon: art {       ...ArtFragment     }     rightsInfo: rights {       ...RightsFragment     }   }   ... on ArtistPlay {     id     type     artist {       id       name       shareableUrlPath: urlPath       icon: art {         ...ArtFragment       }     }   } }  fragment ArtFragment on Art {   artId   dominantColor   artUrl: url(size: WIDTH_500) }  fragment RightsFragment on Rights {   expirationTime   hasInteractive   hasRadioRights   hasOffline } "#;
+
 impl Client {
     pub fn new(user_agent: &str) -> Self {
         Self::with_base(SITE, user_agent)
@@ -1180,12 +1186,6 @@ impl Client {
     }
 
     /// `v1/station/deleteFeedback`: takes one thumb back.
-
-    /// The site's own `GetRecentlyPlayedSources` document, copied from its bundle
-    /// (`web-app.c532b8d045d20ffdc585.js`). It carries the `ArtFragment` and
-    /// `RightsFragment` it names, because a raw POST has to define every fragment
-    /// it spreads -- Apollo merges them for the site, a bare request does not.
-    const RECENT_QUERY: &str = r#"query GetRecentlyPlayedSourcesWeb($limit: Int, $types: [RecentlyPlayedSourceType!]!, $playedAfter: DateTime) {   recentlyPlayedSources(pagination: {limit: $limit}, types: $types, playedAfter: $playedAfter) {     items {       sourceEntity {         ...RecentlyPlayedSourceFragment       }     }   } }  fragment RecentlyPlayedSourceFragment on IEntity {   ... on Station {     id     type     isCollected     stationType   }   ... on Album {     id     type     name     isCollected     shareableUrlPath: urlPath     artist {       id       name       shareableUrlPath: urlPath     }     icon: art {       ...ArtFragment     }     rightsInfo: rights {       ...RightsFragment     }   }   ... on Track {     id     type     name     isCollected     shareableUrlPath: urlPath     artist {       id       name       shareableUrlPath: urlPath     }     album {       id       type       name       shareableUrlPath: urlPath     }     icon: art {       ...ArtFragment     }     rightsInfo: rights {       ...RightsFragment     }   }   ... on Playlist {     id     type     name     totalTracks     isEditable     isCollected     shareableUrlPath: urlPath     hasVoiceTrack: includesAny(types: [AM])     listenerIdInfo: owner {       id       displayName       isMe     }     icon: art {       ...ArtFragment     }   }   ... on Podcast {     id     type     name     publisherName     isCollected     shareableUrlPath: urlPath     icon: art {       ...ArtFragment     }     rightsInfo: rights {       ...RightsFragment     }   }   ... on ArtistPlay {     id     type     artist {       id       name       shareableUrlPath: urlPath       icon: art {         ...ArtFragment       }     }   } }  fragment ArtFragment on Art {   artId   dominantColor   artUrl: url(size: WIDTH_500) }  fragment RightsFragment on Rights {   expirationTime   hasInteractive   hasRadioRights   hasOffline } "#;
 
     pub fn delete_feedback(&mut self, feedback_id: &str, positive: bool) -> Result<(), Error> {
         self.post("/api/v1/station/deleteFeedback", &json!({ "feedbackId": feedback_id, "isPositive": positive }))?;

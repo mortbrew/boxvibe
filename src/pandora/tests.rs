@@ -627,7 +627,7 @@ fn fake_pod(host: &str) -> Value {
 
 #[test]
 fn a_two_ad_pod_is_asked_played_and_reported_in_the_websites_order() {
-    use crate::ads::{Action, Break, Tracker, parse_ad_list};
+    use crate::ads::{parse_ad_list, Action, Break, Tracker};
     use std::time::{Duration, SystemTime};
     let (base, seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
         "/api/v1/auth/login" => login_ok("tok"),
@@ -867,7 +867,6 @@ fn directory_posts_an_empty_body_and_view_all_posts_the_path() {
 #[test]
 fn recently_played_asks_the_graphql_path_with_the_sites_types() {
     let (base, seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
-        "/api/v1/auth/login" => login_ok("tok"),
         "/api/v1/graphql/graphql" => (
             200,
             json!({ "data": { "recentlyPlayedSources": { "items": [
@@ -882,7 +881,9 @@ fn recently_played_asks_the_graphql_path_with_the_sites_types() {
         _ => (200, "{}".into()),
     }));
     let mut c = Client::with_base(&base, "");
-    c.login("me", "pw").unwrap();
+    // The login flow has its own tests; this one is about the call's shape, so
+    // the token is set directly and no password literal is needed.
+    c.auth = Some("tok".into());
     let items = c.recently_played(20, &[]).unwrap();
     assert_eq!(items.len(), 2, "{items:#?}");
     assert_eq!(
@@ -918,12 +919,11 @@ fn recently_played_parse_is_tolerant_and_reports_graphql_errors() {
     assert_eq!((one[0].id.as_str(), one[0].by.as_str()), ("AL:3", ""), "no artist in this answer");
 
     let (base, _seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
-        "/api/v1/auth/login" => login_ok("tok"),
         "/api/v1/graphql/graphql" => (200, json!({ "errors": [{ "message": "no such field" }] }).to_string()),
         _ => (200, "{}".into()),
     }));
     let mut c = Client::with_base(&base, "");
-    c.login("me", "pw").unwrap();
+    c.auth = Some("tok".into());
     let err = c.recently_played(20, &[]).unwrap_err().to_string();
     assert!(err.contains("no such field"), "{err}");
 }

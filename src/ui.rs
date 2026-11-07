@@ -675,11 +675,14 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let now_h = if app.has_now_playing() { 2 } else { 0 };
     let section_pins = app.browse_menu_pins().len() as u16;
     let pinned = app.config.ui.pinned_in_menu;
-    // My Stations, pinned Browse sections, optional Pinned songs.
-    let top_n = 1 + section_pins + u16::from(pinned);
-    let [now_area, stations_row, favs_area, _, rule, app_area] = Layout::vertical([
+    // My Stations and the optional Pinned songs, then the pinned Browse
+    // sections under a "BROWSE (n)" heading, ruled like FAVORITES.
+    let top_n = 1 + u16::from(pinned);
+    let browse_n = if section_pins == 0 { 0 } else { section_pins + 2 };
+    let [now_area, stations_row, browse_area, favs_area, _, rule, app_area] = Layout::vertical([
         Constraint::Length(now_h),
         Constraint::Length(top_n),
+        Constraint::Length(browse_n),
         Constraint::Fill(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -725,10 +728,6 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let count = if app.stations.is_empty() { String::new() } else { format!(" ({})", app.stations.len()) };
     let mut lines = Vec::new();
     let mut top = vec![(MenuItem::Stations, ic.station, format!("My Stations{count}"))];
-    for (i, (_, title)) in app.browse_menu_pins().into_iter().enumerate() {
-        let icon = if title == "Browse Genres" { ic.genre } else { ic.browse };
-        top.push((MenuItem::BrowsePin(i), icon, title));
-    }
     if pinned {
         let n = if app.pins.is_empty() { String::new() } else { format!(" ({})", app.pins.len()) };
         top.push((MenuItem::Pinned, ic.pin, format!("Pinned{n}")));
@@ -742,6 +741,29 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         lines.push(Line::from(pad(&text, stations_row.width as usize)).style(style));
     }
     frame.render_widget(Paragraph::new(lines), stations_row);
+    // The pinned Browse sections, under a heading that matches FAVORITES: a
+    // rule, "BROWSE (n)", then one row each.
+    if section_pins > 0 {
+        let [gap, head, rows] =
+            Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Length(section_pins)])
+                .areas(browse_area);
+        frame.render_widget(inset_rule(&p, gap.width), gap);
+        frame.render_widget(
+            Paragraph::new(Span::styled(format!(" BROWSE ({section_pins})"), Style::new().fg(p.orange).bold())),
+            head,
+        );
+        let mut lines = Vec::new();
+        for (i, (_, title)) in app.browse_menu_pins().into_iter().enumerate() {
+            let icon = if title == "Browse Genres" { ic.genre } else { ic.browse };
+            let mut style = Style::new().fg(p.fg);
+            if let Some(sel) = row_style(MenuItem::BrowsePin(i)) {
+                style = style.patch(sel);
+            }
+            let text = format!(" {} {title}", pad(icon, 2));
+            lines.push(Line::from(pad(&text, rows.width as usize)).style(style));
+        }
+        frame.render_widget(Paragraph::new(lines), rows);
+    }
     // FAVORITES, like tubevibe's tabs: only once a station is starred.
     let favorites = &app.config.ui.favorites;
     if app.config.ui.favorites_in_menu && !favorites.is_empty() && favs_area.height > 1 {
@@ -4603,6 +4625,22 @@ mod tests {
         assert!(all_text(&screen(&app, 120, 36).0).contains("offline"));
         assert!(key_caps(&app).iter().any(|(_, w)| *w == "Try Again"));
         let _ = screen(&app, 30, 8);
+    }
+
+    #[test]
+    fn browse_sections_sit_under_a_browse_heading() {
+        let app = demo();
+        let (lines, _) = screen(&app, 120, 40);
+        let menu = |l: &str| -> String { l.chars().take(30).collect() };
+        let at = |want: &dyn Fn(&str) -> bool| lines.iter().map(|l| menu(l)).position(|l| want(&l));
+        let head = at(&|l| l.starts_with("│ BROWSE (10)")).expect("the BROWSE heading, with the pin count");
+        let pinned = at(&|l| l.contains("Pinned")).expect("Pinned");
+        let first = at(&|l| l.contains("Artists Picked For You")).expect("the first section");
+        assert!(
+            pinned < head && head < first,
+            "Pinned, then BROWSE (n), then the sections:\n{}",
+            lines.iter().map(|l| menu(l)).collect::<Vec<_>>().join("\n")
+        );
     }
 
     #[test]

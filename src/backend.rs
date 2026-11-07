@@ -12,8 +12,8 @@ use crate::ads::{self, Ad};
 use crate::demo;
 use crate::keychain::Keychain;
 use crate::pandora::{
-    self, AdAsk, ArtistInfo, BrowseSection, Client, Error, FeedbackPage, Quality, SearchHit, Seed, Song, Station,
-    StationDetails, StationModes,
+    self, AdAsk, ArtistInfo, BrowseSection, Client, Error, FeedbackPage, Quality, RECENT_PAGE, RecentSource, SearchHit,
+    Seed, Song, Station, StationDetails, StationModes,
 };
 use crate::update::{self, Checked, Update};
 
@@ -72,6 +72,8 @@ pub enum Request {
     Search {
         query: String,
     },
+    /// The account's recently played sources, newest first.
+    RecentlyPlayed,
     /// The artist page (bio, similar artists) of `name`; `music_id` is the
     /// song's `artistMusicId` (empty: found by name).
     Artist {
@@ -193,6 +195,8 @@ pub enum Reply {
         query: String,
         hits: Vec<SearchHit>,
     },
+    /// `recentlyPlayedSources`, newest first, as Pandora sends them.
+    Recent(Vec<RecentSource>),
     /// A station Pandora just made (the account now has it).
     StationCreated(Station),
     Artist(ArtistInfo),
@@ -427,6 +431,20 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
                 }
             }
             Request::Search { query } => Reply::SearchResults { hits: demo::search(&query), query },
+            // The demo's history: three of its stations, as recent station entries.
+            Request::RecentlyPlayed => Reply::Recent(
+                stations
+                    .iter()
+                    .skip(2)
+                    .take(3)
+                    .map(|s| RecentSource {
+                        id: s.id.clone(),
+                        kind: "ST".into(),
+                        name: String::new(),
+                        by: String::new(),
+                    })
+                    .collect(),
+            ),
             Request::CreateStation { pandora_id } => match demo::new_station(&pandora_id, stations.len()) {
                 Some(station) => {
                     // Like Pandora: an existing one is not made twice; a new one comes after Shuffle.
@@ -555,6 +573,9 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
             }
             Request::Search { query } => run(&mut client, &login, &mut took_over, "search", |c| {
                 c.search(&query).map(|hits| Reply::SearchResults { query: query.clone(), hits })
+            }),
+            Request::RecentlyPlayed => run(&mut client, &login, &mut took_over, "recently played", |c| {
+                c.recently_played(RECENT_PAGE, &[]).map(Reply::Recent)
             }),
             Request::CreateStation { pandora_id } => run(&mut client, &login, &mut took_over, "create station", |c| {
                 c.create_station(&pandora_id).map(Reply::StationCreated)

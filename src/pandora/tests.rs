@@ -627,7 +627,7 @@ fn fake_pod(host: &str) -> Value {
 
 #[test]
 fn a_two_ad_pod_is_asked_played_and_reported_in_the_websites_order() {
-    use crate::ads::{parse_ad_list, Action, Break, Tracker};
+    use crate::ads::{Action, Break, Tracker, parse_ad_list};
     use std::time::{Duration, SystemTime};
     let (base, seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
         "/api/v1/auth/login" => login_ok("tok"),
@@ -902,11 +902,43 @@ fn recently_played_asks_the_graphql_path_with_the_sites_types() {
     let vars = call.body["variables"].as_str().expect("variables must be a string");
     let vars: Value = serde_json::from_str(vars).unwrap();
     assert_eq!(vars["limit"], 20);
-    assert_eq!(vars["types"], json!(["ALBUM", "SONG", "PLAYLIST", "STATION", "ARTIST_TOP_SONGS", "PODCAST"]));
+    // Two-letter wire codes: the longer names are the bundle's own constants
+    // and come back as a 400 invalid enum (see the test below).
+    assert_eq!(vars["types"], json!(["AL", "AP", "AU", "CT", "PL", "PC", "PE", "ST", "TR"]));
+    // `playedAfter` stays out of the body: present and null is a 200 with
+    // `data: null` and an error, so it is only sent once a window is asked for.
+    assert!(vars.get("playedAfter").is_none(), "{vars}");
     // The document has to carry the fragments it spreads.
     let query = call.body["query"].as_str().unwrap();
     assert!(query.contains("fragment ArtFragment on Art"), "spread fragment missing");
     assert!(query.contains("fragment RightsFragment on Rights"), "spread fragment missing");
+}
+
+#[test]
+fn a_captured_answer_parses_to_station_entries() {
+    // Trimmed from the live capture of 2026-11-07 (shared fixture, ids masked):
+    // seven stations, `type` as the wire code `ST`, no `name` on a Station.
+    let answer = json!({ "data": { "recentlyPlayedSources": { "items": [
+        { "sourceEntity": { "id": "ST:0:1", "type": "ST", "isCollected": true, "stationType": "SEEDED_STATION" } },
+        { "sourceEntity": { "id": "ST:0:2", "type": "ST", "isCollected": true, "stationType": "SEEDED_STATION" } }
+    ] } } });
+    let items = parse_recently_played(&answer);
+    assert_eq!(items.len(), 2, "{items:#?}");
+    assert_eq!((items[0].id.as_str(), items[0].kind.as_str()), ("ST:0:1", "ST"));
+    assert_eq!((items[1].name.as_str(), items[1].by.as_str()), ("", ""), "a station has neither");
+}
+
+#[test]
+fn a_bad_enum_is_a_400_that_says_which_value_it_refused() {
+    // The wire's own words for the mistake the shipped constant made.
+    let body = json!({ "errors": [{"message": "Variable \"$types\" got invalid value \"ALBUM\" at \"types[0]\"; Expected type RecentlyPlayedSourceType."}] })
+        .to_string();
+    let (base, _seen) = fake_pandora(Box::new(move |_r| (400, body.clone())));
+    let mut c = Client::with_base(&base, "");
+    c.auth = Some("tok".into());
+    let err = c.recently_played(20, &["ALBUM"]).unwrap_err().to_string();
+    assert!(err.contains("invalid value \"ALBUM\""), "{err}");
+    assert!(err.contains("HTTP 400"), "{err}");
 }
 
 #[test]

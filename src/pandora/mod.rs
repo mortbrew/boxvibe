@@ -125,25 +125,25 @@ pub struct FeedbackPage {
 pub const FEEDBACK_PAGE: usize = 30;
 
 /// How many recently played entries one call asks for.
-#[allow(dead_code)] // its menu row lands once a live answer is captured.
 pub const RECENT_PAGE: usize = 20;
 
-/// The `RecentlyPlayedSourceType` values the site's own web client asks for,
-/// read from its bundle rather than guessed: `ALBUM`, `SONG`, `PLAYLIST`,
-/// `STATION`, `ARTIST_TOP_SONGS`, `PODCAST`. `TRACK` is not one of them.
-#[allow(dead_code)]
-pub const RECENT_TYPES: [&str; 6] = ["ALBUM", "SONG", "PLAYLIST", "STATION", "ARTIST_TOP_SONGS", "PODCAST"];
+/// The `RecentlyPlayedSourceType` values to ask for, spelled as the wire
+/// spells them: two-letter codes, confirmed by live introspection on a real
+/// account (2026-11-07). The bundle's `ALBUM` / `SONG` / `STATION` names are
+/// its own app-side constants, mapped before the request goes out — sending
+/// them is a 400 invalid enum. A track is `TR`; there is no `SONG` on the wire.
+pub const RECENT_TYPES: [&str; 9] = ["AL", "AP", "AU", "CT", "PL", "PC", "PE", "ST", "TR"];
 
 /// One entry of the account's recently played list.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[allow(dead_code)] // drawn once a live answer is captured.
 pub struct RecentSource {
     /// `id` (`ST:0:...`, `TR:...`): what replaying it takes.
     pub id: String,
-    /// `type` exactly as the site sends it, left unmapped: nothing here has
-    /// seen a live value yet, so no guess is baked in.
+    /// `type` as the wire sends it, the same two-letter code [`RECENT_TYPES`]
+    /// asks in (`ST`, `TR`, …) — not the longer name.
     pub kind: String,
-    /// `name`: empty for a station, whose fragment selects no name.
+    /// `name`: empty for a station, whose fragment selects no name, so a
+    /// station's title comes from the station list instead.
     pub name: String,
     /// The artist's name, when the entity has one (songs, albums).
     pub by: String,
@@ -358,7 +358,11 @@ pub fn classify(status: u16, body: &str) -> Error {
     if code == Some(1028) {
         return Error::Country;
     }
-    let message = match (str_of(&v, "message"), status) {
+    // A GraphQL failure puts its reason under `errors[0].message` with no
+    // top-level one, so without this a bad enum would only say "HTTP 400".
+    let gql = v.pointer("/errors/0/message").and_then(Value::as_str).unwrap_or_default().trim();
+    let said = if str_of(&v, "message").is_empty() { gql.to_owned() } else { str_of(&v, "message") };
+    let message = match (said, status) {
         (m, 401) if m.is_empty() => "the login expired".into(),
         (m, _) if m.is_empty() => format!("Pandora answered HTTP {status}"),
         (m, _) => format!("{m} (HTTP {status}{})", if kind.is_empty() { String::new() } else { format!(", {kind}") }),
@@ -1203,11 +1207,13 @@ impl Client {
     /// The account's recently played list: one `GetRecentlyPlayedSourcesWeb`
     /// call to `v1/graphql/graphql`, the path the site's client builds as
     /// `'/api/' + 'v1/graphql/graphql'`. `types` are `RecentlyPlayedSourceType`
-    /// values; an empty slice asks for the six the site asks for.
+    /// wire codes (`ST`, `TR`, …); an empty slice asks for all of
+    /// [`RECENT_TYPES`].
     ///
-    /// The answer's shape is not captured yet (introspection is closed), so the
-    /// parser reads what it can and the caller hides an empty list.
-    #[allow(dead_code)] // wired to the menu once a live answer is captured.
+    /// The document declares `$playedAfter`, and null is not the same as
+    /// absent here: sending the key with null answers 200 with `data: null`
+    /// and an error, while omitting it works. So the window is only sent once
+    /// something asks for one, which nothing does yet.
     pub fn recently_played(&mut self, limit: usize, types: &[&str]) -> Result<Vec<RecentSource>, Error> {
         let types: Vec<&str> = if types.is_empty() { RECENT_TYPES.to_vec() } else { types.to_vec() };
         // The site sends `variables` as a JSON string, as the seed mutations do.

@@ -312,6 +312,17 @@ fn browse_item(name: &str, detail: &str, pandora_id: &str, station_factory: &str
         detail: detail.into(),
         pandora_id: pandora_id.into(),
         station_factory: station_factory.into(),
+        link: None,
+    }
+}
+
+fn linked_shelf(name: &str, pandora_id: &str, path: &str) -> BrowseItem {
+    BrowseItem {
+        name: name.into(),
+        detail: String::new(),
+        pandora_id: pandora_id.into(),
+        station_factory: String::new(),
+        link: Some(path.into()),
     }
 }
 
@@ -394,6 +405,22 @@ pub fn browse_at(path: Option<&str>) -> Vec<BrowseSection> {
     match path {
         "/browse/music/new-music" => new_music_view_all(),
         "/browse/music/genres" => genres_view_all(),
+        "/browse/music/decades" => decades_view_all(),
+        "/browse/music/activities" => moods_view_all(),
+        "/browse/music/genres/pop" => {
+            station_page("GE:pop", "Pop", &[("Today's Hits", "GE:demo-hits"), ("Indie Pop", "GE:demo-indie")])
+        }
+        "/browse/music/genres/electronic" => {
+            station_page("GE:electronic", "Electronic", &[("Synthwave", "GE:demo-synthwave")])
+        }
+        "/browse/music/genres/rock" => station_page(
+            "GE:rock",
+            "Rock",
+            &[("Classic Rock", "GE:demo-classic"), ("90s Alternative", "GE:demo-alt90s")],
+        ),
+        "/browse/music/decades/2010s" => station_page("GE:2010s", "2010s", &[("Classic Rock", "GE:demo-classic")]),
+        "/browse/music/activities/happy" => station_page("GE:happy", "Happy", &[("Indie Pop", "GE:demo-indie")]),
+        "/browse/music/genres/empty" => vec![browse_section("GE:empty", "Empty", None, vec![])],
         other => match browse().into_iter().find(|s| s.view_all_path.as_deref() == Some(other)) {
             Some(section) => vec![expand_view_all(section)],
             None => Vec::new(),
@@ -436,14 +463,47 @@ fn new_music_view_all() -> Vec<BrowseSection> {
     ]
 }
 
-/// Genres View-all: one playable genre (so the demo can still start it) plus
-/// the live page's `BR:50:*` rows, which do not create stations.
+/// Genres View-all: category shelves. Named rows carry the next page's site path.
+/// A shelf without a path does not invent one from its `BR:` id.
 fn genres_view_all() -> Vec<BrowseSection> {
-    let mut items = vec![browse_item("Synthwave", "1.2M Listeners", "GE:demo-synthwave", "SF:18245:demo-synthwave")];
-    for n in 1..=27 {
-        items.push(browse_item(&format!("Genre shelf {n}"), "", &format!("BR:50:{n}"), ""));
-    }
-    vec![browse_section("BS:50", "Browse Genres", None, items)]
+    let mut page = category_page(
+        "BS:50",
+        "Browse Genres",
+        "BR:50",
+        &[
+            ("Pop", "/browse/music/genres/pop"),
+            ("Electronic", "/browse/music/genres/electronic"),
+            ("Rock", "/browse/music/genres/rock"),
+        ],
+    );
+    page[0].items.insert(0, browse_item("Synthwave", "1.2M Listeners", "GE:demo-synthwave", "SF:18245:demo-synthwave"));
+    page
+}
+
+fn decades_view_all() -> Vec<BrowseSection> {
+    category_page("BS:6", "Browse Decades", "BR:6", &[("2010s", "/browse/music/decades/2010s")])
+}
+
+fn moods_view_all() -> Vec<BrowseSection> {
+    category_page("BS:7", "Browse Moods & Activities", "BR:7", &[("Happy", "/browse/music/activities/happy")])
+}
+
+fn category_page(id: &str, title: &str, id_prefix: &str, named: &[(&str, &str)]) -> Vec<BrowseSection> {
+    let mut items: Vec<BrowseItem> = named
+        .iter()
+        .enumerate()
+        .map(|(n, (name, path))| linked_shelf(name, &format!("{id_prefix}:{n}"), path))
+        .collect();
+    items.push(browse_item("No page", "", &format!("{id_prefix}:none"), ""));
+    vec![expand_view_all(browse_section(id, title, None, items))]
+}
+
+fn station_page(id: &str, title: &str, rows: &[(&str, &str)]) -> Vec<BrowseSection> {
+    let items = rows
+        .iter()
+        .map(|(name, pandora_id)| browse_item(name, "", pandora_id, &pandora_id.replacen("GE:", "SF:", 1)))
+        .collect();
+    vec![browse_section(id, title, None, items)]
 }
 
 fn expand_view_all(section: BrowseSection) -> BrowseSection {

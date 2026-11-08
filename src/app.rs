@@ -564,6 +564,20 @@ pub enum BrowseState {
     Failed(String),
 }
 
+/// The Browse page under a category shelf, so Esc returns to it.
+struct BrowsePlace {
+    state: BrowseState,
+    path: Option<String>,
+    cursor: usize,
+}
+
+enum BrowsePick {
+    Station(String, String),
+    Page(String),
+    Unsupported(String),
+    Header,
+}
+
 /// One line on the Browse page: a section title or an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrowseRow<'a> {
@@ -920,8 +934,10 @@ pub struct App {
     pub recent_cursor: usize,
     /// A recently played call is on its way.
     pub recent_loading: bool,
-    /// Asked once this login. Logout clears it so the next account is fetched.
+    /// The login's first fetch has been sent. Logout clears it.
     recent_asked: bool,
+    /// A tune or a page open happened while a fetch was already in flight.
+    recent_dirty: bool,
     /// Bumped on each ask and on logout. A reply from an older one is dropped.
     recent_generation: u64,
     /// Up Next songs disliked with b: sent, and skipped, when their turn comes.
@@ -955,6 +971,8 @@ pub struct App {
     view_all: HashMap<String, Vec<BrowseSection>>,
     /// View-all path on screen or in flight. `None`: the page is the teaser.
     browse_path: Option<String>,
+    /// Page to restore when Esc leaves a category shelf.
+    browse_parent: Option<BrowsePlace>,
     /// Selected genre station, counted over the stations only (not the headings).
     /// A station is being made: a second Enter waits for it.
     creating: bool,
@@ -1061,6 +1079,7 @@ impl App {
             recent_cursor: 0,
             recent_loading: false,
             recent_asked: false,
+            recent_dirty: false,
             recent_generation: 0,
             held_dislikes: Default::default(),
             song_menu: None,
@@ -1078,6 +1097,7 @@ impl App {
             browse_directory: BrowseState::Idle,
             view_all: HashMap::new(),
             browse_path: None,
+            browse_parent: None,
             creating: false,
             editor: None,
             ad: AdPhase::Off,
@@ -1244,11 +1264,10 @@ impl App {
         let pins = (0..self.browse_menu_pins().len()).map(MenuItem::BrowsePin);
         top.into_iter()
             .chain([MenuItem::Stations])
-            // Pinned keeps a row of its own above the Browse sections, which
-            // the menu draws under a "BROWSE (n)" heading.
-            .chain(self.config.ui.pinned_in_menu.then_some(MenuItem::Pinned))
-            // Empty until Pandora's answer lands, so the row is absent, not blank.
+            // Recently Played sits where Pinned used to, above Pinned. An empty
+            // list keeps the row absent. Pinned stays above the Browse sections.
             .chain(self.recent_row().then_some(MenuItem::RecentlyPlayed))
+            .chain(self.config.ui.pinned_in_menu.then_some(MenuItem::Pinned))
             .chain(pins)
             .chain(
                 (0..if self.config.ui.favorites_in_menu { self.config.ui.favorites.len() } else { 0 })
@@ -1331,15 +1350,37 @@ impl App {
         !self.recent.is_empty()
     }
 
-    /// Asks Pandora for the recently played list, once per login.
+    /// Asks Pandora for the recently played list, once after login.
     fn ask_recently_played(&mut self) {
-        if self.session != Session::LoggedIn || self.recent_asked || self.recent_loading {
+        if self.recent_asked {
             return;
         }
+        self.refresh_recently_played();
+    }
+
+    /// One fetch for a login, a station start, or opening the page. A second
+    /// event while that fetch is in flight waits for it, then sends once more.
+    /// The list itself still comes only from Pandora's reply.
+    fn refresh_recently_played(&mut self) {
+        if self.session != Session::LoggedIn {
+            return;
+        }
+        if self.recent_loading {
+            self.recent_dirty = true;
+            return;
+        }
+        self.recent_dirty = false;
         self.recent_asked = true;
         self.recent_loading = true;
         self.recent_generation = self.recent_generation.wrapping_add(1);
         self.backend.send(Request::RecentlyPlayed { generation: self.recent_generation });
+    }
+
+    fn finish_recent_request(&mut self) {
+        self.recent_loading = false;
+        if self.recent_dirty {
+            self.refresh_recently_played();
+        }
     }
 
     /// The reply belongs to the login that asked for it.
@@ -1354,6 +1395,7 @@ impl App {
         self.recent_cursor = 0;
         self.recent_loading = false;
         self.recent_asked = false;
+        self.recent_dirty = false;
     }
 
     /// The menu's RECENTLY PLAYED entry: the list of recent sources.
@@ -1362,6 +1404,7 @@ impl App {
         self.focus = Focus::Content;
         self.point_menu_at_view();
         self.recent_cursor = self.recent_cursor.min(self.recent.len().saturating_sub(1));
+        self.refresh_recently_played();
     }
 
     /// A recent entry's title. A station's own fragment selects no name, so
@@ -1460,6 +1503,7 @@ impl App {
     }
 
     fn open_browse_view(&mut self) {
+        self.browse_parent = None;
         self.view = View::Browse;
         self.focus = Focus::Content;
         self.point_menu_at_view();
@@ -1564,6 +1608,13 @@ impl App {
                 if self.browse_path.as_deref() != Some(path.as_str()) {
                     return;
                 }
+                if let Some(parent) = self.browse_parent.take() {
+                    self.browse = parent.state;
+                    self.browse_path = parent.path;
+                    self.browse_cursor = parent.cursor;
+                    self.status = format!("That page didn't load ({message})");
+                    return;
+                }
                 if let BrowseState::Loaded(sections) = &self.browse_directory {
                     self.browse_path = None;
                     self.browse = BrowseState::Loaded(sections.clone());
@@ -1616,24 +1667,65 @@ impl App {
         self.browse_cursor.min(self.browse_rows().len().saturating_sub(1))
     }
 
-    /// Enter on a Browse item: create+play when the row can start a station.
+    /// Enter on a Browse item: start a station, or open a category page the row names.
     fn activate_browse_row(&mut self) {
         let retry = matches!(self.browse, BrowseState::Idle | BrowseState::Failed(_));
         let loading = matches!(self.browse, BrowseState::Loading);
-        let picked = self.browse_rows().get(self.browse_index()).and_then(|row| match row {
-            BrowseRow::Item(item) => Some((item.create_id().map(str::to_owned), item.name.clone())),
-            BrowseRow::Header(_) => None,
+        let picked = self.browse_rows().get(self.browse_index()).map(|row| match row {
+            BrowseRow::Header(_) => BrowsePick::Header,
+            BrowseRow::Item(item) => {
+                if let Some(id) = item.create_id() {
+                    BrowsePick::Station(id.to_owned(), item.name.clone())
+                } else if let Some(path) = item.link.clone() {
+                    BrowsePick::Page(path)
+                } else {
+                    BrowsePick::Unsupported(item.name.clone())
+                }
+            }
         });
         match (loading, retry, picked) {
             (true, _, _) => {}
             (_, true, _) => self.retry_browse(),
-            (_, _, Some((Some(id), name))) => self.create_station(&id, &name),
-            (_, _, Some((None, name))) => {
+            (_, _, Some(BrowsePick::Station(id, name))) => self.create_station(&id, &name),
+            (_, _, Some(BrowsePick::Page(path))) => self.open_browse_link(path),
+            (_, _, Some(BrowsePick::Unsupported(name))) => {
                 self.status =
                     format!("“{name}” can't start a station here (playlist, podcast, album, mood or category)");
             }
+            (_, _, Some(BrowsePick::Header)) => self.status = "That's a heading. Pick a row under it.".into(),
             _ => {}
         }
+    }
+
+    /// A category shelf's site path. The page underneath is kept for Esc.
+    fn open_browse_link(&mut self, path: String) {
+        if self.browse_path.as_deref() == Some(path.as_str()) {
+            return;
+        }
+        if matches!(self.browse, BrowseState::Loaded(_)) {
+            self.browse_parent = Some(BrowsePlace {
+                state: self.browse.clone(),
+                path: self.browse_path.clone(),
+                cursor: self.browse_cursor,
+            });
+        }
+        self.fetch_view_all(path);
+    }
+
+    /// Esc on a category page returns to the page that opened it.
+    fn browse_back(&mut self) -> bool {
+        if self.view != View::Browse || self.focus != Focus::Content {
+            return false;
+        }
+        let Some(parent) = self.browse_parent.take() else { return false };
+        self.browse = parent.state;
+        self.browse_path = parent.path;
+        self.browse_cursor = parent.cursor;
+        true
+    }
+
+    pub fn browse_can_go_back(&self) -> bool {
+        self.view == View::Browse && self.focus == Focus::Content && self.browse_parent.is_some()
     }
 
     // --- Adding stations (a, Genres) ---
@@ -2357,27 +2449,33 @@ impl App {
                 if !self.accept_recent(generation) {
                     return;
                 }
-                // The new row is inserted under Pinned. Stay on the entry the
-                // cursor was already on, instead of landing on the new one.
+                // A new row is inserted above Pinned. Stay on the menu entry
+                // the cursor was already on, and on the same recent source.
                 let had = self.recent_row();
                 let selected = self.menu_selected();
+                let keep = self.recent.get(self.recent_cursor).map(|s| s.id.clone());
                 self.recent = sources;
-                self.recent_loading = false;
-                self.recent_cursor = self.recent_cursor.min(self.recent.len().saturating_sub(1));
+                if let Some(id) = keep
+                    && let Some(at) = self.recent.iter().position(|s| s.id == id)
+                {
+                    self.recent_cursor = at;
+                } else {
+                    self.recent_cursor = self.recent_cursor.min(self.recent.len().saturating_sub(1));
+                }
                 if !had && self.recent_row() {
                     let items = self.menu_items();
                     if let Some(i) = items.iter().position(|m| *m == selected) {
                         self.menu_cursor = i;
                     }
                 }
+                self.finish_recent_request();
             }
             Reply::RecentFailed { generation, message } => {
                 if !self.accept_recent(generation) {
                     return;
                 }
-                self.recent_loading = false;
-                // The row hides on an empty list, so say it in the status bar.
                 self.status = format!("⚠ Recently Played: {message}");
+                self.finish_recent_request();
             }
             Reply::Failed { what, message } => {
                 if self.editor_failed(what, &message) || self.panel_failed(what, &message) {
@@ -2385,8 +2483,8 @@ impl App {
                 }
                 if what == "recently played" {
                     if self.recent_loading {
-                        self.recent_loading = false;
                         self.status = format!("⚠ Recently Played: {message}");
+                        self.finish_recent_request();
                     }
                     return;
                 }
@@ -2640,6 +2738,7 @@ impl App {
         self.status = format!("Tuning in to {}", station.name);
         // Every way a station starts lands where Shift+P does: same function, no drift.
         self.show_now_playing();
+        self.refresh_recently_played();
     }
 
     fn push_history(&mut self, song: Song) {
@@ -3164,6 +3263,9 @@ impl App {
             Cmd::NextFocus => self.next_focus(true),
             Cmd::PrevFocus => self.next_focus(false),
             Cmd::ToMenu => {
+                if self.browse_back() {
+                    return;
+                }
                 self.focus = Focus::Menu;
                 self.point_menu_at_view();
             }
@@ -4024,7 +4126,7 @@ mod tests {
         let items = app.menu_items();
         let pinned = items.iter().position(|m| *m == MenuItem::Pinned).expect("Pinned");
         let recent = items.iter().position(|m| *m == MenuItem::RecentlyPlayed).expect("Recently Played");
-        assert_eq!(recent, pinned + 1, "right under Pinned, inside MY COLLECTION: {items:?}");
+        assert_eq!(recent + 1, pinned, "above Pinned, inside MY COLLECTION: {items:?}");
         // Nothing asked for yet, or an empty history: no row at all, the way
         // FAVORITES hides.
         let fresh = App::new(Config::default(), None, &[], true);
@@ -4136,6 +4238,63 @@ mod tests {
         });
         assert!(!app.recent_loading, "the pending flag clears");
         assert!(app.status.contains("Recently Played") && app.status.contains("invalid value"));
+    }
+
+    #[test]
+    fn playing_or_opening_recently_played_refreshes_once_and_keeps_the_selection() {
+        let mut app = demo();
+        let before = app.recent.clone();
+        let generation = app.recent_generation;
+        app.tune(2);
+        assert!(app.recent_loading);
+        assert_eq!(app.recent_generation, generation.wrapping_add(1));
+        assert_eq!(app.recent, before, "playback does not invent a row before Pandora answers");
+        app.tune(1);
+        assert_eq!(app.recent_generation, generation.wrapping_add(1), "a second start waits for the one in flight");
+        assert!(app.recent_dirty);
+        app.settle(Duration::from_millis(500));
+        assert!(!app.recent_loading && !app.recent_dirty);
+        assert!(app.recent_generation > generation.wrapping_add(1), "the waiting start sends once");
+        app.recent_cursor = app.recent.len() - 1;
+        let id = app.recent[app.recent_cursor].id.clone();
+        app.show_recently_played();
+        assert_eq!(app.view, View::Recent);
+        assert!(app.recent_loading);
+        app.settle(Duration::from_millis(400));
+        assert_eq!(app.recent[app.recent_cursor].id, id, "the open page keeps the selected source");
+    }
+
+    #[test]
+    fn a_failed_recently_played_fetch_can_be_asked_again_by_opening_the_page() {
+        let mut app = demo();
+        app.recent_loading = true;
+        app.recent_generation = 9;
+        app.on_reply(Reply::RecentFailed { generation: 9, message: "down".into() });
+        assert!(!app.recent_loading);
+        assert!(app.status.contains("down"));
+        let generation = app.recent_generation;
+        app.show_recently_played();
+        assert!(app.recent_loading && app.recent_generation == generation.wrapping_add(1));
+    }
+
+    #[test]
+    fn a_recent_row_appearing_above_pinned_keeps_the_pinned_cursor() {
+        let mut app = demo();
+        app.recent.clear();
+        let pinned = app.menu_items().iter().position(|m| *m == MenuItem::Pinned).unwrap();
+        app.focus = Focus::Menu;
+        app.menu_cursor = pinned;
+        app.recent_loading = true;
+        app.recent_generation = 2;
+        app.on_reply(Reply::Recent {
+            generation: 2,
+            sources: vec![RecentSource { id: "ST:0:1".into(), kind: "ST".into(), ..Default::default() }],
+        });
+        assert_eq!(app.menu_selected(), MenuItem::Pinned);
+        let items = app.menu_items();
+        let recent = items.iter().position(|m| *m == MenuItem::RecentlyPlayed).unwrap();
+        let pinned = items.iter().position(|m| *m == MenuItem::Pinned).unwrap();
+        assert!(recent < pinned);
     }
 
     #[test]
@@ -4376,8 +4535,8 @@ mod tests {
         let items = app.menu_items();
         assert_eq!(items[0], MenuItem::NowPlaying, "a station plays: NOW PLAYING on top");
         assert_eq!(items[1], MenuItem::Stations);
-        assert_eq!(items[2], MenuItem::Pinned);
-        assert_eq!(items[3], MenuItem::RecentlyPlayed, "the recently played row closes MY COLLECTION");
+        assert_eq!(items[2], MenuItem::RecentlyPlayed, "Recently Played takes Pinned's old place");
+        assert_eq!(items[3], MenuItem::Pinned);
         let pins = config::BROWSE_SECTIONS.len();
         assert_eq!(&items[4..4 + pins], &(0..pins).map(MenuItem::BrowsePin).collect::<Vec<_>>()[..]);
         assert_eq!(
@@ -4472,9 +4631,8 @@ mod tests {
         app.on_key(key(KeyCode::Char('f')));
         let third = app.stations[2].clone();
         assert!(app.is_favorite(&third.id));
-        // The demo's recently played answer lands during `settle`, so its row
-        // sits under Pinned, inside MY COLLECTION.
-        let mut want = vec![MenuItem::Stations, MenuItem::Pinned, MenuItem::RecentlyPlayed];
+        // The demo's recently played answer lands during `settle`, above Pinned.
+        let mut want = vec![MenuItem::Stations, MenuItem::RecentlyPlayed, MenuItem::Pinned];
         want.extend((0..config::BROWSE_SECTIONS.len()).map(MenuItem::BrowsePin));
         want.extend([
             MenuItem::Favorite(0),
@@ -6321,7 +6479,7 @@ mod tests {
     }
 
     #[test]
-    fn shift_g_opens_genres_view_all_caches_it_and_enter_plays_synthwave() {
+    fn shift_g_opens_genres_and_a_shelf_reaches_a_station() {
         let mut app = demo();
         app.settle(Duration::from_millis(300));
         app.on_key(shift('G'));
@@ -6337,32 +6495,114 @@ mod tests {
             .iter()
             .filter(|r| matches!(r, BrowseRow::Item(i) if i.pandora_id.starts_with("BR:50:")))
             .count();
-        assert_eq!(shelves, 27, "genres View-all is the BR:50 rows, not the one-row teaser");
-        // A BR:50 row does not start a station.
-        while !matches!(app.browse_rows().get(app.browse_index()), Some(BrowseRow::Item(i)) if i.pandora_id.starts_with("BR:50:"))
-        {
-            app.on_key(key(KeyCode::Char('j')));
-        }
-        let before = app.stations.len();
+        assert_eq!(shelves, 4, "named shelves plus one with no page");
+        app.browse_cursor = 0;
         app.on_key(key(KeyCode::Enter));
-        assert_eq!(app.stations.len(), before);
+        assert!(app.status.contains("heading"), "{}", app.status);
+        move_browse_to(&mut app, "Pop");
+        let cursor = app.browse_cursor;
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.browse, BrowseState::Loading);
+        app.settle(Duration::from_millis(400));
+        assert_eq!(app.browse_path.as_deref(), Some("/browse/music/genres/pop"));
+        assert!(app.browse_rows().iter().any(|r| matches!(r, BrowseRow::Item(i) if i.name == "Today's Hits")));
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.browse_path.as_deref(), Some("/browse/music/genres"));
+        assert_eq!(app.browse_cursor, cursor, "Esc returns to the shelf that opened");
+        assert_eq!(app.focus, Focus::Content);
+        app.on_key(key(KeyCode::Enter));
+        app.settle(Duration::from_millis(400));
+        let before = app.stations.len();
+        move_browse_to(&mut app, "Indie Pop");
+        app.on_key(key(KeyCode::Enter));
+        app.settle(Duration::from_millis(400));
+        assert_eq!(app.stations.len(), before + 1);
+        app.on_key(shift('G'));
+        app.settle(Duration::from_millis(200));
+        move_browse_to(&mut app, "No page");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.stations.len(), before + 1);
         assert!(app.status.contains("can't start a station"), "{}", app.status);
-        // Leaving and coming back uses the cache (no second View-all fetch).
         app.on_key(shift('S'));
         let loaded = app.browse.clone();
         app.on_key(shift('G'));
         assert_eq!(app.browse, loaded);
         assert!(app.backend.replies.recv_timeout(Duration::from_millis(100)).is_err(), "view-all is cached");
-        // Enter on Synthwave (the one playable genre on the demo page).
-        while !matches!(app.browse_rows().get(app.browse_index()), Some(BrowseRow::Item(i)) if i.name == "Synthwave") {
-            app.on_key(key(KeyCode::Char('j')));
+    }
+
+    #[test]
+    fn decades_and_moods_open_the_same_way_and_a_failed_page_returns() {
+        let mut app = demo();
+        for (section, shelf, path, station) in [
+            ("Decades", "2010s", "/browse/music/decades/2010s", "Classic Rock"),
+            ("Moods and activities", "Happy", "/browse/music/activities/happy", "Indie Pop"),
+        ] {
+            app.show_browse_section(section);
+            app.settle(Duration::from_millis(400));
+            assert_eq!(
+                app.browse_path.as_deref(),
+                Some(match section {
+                    "Decades" => "/browse/music/decades",
+                    _ => "/browse/music/activities",
+                })
+            );
+            move_browse_to(&mut app, shelf);
+            app.on_key(key(KeyCode::Enter));
+            app.settle(Duration::from_millis(400));
+            assert_eq!(app.browse_path.as_deref(), Some(path));
+            app.on_key(key(KeyCode::Esc));
+            assert!(
+                app.browse_path
+                    .as_deref()
+                    .is_some_and(|p| p == "/browse/music/decades" || p == "/browse/music/activities")
+            );
+            app.on_key(key(KeyCode::Enter));
+            app.settle(Duration::from_millis(400));
+            move_browse_to(&mut app, station);
+            let before = app.stations.len();
+            app.on_key(key(KeyCode::Enter));
+            app.settle(Duration::from_millis(400));
+            assert_eq!(app.stations.len(), before + 1);
+            app.show_browse_section(section);
+            app.settle(Duration::from_millis(200));
+            move_browse_to(&mut app, "No page");
+            app.on_key(key(KeyCode::Enter));
+            assert!(app.status.contains("can't start a station"), "{}", app.status);
         }
+        app.show_browse_section("Browse Genres");
+        app.settle(Duration::from_millis(400));
+        move_browse_to(&mut app, "Pop");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.browse, BrowseState::Loading);
+        app.on_reply(Reply::BrowseFailed { path: Some("/browse/music/genres/pop".into()), message: "nope".into() });
+        assert_eq!(app.browse_path.as_deref(), Some("/browse/music/genres"));
+        assert!(app.status.contains("didn't load") && app.status.contains("nope"), "{}", app.status);
+        if let BrowseState::Loaded(sections) = &mut app.browse {
+            sections[0].items.push(BrowseItem {
+                name: "Empty".into(),
+                detail: String::new(),
+                pandora_id: "BR:50:empty".into(),
+                station_factory: String::new(),
+                link: Some("/browse/music/genres/empty".into()),
+            });
+        }
+        move_browse_to(&mut app, "Empty");
         app.on_key(key(KeyCode::Enter));
         app.settle(Duration::from_millis(400));
-        assert_eq!(app.stations.len(), before + 1);
-        let at = usize::from(app.stations[0].is_shuffle);
-        assert_eq!(app.stations[at].name, "Synthwave");
-        assert_eq!(app.current_station.as_deref(), Some(app.stations[at].id.as_str()));
+        assert_eq!(app.browse_path.as_deref(), Some("/browse/music/genres/empty"));
+        assert_eq!(browse_item_count(&app), 0);
+        assert_eq!(browse_headers(&app), ["Empty"]);
+    }
+
+    fn move_browse_to(app: &mut App, name: &str) {
+        let rows = app.browse_rows().len();
+        for _ in 0..rows {
+            if matches!(app.browse_rows().get(app.browse_index()), Some(BrowseRow::Item(i)) if i.name == name) {
+                return;
+            }
+            app.on_key(key(KeyCode::Char('j')));
+        }
+        panic!("no browse row {name}");
     }
 
     #[test]
@@ -6475,8 +6715,8 @@ mod tests {
         let app = demo();
         let items = app.menu_items();
         let at = items.iter().position(|m| *m == MenuItem::Stations).unwrap();
-        assert_eq!(items[at + 1], MenuItem::Pinned, "Pinned keeps a row above the Browse sections");
-        assert_eq!(items[at + 2], MenuItem::RecentlyPlayed, "the recently played row stays in MY COLLECTION");
+        assert_eq!(items[at + 1], MenuItem::RecentlyPlayed, "Recently Played sits above Pinned");
+        assert_eq!(items[at + 2], MenuItem::Pinned, "Pinned stays above the Browse sections");
         assert_eq!(items[at + 3], MenuItem::BrowsePin(0), "section pins follow MY COLLECTION");
         assert_eq!(
             items.iter().filter(|m| matches!(m, MenuItem::BrowsePin(_))).count(),

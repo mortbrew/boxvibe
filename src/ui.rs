@@ -684,9 +684,9 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let personal_n = 1 + u16::from(pinned) + recent_n;
     // Hidden while it has nothing of its own, the way FAVORITES hides.
     let collection_head = !app.stations.is_empty() || (pinned && !app.pins.is_empty()) || app.recent_row();
-    // NOW PLAYING already draws an inset rule above it, so skip the one here.
-    let collection_gap = u16::from(now_h == 0);
-    let collection_n = personal_n + if collection_head { 1 + collection_gap } else { 0 };
+    // The only rule above MY COLLECTION is the one under NOW PLAYING, so it
+    // stays hidden until something is playing.
+    let collection_n = personal_n + u16::from(collection_head);
     let browse_n = if section_pins == 0 { 0 } else { section_pins + 2 };
     let [now_area, collection_area, browse_area, favs_area, _, rule, app_area] = Layout::vertical([
         Constraint::Length(now_h),
@@ -738,15 +738,8 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     // The heading and the rows it covers; without a heading the rows take the
     // whole area.
     let (rows_area, head_area) = if collection_head {
-        let [gap, head, rows] = Layout::vertical([
-            Constraint::Length(collection_gap),
-            Constraint::Length(1),
-            Constraint::Length(personal_n),
-        ])
-        .areas(collection_area);
-        if collection_gap > 0 {
-            frame.render_widget(inset_rule(&p, gap.width), gap);
-        }
+        let [head, rows] =
+            Layout::vertical([Constraint::Length(1), Constraint::Length(personal_n)]).areas(collection_area);
         (rows, Some(head))
     } else {
         (collection_area, None)
@@ -757,12 +750,12 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let count = if app.stations.is_empty() { String::new() } else { format!(" ({})", app.stations.len()) };
     let mut lines = Vec::new();
     let mut top = vec![(MenuItem::Stations, ic.station, format!("My Stations{count}"))];
+    if app.recent_row() {
+        top.push((MenuItem::RecentlyPlayed, ic.recent, format!("Recently Played ({})", app.recent.len())));
+    }
     if pinned {
         let n = if app.pins.is_empty() { String::new() } else { format!(" ({})", app.pins.len()) };
         top.push((MenuItem::Pinned, ic.pin, format!("Pinned{n}")));
-    }
-    if app.recent_row() {
-        top.push((MenuItem::RecentlyPlayed, ic.recent, format!("Recently Played ({})", app.recent.len())));
     }
     for (item, icon, label) in top {
         let mut style = Style::new().fg(p.fg);
@@ -2445,12 +2438,16 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         (Focus::Content, View::Browse) => {
             match &app.browse {
                 BrowseState::Loaded(_) if app.browse_rows().iter().any(|r| matches!(r, BrowseRow::Item(_))) => {
-                    keys.push(("Enter", "Start Station"));
+                    let open = app.browse_rows().get(app.browse_index()).is_some_and(|row| match row {
+                        BrowseRow::Item(item) => item.create_id().is_none() && item.link.is_some(),
+                        BrowseRow::Header(_) => false,
+                    });
+                    keys.push(("Enter", if open { "Open" } else { "Start Station" }));
                 }
                 BrowseState::Failed(_) => keys.push(("Enter", "Try Again")),
                 _ => {}
             }
-            keys.push(("Esc", "Menu"));
+            keys.push(("Esc", if app.browse_can_go_back() { "Back" } else { "Menu" }));
         }
         (Focus::Content, View::Pinned) => {
             if let Some(pin) = app.pins.get(app.pinned_cursor) {
@@ -4177,6 +4174,21 @@ mod tests {
         assert!(menu.starts_with("│  ──") && menu.ends_with("──  │"), "inset rule: {menu:?}");
         // That rule doubles as MY COLLECTION's, so its heading sits right under it.
         assert!(lines[3].starts_with("│ MY COLLECTION"), "{}", lines[3]);
+        // Nothing playing: that rule is absent, and MY COLLECTION is the first row.
+        app.current_station = None;
+        let (idle, _) = screen(&app, 120, 36);
+        assert!(idle[1].starts_with("│ MY COLLECTION"), "no rule before playback: {}", idle[1]);
+        assert!(!idle[1].contains('─'), "{}", idle[1]);
+        if std::env::var_os("BOXVIBE_SHOTS").is_some() {
+            let _ = std::fs::create_dir_all("/opt/cursor/artifacts");
+            let _ = std::fs::write("/opt/cursor/artifacts/menu-playing.txt", lines.join("\n"));
+            let _ = std::fs::write("/opt/cursor/artifacts/menu-before.txt", idle.join("\n"));
+            let mut genres = demo();
+            genres.show_browse_section("Browse Genres");
+            genres.settle(std::time::Duration::from_millis(400));
+            let (page, _) = screen(&genres, 120, 36);
+            let _ = std::fs::write("/opt/cursor/artifacts/genres.txt", page.join("\n"));
+        }
         assert!(lines[4].contains("My Stations ("), "{}", lines[4]);
         assert!(lines[35].contains(" P  Now Playing"), "key bar: {}", lines[35]);
     }
@@ -4761,7 +4773,7 @@ mod tests {
     }
 
     #[test]
-    fn recently_played_sits_under_pinned_and_hides_while_empty() {
+    fn recently_played_sits_above_pinned_and_hides_while_empty() {
         let app = demo();
         let (lines, _) = screen(&app, 120, 40);
         let menu = |l: &str| -> String { l.chars().take(30).collect() };
@@ -4772,8 +4784,8 @@ mod tests {
         let browse = at(&|l| l.starts_with("│ BROWSE (10)")).expect("the BROWSE heading");
         let first = at(&|l| l.contains("Artists Picked For You")).expect("the first section");
         assert!(
-            stations < pinned && pinned < recent && recent < browse && browse < first,
-            "My Stations, Pinned, Recently Played, then BROWSE:\n{}",
+            stations < recent && recent < pinned && pinned < browse && browse < first,
+            "My Stations, Recently Played, Pinned, then BROWSE:\n{}",
             lines.iter().map(|l| menu(l)).collect::<Vec<_>>().join("\n")
         );
         // Short and narrow windows still draw it without panicking.

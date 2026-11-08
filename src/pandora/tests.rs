@@ -902,8 +902,8 @@ fn recently_played_asks_the_graphql_path_with_the_sites_types() {
     let vars = call.body["variables"].as_str().expect("variables must be a string");
     let vars: Value = serde_json::from_str(vars).unwrap();
     assert_eq!(vars["limit"], 20);
-    // Two-letter wire codes: the longer names are the bundle's own constants
-    // and come back as a 400 invalid enum (see the test below).
+    // Short codes, not the bundle's long names. Whether the live enum accepts
+    // them (and whether `SF` should be here) is still a live check.
     assert_eq!(vars["types"], json!(["AL", "AP", "AU", "CT", "PL", "PC", "PE", "ST", "TR"]));
     // `playedAfter` stays out of the body: present and null is a 200 with
     // `data: null` and an error, so it is only sent once a window is asked for.
@@ -915,9 +915,21 @@ fn recently_played_asks_the_graphql_path_with_the_sites_types() {
 }
 
 #[test]
+fn a_graphql_station_id_matches_the_rest_station_id() {
+    // createStation's answer carries both: stationId "3815", pandoraId "ST:0:3815".
+    assert!(station_ids_match("3815", "ST:0:3815"));
+    assert!(station_ids_match("ST:0:3815", "ST:0:3815"));
+    assert!(station_ids_match("demo-2", "demo-2"), "an id copied through unchanged still matches");
+    assert!(!station_ids_match("9", "ST:0:19"), "the prefix is not a suffix search");
+    assert!(!station_ids_match("3815", "TR:3815"));
+    assert!(!station_ids_match("", "ST:0:1"));
+    assert!(!station_ids_match("1", "ST:0:"));
+}
+
+#[test]
 fn a_captured_answer_parses_to_station_entries() {
-    // Trimmed from the live capture of 2026-11-07 (shared fixture, ids masked):
-    // seven stations, `type` as the wire code `ST`, no `name` on a Station.
+    // Station shape from the query fragment (id, type, isCollected, stationType;
+    // no name). Ids are placeholders, not a saved live body.
     let answer = json!({ "data": { "recentlyPlayedSources": { "items": [
         { "sourceEntity": { "id": "ST:0:1", "type": "ST", "isCollected": true, "stationType": "SEEDED_STATION" } },
         { "sourceEntity": { "id": "ST:0:2", "type": "ST", "isCollected": true, "stationType": "SEEDED_STATION" } }
@@ -930,7 +942,8 @@ fn a_captured_answer_parses_to_station_entries() {
 
 #[test]
 fn a_bad_enum_is_a_400_that_says_which_value_it_refused() {
-    // The wire's own words for the mistake the shipped constant made.
+    // A GraphQL 400 shaped like an invalid enum. The body is written here;
+    // it is not a captured live response.
     let body = json!({ "errors": [{"message": "Variable \"$types\" got invalid value \"ALBUM\" at \"types[0]\"; Expected type RecentlyPlayedSourceType."}] })
         .to_string();
     let (base, _seen) = fake_pandora(Box::new(move |_r| (400, body.clone())));

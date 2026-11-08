@@ -23,7 +23,7 @@ use crate::art::Cover;
 use crate::config::{AlbumArt, BorderStyle, GoodVibes};
 use crate::icons::{Icons, icons};
 use crate::input::TextInput;
-use crate::pandora::{Rating, Song};
+use crate::pandora::{Rating, Song, station_ids_match};
 use crate::theme::Palette;
 use crate::update::{Progress, Replace};
 use ratatui_image::{Resize, StatefulImage};
@@ -676,14 +676,14 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let now_h = if app.has_now_playing() { 2 } else { 0 };
     let section_pins = app.browse_menu_pins().len() as u16;
     let pinned = app.config.ui.pinned_in_menu;
-    // MY COLLECTION groups the personal rows -- My Stations and the optional
-    // Pinned songs -- ruled and headed like FAVORITES. The pinned Browse
-    // sections follow under their own "BROWSE (n)" heading.
-    // The recently played row joins the collection once it has something to show.
+    // MY COLLECTION groups the personal rows -- My Stations, the optional
+    // Pinned songs, and Recently Played once it has something to show -- ruled
+    // and headed like FAVORITES. The pinned Browse sections follow under
+    // their own "BROWSE (n)" heading.
     let recent_n = u16::from(app.recent_row());
     let personal_n = 1 + u16::from(pinned) + recent_n;
     // Hidden while it has nothing of its own, the way FAVORITES hides.
-    let collection_head = !app.stations.is_empty() || (pinned && !app.pins.is_empty());
+    let collection_head = !app.stations.is_empty() || (pinned && !app.pins.is_empty()) || app.recent_row();
     // NOW PLAYING already draws an inset rule above it, so skip the one here.
     let collection_gap = u16::from(now_h == 0);
     let collection_n = personal_n + if collection_head { 1 + collection_gap } else { 0 };
@@ -962,7 +962,7 @@ fn draw_recent(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         .recent
         .iter()
         .map(|source| {
-            let playing = app.current_station.as_deref() == Some(source.id.as_str());
+            let playing = app.current_station.as_deref().is_some_and(|id| station_ids_match(id, &source.id));
             let icon = if playing {
                 ic.play
             } else if source.kind == "ST" {
@@ -4780,6 +4780,19 @@ mod tests {
         for (c, r) in [(40, 10), (20, 6), (120, 8)] {
             let _ = screen(&app, c, r);
         }
+    }
+
+    #[test]
+    fn recently_played_keeps_the_collection_heading_when_stations_are_gone() {
+        let mut app = App::new(crate::config::Config::default(), None, &[], true);
+        app.config.ui.icons = crate::config::IconSet::Emoji;
+        app.config.ui.pinned_in_menu = false;
+        app.stations.clear();
+        app.recent =
+            vec![crate::pandora::RecentSource { id: "ST:0:1".into(), kind: "ST".into(), ..Default::default() }];
+        let text = all_text(&screen(&app, 120, 40).0);
+        assert!(text.contains("MY COLLECTION"), "{text}");
+        assert!(text.contains("Recently Played (1)"), "{text}");
     }
 
     #[test]

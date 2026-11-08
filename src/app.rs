@@ -22,6 +22,7 @@ use crate::input::TextInput;
 use crate::keychain::{self, Keychain, NO_KEYCHAIN};
 use crate::pandora::{
     BrowseItem, BrowseSection, Quality, Rating, RecentSource, SearchHit, Song, Station, StationDetails,
+    station_ids_match,
 };
 use crate::theme::{self, Palette};
 use crate::update::{Progress, Replace, Update};
@@ -919,8 +920,10 @@ pub struct App {
     pub recent_cursor: usize,
     /// A recently played call is on its way.
     pub recent_loading: bool,
-    /// It was asked for once this session: an empty history must not re-ask.
+    /// Asked once this login. Logout clears it so the next account is fetched.
     recent_asked: bool,
+    /// Bumped on each ask and on logout. A reply from an older one is dropped.
+    recent_generation: u64,
     /// Up Next songs disliked with b: sent, and skipped, when their turn comes.
     pub held_dislikes: std::collections::HashSet<String>,
     /// `.`: the song menu, and the song it is for.
@@ -1058,6 +1061,7 @@ impl App {
             recent_cursor: 0,
             recent_loading: false,
             recent_asked: false,
+            recent_generation: 0,
             held_dislikes: Default::default(),
             song_menu: None,
             panel: None,
@@ -1327,14 +1331,29 @@ impl App {
         !self.recent.is_empty()
     }
 
-    /// Asks Pandora for the recently played list, once per session.
+    /// Asks Pandora for the recently played list, once per login.
     fn ask_recently_played(&mut self) {
-        if self.recent_asked || self.recent_loading {
+        if self.session != Session::LoggedIn || self.recent_asked || self.recent_loading {
             return;
         }
         self.recent_asked = true;
         self.recent_loading = true;
-        self.backend.send(Request::RecentlyPlayed);
+        self.recent_generation = self.recent_generation.wrapping_add(1);
+        self.backend.send(Request::RecentlyPlayed { generation: self.recent_generation });
+    }
+
+    /// The reply belongs to the login that asked for it.
+    fn accept_recent(&self, generation: u64) -> bool {
+        generation == self.recent_generation && self.session == Session::LoggedIn
+    }
+
+    /// Drops the list and invalidates an answer still in flight.
+    fn forget_recent(&mut self) {
+        self.recent_generation = self.recent_generation.wrapping_add(1);
+        self.recent.clear();
+        self.recent_cursor = 0;
+        self.recent_loading = false;
+        self.recent_asked = false;
     }
 
     /// The menu's RECENTLY PLAYED entry: the list of recent sources.
@@ -1349,7 +1368,7 @@ impl App {
     /// the station list gives it one; anything else uses `name`, then the
     /// artist, then the id rather than a blank row.
     pub fn recent_title(&self, source: &RecentSource) -> String {
-        if let Some(station) = self.stations.iter().find(|s| s.id == source.id) {
+        if let Some(station) = self.stations.iter().find(|s| station_ids_match(&s.id, &source.id)) {
             return station.name.clone();
         }
         if !source.name.is_empty() {
@@ -1372,7 +1391,7 @@ impl App {
             self.status = format!("“{}” is not a station: play it from Pandora", self.recent_title(&source));
             return;
         }
-        match self.stations.iter().position(|s| s.id == source.id) {
+        match self.stations.iter().position(|s| station_ids_match(&s.id, &source.id)) {
             Some(at) => self.tune(at),
             None if self.stations.is_empty() => self.status = "The stations are still loading".into(),
             None => self.status = format!("“{}” isn't one of your stations any more", self.recent_title(&source)),
@@ -2334,19 +2353,41 @@ impl App {
             | Reply::SeedRemoved { .. }
             | Reply::Feedback { .. }
             | Reply::FeedbackDeleted { .. } => {}
-            Reply::Recent(sources) => {
+            Reply::Recent { generation, sources } => {
+                if !self.accept_recent(generation) {
+                    return;
+                }
+                // The new row is inserted under Pinned. Stay on the entry the
+                // cursor was already on, instead of landing on the new one.
+                let had = self.recent_row();
+                let selected = self.menu_selected();
                 self.recent = sources;
                 self.recent_loading = false;
                 self.recent_cursor = self.recent_cursor.min(self.recent.len().saturating_sub(1));
+                if !had && self.recent_row() {
+                    let items = self.menu_items();
+                    if let Some(i) = items.iter().position(|m| *m == selected) {
+                        self.menu_cursor = i;
+                    }
+                }
+            }
+            Reply::RecentFailed { generation, message } => {
+                if !self.accept_recent(generation) {
+                    return;
+                }
+                self.recent_loading = false;
+                // The row hides on an empty list, so say it in the status bar.
+                self.status = format!("⚠ Recently Played: {message}");
             }
             Reply::Failed { what, message } => {
                 if self.editor_failed(what, &message) || self.panel_failed(what, &message) {
                     return;
                 }
                 if what == "recently played" {
-                    self.recent_loading = false;
-                    // The row hides on an empty list, so say it in the status bar.
-                    self.status = format!("⚠ Recently Played: {message}");
+                    if self.recent_loading {
+                        self.recent_loading = false;
+                        self.status = format!("⚠ Recently Played: {message}");
+                    }
                     return;
                 }
                 if what == "shuffle" {
@@ -2557,6 +2598,7 @@ impl App {
         self.queue.clear();
         self.history.clear();
         self.stations.clear();
+        self.forget_recent();
         self.current_station = None;
         self.menu_cursor = 0;
         self.view = View::Settings;
@@ -4030,6 +4072,58 @@ mod tests {
         // ARTIST_TOP_SONGS answers an ArtistPlay: artist.name, no top-level name.
         let artist = RecentSource { id: "AP:2".into(), kind: "AP".into(), name: String::new(), by: "MGMT".into() };
         assert_eq!(app.recent_title(&artist), "MGMT");
+    }
+
+    #[test]
+    fn a_graphql_station_id_joins_and_plays_the_rest_station_without_moving_the_menu() {
+        let mut app = demo();
+        app.recent.clear();
+        app.recent_loading = true;
+        app.recent_generation = 7;
+        let at = app.menu_items().iter().position(|m| *m == MenuItem::Settings).unwrap();
+        app.focus = Focus::Menu;
+        app.menu_cursor = at;
+        let station = app.stations[2].clone();
+        app.on_reply(Reply::Recent {
+            generation: 7,
+            sources: vec![RecentSource { id: format!("ST:0:{}", station.id), kind: "ST".into(), ..Default::default() }],
+        });
+        assert!(app.recent_row());
+        assert_eq!(app.menu_selected(), MenuItem::Settings, "the new row must not steal the cursor");
+        assert_eq!(app.recent_title(&app.recent[0]), station.name);
+        app.view = View::Recent;
+        app.focus = Focus::Content;
+        app.recent_cursor = 0;
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.current_station.as_deref(), Some(station.id.as_str()));
+        assert_eq!(app.view, View::Player);
+    }
+
+    #[test]
+    fn a_stale_recently_played_answer_is_ignored_and_logout_asks_again() {
+        let mut app = demo();
+        let before = app.recent.clone();
+        app.recent_generation = 4;
+        app.recent_loading = true;
+        app.on_reply(Reply::Recent { generation: 3, sources: vec![] });
+        assert_eq!(app.recent, before);
+        assert!(app.recent_loading, "an older success must not clear the newer request");
+        app.on_reply(Reply::RecentFailed { generation: 3, message: "old".into() });
+        assert!(app.recent_loading, "an older failure must not clear the newer request");
+        assert!(!app.status.contains("old"));
+        let generation = app.recent_generation;
+        app.log_out();
+        assert!(app.recent.is_empty());
+        assert!(!app.recent_asked && !app.recent_loading);
+        assert_ne!(app.recent_generation, generation);
+        app.on_reply(Reply::Recent {
+            generation,
+            sources: vec![RecentSource { id: "ST:0:1".into(), kind: "ST".into(), ..Default::default() }],
+        });
+        assert!(app.recent.is_empty(), "a late answer from the old login is dropped");
+        app.session = Session::LoggedIn;
+        app.on_reply(Reply::Stations(vec![Station { id: "3815".into(), name: "Tee".into(), ..Default::default() }]));
+        assert!(app.recent_loading && app.recent_asked, "the next login asks once");
     }
 
     #[test]

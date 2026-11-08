@@ -127,11 +127,13 @@ pub const FEEDBACK_PAGE: usize = 30;
 /// How many recently played entries one call asks for.
 pub const RECENT_PAGE: usize = 20;
 
-/// The `RecentlyPlayedSourceType` values to ask for, spelled as the wire
-/// spells them: two-letter codes, confirmed by live introspection on a real
-/// account (2026-11-07). The bundle's `ALBUM` / `SONG` / `STATION` names are
-/// its own app-side constants, mapped before the request goes out — sending
-/// them is a 400 invalid enum. A track is `TR`; there is no `SONG` on the wire.
+/// `RecentlyPlayedSourceType` values this client sends. The public bundle
+/// (`web-app.c532b8d045d20ffdc585.js`) still lists the long names
+/// `ALBUM, SONG, PLAYLIST, STATION, ARTIST_TOP_SONGS, PODCAST`, and that list
+/// has no caller in the bundle. `PandoraTypes` in the same file maps
+/// `STATION` to `SF` and `USER_STATION` to `ST` (a track is `TR`). These nine
+/// short codes are unconfirmed against a live account: one rejected code
+/// fails the whole call. `SF` is not among them.
 pub const RECENT_TYPES: [&str; 9] = ["AL", "AP", "AU", "CT", "PL", "PC", "PE", "ST", "TR"];
 
 /// One entry of the account's recently played list.
@@ -615,6 +617,23 @@ pub fn parse_seed_suggestions(v: &Value) -> Vec<SearchHit> {
             })
         })
         .collect()
+}
+
+/// REST `stationId` (`3815`, what `getStations` stores) and the GraphQL
+/// station `id` (`ST:0:3815`, what recently played returns) name one station.
+/// The seed mutations already send `ST:0:` plus the REST id; equality still
+/// counts, so a demo id that was copied through unchanged matches too.
+pub fn station_ids_match(rest_id: &str, source_id: &str) -> bool {
+    if rest_id.is_empty() || source_id.is_empty() {
+        return false;
+    }
+    if rest_id == source_id {
+        return true;
+    }
+    fn bare(id: &str) -> Option<&str> {
+        id.strip_prefix("ST:0:").filter(|rest| !rest.is_empty())
+    }
+    bare(source_id) == Some(rest_id) || bare(rest_id) == Some(source_id)
 }
 
 /// The entries of a `recentlyPlayedSources` answer: one `RecentSource` per

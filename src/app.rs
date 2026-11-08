@@ -4037,7 +4037,7 @@ mod tests {
         let mut app = demo();
         app.recent_loading = true;
         app.on_reply(Reply::Failed {
-            what: "recently played".into(),
+            what: "recently played",
             message: "Variable \"$types\" got invalid value \"ALBUM\" (HTTP 400)".into(),
         });
         assert!(!app.recent_loading, "the pending flag clears");

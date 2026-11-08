@@ -125,25 +125,27 @@ pub struct FeedbackPage {
 pub const FEEDBACK_PAGE: usize = 30;
 
 /// How many recently played entries one call asks for.
-#[allow(dead_code)] // its menu row lands once a live answer is captured.
 pub const RECENT_PAGE: usize = 20;
 
-/// The `RecentlyPlayedSourceType` values the site's own web client asks for,
-/// read from its bundle rather than guessed: `ALBUM`, `SONG`, `PLAYLIST`,
-/// `STATION`, `ARTIST_TOP_SONGS`, `PODCAST`. `TRACK` is not one of them.
-#[allow(dead_code)]
-pub const RECENT_TYPES: [&str; 6] = ["ALBUM", "SONG", "PLAYLIST", "STATION", "ARTIST_TOP_SONGS", "PODCAST"];
+/// `RecentlyPlayedSourceType` values this client sends. The public bundle
+/// (`web-app.c532b8d045d20ffdc585.js`) still lists the long names
+/// `ALBUM, SONG, PLAYLIST, STATION, ARTIST_TOP_SONGS, PODCAST`, and that list
+/// has no caller in the bundle. `PandoraTypes` in the same file maps
+/// `STATION` to `SF` and `USER_STATION` to `ST` (a track is `TR`). These nine
+/// short codes are unconfirmed against a live account: one rejected code
+/// fails the whole call. `SF` is not among them.
+pub const RECENT_TYPES: [&str; 9] = ["AL", "AP", "AU", "CT", "PL", "PC", "PE", "ST", "TR"];
 
 /// One entry of the account's recently played list.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[allow(dead_code)] // drawn once a live answer is captured.
 pub struct RecentSource {
     /// `id` (`ST:0:...`, `TR:...`): what replaying it takes.
     pub id: String,
-    /// `type` exactly as the site sends it, left unmapped: nothing here has
-    /// seen a live value yet, so no guess is baked in.
+    /// `type` as the wire sends it, the same two-letter code [`RECENT_TYPES`]
+    /// asks in (`ST`, `TR`, …) — not the longer name.
     pub kind: String,
-    /// `name`: empty for a station, whose fragment selects no name.
+    /// `name`: empty for a station, whose fragment selects no name, so a
+    /// station's title comes from the station list instead.
     pub name: String,
     /// The artist's name, when the entity has one (songs, albums).
     pub by: String,
@@ -358,7 +360,11 @@ pub fn classify(status: u16, body: &str) -> Error {
     if code == Some(1028) {
         return Error::Country;
     }
-    let message = match (str_of(&v, "message"), status) {
+    // A GraphQL failure puts its reason under `errors[0].message` with no
+    // top-level one, so without this a bad enum would only say "HTTP 400".
+    let gql = v.pointer("/errors/0/message").and_then(Value::as_str).unwrap_or_default().trim();
+    let said = if str_of(&v, "message").is_empty() { gql.to_owned() } else { str_of(&v, "message") };
+    let message = match (said, status) {
         (m, 401) if m.is_empty() => "the login expired".into(),
         (m, _) if m.is_empty() => format!("Pandora answered HTTP {status}"),
         (m, _) => format!("{m} (HTTP {status}{})", if kind.is_empty() { String::new() } else { format!(", {kind}") }),
@@ -611,6 +617,23 @@ pub fn parse_seed_suggestions(v: &Value) -> Vec<SearchHit> {
             })
         })
         .collect()
+}
+
+/// REST `stationId` (`3815`, what `getStations` stores) and the GraphQL
+/// station `id` (`ST:0:3815`, what recently played returns) name one station.
+/// The seed mutations already send `ST:0:` plus the REST id; equality still
+/// counts, so a demo id that was copied through unchanged matches too.
+pub fn station_ids_match(rest_id: &str, source_id: &str) -> bool {
+    if rest_id.is_empty() || source_id.is_empty() {
+        return false;
+    }
+    if rest_id == source_id {
+        return true;
+    }
+    fn bare(id: &str) -> Option<&str> {
+        id.strip_prefix("ST:0:").filter(|rest| !rest.is_empty())
+    }
+    bare(source_id) == Some(rest_id) || bare(rest_id) == Some(source_id)
 }
 
 /// The entries of a `recentlyPlayedSources` answer: one `RecentSource` per
@@ -1203,11 +1226,13 @@ impl Client {
     /// The account's recently played list: one `GetRecentlyPlayedSourcesWeb`
     /// call to `v1/graphql/graphql`, the path the site's client builds as
     /// `'/api/' + 'v1/graphql/graphql'`. `types` are `RecentlyPlayedSourceType`
-    /// values; an empty slice asks for the six the site asks for.
+    /// wire codes (`ST`, `TR`, …); an empty slice asks for all of
+    /// [`RECENT_TYPES`].
     ///
-    /// The answer's shape is not captured yet (introspection is closed), so the
-    /// parser reads what it can and the caller hides an empty list.
-    #[allow(dead_code)] // wired to the menu once a live answer is captured.
+    /// The document declares `$playedAfter`, and null is not the same as
+    /// absent here: sending the key with null answers 200 with `data: null`
+    /// and an error, while omitting it works. So the window is only sent once
+    /// something asks for one, which nothing does yet.
     pub fn recently_played(&mut self, limit: usize, types: &[&str]) -> Result<Vec<RecentSource>, Error> {
         let types: Vec<&str> = if types.is_empty() { RECENT_TYPES.to_vec() } else { types.to_vec() };
         // The site sends `variables` as a JSON string, as the seed mutations do.

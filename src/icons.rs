@@ -18,6 +18,8 @@ pub struct Icons {
     pub favorite: &'static str,
     /// A pinned song (Shift+I) and the Pinned page.
     pub pin: &'static str,
+    /// The recently played list (MY COLLECTION's last row).
+    pub recent: &'static str,
     pub bell: &'static str,
     /// Right after the star of a Pandora genre station (one you can't rename): the boxvibe logo.
     pub genre_station: &'static str,
@@ -52,6 +54,7 @@ const EMOJI: Icons = Icons {
     shared: "👥",
     favorite: "⭐",
     pin: "📌",
+    recent: "🕑",
     bell: "🔔",
     genre_station: LOGO,
     own_station: "👤",
@@ -86,6 +89,7 @@ const NERD: Icons = Icons {
     shared: "\u{f0c0}",
     favorite: "\u{f005}",
     pin: "\u{f08d}",
+    recent: "\u{f1da}",
     bell: "\u{f0f3}",
     genre_station: LOGO,
     own_station: "\u{f007}",
@@ -121,6 +125,7 @@ const UNICODE: Icons = Icons {
     shared: "⚇",
     favorite: "★",
     pin: "⚑",
+    recent: "↺",
     bell: "!",
     // The logo is the Nerd Font box in every set; the person is a plain smiley.
     genre_station: LOGO,

@@ -20,7 +20,10 @@ use crate::backend::{Backend, KeychainJob, KeychainReply, Reply, Request};
 use crate::config::{self, AlbumArt, Config, ConfigWarning, GoodVibes, Secret};
 use crate::input::TextInput;
 use crate::keychain::{self, Keychain, NO_KEYCHAIN};
-use crate::pandora::{BrowseItem, BrowseSection, Quality, Rating, SearchHit, Song, Station, StationDetails};
+use crate::pandora::{
+    BrowseItem, BrowseSection, Quality, Rating, RecentSource, SearchHit, Song, Station, StationDetails,
+    station_ids_match,
+};
 use crate::theme::{self, Palette};
 use crate::update::{Progress, Replace, Update};
 
@@ -57,6 +60,9 @@ pub enum View {
     Browse,
     /// Songs pinned with Shift+I.
     Pinned,
+    /// The account's recently played sources, newest first: MY COLLECTION's
+    /// last row, from Pandora's GraphQL API.
+    Recent,
     Settings,
     /// What the bottom bar said, newest first.
     Notifications,
@@ -81,6 +87,9 @@ pub enum MenuItem {
     BrowsePin(usize),
     /// The songs pinned with Shift+I (hidden by `[look] pinned_in_menu`).
     Pinned,
+    /// The recently played list. Drawn only once Pandora sent something, so
+    /// it hides while empty the way FAVORITES does.
+    RecentlyPlayed,
     /// A starred station, by its index in `[playback] favorites`.
     Favorite(usize),
     Settings,
@@ -906,6 +915,15 @@ pub struct App {
     /// Where they are kept (`None`: in the demo, only in memory).
     pub pins_path: Option<PathBuf>,
     pub pinned_cursor: usize,
+    /// The account's recently played sources, newest first.
+    pub recent: Vec<RecentSource>,
+    pub recent_cursor: usize,
+    /// A recently played call is on its way.
+    pub recent_loading: bool,
+    /// Asked once this login. Logout clears it so the next account is fetched.
+    recent_asked: bool,
+    /// Bumped on each ask and on logout. A reply from an older one is dropped.
+    recent_generation: u64,
     /// Up Next songs disliked with b: sent, and skipped, when their turn comes.
     pub held_dislikes: std::collections::HashSet<String>,
     /// `.`: the song menu, and the song it is for.
@@ -1039,6 +1057,11 @@ impl App {
             pins_path: if demo { None } else { crate::pinned::default_path() },
             pins: Vec::new(),
             pinned_cursor: 0,
+            recent: Vec::new(),
+            recent_cursor: 0,
+            recent_loading: false,
+            recent_asked: false,
+            recent_generation: 0,
             held_dislikes: Default::default(),
             song_menu: None,
             panel: None,
@@ -1224,6 +1247,8 @@ impl App {
             // Pinned keeps a row of its own above the Browse sections, which
             // the menu draws under a "BROWSE (n)" heading.
             .chain(self.config.ui.pinned_in_menu.then_some(MenuItem::Pinned))
+            // Empty until Pandora's answer lands, so the row is absent, not blank.
+            .chain(self.recent_row().then_some(MenuItem::RecentlyPlayed))
             .chain(pins)
             .chain(
                 (0..if self.config.ui.favorites_in_menu { self.config.ui.favorites.len() } else { 0 })
@@ -1244,6 +1269,7 @@ impl App {
             MenuItem::Stations => self.show_stations(),
             MenuItem::BrowsePin(i) => self.show_browse_pin(i),
             MenuItem::Pinned => self.show_page(View::Pinned),
+            MenuItem::RecentlyPlayed => self.show_recently_played(),
             MenuItem::Favorite(i) => {
                 let Some(fav) = self.config.ui.favorites.get(i).cloned() else { return };
                 match self.stations.iter().position(|s| s.id == fav.id) {
@@ -1297,6 +1323,79 @@ impl App {
         self.view = view;
         self.point_menu_at_view();
         self.focus = Focus::Content;
+    }
+
+    /// How many rows the menu's recently played entry takes: one, or none
+    /// while the list is empty (FAVORITES hides the same way).
+    pub fn recent_row(&self) -> bool {
+        !self.recent.is_empty()
+    }
+
+    /// Asks Pandora for the recently played list, once per login.
+    fn ask_recently_played(&mut self) {
+        if self.session != Session::LoggedIn || self.recent_asked || self.recent_loading {
+            return;
+        }
+        self.recent_asked = true;
+        self.recent_loading = true;
+        self.recent_generation = self.recent_generation.wrapping_add(1);
+        self.backend.send(Request::RecentlyPlayed { generation: self.recent_generation });
+    }
+
+    /// The reply belongs to the login that asked for it.
+    fn accept_recent(&self, generation: u64) -> bool {
+        generation == self.recent_generation && self.session == Session::LoggedIn
+    }
+
+    /// Drops the list and invalidates an answer still in flight.
+    fn forget_recent(&mut self) {
+        self.recent_generation = self.recent_generation.wrapping_add(1);
+        self.recent.clear();
+        self.recent_cursor = 0;
+        self.recent_loading = false;
+        self.recent_asked = false;
+    }
+
+    /// The menu's RECENTLY PLAYED entry: the list of recent sources.
+    fn show_recently_played(&mut self) {
+        self.view = View::Recent;
+        self.focus = Focus::Content;
+        self.point_menu_at_view();
+        self.recent_cursor = self.recent_cursor.min(self.recent.len().saturating_sub(1));
+    }
+
+    /// A recent entry's title. A station's own fragment selects no name, so
+    /// the station list gives it one; anything else uses `name`, then the
+    /// artist, then the id rather than a blank row.
+    pub fn recent_title(&self, source: &RecentSource) -> String {
+        if let Some(station) = self.stations.iter().find(|s| station_ids_match(&s.id, &source.id)) {
+            return station.name.clone();
+        }
+        if !source.name.is_empty() {
+            return source.name.clone();
+        }
+        if !source.by.is_empty() {
+            return source.by.clone();
+        }
+        source.id.clone()
+    }
+
+    /// Enter on a recent entry: a station plays. Anything else (a track, an
+    /// album, a playlist) needs a station to play from, which Pandora's answer
+    /// does not name, so say so instead of guessing one.
+    fn play_recent(&mut self) {
+        let Some(source) = self.recent.get(self.recent_cursor.min(self.recent.len().saturating_sub(1))).cloned() else {
+            return;
+        };
+        if source.kind != "ST" {
+            self.status = format!("“{}” is not a station: play it from Pandora", self.recent_title(&source));
+            return;
+        }
+        match self.stations.iter().position(|s| station_ids_match(&s.id, &source.id)) {
+            Some(at) => self.tune(at),
+            None if self.stations.is_empty() => self.status = "The stations are still loading".into(),
+            None => self.status = format!("“{}” isn't one of your stations any more", self.recent_title(&source)),
+        }
     }
 
     /// My Stations (menu entry or `S`): the list, with the keys on it.
@@ -1959,6 +2058,7 @@ impl App {
                 None => None,
             },
             View::Pinned => Some(MenuItem::Pinned),
+            View::Recent => Some(MenuItem::RecentlyPlayed),
             View::Player if self.has_now_playing() => Some(MenuItem::NowPlaying),
             View::Player => None,
         };
@@ -2110,6 +2210,9 @@ impl App {
                 let last = &self.config.pandora.last_station;
                 let at = self.stations.iter().position(|s| &s.id == last);
                 self.stations_cursor = at.unwrap_or(0);
+                // One call per session, after the list: a station entry carries
+                // no name, so the row joins names from `stations`.
+                self.ask_recently_played();
                 // Favorites keep the names Pandora uses now.
                 let mut renamed = false;
                 for f in &mut self.config.ui.favorites {
@@ -2250,8 +2353,41 @@ impl App {
             | Reply::SeedRemoved { .. }
             | Reply::Feedback { .. }
             | Reply::FeedbackDeleted { .. } => {}
+            Reply::Recent { generation, sources } => {
+                if !self.accept_recent(generation) {
+                    return;
+                }
+                // The new row is inserted under Pinned. Stay on the entry the
+                // cursor was already on, instead of landing on the new one.
+                let had = self.recent_row();
+                let selected = self.menu_selected();
+                self.recent = sources;
+                self.recent_loading = false;
+                self.recent_cursor = self.recent_cursor.min(self.recent.len().saturating_sub(1));
+                if !had && self.recent_row() {
+                    let items = self.menu_items();
+                    if let Some(i) = items.iter().position(|m| *m == selected) {
+                        self.menu_cursor = i;
+                    }
+                }
+            }
+            Reply::RecentFailed { generation, message } => {
+                if !self.accept_recent(generation) {
+                    return;
+                }
+                self.recent_loading = false;
+                // The row hides on an empty list, so say it in the status bar.
+                self.status = format!("⚠ Recently Played: {message}");
+            }
             Reply::Failed { what, message } => {
                 if self.editor_failed(what, &message) || self.panel_failed(what, &message) {
+                    return;
+                }
+                if what == "recently played" {
+                    if self.recent_loading {
+                        self.recent_loading = false;
+                        self.status = format!("⚠ Recently Played: {message}");
+                    }
                     return;
                 }
                 if what == "shuffle" {
@@ -2462,6 +2598,7 @@ impl App {
         self.queue.clear();
         self.history.clear();
         self.stations.clear();
+        self.forget_recent();
         self.current_station = None;
         self.menu_cursor = 0;
         self.view = View::Settings;
@@ -3342,6 +3479,7 @@ impl App {
             }
             (Focus::Content, View::Browse) => self.activate_browse_row(),
             (Focus::Content, View::Pinned) => self.open_pin(),
+            (Focus::Content, View::Recent) => self.play_recent(),
             (Focus::Content, View::Notifications) => {}
             (Focus::Content, View::Player) => {}
         }
@@ -3383,6 +3521,7 @@ impl App {
                 self.notes_cursor = clamp(self.notes_cursor, self.notes.len().max(1))
             }
             (Focus::Content, View::Pinned) => self.pinned_cursor = clamp(self.pinned_cursor, self.pins.len().max(1)),
+            (Focus::Content, View::Recent) => self.recent_cursor = clamp(self.recent_cursor, self.recent.len().max(1)),
         }
     }
 
@@ -3878,6 +4017,128 @@ mod tests {
     }
 
     #[test]
+    fn the_recently_played_row_joins_the_collection_once_pandora_answers() {
+        let app = demo();
+        // The demo worker answers with three of its stations.
+        assert!(app.recent_row(), "the demo has a history: {:#?}", app.recent);
+        let items = app.menu_items();
+        let pinned = items.iter().position(|m| *m == MenuItem::Pinned).expect("Pinned");
+        let recent = items.iter().position(|m| *m == MenuItem::RecentlyPlayed).expect("Recently Played");
+        assert_eq!(recent, pinned + 1, "right under Pinned, inside MY COLLECTION: {items:?}");
+        // Nothing asked for yet, or an empty history: no row at all, the way
+        // FAVORITES hides.
+        let fresh = App::new(Config::default(), None, &[], true);
+        assert!(!fresh.recent_row());
+        assert!(!fresh.menu_items().contains(&MenuItem::RecentlyPlayed), "{:?}", fresh.menu_items());
+    }
+
+    #[test]
+    fn enter_on_a_recent_station_plays_it_and_a_track_says_it_cannot() {
+        let mut app = demo();
+        let at = app.menu_items().iter().position(|m| *m == MenuItem::RecentlyPlayed).unwrap();
+        app.focus = Focus::Menu;
+        app.menu_cursor = at;
+        app.on_key(key(KeyCode::Enter));
+        // No status text in the message: it can carry the account, and CodeQL
+        // counts a panic message as a log sink (cleartext-logging).
+        assert_eq!((app.view, app.focus), (View::Recent, Focus::Content));
+        let first = app.recent[0].clone();
+        assert_eq!(first.kind, "ST", "{first:#?}");
+        app.recent_cursor = 0;
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.current_station.as_deref(), Some(first.id.as_str()));
+        assert_eq!(app.view, View::Player, "tuning lands on Now Playing, like Shift+P");
+        // A track cannot be played from here: Pandora's answer names no station
+        // to play it from, so the row says so rather than guessing one.
+        app.view = View::Recent;
+        app.recent =
+            vec![RecentSource { id: "TR:1".into(), kind: "TR".into(), name: "Kids".into(), by: "MGMT".into() }];
+        app.recent_cursor = 0;
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.view, View::Recent, "still here");
+        assert!(app.status.contains("Kids") && app.status.contains("not a station"));
+    }
+
+    #[test]
+    fn a_recent_entry_is_titled_by_its_station_then_its_own_fields() {
+        let app = demo();
+        let station = app.stations[1].clone();
+        let joined = RecentSource { id: station.id.clone(), kind: "ST".into(), ..Default::default() };
+        assert_eq!(app.recent_title(&joined), station.name, "a station's name comes from the station list");
+        let gone = RecentSource { id: "ST:0:99".into(), kind: "ST".into(), ..Default::default() };
+        assert_eq!(app.recent_title(&gone), "ST:0:99", "nowhere to get a name: the id, never a blank row");
+        let track = RecentSource { id: "TR:1".into(), kind: "TR".into(), name: "Kids".into(), by: "MGMT".into() };
+        assert_eq!(app.recent_title(&track), "Kids");
+        // ARTIST_TOP_SONGS answers an ArtistPlay: artist.name, no top-level name.
+        let artist = RecentSource { id: "AP:2".into(), kind: "AP".into(), name: String::new(), by: "MGMT".into() };
+        assert_eq!(app.recent_title(&artist), "MGMT");
+    }
+
+    #[test]
+    fn a_graphql_station_id_joins_and_plays_the_rest_station_without_moving_the_menu() {
+        let mut app = demo();
+        app.recent.clear();
+        app.recent_loading = true;
+        app.recent_generation = 7;
+        let at = app.menu_items().iter().position(|m| *m == MenuItem::Settings).unwrap();
+        app.focus = Focus::Menu;
+        app.menu_cursor = at;
+        let station = app.stations[2].clone();
+        app.on_reply(Reply::Recent {
+            generation: 7,
+            sources: vec![RecentSource { id: format!("ST:0:{}", station.id), kind: "ST".into(), ..Default::default() }],
+        });
+        assert!(app.recent_row());
+        assert_eq!(app.menu_selected(), MenuItem::Settings, "the new row must not steal the cursor");
+        assert_eq!(app.recent_title(&app.recent[0]), station.name);
+        app.view = View::Recent;
+        app.focus = Focus::Content;
+        app.recent_cursor = 0;
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.current_station.as_deref(), Some(station.id.as_str()));
+        assert_eq!(app.view, View::Player);
+    }
+
+    #[test]
+    fn a_stale_recently_played_answer_is_ignored_and_logout_asks_again() {
+        let mut app = demo();
+        let before = app.recent.clone();
+        app.recent_generation = 4;
+        app.recent_loading = true;
+        app.on_reply(Reply::Recent { generation: 3, sources: vec![] });
+        assert_eq!(app.recent, before);
+        assert!(app.recent_loading, "an older success must not clear the newer request");
+        app.on_reply(Reply::RecentFailed { generation: 3, message: "old".into() });
+        assert!(app.recent_loading, "an older failure must not clear the newer request");
+        assert!(!app.status.contains("old"));
+        let generation = app.recent_generation;
+        app.log_out();
+        assert!(app.recent.is_empty());
+        assert!(!app.recent_asked && !app.recent_loading);
+        assert_ne!(app.recent_generation, generation);
+        app.on_reply(Reply::Recent {
+            generation,
+            sources: vec![RecentSource { id: "ST:0:1".into(), kind: "ST".into(), ..Default::default() }],
+        });
+        assert!(app.recent.is_empty(), "a late answer from the old login is dropped");
+        app.session = Session::LoggedIn;
+        app.on_reply(Reply::Stations(vec![Station { id: "3815".into(), name: "Tee".into(), ..Default::default() }]));
+        assert!(app.recent_loading && app.recent_asked, "the next login asks once");
+    }
+
+    #[test]
+    fn a_failed_recently_played_call_stops_the_spinner_and_says_why() {
+        let mut app = demo();
+        app.recent_loading = true;
+        app.on_reply(Reply::Failed {
+            what: "recently played",
+            message: "Variable \"$types\" got invalid value \"ALBUM\" (HTTP 400)".into(),
+        });
+        assert!(!app.recent_loading, "the pending flag clears");
+        assert!(app.status.contains("Recently Played") && app.status.contains("invalid value"));
+    }
+
+    #[test]
     fn browse_menu_loads_directory_and_enter_starts_a_station() {
         let mut app = demo();
         let at = app.menu_items().iter().position(|m| *m == MenuItem::BrowsePin(0)).unwrap();
@@ -4116,9 +4377,14 @@ mod tests {
         assert_eq!(items[0], MenuItem::NowPlaying, "a station plays: NOW PLAYING on top");
         assert_eq!(items[1], MenuItem::Stations);
         assert_eq!(items[2], MenuItem::Pinned);
+        assert_eq!(items[3], MenuItem::RecentlyPlayed, "the recently played row closes MY COLLECTION");
         let pins = config::BROWSE_SECTIONS.len();
-        assert_eq!(&items[3..3 + pins], &(0..pins).map(MenuItem::BrowsePin).collect::<Vec<_>>()[..]);
-        assert_eq!(items.len(), 2 + 1 + pins + 4, "NOW PLAYING, My Stations, Pinned, all section pins, no favorites");
+        assert_eq!(&items[4..4 + pins], &(0..pins).map(MenuItem::BrowsePin).collect::<Vec<_>>()[..]);
+        assert_eq!(
+            items.len(),
+            2 + 1 + 1 + pins + 4,
+            "NOW PLAYING, My Stations, Pinned, Recently Played, all section pins, no favorites"
+        );
         assert_eq!(
             &items[items.len() - 4..],
             [MenuItem::Settings, MenuItem::Notifications, MenuItem::About, MenuItem::Quit]
@@ -4206,7 +4472,9 @@ mod tests {
         app.on_key(key(KeyCode::Char('f')));
         let third = app.stations[2].clone();
         assert!(app.is_favorite(&third.id));
-        let mut want = vec![MenuItem::Stations, MenuItem::Pinned];
+        // The demo's recently played answer lands during `settle`, so its row
+        // sits under Pinned, inside MY COLLECTION.
+        let mut want = vec![MenuItem::Stations, MenuItem::Pinned, MenuItem::RecentlyPlayed];
         want.extend((0..config::BROWSE_SECTIONS.len()).map(MenuItem::BrowsePin));
         want.extend([
             MenuItem::Favorite(0),
@@ -6208,7 +6476,8 @@ mod tests {
         let items = app.menu_items();
         let at = items.iter().position(|m| *m == MenuItem::Stations).unwrap();
         assert_eq!(items[at + 1], MenuItem::Pinned, "Pinned keeps a row above the Browse sections");
-        assert_eq!(items[at + 2], MenuItem::BrowsePin(0), "section pins follow My Stations");
+        assert_eq!(items[at + 2], MenuItem::RecentlyPlayed, "the recently played row stays in MY COLLECTION");
+        assert_eq!(items[at + 3], MenuItem::BrowsePin(0), "section pins follow MY COLLECTION");
         assert_eq!(
             items.iter().filter(|m| matches!(m, MenuItem::BrowsePin(_))).count(),
             config::BROWSE_SECTIONS.len(),

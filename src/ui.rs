@@ -23,7 +23,7 @@ use crate::art::Cover;
 use crate::config::{AlbumArt, BorderStyle, GoodVibes};
 use crate::icons::{Icons, icons};
 use crate::input::TextInput;
-use crate::pandora::{Rating, Song};
+use crate::pandora::{Rating, Song, station_ids_match};
 use crate::theme::Palette;
 use crate::update::{Progress, Replace};
 use ratatui_image::{Resize, StatefulImage};
@@ -90,6 +90,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         View::Stations => draw_stations(frame, app, ic, right),
         View::Browse => draw_browse(frame, app, ic, right),
         View::Pinned => draw_pinned(frame, app, ic, right),
+        View::Recent => draw_recent(frame, app, ic, right),
         View::Settings => draw_settings(frame, app, ic, right),
         View::About => draw_about(frame, app, ic, right),
         View::Notifications => draw_notes(frame, app, ic, right),
@@ -675,12 +676,14 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let now_h = if app.has_now_playing() { 2 } else { 0 };
     let section_pins = app.browse_menu_pins().len() as u16;
     let pinned = app.config.ui.pinned_in_menu;
-    // MY COLLECTION groups the personal rows -- My Stations and the optional
-    // Pinned songs -- ruled and headed like FAVORITES. The pinned Browse
-    // sections follow under their own "BROWSE (n)" heading.
-    let personal_n = 1 + u16::from(pinned);
+    // MY COLLECTION groups the personal rows -- My Stations, the optional
+    // Pinned songs, and Recently Played once it has something to show -- ruled
+    // and headed like FAVORITES. The pinned Browse sections follow under
+    // their own "BROWSE (n)" heading.
+    let recent_n = u16::from(app.recent_row());
+    let personal_n = 1 + u16::from(pinned) + recent_n;
     // Hidden while it has nothing of its own, the way FAVORITES hides.
-    let collection_head = !app.stations.is_empty() || (pinned && !app.pins.is_empty());
+    let collection_head = !app.stations.is_empty() || (pinned && !app.pins.is_empty()) || app.recent_row();
     // NOW PLAYING already draws an inset rule above it, so skip the one here.
     let collection_gap = u16::from(now_h == 0);
     let collection_n = personal_n + if collection_head { 1 + collection_gap } else { 0 };
@@ -704,7 +707,8 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         | (MenuItem::Notifications, View::Notifications)
         | (MenuItem::NowPlaying, View::Player)
         | (MenuItem::Stations, View::Stations)
-        | (MenuItem::Pinned, View::Pinned) => true,
+        | (MenuItem::Pinned, View::Pinned)
+        | (MenuItem::RecentlyPlayed, View::Recent) => true,
         (MenuItem::BrowsePin(i), View::Browse) => app
             .browse_filter
             .as_ref()
@@ -748,10 +752,7 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         (collection_area, None)
     };
     if let Some(head) = head_area {
-        frame.render_widget(
-            Paragraph::new(Span::styled(" MY COLLECTION", Style::new().fg(p.orange).bold())),
-            head,
-        );
+        frame.render_widget(Paragraph::new(Span::styled(" MY COLLECTION", Style::new().fg(p.orange).bold())), head);
     }
     let count = if app.stations.is_empty() { String::new() } else { format!(" ({})", app.stations.len()) };
     let mut lines = Vec::new();
@@ -759,6 +760,9 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     if pinned {
         let n = if app.pins.is_empty() { String::new() } else { format!(" ({})", app.pins.len()) };
         top.push((MenuItem::Pinned, ic.pin, format!("Pinned{n}")));
+    }
+    if app.recent_row() {
+        top.push((MenuItem::RecentlyPlayed, ic.recent, format!("Recently Played ({})", app.recent.len())));
     }
     for (item, icon, label) in top {
         let mut style = Style::new().fg(p.fg);
@@ -932,6 +936,49 @@ fn draw_pinned(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         .collect();
     let list = List::new(items).highlight_style(selection(&p, focused));
     let mut state = ListState::default().with_selected(Some(app.pinned_cursor.min(app.pins.len() - 1)));
+    frame.render_stateful_widget(list, inner, &mut state);
+}
+
+// --- Recently played ---
+
+fn draw_recent(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
+    let p = app.palette;
+    let focused = app.focus == Focus::Content;
+    let count = if app.recent.is_empty() { String::new() } else { format!(" ({})", app.recent.len()) };
+    let block = panel(title(format!("{} Recently Played{count}", ic.recent), &p), &p, focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if app.recent.is_empty() {
+        let text = if app.recent_loading {
+            format!(" {} Loading…", ic.loading)
+        } else {
+            " Nothing played recently yet".to_owned()
+        };
+        frame.render_widget(Paragraph::new(text).fg(p.muted), inner);
+        return;
+    }
+    let width = inner.width as usize;
+    let items: Vec<ListItem> = app
+        .recent
+        .iter()
+        .map(|source| {
+            let playing = app.current_station.as_deref().is_some_and(|id| station_ids_match(id, &source.id));
+            let icon = if playing {
+                ic.play
+            } else if source.kind == "ST" {
+                ic.station
+            } else {
+                ic.recent
+            };
+            let style = if playing { Style::new().fg(p.green).bold() } else { Style::new().fg(p.fg) };
+            let head = format!(" {} ", pad(icon, 2));
+            let room = width.saturating_sub(safe_width(&head));
+            let name = truncate(&clean(&app.recent_title(source)), room);
+            ListItem::new(Line::from(format!("{head}{name}"))).style(style)
+        })
+        .collect();
+    let list = List::new(items).highlight_style(selection(&p, focused));
+    let mut state = ListState::default().with_selected(Some(app.recent_cursor.min(app.recent.len() - 1)));
     frame.render_stateful_widget(list, inner, &mut state);
 }
 
@@ -2308,6 +2355,7 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     let nothing_to_move = app.view == View::About
         || app.view == View::Notifications && app.focus == Focus::Content && app.notes.len() < 2
         || app.view == View::Pinned && app.focus == Focus::Content && app.pins.len() < 2
+        || app.view == View::Recent && app.focus == Focus::Content && app.recent.len() < 2
         || in_songs && app.pane == Pane::NowPlaying
         || app.view == View::Browse && app.focus == Focus::Content && app.browse_rows().is_empty();
     if !nothing_to_move {
@@ -2410,6 +2458,13 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
                     keys.push(("Enter", "Open Page"));
                 }
                 keys.push(("x", "Unpin"));
+            }
+            keys.push(("Esc", "Menu"));
+        }
+        (Focus::Content, View::Recent) => {
+            if app.recent.get(app.recent_cursor.min(app.recent.len().saturating_sub(1))).is_some_and(|s| s.kind == "ST")
+            {
+                keys.push(("Enter", "Play"));
             }
             keys.push(("Esc", "Menu"));
         }
@@ -4703,6 +4758,81 @@ mod tests {
         for (c, r) in [(40, 10), (20, 6), (120, 8)] {
             let _ = screen(&app, c, r);
         }
+    }
+
+    #[test]
+    fn recently_played_sits_under_pinned_and_hides_while_empty() {
+        let app = demo();
+        let (lines, _) = screen(&app, 120, 40);
+        let menu = |l: &str| -> String { l.chars().take(30).collect() };
+        let at = |want: &dyn Fn(&str) -> bool| lines.iter().map(|l| menu(l)).position(|l| want(&l));
+        let stations = at(&|l| l.contains("My Stations")).expect("My Stations");
+        let pinned = at(&|l| l.contains("Pinned")).expect("Pinned");
+        let recent = at(&|l| l.contains("Recently Played (3)")).expect("the recently played row, with its count");
+        let browse = at(&|l| l.starts_with("│ BROWSE (10)")).expect("the BROWSE heading");
+        let first = at(&|l| l.contains("Artists Picked For You")).expect("the first section");
+        assert!(
+            stations < pinned && pinned < recent && recent < browse && browse < first,
+            "My Stations, Pinned, Recently Played, then BROWSE:\n{}",
+            lines.iter().map(|l| menu(l)).collect::<Vec<_>>().join("\n")
+        );
+        // Short and narrow windows still draw it without panicking.
+        for (c, r) in [(40, 10), (20, 6), (120, 8)] {
+            let _ = screen(&app, c, r);
+        }
+    }
+
+    #[test]
+    fn recently_played_keeps_the_collection_heading_when_stations_are_gone() {
+        let mut app = App::new(crate::config::Config::default(), None, &[], true);
+        app.config.ui.icons = crate::config::IconSet::Emoji;
+        app.config.ui.pinned_in_menu = false;
+        app.stations.clear();
+        app.recent =
+            vec![crate::pandora::RecentSource { id: "ST:0:1".into(), kind: "ST".into(), ..Default::default() }];
+        let text = all_text(&screen(&app, 120, 40).0);
+        assert!(text.contains("MY COLLECTION"), "{text}");
+        assert!(text.contains("Recently Played (1)"), "{text}");
+    }
+
+    #[test]
+    fn an_empty_history_draws_no_recently_played_state() {
+        let mut fresh = App::new(crate::config::Config::default(), None, &[], true);
+        fresh.config.ui.icons = crate::config::IconSet::Emoji;
+        let (lines, _) = screen(&fresh, 120, 40);
+        assert!(!lines.iter().any(|l| l.contains("Recently Played")), "hidden while empty:\n{}", lines.join("\n"));
+    }
+
+    #[test]
+    fn the_recently_played_page_lists_its_rows_and_offers_play() {
+        let mut app = demo();
+        app.view = View::Recent;
+        app.focus = crate::app::Focus::Content;
+        app.recent_cursor = 0;
+        let (lines, _) = screen(&app, 120, 40);
+        assert!(lines[0].contains("Recently Played (3)"), "the page title: {}", lines[0]);
+        let all = lines.join("\n");
+        for name in app.recent.iter().map(|s| app.recent_title(s)) {
+            assert!(all.contains(name.as_str()), "{name} missing from:\n{all}");
+        }
+        let caps = key_caps(&app);
+        assert!(caps.iter().any(|(k, w)| *k == "Enter" && *w == "Play"), "{caps:?}");
+    }
+
+    #[test]
+    fn the_recently_played_page_says_loading_and_nothing_played() {
+        let mut blank = App::new(crate::config::Config::default(), None, &[], true);
+        blank.config.ui.icons = crate::config::IconSet::Emoji;
+        blank.view = View::Recent;
+        blank.focus = crate::app::Focus::Content;
+        let text = all_text(&screen(&blank, 120, 40).0);
+        assert!(text.contains("Nothing played"), "{text}");
+        blank.recent_loading = true;
+        let text = all_text(&screen(&blank, 120, 40).0);
+        assert!(text.contains("Loading"), "{text}");
+        // One row: no "move" hint, and no Enter: there is nothing else to play.
+        let caps = key_caps(&blank);
+        assert!(!caps.iter().any(|(k, _)| k.contains("j/k")), "{caps:?}");
     }
 
     #[test]

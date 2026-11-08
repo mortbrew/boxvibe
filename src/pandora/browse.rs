@@ -150,7 +150,9 @@ fn parse_item(it: &Value, anns: Option<&serde_json::Map<String, Value>>) -> Opti
     if name.is_empty() {
         name = pandora_id.clone();
     }
-    let link = it.get("webUrl").and_then(Value::as_str).and_then(site_path);
+    let link = ["webUrl", "urlPath", "shareableUrlPath"]
+        .into_iter()
+        .find_map(|key| it.get(key).and_then(Value::as_str).and_then(site_path));
     Some(BrowseItem { name, detail, pandora_id, station_factory, link })
 }
 
@@ -226,6 +228,18 @@ mod tests {
         }));
         assert_eq!(linked[0].items[0].link.as_deref(), Some("/browse/music/genres/country"));
         assert!(linked[0].items[0].create_id().is_none());
+        let path_item = parse_directory(&json!({
+            "sections": [{
+                "id": "BS:12",
+                "title": {"labels": [{"text": "Playlists", "style": "header"}]},
+                "subsections": [{"items": [{
+                    "pandoraId": "PL:1",
+                    "urlPath": "/playlist/the-drop",
+                    "labels": [{"text": "The Drop", "style": "title"}]
+                }]}]
+            }]
+        }));
+        assert_eq!(path_item[0].items[0].link.as_deref(), Some("/playlist/the-drop"));
     }
 
     #[test]

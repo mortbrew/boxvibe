@@ -898,11 +898,20 @@ fn draw_pinned(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let block = panel(title(format!("{} Pinned{count}", ic.pin), &p), &p, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    let local_only = " Pins stay on this device only (not in your Pandora account).";
     if app.pins.is_empty() {
-        let text = " Nothing pinned yet. Shift+I pins the selected or playing song: its title, artist, album, cover and Pandora page (never the audio).";
+        let text = format!(
+            " Nothing pinned yet. Shift+I pins the selected or playing song: its title, artist, album, cover and Pandora page (never the audio).{local_only}"
+        );
         frame.render_widget(Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: false }).fg(p.muted), inner);
         return;
     }
+    let [note_area, list_area] = Layout::vertical([Constraint::Length(2), Constraint::Fill(1)]).areas(inner);
+    frame.render_widget(
+        Paragraph::new(local_only.trim()).wrap(ratatui::widgets::Wrap { trim: false }).fg(p.muted),
+        note_area,
+    );
+    let inner = list_area;
     let width = inner.width as usize;
     let items: Vec<ListItem> = app
         .pins
@@ -2267,6 +2276,9 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.confirm_unpin().is_some() {
         return vec![("y", "Yes, Unpin"), ("n Esc", "No"), ("← → Enter", "Choose")];
     }
+    if app.confirm_forget_recent().is_some() {
+        return vec![("y", "Yes, Remove"), ("n Esc", "No"), ("← → Enter", "Choose")];
+    }
     if app.theme_delete_asked().is_some() {
         return vec![("y", "Yes, Delete"), ("n Esc", "No"), ("← → Enter", "Choose")];
     }
@@ -2459,6 +2471,9 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
             keys.push(("Esc", "Menu"));
         }
         (Focus::Content, View::Recent) => {
+            if !app.recent.is_empty() {
+                keys.push(("x", "Remove"));
+            }
             if app.recent.get(app.recent_cursor.min(app.recent.len().saturating_sub(1))).is_some_and(|s| s.kind == "ST")
             {
                 keys.push(("Enter", "Play"));
@@ -3795,6 +3810,7 @@ mod tests {
         let (lines, _) = screen(&app, 140, 40);
         let all = lines.join("\n");
         assert!(all.contains("Pinned (1)") && all.contains(&title) && all.contains(&app.pins[0].pinned), "{all}");
+        assert!(all.contains("device only"), "local-only note: {all}");
         assert!(key_caps(&app).iter().any(|(k, v)| *k == "x" && *v == "Unpin"));
         app.config.ui.pinned_in_menu = false;
         app.view = View::Player;

@@ -421,6 +421,14 @@ pub fn browse_at(path: Option<&str>) -> Vec<BrowseSection> {
         "/browse/music/decades/2010s" => station_page("GE:2010s", "2010s", &[("Classic Rock", "GE:demo-classic")]),
         "/browse/music/activities/happy" => station_page("GE:happy", "Happy", &[("Indie Pop", "GE:demo-indie")]),
         "/browse/music/genres/empty" => vec![browse_section("GE:empty", "Empty", None, vec![])],
+        "/browse/music/featured-playlists" => featured_playlists_view_all(),
+        "/browse/music/featured-playlists/the-drop" => {
+            playlist_page("PL:drop", "The Drop", &[("Midnight City", "M83"), ("Kids", "MGMT")])
+        }
+        "/browse/podcasts" => podcasts_view_all(),
+        "/browse/podcasts/crime-junkie" => {
+            podcast_page("PC:demo", "Crime Junkie", &[("Latest episode", "This week"), ("Back catalog", "Archive")])
+        }
         other => match browse().into_iter().find(|s| s.view_all_path.as_deref() == Some(other)) {
             Some(section) => vec![expand_view_all(section)],
             None => Vec::new(),
@@ -496,6 +504,32 @@ fn category_page(id: &str, title: &str, id_prefix: &str, named: &[(&str, &str)])
         .collect();
     items.push(browse_item("No page", "", &format!("{id_prefix}:none"), ""));
     vec![expand_view_all(browse_section(id, title, None, items))]
+}
+
+fn featured_playlists_view_all() -> Vec<BrowseSection> {
+    category_page("BS:12", "Featured Playlists", "BR:12", &[("The Drop", "/browse/music/featured-playlists/the-drop")])
+}
+
+fn podcasts_view_all() -> Vec<BrowseSection> {
+    category_page("BS:38", "Recommended Podcasts", "BR:38", &[("Crime Junkie", "/browse/podcasts/crime-junkie")])
+}
+
+fn playlist_page(id: &str, title: &str, tracks: &[(&str, &str)]) -> Vec<BrowseSection> {
+    let items = tracks
+        .iter()
+        .enumerate()
+        .map(|(n, (name, artist))| browse_item(name, artist, &format!("AL:pl:{n}"), ""))
+        .collect();
+    vec![browse_section(id, title, None, items)]
+}
+
+fn podcast_page(id: &str, title: &str, episodes: &[(&str, &str)]) -> Vec<BrowseSection> {
+    let items = episodes
+        .iter()
+        .enumerate()
+        .map(|(n, (name, detail))| browse_item(name, detail, &format!("PE:pc:{n}"), ""))
+        .collect();
+    vec![browse_section(id, title, None, items)]
 }
 
 fn station_page(id: &str, title: &str, rows: &[(&str, &str)]) -> Vec<BrowseSection> {

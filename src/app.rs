@@ -940,6 +940,9 @@ pub struct App {
     recent_dirty: bool,
     /// Bumped on each ask and on logout. A reply from an older one is dropped.
     recent_generation: u64,
+    /// Rows removed on this device only. Pandora's list is unchanged; refresh
+    /// may bring them back unless Pandora adds a remove API.
+    recent_hidden: std::collections::HashSet<String>,
     /// Up Next songs disliked with b: sent, and skipped, when their turn comes.
     pub held_dislikes: std::collections::HashSet<String>,
     /// `.`: the song menu, and the song it is for.
@@ -1081,6 +1084,7 @@ impl App {
             recent_asked: false,
             recent_dirty: false,
             recent_generation: 0,
+            recent_hidden: Default::default(),
             held_dislikes: Default::default(),
             song_menu: None,
             panel: None,
@@ -1396,6 +1400,22 @@ impl App {
         self.recent_loading = false;
         self.recent_asked = false;
         self.recent_dirty = false;
+        self.recent_hidden.clear();
+    }
+
+    fn filter_recent(&self, sources: Vec<RecentSource>) -> Vec<RecentSource> {
+        sources.into_iter().filter(|s| !self.recent_hidden.contains(&s.id)).collect()
+    }
+
+    pub(crate) fn forget_recent_row(&mut self, at: usize) {
+        let Some(source) = self.recent.get(at).cloned() else { return };
+        self.recent_hidden.insert(source.id.clone());
+        self.recent.retain(|s| s.id != source.id);
+        self.recent_cursor = self.recent_cursor.min(self.recent.len().saturating_sub(1));
+        self.status = format!(
+            "Removed “{}” from Recently Played here (this device only; Pandora's history is unchanged)",
+            self.recent_title(&source)
+        );
     }
 
     /// The menu's RECENTLY PLAYED entry: the list of recent sources.
@@ -1689,8 +1709,24 @@ impl App {
             (_, _, Some(BrowsePick::Station(id, name))) => self.create_station(&id, &name),
             (_, _, Some(BrowsePick::Page(path))) => self.open_browse_link(path),
             (_, _, Some(BrowsePick::Unsupported(name))) => {
-                self.status =
-                    format!("“{name}” can't start a station here (playlist, podcast, album, mood or category)");
+                let pandora_id = self.browse_rows().get(self.browse_index()).and_then(|r| match r {
+                    BrowseRow::Item(item) => Some(item.pandora_id.clone()),
+                    _ => None,
+                });
+                let hint = pandora_id.as_deref().and_then(|id| {
+                    if id.starts_with("PL:") {
+                        Some("playlists are browse-only in boxvibe right now")
+                    } else if id.starts_with("PC:") || id.starts_with("PE:") {
+                        Some("podcasts are browse-only in boxvibe right now")
+                    } else {
+                        None
+                    }
+                });
+                self.status = if let Some(why) = hint {
+                    format!("“{name}” can't play here ({why})")
+                } else {
+                    format!("“{name}” can't start a station here (playlist, podcast, album, mood or category)")
+                };
             }
             (_, _, Some(BrowsePick::Header)) => self.status = "That's a heading. Pick a row under it.".into(),
             _ => {}
@@ -2454,7 +2490,7 @@ impl App {
                 let had = self.recent_row();
                 let selected = self.menu_selected();
                 let keep = self.recent.get(self.recent_cursor).map(|s| s.id.clone());
-                self.recent = sources;
+                self.recent = self.filter_recent(sources);
                 if let Some(id) = keep
                     && let Some(at) = self.recent.iter().position(|s| s.id == id)
                 {
@@ -3460,6 +3496,10 @@ impl App {
             }
             return;
         }
+        if self.focus == Focus::Content && self.view == View::Recent && !self.recent.is_empty() {
+            self.ask_forget_recent(self.recent_cursor.min(self.recent.len().saturating_sub(1)));
+            return;
+        }
         let Some((station, favorite)) = self.station_in_reach() else {
             return self.no_station_here("x deletes");
         };
@@ -4275,6 +4315,22 @@ mod tests {
         let generation = app.recent_generation;
         app.show_recently_played();
         assert!(app.recent_loading && app.recent_generation == generation.wrapping_add(1));
+    }
+
+    #[test]
+    fn x_removes_a_recently_played_row_here_only() {
+        let mut app = demo();
+        app.view = View::Recent;
+        app.focus = Focus::Content;
+        let before = app.recent.len();
+        app.recent_cursor = 0;
+        app.on_key(key(KeyCode::Char('x')));
+        app.on_key(key(KeyCode::Char('y')));
+        assert_eq!(app.recent.len(), before - 1);
+        assert!(app.status.contains("device only"), "{}", app.status);
+        app.refresh_recently_played();
+        app.settle(Duration::from_millis(400));
+        assert_eq!(app.recent.len(), before - 1, "hidden rows stay filtered after refresh");
     }
 
     #[test]
@@ -6528,6 +6584,44 @@ mod tests {
         app.on_key(shift('G'));
         assert_eq!(app.browse, loaded);
         assert!(app.backend.replies.recv_timeout(Duration::from_millis(100)).is_err(), "view-all is cached");
+    }
+
+    #[test]
+    fn featured_playlists_and_podcasts_drill_down_in_browse() {
+        let mut app = demo();
+        for (section, shelf, list_path, detail_path, leaf) in [
+            (
+                "Featured Playlists",
+                "The Drop",
+                "/browse/music/featured-playlists",
+                "/browse/music/featured-playlists/the-drop",
+                "Midnight City",
+            ),
+            (
+                "Recommended Podcasts",
+                "Crime Junkie",
+                "/browse/podcasts",
+                "/browse/podcasts/crime-junkie",
+                "Latest episode",
+            ),
+        ] {
+            app.show_browse_section(section);
+            app.settle(Duration::from_millis(400));
+            assert_eq!(app.browse_path.as_deref(), Some(list_path));
+            move_browse_to(&mut app, shelf);
+            app.on_key(key(KeyCode::Enter));
+            app.settle(Duration::from_millis(400));
+            assert_eq!(app.browse_path.as_deref(), Some(detail_path));
+            move_browse_to(&mut app, leaf);
+            app.on_key(key(KeyCode::Enter));
+            assert!(
+                app.status.contains("browse-only") || app.status.contains("can't"),
+                "{section}: {}",
+                app.status
+            );
+            app.on_key(key(KeyCode::Esc));
+            assert_eq!(app.browse_path.as_deref(), Some(list_path));
+        }
     }
 
     #[test]

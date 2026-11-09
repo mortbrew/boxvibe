@@ -287,6 +287,29 @@ cargo build --release
 
 Tests run in demo mode or against a fake server, never live Pandora.
 
+### Branches
+
+`dev` is the default branch and the only one worked on. `main` is a release
+marker: it accepts changes only through a pull request (the "Protect main"
+ruleset), and `dev` is merged into it only to cut a release. Feature work
+targets `dev`.
+
+### Versions
+
+`dev`'s `Cargo.toml` version runs **ahead** of the newest published release
+(`0.6.0` while the latest release is `v0.5.0`). That is deliberate. The version
+string is drawn on the splash, the About panel, the status bar and the box
+frames, so seeing `v0.6.0` confirms the running binary is a build from source
+rather than the released one.
+
+- Keep the bump in `Cargo.toml` only; `env!("CARGO_PKG_VERSION")` propagates it.
+  Update `Cargo.lock` with `cargo update --workspace --offline`, never by hand.
+- `CHANGELOG.md` sections are historical records of shipped releases, so they
+  keep the version that shipped.
+- The literal `"0.4.0"` in `src/snapshot.rs` is fabricated update data for the
+  screenshots; leave it.
+- A source build reporting no update available is expected, not a bug.
+
 ## Disclaimer
 
 boxvibe is not made by or affiliated with Pandora. It uses an unofficial API,

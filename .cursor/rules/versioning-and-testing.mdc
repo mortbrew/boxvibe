@@ -1,0 +1,32 @@
+---
+description: How boxvibe is tested and versioned — always run from the repo, never outside it.
+alwaysApply: true
+---
+
+# Testing and versions
+
+The project facts live in the README's **Development** section (Branches,
+Versions). This file is the agent-facing framing of them.
+
+## Never test outside the local repo
+
+Toby only ever runs boxvibe from the source tree (`cargo run`, `./target/debug/boxvibe`,
+`./target/release/boxvibe`). He does **not** install it to `~/.local/bin`, `~/.cargo/bin`, or a
+package, and does not test an installed copy.
+
+- Don't suggest installing, copying to `PATH`, or packaging as a testing step.
+- Don't mention a stale binary at `~/.local/bin/boxvibe`, or suggest updating it — testing never uses it.
+- "Self-update could overwrite an installed build" is not a concern here; source builds under
+  `target/` are already dev builds (`update::is_dev_build`, `src/main.rs`).
+
+## Don't "fix" the version
+
+`dev` carries a higher version than the latest release on purpose, so the version on screen
+confirms which build is running. Don't revert the bump, don't flag About reporting no update
+available as a bug, and don't hand-edit `Cargo.lock`. See the README's **Versions** for the
+details.
+
+## Branches
+
+`dev` is the default branch and the only one worked on. `main` accepts changes only through a
+pull request; `dev` is merged into it only to cut a release. Feature PRs target `dev`.

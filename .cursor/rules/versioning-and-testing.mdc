@@ -57,3 +57,20 @@ went ahead because only the required three were looked at.
   `gh api repos/mortbrew/boxvibe/code-scanning/alerts?state=open` and fix or dismiss each one
   with a reason; do not merge on top of them.
 - After a release, bump `dev`'s version ahead of the tag that was just cut.
+
+## Ask before anything outward-facing
+
+Anything a third party can see needs Toby's approval **before** it happens, not after. Show the
+exact text or the exact command and wait.
+
+- Public comments on issues and pull requests, and closing, reopening, labeling or assigning
+  them. "Can we post a response to that issue?" is permission to *draft* one, not to publish it.
+- Releases, tags, and pushes to `main`.
+- Force-pushes, branch deletion, and anything that rewrites published history.
+
+This went wrong once: asked whether we could reply to issue #11 and close it, the reply was
+posted and the issue closed without showing the draft first. The wording was fine, but the
+decision to publish was Toby's to make.
+
+Local work — editing files, running tests, committing and pushing to `dev` — does not need this
+approval.

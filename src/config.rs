@@ -1223,11 +1223,25 @@ pub fn set_values(path: &Path, values: &[(&str, &str, toml_edit::Value)]) -> Res
     write_private(path, &doc.to_string()).map_err(|e| error(e.to_string()))
 }
 
+/// A scratch directory for a test, under `target/tmp` rather than `/tmp`.
+///
+/// `/tmp` is a small tmpfs on some machines, and a suite that writes a
+/// directory per test fills it, after which unrelated tests fail with "Disk
+/// quota exceeded". `target/` is already ignored and `cargo clean` removes it.
+/// `CARGO_MANIFEST_DIR` is the repository root, so this works from any cwd.
 #[cfg(test)]
 pub(crate) fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("boxvibe-test-{}-{name}", std::process::id()));
+    let dir = scratch_dir(&format!("boxvibe-test-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// `target/tmp/<name>`, created if needed.
+#[cfg(test)]
+pub(crate) fn scratch_dir(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("tmp").join(name);
+    let _ = std::fs::create_dir_all(&dir);
     dir
 }
 

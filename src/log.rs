@@ -78,7 +78,7 @@ mod tests {
 
     #[test]
     fn a_line_is_one_line_whatever_it_was_given() {
-        let dir = std::env::temp_dir().join(format!("boxvibe-log-{}", std::process::id()));
+        let dir = crate::config::scratch_dir(&format!("boxvibe-log-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let file = dir.join("boxvibe.log");
         write(&file, "a\nb\tc");
@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn a_full_log_moves_aside_and_starts_again() {
-        let dir = std::env::temp_dir().join(format!("boxvibe-log-cap-{}", std::process::id()));
+        let dir = crate::config::scratch_dir(&format!("boxvibe-log-cap-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let file = dir.join("boxvibe.log");
         std::fs::create_dir_all(&dir).unwrap();

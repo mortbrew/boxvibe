@@ -26,9 +26,11 @@ per-session directory inside it. A debug build is about 4 GB, so a session or tw
 and unrelated tests start failing with `Disk quota exceeded (os error 122)`.
 
 - Run cargo with `CARGO_TARGET_DIR=$PWD/target` so builds land in the repo, not the tmpfs.
-- `.cargo/config.toml` forces `TMPDIR=target/tmp` for every cargo command, so the config files,
-  art logs and theme dirs the tests write go under `target/` too. Don't remove it; without it
-  the suite leaks a directory per test into `/tmp` and eventually fails the same way.
+- The tests write their scratch directories under `target/tmp` themselves
+  (`config::scratch_dir`), so the suite does not leak a directory per test into `/tmp`.
+- Do **not** set `TMPDIR` in `.cargo/config.toml`. It applies to every cargo command including
+  rustc, and on a fresh checkout `target/tmp` does not exist yet, so the build dies with
+  `couldn't create a temp dir: No such file or directory`. That broke the MSRV job once.
 - `cargo clean` therefore clears both. Nothing else needs cleaning up.
 
 ## Don't "fix" the version

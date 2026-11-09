@@ -783,7 +783,7 @@ mod tests {
 
     #[test]
     fn the_disk_cache_is_trimmed_oldest_first() {
-        let dir = std::env::temp_dir().join(format!("boxvibe-art-{}", std::process::id()));
+        let dir = crate::config::scratch_dir(&format!("boxvibe-art-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for (i, name) in ["a", "b", "c"].iter().enumerate() {
             let p = cache_path(&dir, name);

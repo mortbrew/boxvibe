@@ -308,6 +308,11 @@ marker: it accepts changes only through a pull request (the "Protect main"
 ruleset), and `dev` is merged into it only to cut a release. Feature work
 targets `dev`.
 
+The whole model — branches, workflows, repository settings, the ruleset and the
+security settings — is specified in [`docs/setup.md`](docs/setup.md). That file
+is the checklist a repository must satisfy; when it and a repo disagree, the
+file wins.
+
 ### Versions
 
 `dev`'s `Cargo.toml` version runs **ahead** of the newest published release

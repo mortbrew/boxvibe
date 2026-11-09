@@ -45,6 +45,12 @@ details.
 `dev` is the default branch and the only one worked on. `main` accepts changes only through a
 pull request; `dev` is merged into it only to cut a release. Feature PRs target `dev`.
 
+The full model — branches, workflows, repository settings, the "Protect main" ruleset and the
+security settings — is specified in `docs/setup.md`. That file is the checklist this repository
+must satisfy. When it and the repo disagree, the file wins and the repo is what gets fixed. If
+asked to set up a new repo "like boxvibe" or "with setup.md", follow that file top to bottom and
+run its Verification section.
+
 ## Before merging or releasing, read every check
 
 The "Protect main" ruleset only *requires* `fmt`, `ci` and `msrv`, so a pull request can merge

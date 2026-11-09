@@ -263,9 +263,7 @@ impl Art {
             // protocol, so the cover is swapped in place. Tearing it down
             // instead cleared the screen and re-sent the picture, which is what
             // made Shift+R flash.
-            let same_kind = shown
-                .as_ref()
-                .is_some_and(|s| s.url == url && is_blocks(&s.protocol) == picture.is_none());
+            let same_kind = shown.as_ref().is_some_and(|s| s.url == url && is_blocks(&s.protocol) == picture.is_none());
             if same_kind {
                 let shown = shown.as_mut().expect("just checked");
                 shown.look = look;
@@ -549,7 +547,6 @@ mod tests {
     fn look(mode: AlbumArt, pixelation: RetroMode) -> Look {
         Look { mode, pixelation, tint: ArtTint::Off, palette: crate::theme::BUILT_IN[0].2 }
     }
-
 
     /// `resize_exact` with Nearest, the two-pass version `pixelate` replaced.
     fn resized(image: &DynamicImage, pixelation: RetroMode) -> DynamicImage {

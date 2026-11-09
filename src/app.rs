@@ -6611,11 +6611,7 @@ mod tests {
             assert_eq!(app.browse_path.as_deref(), Some(detail_path));
             move_browse_to(&mut app, leaf);
             app.on_key(key(KeyCode::Enter));
-            assert!(
-                app.status.contains("browse-only") || app.status.contains("can't"),
-                "{section}: {}",
-                app.status
-            );
+            assert!(app.status.contains("browse-only") || app.status.contains("can't"), "{section}: {}", app.status);
             app.on_key(key(KeyCode::Esc));
             assert_eq!(app.browse_path.as_deref(), Some(list_path));
         }

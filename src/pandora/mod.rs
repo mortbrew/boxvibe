@@ -124,6 +124,33 @@ pub struct FeedbackPage {
 /// How many thumbs one page asks for.
 pub const FEEDBACK_PAGE: usize = 30;
 
+/// How many recently played entries one call asks for.
+pub const RECENT_PAGE: usize = 20;
+
+/// `RecentlyPlayedSourceType` values this client sends. The public bundle
+/// (`web-app.c532b8d045d20ffdc585.js`) still lists the long names
+/// `ALBUM, SONG, PLAYLIST, STATION, ARTIST_TOP_SONGS, PODCAST`, and that list
+/// has no caller in the bundle. `PandoraTypes` in the same file maps
+/// `STATION` to `SF` and `USER_STATION` to `ST` (a track is `TR`). These nine
+/// short codes are unconfirmed against a live account: one rejected code
+/// fails the whole call. `SF` is not among them.
+pub const RECENT_TYPES: [&str; 9] = ["AL", "AP", "AU", "CT", "PL", "PC", "PE", "ST", "TR"];
+
+/// One entry of the account's recently played list.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RecentSource {
+    /// `id` (`ST:0:...`, `TR:...`): what replaying it takes.
+    pub id: String,
+    /// `type` as the wire sends it, the same two-letter code [`RECENT_TYPES`]
+    /// asks in (`ST`, `TR`, …) — not the longer name.
+    pub kind: String,
+    /// `name`: empty for a station, whose fragment selects no name, so a
+    /// station's title comes from the station list instead.
+    pub name: String,
+    /// The artist's name, when the entity has one (songs, albums).
+    pub by: String,
+}
+
 /// What a search hit is: only artists and songs can seed a station here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HitKind {
@@ -217,6 +244,9 @@ pub struct Song {
     /// Signed CDN link, valid for a limited time.
     pub audio_url: String,
     pub audio_format: AudioFormat,
+    /// `bitrate`, kbps as Pandora reports it (0 when it says nothing). What
+    /// the stream really is, which is not always what was asked for.
+    pub bitrate: u32,
     /// The album cover Now Playing draws (about 500 px: [`art_for_box`]).
     pub cover_art_url: String,
     pub detail_url: String,
@@ -333,7 +363,11 @@ pub fn classify(status: u16, body: &str) -> Error {
     if code == Some(1028) {
         return Error::Country;
     }
-    let message = match (str_of(&v, "message"), status) {
+    // A GraphQL failure puts its reason under `errors[0].message` with no
+    // top-level one, so without this a bad enum would only say "HTTP 400".
+    let gql = v.pointer("/errors/0/message").and_then(Value::as_str).unwrap_or_default().trim();
+    let said = if str_of(&v, "message").is_empty() { gql.to_owned() } else { str_of(&v, "message") };
+    let message = match (said, status) {
         (m, 401) if m.is_empty() => "the login expired".into(),
         (m, _) if m.is_empty() => format!("Pandora answered HTTP {status}"),
         (m, _) => format!("{m} (HTTP {status}{})", if kind.is_empty() { String::new() } else { format!(", {kind}") }),
@@ -588,6 +622,48 @@ pub fn parse_seed_suggestions(v: &Value) -> Vec<SearchHit> {
         .collect()
 }
 
+/// REST `stationId` (`3815`, what `getStations` stores) and the GraphQL
+/// station `id` (`ST:0:3815`, what recently played returns) name one station.
+/// The seed mutations already send `ST:0:` plus the REST id; equality still
+/// counts, so a demo id that was copied through unchanged matches too.
+pub fn station_ids_match(rest_id: &str, source_id: &str) -> bool {
+    if rest_id.is_empty() || source_id.is_empty() {
+        return false;
+    }
+    if rest_id == source_id {
+        return true;
+    }
+    fn bare(id: &str) -> Option<&str> {
+        id.strip_prefix("ST:0:").filter(|rest| !rest.is_empty())
+    }
+    bare(source_id) == Some(rest_id) || bare(rest_id) == Some(source_id)
+}
+
+/// The entries of a `recentlyPlayedSources` answer: one `RecentSource` per
+/// `items[].sourceEntity` that has an `id`, skipping null or empty ones.
+pub fn parse_recently_played(v: &Value) -> Vec<RecentSource> {
+    v.pointer("/data/recentlyPlayedSources/items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("sourceEntity"))
+        .filter(|entity| entity.is_object())
+        .filter_map(|entity| {
+            let id = str_of(entity, "id");
+            if id.is_empty() {
+                return None;
+            }
+            let by = entity.pointer("/artist/name").and_then(Value::as_str).unwrap_or_default();
+            Some(RecentSource {
+                id,
+                kind: str_of(entity, "type"),
+                name: str_of(entity, "name").trim().to_owned(),
+                by: by.trim().to_owned(),
+            })
+        })
+        .collect()
+}
+
 /// `getStationFeedback`: `total` and the `feedback` list. Entries without an
 /// id are skipped (they could not be deleted).
 pub fn parse_feedback(v: &Value) -> FeedbackPage {
@@ -735,6 +811,10 @@ pub fn parse_track(v: &Value, station_id: &str) -> Option<Song> {
         } else {
             AudioFormat::Unknown
         },
+        bitrate: v
+            .get("bitrate")
+            .and_then(|b| b.as_u64().or_else(|| b.as_str().and_then(|s| s.trim().parse().ok())))
+            .unwrap_or(0) as u32,
         cover_art_url: art_for_box(v.get("albumArt")),
         detail_url: str_of(v, "songDetailURL"),
         artist_music_id: str_of(v, "artistMusicId"),
@@ -791,6 +871,12 @@ pub struct Client {
     aac_only: bool,
 }
 
+/// The site's own `GetRecentlyPlayedSources` document, copied from its bundle
+/// (`web-app.c532b8d045d20ffdc585.js`). It carries the `ArtFragment` and
+/// `RightsFragment` it names, because a raw POST has to define every fragment
+/// it spreads -- Apollo merges them for the site, a bare request does not.
+const RECENT_QUERY: &str = r#"query GetRecentlyPlayedSourcesWeb($limit: Int, $types: [RecentlyPlayedSourceType!]!, $playedAfter: DateTime) {   recentlyPlayedSources(pagination: {limit: $limit}, types: $types, playedAfter: $playedAfter) {     items {       sourceEntity {         ...RecentlyPlayedSourceFragment       }     }   } }  fragment RecentlyPlayedSourceFragment on IEntity {   ... on Station {     id     type     isCollected     stationType   }   ... on Album {     id     type     name     isCollected     shareableUrlPath: urlPath     artist {       id       name       shareableUrlPath: urlPath     }     icon: art {       ...ArtFragment     }     rightsInfo: rights {       ...RightsFragment     }   }   ... on Track {     id     type     name     isCollected     shareableUrlPath: urlPath     artist {       id       name       shareableUrlPath: urlPath     }     album {       id       type       name       shareableUrlPath: urlPath     }     icon: art {       ...ArtFragment     }     rightsInfo: rights {       ...RightsFragment     }   }   ... on Playlist {     id     type     name     totalTracks     isEditable     isCollected     shareableUrlPath: urlPath     hasVoiceTrack: includesAny(types: [AM])     listenerIdInfo: owner {       id       displayName       isMe     }     icon: art {       ...ArtFragment     }   }   ... on Podcast {     id     type     name     publisherName     isCollected     shareableUrlPath: urlPath     icon: art {       ...ArtFragment     }     rightsInfo: rights {       ...RightsFragment     }   }   ... on ArtistPlay {     id     type     artist {       id       name       shareableUrlPath: urlPath       icon: art {         ...ArtFragment       }     }   } }  fragment ArtFragment on Art {   artId   dominantColor   artUrl: url(size: WIDTH_500) }  fragment RightsFragment on Rights {   expirationTime   hasInteractive   hasRadioRights   hasOffline } "#;
+
 impl Client {
     pub fn new(user_agent: &str) -> Self {
         Self::with_base(SITE, user_agent)
@@ -838,6 +924,12 @@ impl Client {
 
     /// POSTs `body` as JSON to `path` (`/api/v1/...`) with the site's headers.
     fn post(&mut self, path: &str, body: &Value) -> Result<Value, Error> {
+        self.post_with(path, body, None)
+    }
+
+    /// `post`, plus the Apollo client name the site's GraphQL calls carry. Only
+    /// the GraphQL calls are seen sending it, so it is opt-in, not global.
+    fn post_with(&mut self, path: &str, body: &Value, client_name: Option<&str>) -> Result<Value, Error> {
         let csrf = match &self.csrf {
             Some(c) => c.clone(),
             None => self.fetch_csrf(),
@@ -855,6 +947,9 @@ impl Client {
             .header("Cookie", format!("csrftoken={csrf}"));
         if let Some(auth) = &self.auth {
             request = request.header("X-AuthToken", auth);
+        }
+        if let Some(name) = client_name {
+            request = request.header("apollographql-client-name", name);
         }
         let mut response = request.send(body.to_string()).map_err(|e| Error::Http(e.to_string()))?;
         let status = response.status().as_u16();
@@ -1135,6 +1230,38 @@ impl Client {
         Ok(())
     }
 
+    /// The account's recently played list: one `GetRecentlyPlayedSourcesWeb`
+    /// call to `v1/graphql/graphql`, the path the site's client builds as
+    /// `'/api/' + 'v1/graphql/graphql'`. `types` are `RecentlyPlayedSourceType`
+    /// wire codes (`ST`, `TR`, …); an empty slice asks for all of
+    /// [`RECENT_TYPES`].
+    ///
+    /// The document declares `$playedAfter`, and null is not the same as
+    /// absent here: sending the key with null answers 200 with `data: null`
+    /// and an error, while omitting it works. So the window is only sent once
+    /// something asks for one, which nothing does yet.
+    pub fn recently_played(&mut self, limit: usize, types: &[&str]) -> Result<Vec<RecentSource>, Error> {
+        let types: Vec<&str> = if types.is_empty() { RECENT_TYPES.to_vec() } else { types.to_vec() };
+        // The site sends `variables` as a JSON string, as the seed mutations do.
+        let variables = json!({ "limit": limit, "types": types }).to_string();
+        let body = json!({
+            "operationName": "GetRecentlyPlayedSourcesWeb",
+            "query": RECENT_QUERY,
+            "variables": variables,
+        });
+        let v = self.post_with("/api/v1/graphql/graphql", &body, Some("web"))?;
+        if let Some(first) = v.get("errors").and_then(Value::as_array).and_then(|e| e.first()) {
+            let message = str_of(first, "message");
+            return Err(Error::Api {
+                status: 200,
+                code: None,
+                kind: "GRAPHQL".into(),
+                message: if message.is_empty() { "Pandora refused the recently played list".into() } else { message },
+            });
+        }
+        Ok(parse_recently_played(&v))
+    }
+
     /// `v3/sod/search`: artists and songs matching `query`.
     pub fn search(&mut self, query: &str) -> Result<Vec<SearchHit>, Error> {
         let v = self.post(
@@ -1203,11 +1330,24 @@ impl Client {
             "isStationStart": start,
             "fragmentRequestReason": "Normal",
             "audioFormat": format,
+            // What the site sends alongside `audioFormat`: the formats this
+            // client can play, best first. Pandora answers with the best one
+            // the account may have, which is not always the one asked for.
+            "supportedFormats": ["mp3-hifi", "mp3", "aacplus"],
             "startingAtTrackId": null,
             "onDemandArtistMessageArtistUidHex": null,
             "onDemandArtistMessageIdHex": null,
         });
         self.post("/api/v1/playlist/getFragment", &body)
+    }
+
+    /// The quality to ask fragments for. Changing it forgets an earlier
+    /// refusal, so a new choice is tried rather than assumed to fail too.
+    pub fn set_quality(&mut self, quality: Quality) {
+        if self.quality != quality {
+            self.aac_only = false;
+        }
+        self.quality = quality;
     }
 
     /// `v1/station/addFeedback`: thumbs up (`positive`) or down.

@@ -31,6 +31,9 @@ pub struct BrowseItem {
     pub pandora_id: String,
     /// `SF:…` when Pandora offers a station factory for this row.
     pub station_factory: String,
+    /// Item `webUrl`, as a site path. A category shelf (Genres, Decades, Moods)
+    /// uses it to open the next directory page. Absent: this row has no page.
+    pub link: Option<String>,
 }
 
 impl BrowseItem {
@@ -103,11 +106,11 @@ fn parse_section(s: &Value, anns: Option<&serde_json::Map<String, Value>>) -> Op
     Some(BrowseSection { id, title, items, view_all_path: section_view_all_path(s) })
 }
 
-/// `viewAll.webUrl`, as a site path (`/browse/music/new-music`).
-fn section_view_all_path(section: &Value) -> Option<String> {
-    let raw = section.get("viewAll")?.get("webUrl")?.as_str()?.trim();
+/// `webUrl` as a site path (`/browse/music/genres/pop`). Query and fragment dropped.
+fn site_path(raw: &str) -> Option<String> {
+    let raw = raw.trim();
     let raw = raw.split(['?', '#']).next().unwrap_or(raw).trim();
-    if raw.is_empty() {
+    if raw.is_empty() || raw.contains("..") {
         return None;
     }
     let path = raw
@@ -115,6 +118,11 @@ fn section_view_all_path(section: &Value) -> Option<String> {
         .or_else(|| raw.strip_prefix("http://www.pandora.com"))
         .unwrap_or(raw);
     path.starts_with('/').then(|| path.to_owned())
+}
+
+/// `viewAll.webUrl`, as a site path (`/browse/music/new-music`).
+fn section_view_all_path(section: &Value) -> Option<String> {
+    site_path(section.get("viewAll")?.get("webUrl")?.as_str()?)
 }
 
 fn parse_item(it: &Value, anns: Option<&serde_json::Map<String, Value>>) -> Option<BrowseItem> {
@@ -142,7 +150,10 @@ fn parse_item(it: &Value, anns: Option<&serde_json::Map<String, Value>>) -> Opti
     if name.is_empty() {
         name = pandora_id.clone();
     }
-    Some(BrowseItem { name, detail, pandora_id, station_factory })
+    let link = ["webUrl", "urlPath", "shareableUrlPath"]
+        .into_iter()
+        .find_map(|key| it.get(key).and_then(Value::as_str).and_then(site_path));
+    Some(BrowseItem { name, detail, pandora_id, station_factory, link })
 }
 
 fn label_text(node: Option<&Value>, style: &str) -> Option<String> {
@@ -201,8 +212,34 @@ mod tests {
             detail: String::new(),
             pandora_id: "BR:50:7".into(),
             station_factory: String::new(),
+            link: None,
         };
         assert!(shelf.create_id().is_none(), "BR:50 rows do not start a station");
+        let linked = parse_directory(&json!({
+            "sections": [{
+                "id": "BS:50",
+                "title": {"labels": [{"text": "Browse Genres", "style": "header"}]},
+                "subsections": [{"items": [{
+                    "pandoraId": "BR:50:7",
+                    "webUrl": "https://www.pandora.com/browse/music/genres/country?ref=1",
+                    "labels": [{"text": "Country", "style": "title"}]
+                }]}]
+            }]
+        }));
+        assert_eq!(linked[0].items[0].link.as_deref(), Some("/browse/music/genres/country"));
+        assert!(linked[0].items[0].create_id().is_none());
+        let path_item = parse_directory(&json!({
+            "sections": [{
+                "id": "BS:12",
+                "title": {"labels": [{"text": "Playlists", "style": "header"}]},
+                "subsections": [{"items": [{
+                    "pandoraId": "PL:1",
+                    "urlPath": "/playlist/the-drop",
+                    "labels": [{"text": "The Drop", "style": "title"}]
+                }]}]
+            }]
+        }));
+        assert_eq!(path_item[0].items[0].link.as_deref(), Some("/playlist/the-drop"));
     }
 
     #[test]

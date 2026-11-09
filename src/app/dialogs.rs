@@ -23,6 +23,9 @@ pub struct Quit;
 /// The unpin question: which pin.
 #[derive(Clone, Copy)]
 pub struct Unpin(pub usize);
+/// Remove one row from the local Recently Played list.
+#[derive(Clone, Copy)]
+pub struct ForgetRecent(pub usize);
 
 /// Theme Select: which saved theme to delete.
 pub struct ThemeDelete(pub String);
@@ -100,6 +103,20 @@ impl App {
     /// Which pin the unpin question is about.
     pub fn confirm_unpin(&self) -> Option<usize> {
         self.dialogs.find::<Ask<Unpin>>().map(|a| a.about.0)
+    }
+
+    pub(super) fn ask_forget_recent(&mut self, at: usize) {
+        let question = self
+            .recent
+            .get(at)
+            .map(|source| format!("Remove “{}” from Recently Played here?", self.recent_title(source)))
+            .unwrap_or_else(|| "Remove this entry from Recently Played here?".into());
+        let confirm = Confirm::new("forget-recent", question).title("Remove recently played").labels("Remove", "Keep");
+        self.push_dialog(Ask { confirm, about: ForgetRecent(at) });
+    }
+
+    pub fn confirm_forget_recent(&self) -> Option<usize> {
+        self.dialogs.find::<Ask<ForgetRecent>>().map(|a| a.about.0)
     }
 
     pub(super) fn ask_delete_station(&mut self, station: StationRef) {
@@ -198,6 +215,7 @@ impl App {
     pub(super) fn dialog_key(&mut self, key: KeyEvent) -> bool {
         // What the top question is about: the stack drops it as it answers.
         let unpin = self.dialogs.top::<Ask<Unpin>>().map(|a| a.about);
+        let forget_recent = self.dialogs.top::<Ask<ForgetRecent>>().map(|a| a.about);
         let delete = self.dialogs.top::<Ask<StationRef>>().map(|a| a.about.clone());
         let theme = self.dialogs.top::<Ask<ThemeDelete>>().map(|a| a.about.0.clone());
         let editor = self.dialogs.top::<Ask<EditorConfirm>>().map(|a| a.about.clone());
@@ -212,6 +230,13 @@ impl App {
                 self.status = format!("Unpinned “{}”", pin.title);
             } else {
                 self.status = "Kept the pin".into();
+            }
+        }
+        if let Some(ForgetRecent(at)) = forget_recent.filter(|_| closed) {
+            if yes {
+                self.forget_recent_row(at);
+            } else {
+                self.status = "Kept the entry".into();
             }
         }
         if let Some(station) = delete.filter(|_| closed) {

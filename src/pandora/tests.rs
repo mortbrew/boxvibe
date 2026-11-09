@@ -49,6 +49,24 @@ fn track(title: &str, kind: &str) -> Value {
 }
 
 #[test]
+fn the_bitrate_pandora_reports_is_kept() {
+    // What the free tier really sends: 64 kbps HE-AAC, whatever was asked for.
+    let mut free = track("Free", "Track");
+    free["audioEncoding"] = json!("aacplus");
+    free["bitrate"] = json!(64);
+    let s = parse_track(&free, "st").unwrap();
+    assert_eq!((s.audio_format, s.bitrate), (AudioFormat::Aac, 64));
+
+    // A number or text, as Pandora sends both.
+    let mut text = track("Text", "Track");
+    text["bitrate"] = json!("192");
+    assert_eq!(parse_track(&text, "st").unwrap().bitrate, 192);
+
+    // Saying nothing is 0, not a guess.
+    assert_eq!(parse_track(&track("Quiet", "Track"), "st").unwrap().bitrate, 0);
+}
+
+#[test]
 fn fragment_tracks_parse_and_non_songs_are_dropped() {
     let s = parse_track(&track("Slow Hands", "Track"), "fallback").unwrap();
     assert_eq!((s.title.as_str(), s.album.as_str(), s.length), ("Slow Hands", "Slow Hands (Single)", 188));
@@ -288,6 +306,50 @@ fn later_fragments_are_not_station_starts_and_plain_plans_get_mp3() {
     let f: Vec<&Seen> = seen.iter().filter(|s| s.path.ends_with("getFragment")).collect();
     assert_eq!((f[0].body["isStationStart"].clone(), f[1].body["isStationStart"].clone()), (json!(true), json!(false)));
     assert_eq!(f[0].body["audioFormat"], "mp3");
+    assert_eq!(
+        f[0].body["supportedFormats"],
+        json!(["mp3-hifi", "mp3", "aacplus"]),
+        "the formats we can play, best first, as the site sends them"
+    );
+}
+
+#[test]
+fn changing_the_quality_forgets_an_earlier_refusal() {
+    let (base, seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
+        "/api/v1/auth/login" => (200, json!({ "authToken": "t", "config": { "flags": [] } }).to_string()),
+        // The first MP3 ask is refused, so the client falls back to aacplus.
+        "/api/v1/playlist/getFragment" if r.body["audioFormat"] == "mp3" => {
+            (400, r#"{"errorString":"INVALID_REQUEST","errorCode":0}"#.into())
+        }
+        _ => (200, json!({ "tracks": [] }).to_string()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    c.fragment("st").unwrap();
+    c.fragment("st").unwrap();
+    {
+        let seen = seen.lock().unwrap();
+        let formats: Vec<&str> = seen
+            .iter()
+            .filter(|s| s.path.ends_with("getFragment"))
+            .map(|s| s.body["audioFormat"].as_str().unwrap())
+            .collect();
+        assert_eq!(formats, ["mp3", "aacplus", "aacplus"], "the refusal sticks for this quality");
+    }
+    // A new choice is tried rather than assumed to fail the same way.
+    c.set_quality(Quality::Standard);
+    c.fragment("st").unwrap();
+    let seen = seen.lock().unwrap();
+    let formats: Vec<&str> = seen
+        .iter()
+        .filter(|s| s.path.ends_with("getFragment"))
+        .map(|s| s.body["audioFormat"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        formats,
+        ["mp3", "aacplus", "aacplus", "mp3", "aacplus"],
+        "the new quality asks for MP3 again before falling back"
+    );
 }
 
 #[test]
@@ -862,4 +924,128 @@ fn directory_posts_an_empty_body_and_view_all_posts_the_path() {
     assert_eq!(bodies.len(), 2, "{bodies:?}");
     assert_eq!(bodies[0], &json!({}), "main Browse still posts {{}}");
     assert_eq!(bodies[1], &json!({"deviceType": "web", "path": "/browse/music/new-music", "feedType": "browse"}));
+}
+
+#[test]
+fn recently_played_asks_the_graphql_path_with_the_sites_types() {
+    let (base, seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
+        "/api/v1/graphql/graphql" => (
+            200,
+            json!({ "data": { "recentlyPlayedSources": { "items": [
+                { "sourceEntity": { "id": "TR:1", "type": "TR", "name": " Kids ",
+                                    "artist": { "id": "AR:2", "name": "MGMT" } } },
+                { "sourceEntity": { "id": "ST:0:9", "type": "ST" } },
+                { "sourceEntity": { "id": "" } },
+                { "sourceEntity": null },
+            ] } } })
+            .to_string(),
+        ),
+        _ => (200, "{}".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    // The login flow has its own tests; this one is about the call's shape, so
+    // the token is set directly and no password literal is needed.
+    c.auth = Some("tok".into());
+    let items = c.recently_played(20, &[]).unwrap();
+    assert_eq!(items.len(), 2, "{items:#?}");
+    assert_eq!(
+        (items[0].id.as_str(), items[0].kind.as_str(), items[0].name.as_str(), items[0].by.as_str()),
+        ("TR:1", "TR", "Kids", "MGMT")
+    );
+    // A station's fragment selects no name, so an empty one must not panic.
+    assert_eq!((items[1].id.as_str(), items[1].name.as_str()), ("ST:0:9", ""));
+    let seen = seen.lock().unwrap();
+    let call = seen.iter().find(|s| s.path.ends_with("graphql/graphql")).expect("no graphql call");
+    assert_eq!(call.header("X-AuthToken"), Some("tok"));
+    // The site's Apollo client sends this on its GraphQL calls.
+    assert_eq!(call.header("apollographql-client-name"), Some("web"));
+    assert_eq!(call.body["operationName"], "GetRecentlyPlayedSourcesWeb");
+    // `variables` is a JSON string, not an object: the site sends it that way.
+    let vars = call.body["variables"].as_str().expect("variables must be a string");
+    let vars: Value = serde_json::from_str(vars).unwrap();
+    assert_eq!(vars["limit"], 20);
+    // Short codes, not the bundle's long names. Whether the live enum accepts
+    // them (and whether `SF` should be here) is still a live check.
+    assert_eq!(vars["types"], json!(["AL", "AP", "AU", "CT", "PL", "PC", "PE", "ST", "TR"]));
+    // `playedAfter` stays out of the body: present and null is a 200 with
+    // `data: null` and an error, so it is only sent once a window is asked for.
+    assert!(vars.get("playedAfter").is_none(), "{vars}");
+    // The document has to carry the fragments it spreads.
+    let query = call.body["query"].as_str().unwrap();
+    assert!(query.contains("fragment ArtFragment on Art"), "spread fragment missing");
+    assert!(query.contains("fragment RightsFragment on Rights"), "spread fragment missing");
+}
+
+#[test]
+fn a_graphql_station_id_matches_the_rest_station_id() {
+    // createStation's answer carries both: stationId "3815", pandoraId "ST:0:3815".
+    assert!(station_ids_match("3815", "ST:0:3815"));
+    assert!(station_ids_match("ST:0:3815", "ST:0:3815"));
+    assert!(station_ids_match("demo-2", "demo-2"), "an id copied through unchanged still matches");
+    assert!(!station_ids_match("9", "ST:0:19"), "the prefix is not a suffix search");
+    assert!(!station_ids_match("3815", "TR:3815"));
+    assert!(!station_ids_match("", "ST:0:1"));
+    assert!(!station_ids_match("1", "ST:0:"));
+}
+
+#[test]
+fn a_captured_answer_parses_to_station_entries() {
+    // Station shape from the query fragment (id, type, isCollected, stationType;
+    // no name). Ids are placeholders, not a saved live body.
+    let answer = json!({ "data": { "recentlyPlayedSources": { "items": [
+        { "sourceEntity": { "id": "ST:0:1", "type": "ST", "isCollected": true, "stationType": "SEEDED_STATION" } },
+        { "sourceEntity": { "id": "ST:0:2", "type": "ST", "isCollected": true, "stationType": "SEEDED_STATION" } }
+    ] } } });
+    let items = parse_recently_played(&answer);
+    assert_eq!(items.len(), 2, "{items:#?}");
+    assert_eq!((items[0].id.as_str(), items[0].kind.as_str()), ("ST:0:1", "ST"));
+    assert_eq!((items[1].name.as_str(), items[1].by.as_str()), ("", ""), "a station has neither");
+}
+
+#[test]
+fn a_bad_enum_is_a_400_that_says_which_value_it_refused() {
+    // A GraphQL 400 shaped like an invalid enum. The body is written here;
+    // it is not a captured live response.
+    let body = json!({ "errors": [{"message": "Variable \"$types\" got invalid value \"ALBUM\" at \"types[0]\"; Expected type RecentlyPlayedSourceType."}] })
+        .to_string();
+    let (base, _seen) = fake_pandora(Box::new(move |_r| (400, body.clone())));
+    let mut c = Client::with_base(&base, "");
+    c.auth = Some("tok".into());
+    let err = c.recently_played(20, &["ALBUM"]).unwrap_err().to_string();
+    assert!(err.contains("invalid value \"ALBUM\""), "{err}");
+    assert!(err.contains("HTTP 400"), "{err}");
+}
+
+#[test]
+fn the_apollo_client_name_is_only_sent_on_graphql_calls() {
+    let (base, seen) = fake_pandora(Box::new(|_r| (200, "{}".into())));
+    let mut c = Client::with_base(&base, "");
+    c.auth = Some("tok".into());
+    let _ = c.station_feedback("1", true, 0);
+    let seen = seen.lock().unwrap();
+    let rest = seen.iter().find(|s| s.path == "/api/v1/station/getStationFeedback").expect("no REST call");
+    assert_eq!(rest.header("apollographql-client-name"), None, "REST calls must not start sending it");
+    assert_eq!(rest.header("X-AuthToken"), Some("tok"));
+    assert!(seen.iter().all(|s| s.header("apollographql-client-name").is_none()), "{seen:?}");
+}
+
+#[test]
+fn recently_played_parse_is_tolerant_and_reports_graphql_errors() {
+    assert!(parse_recently_played(&json!({})).is_empty());
+    assert!(parse_recently_played(&json!({ "data": { "recentlyPlayedSources": { "items": null } } })).is_empty());
+    assert!(parse_recently_played(&json!({ "data": null })).is_empty());
+    let one = parse_recently_played(&json!({ "data": { "recentlyPlayedSources": { "items": [
+        { "sourceEntity": { "id": "AL:3", "type": "AL", "name": "Oracular" } }
+    ] } } }));
+    assert_eq!(one.len(), 1);
+    assert_eq!((one[0].id.as_str(), one[0].by.as_str()), ("AL:3", ""), "no artist in this answer");
+
+    let (base, _seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
+        "/api/v1/graphql/graphql" => (200, json!({ "errors": [{ "message": "no such field" }] }).to_string()),
+        _ => (200, "{}".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.auth = Some("tok".into());
+    let err = c.recently_played(20, &[]).unwrap_err().to_string();
+    assert!(err.contains("no such field"), "{err}");
 }

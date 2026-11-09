@@ -62,6 +62,12 @@ Covers download in the background and are cached in `~/.cache/boxvibe/art`
 (50 MB). A failed one is retried; why it failed goes to
 `~/.cache/boxvibe/art.log`, never the screen.
 
+Playback writes `~/.cache/boxvibe/boxvibe.log`: each song as it starts (what
+Pandora sent, what it decoded to, whether it was resampled), each as it ends
+(how far it got against how long it should have been), and every reason a song
+was skipped. It is capped at 512 KB and rolls over to `.old`, so it can be left
+on. `BOXVIBE_LOG=off` silences it; `BOXVIBE_LOG=<file>` writes somewhere else.
+
 ## Make and shape stations
 
 **Create a station** with `a` on the My Stations page: type an artist or song,
@@ -107,8 +113,9 @@ Highlights:
 - **Good Vibes Only** (on by default) plays Pandora's audio ads the way the
   website does, so your account looks like any other listener's. **Muted**
   plays them silently; **Off** skips them, at your own risk (see the popup).
-- **Audio quality**: 192 kbps MP3 on Plus / Premium, with Pandora's per-song
-  loudness applied.
+- **Audio quality**: 192 kbps MP3 on Plus / Premium, 64 kbps HE-AAC on a free
+  plan, with Pandora's per-song loudness applied. HE-AAC is decoded with its
+  high band (SBR) and stereo (PS), so a free plan sounds as good as it can.
 - **App menu entry** adds boxvibe to your app launcher.
 
 ## Install
@@ -211,6 +218,7 @@ genre_edit_popup = true        # true: renaming or editing a genre station opens
 [playback]
 audio_quality = "high"         # high: MP3 192 kbps if your plan has it (Plus, Premium), else 128
                                # standard: MP3 128 kbps (old low / medium values mean standard)
+                               # A free plan gets 64 kbps HE-AAC either way; Settings shows what is playing
 volume = 70                    # 0–100
 song_change_notifications = true   # Settings → Song change notifications: a desktop notification when the song changes (Settings toggles it)
 autoplay_last_station = true   # start the station played last when boxvibe opens
@@ -286,6 +294,35 @@ cargo build --release
 ```
 
 Tests run in demo mode or against a fake server, never live Pandora.
+
+CI runs on every push and pull request to `main` and `dev`: `fmt` (rustfmt),
+`ci` (release build, tests, clippy), `msrv` (a build on the `rust-version` in
+`Cargo.toml`, so the README's minimum stays honest), `audit` (`cargo audit`
+against RustSec) and `codeql`. A pull request into `main` needs `fmt`, `ci` and
+`msrv` green before it can merge.
+
+### Branches
+
+`dev` is the default branch and the only one worked on. `main` is a release
+marker: it accepts changes only through a pull request (the "Protect main"
+ruleset), and `dev` is merged into it only to cut a release. Feature work
+targets `dev`.
+
+### Versions
+
+`dev`'s `Cargo.toml` version runs **ahead** of the newest published release
+(`0.6.0` while the latest release is `v0.5.0`). That is deliberate. The version
+string is drawn on the splash, the About panel, the status bar and the box
+frames, so seeing `v0.6.0` confirms the running binary is a build from source
+rather than the released one.
+
+- Keep the bump in `Cargo.toml` only; `env!("CARGO_PKG_VERSION")` propagates it.
+  Update `Cargo.lock` with `cargo update --workspace --offline`, never by hand.
+- `CHANGELOG.md` sections are historical records of shipped releases, so they
+  keep the version that shipped.
+- The literal `"0.4.0"` in `src/snapshot.rs` is fabricated update data for the
+  screenshots; leave it.
+- A source build reporting no update available is expected, not a bug.
 
 ## Disclaimer
 

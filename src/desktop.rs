@@ -110,7 +110,7 @@ mod tests {
     use super::*;
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("boxvibe-desktop-{name}-{}", std::process::id()));
+        let dir = crate::config::scratch_dir(&format!("boxvibe-desktop-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }

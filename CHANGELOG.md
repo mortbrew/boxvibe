@@ -2,6 +2,30 @@
 
 Short and scannable; the git history has the details.
 
+## 0.6.0 (2026-11-09)
+
+### Fixed
+- **Free-plan audio sounds as good as it can.** Pandora's free tier serves 64 kbps HE-AAC: a 22.05 kHz AAC-LC core that SBR doubles to 44.1 kHz, with PS for stereo. symphonia decoded only the core, so it came out at half the rate, mono, with no high band — the duller sound in issue #11. AAC now goes to `syom`, which applies SBR and PS; MP3 stays on symphonia.
+- The container decides the decoder, not a trial decode: an MP3 behind an ID3v2 tag was reported as `Malformed(AdtsLayer)` rather than `NotAac`, so an error-based fallback sent every MP3 to the AAC decoder and skipped it. Detection looks past the ID3 tag and walks leading MP4 boxes, since `ftyp` is not always first. A container that looks like AAC but cannot be read is still tried as MP3, so a wrong guess cannot cost a song.
+- Changing the look with `Shift+R` / `Shift+H` / `Shift+C` swaps the cover in place instead of tearing the protocol down, so it costs one repaint of the art box rather than a full-screen flash. Prepared covers are cached per (url, look).
+
+### Added
+- **Playback log** at `~/.cache/boxvibe/boxvibe.log`: each song as it starts (what Pandora sent, what it decoded to, whether it was resampled), each as it ends (how far it got against how long it should have been), and every reason a song was skipped. Capped at 512 KB and rolls over to `.old`, so it can be left on. `BOXVIBE_LOG=off` silences it; `BOXVIBE_LOG=<file>` writes somewhere else.
+- Fragments ask for `supportedFormats` as the site does, and the bitrate Pandora reports is kept, so the interface says what is really playing rather than what was asked for.
+- The status bar names the stream playing (`MP3 192 kbps`, `AAC 64 kbps`) to the left of the account, and follows each song.
+- **Recently Played** in My Collection, read from the account's list.
+- Browse playlists and podcasts; remove a local recent entry.
+
+### Changed
+- **Audio quality is greyed out on a free plan.** `high` and `standard` both request `mp3` there, so the toggle changed nothing; Enter now explains instead of toggling, and logging out forgets the plan so the next account is not greyed.
+- My Stations and Pinned sit under a **MY COLLECTION** heading; pinned Browse sections sit under a **BROWSE (n)** heading.
+- Settings shows what is really playing next to Audio quality.
+
+### Internal
+- CI runs on every push and pull request to `main` and `dev`: `fmt`, `ci` (release build, tests, clippy), `msrv` (a build on the `rust-version` in `Cargo.toml`), `audit` and `codeql`. A pull request into `main` needs `fmt`, `ci` and `msrv` green.
+- The branch and version policy is written down in the README's Development section.
+- Tests keep their scratch directories under `target/tmp` rather than `/tmp`, and no longer spawn `notify-send`.
+
 ## 0.5.0 (2026-11-06)
 
 ### Internal

@@ -12,8 +12,8 @@ use crate::ads::{self, Ad};
 use crate::demo;
 use crate::keychain::Keychain;
 use crate::pandora::{
-    self, AdAsk, ArtistInfo, BrowseSection, Client, Error, FeedbackPage, Quality, SearchHit, Seed, Song, Station,
-    StationDetails, StationModes,
+    self, AdAsk, ArtistInfo, BrowseSection, Client, Error, FeedbackPage, Quality, RECENT_PAGE, RecentSource, SearchHit,
+    Seed, Song, Station, StationDetails, StationModes,
 };
 use crate::update::{self, Checked, Update};
 
@@ -71,6 +71,11 @@ pub enum Request {
     /// Search Pandora for artists and songs to start a station from.
     Search {
         query: String,
+    },
+    /// The account's recently played sources, newest first.
+    /// `generation` comes back on the reply so a late answer can be dropped.
+    RecentlyPlayed {
+        generation: u64,
     },
     /// The artist page (bio, similar artists) of `name`; `music_id` is the
     /// song's `artistMusicId` (empty: found by name).
@@ -192,6 +197,17 @@ pub enum Reply {
     SearchResults {
         query: String,
         hits: Vec<SearchHit>,
+    },
+    /// `recentlyPlayedSources`, newest first, as Pandora sends them.
+    /// `generation` is the one [`Request::RecentlyPlayed`] carried.
+    Recent {
+        generation: u64,
+        sources: Vec<RecentSource>,
+    },
+    /// The recently played call failed. `generation` matches [`Reply::Recent`].
+    RecentFailed {
+        generation: u64,
+        message: String,
     },
     /// A station Pandora just made (the account now has it).
     StationCreated(Station),
@@ -427,6 +443,22 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
                 }
             }
             Request::Search { query } => Reply::SearchResults { hits: demo::search(&query), query },
+            // The demo's history: three of its stations, as recent station entries.
+            // Demo ids are copied through, so they match the station list as-is.
+            Request::RecentlyPlayed { generation } => Reply::Recent {
+                generation,
+                sources: stations
+                    .iter()
+                    .skip(2)
+                    .take(3)
+                    .map(|s| RecentSource {
+                        id: s.id.clone(),
+                        kind: "ST".into(),
+                        name: String::new(),
+                        by: String::new(),
+                    })
+                    .collect(),
+            },
             Request::CreateStation { pandora_id } => match demo::new_station(&pandora_id, stations.len()) {
                 Some(station) => {
                     // Like Pandora: an existing one is not made twice; a new one comes after Shuffle.
@@ -488,7 +520,7 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
 
 fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Quality, user_agent: &str) {
     let mut client = Client::new(user_agent);
-    client.quality = quality;
+    client.set_quality(quality);
     let mut login: Option<(String, String)> = None;
     for request in requests {
         let mut took_over = false;
@@ -556,6 +588,15 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
             Request::Search { query } => run(&mut client, &login, &mut took_over, "search", |c| {
                 c.search(&query).map(|hits| Reply::SearchResults { query: query.clone(), hits })
             }),
+            Request::RecentlyPlayed { generation } => {
+                let reply = run(&mut client, &login, &mut took_over, "recently played", |c| {
+                    c.recently_played(RECENT_PAGE, &[]).map(|sources| Reply::Recent { generation, sources })
+                });
+                match reply {
+                    Reply::Failed { message, .. } => Reply::RecentFailed { generation, message },
+                    other => other,
+                }
+            }
             Request::CreateStation { pandora_id } => run(&mut client, &login, &mut took_over, "create station", |c| {
                 c.create_station(&pandora_id).map(Reply::StationCreated)
             }),
@@ -633,7 +674,7 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                 Reply::TookOver
             }
             Request::Quality(quality) => {
-                client.quality = quality;
+                client.set_quality(quality);
                 continue;
             }
             Request::Audio { .. } | Request::Art { .. } => continue,

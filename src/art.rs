@@ -98,6 +98,19 @@ struct Shown {
     protocol: StatefulProtocol,
 }
 
+/// The pixelated and tinted cover for one `(url, look)`, so going back through
+/// the retro levels (Shift+R) is a cache hit rather than another encode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LookKey {
+    pixelation: RetroMode,
+    tint: ArtTint,
+    /// Only part of the key when the cover is tinted, matching `Look`'s equality.
+    palette: Option<Palette>,
+}
+
+/// The retro levels (7), plus the cover of the song playing and the one before.
+const CACHED_COVERS: usize = 16;
+
 #[derive(Default)]
 pub struct Art {
     /// The terminal's graphics, when it has any (Picture).
@@ -118,6 +131,8 @@ pub struct Art {
     pub last_area: std::cell::Cell<ratatui::layout::Rect>,
     /// Where the cover itself was last drawn inside that box.
     pub last_cover: std::cell::Cell<ratatui::layout::Rect>,
+    /// Prepared covers, newest last: Shift+R cycles back through the levels.
+    cache: RefCell<VecDeque<(String, LookKey, Arc<DynamicImage>)>>,
 }
 
 impl Art {
@@ -234,19 +249,61 @@ impl Art {
             .as_ref()
             .is_some_and(|s| s.url == url && s.look == look && is_blocks(&s.protocol) == picture.is_none());
         if !current {
-            if shown.take().is_some_and(|s| !is_blocks(&s.protocol)) {
-                self.needs_clear.set(true);
-            }
             let image = match (mode, self.images.get(url)) {
-                (AlbumArt::Off, _) | (_, None) => return None,
+                (AlbumArt::Off, _) | (_, None) => {
+                    if shown.take().is_some_and(|s| !is_blocks(&s.protocol)) {
+                        self.needs_clear.set(true);
+                    }
+                    return None;
+                }
                 (_, Some(image)) => image,
             };
-            let picker = picture.cloned().unwrap_or_else(|| self.blocks_picker());
-            let protocol =
-                picker.new_resize_protocol(tint(&pixelate(image, look.pixelation), look.tint, &look.palette));
-            *shown = Some(Shown { url: url.into(), look, protocol });
+            let ready = self.prepared(url, image, look);
+            // Changing a setting on the same cover keeps the same kind of
+            // protocol, so the cover is swapped in place. Tearing it down
+            // instead cleared the screen and re-sent the picture, which is what
+            // made Shift+R flash.
+            let same_kind = shown.as_ref().is_some_and(|s| s.url == url && is_blocks(&s.protocol) == picture.is_none());
+            if same_kind {
+                let shown = shown.as_mut().expect("just checked");
+                shown.look = look;
+                shown.protocol = picture.unwrap_or(&self.blocks_picker()).new_resize_protocol(ready);
+            } else {
+                if shown.take().is_some_and(|s| !is_blocks(&s.protocol)) {
+                    self.needs_clear.set(true);
+                }
+                let picker = picture.cloned().unwrap_or_else(|| self.blocks_picker());
+                let protocol = picker.new_resize_protocol(ready);
+                *shown = Some(Shown { url: url.into(), look, protocol });
+            }
         }
         Some(RefMut::map(shown, |s| &mut s.as_mut().expect("just set").protocol))
+    }
+
+    /// The cover for `look`, pixelated and tinted: from the cache when this
+    /// look has been drawn before, else built once and kept. The cache stores
+    /// exactly what the uncached path computes, so it cannot change the pixels.
+    fn prepared(&self, url: &str, image: &Arc<DynamicImage>, look: Look) -> DynamicImage {
+        // The palette only distinguishes looks that are tinted, as in `Look`'s
+        // equality: an untinted cover is the same whatever the theme.
+        let key = LookKey {
+            pixelation: look.pixelation,
+            tint: look.tint,
+            palette: (look.tint != ArtTint::Off).then_some(look.palette),
+        };
+        let mut cache = self.cache.borrow_mut();
+        if let Some(at) = cache.iter().position(|(u, k, _)| u == url && *k == key) {
+            let hit = cache.remove(at).expect("just found").2;
+            cache.push_back((url.into(), key, hit.clone()));
+            return (*hit).clone();
+        }
+        let ready = Arc::new(tint(&pixelate(image, look.pixelation), look.tint, &look.palette));
+        // One cover's worth of levels, plus this song and the one before it.
+        cache.push_back((url.into(), key, ready.clone()));
+        while cache.len() > CACHED_COVERS {
+            cache.pop_front();
+        }
+        (*ready).clone()
     }
 
     /// Call after drawing the cover: when the terminal's graphics couldn't
@@ -300,6 +357,12 @@ fn is_blocks(p: &StatefulProtocol) -> bool {
 
 /// The cover shrunk to `pixelation`'s grid and blown back up, nearest
 /// neighbour both ways, so every protocol shows the same big pixels.
+///
+/// Nearest neighbour is a plain index remap, so the two `resize_exact` passes
+/// it used to take are folded into one loop and one buffer. The sampling index
+/// is `floor((x + 0.5) * grid / full)`, which is how `resize_exact` picks its
+/// pixel: the half-pixel offset centres the sample, and leaving it out shifts
+/// the whole image and smears the rows.
 pub fn pixelate(image: &DynamicImage, pixelation: RetroMode) -> DynamicImage {
     let Some(grid) = pixelation.grid() else { return image.clone() };
     let (w, h) = (image.width().max(1), image.height().max(1));
@@ -307,7 +370,28 @@ pub fn pixelate(image: &DynamicImage, pixelation: RetroMode) -> DynamicImage {
     if gw >= w && gh >= h {
         return image.clone();
     }
-    image.resize_exact(gw, gh, FilterType::Nearest).resize_exact(w, h, FilterType::Nearest)
+    let src = image.to_rgb8();
+    let mut out = image::RgbImage::new(w, h);
+    // The two `resize_exact` passes, composed: an output pixel picks a grid
+    // cell, and the grid cell picks a source pixel. `image` samples at
+    // floor((i + 0.5) * small / full) in f32, so this does the same in f32
+    // rather than trusting integer division to round identically.
+    let pick = |full: u32, small: u32| -> Vec<u32> {
+        let step = small as f32 / full as f32;
+        (0..full).map(|i| ((i as f32 + 0.5) * step).floor() as u32).collect()
+    };
+    let to_grid_x = pick(w, gw);
+    let to_grid_y = pick(h, gh);
+    let from_grid_x = pick(gw, w);
+    let from_grid_y = pick(gh, h);
+    for (y, gy) in to_grid_y.iter().enumerate() {
+        let sy = from_grid_y[*gy as usize];
+        for (x, gx) in to_grid_x.iter().enumerate() {
+            let sx = from_grid_x[*gx as usize];
+            out.put_pixel(x as u32, y as u32, *src.get_pixel(sx, sy));
+        }
+    }
+    DynamicImage::ImageRgb8(out)
 }
 
 fn rgb_of(c: ratatui::style::Color) -> Option<[u8; 3]> {
@@ -464,6 +548,58 @@ mod tests {
         Look { mode, pixelation, tint: ArtTint::Off, palette: crate::theme::BUILT_IN[0].2 }
     }
 
+    /// `resize_exact` with Nearest, the two-pass version `pixelate` replaced.
+    fn resized(image: &DynamicImage, pixelation: RetroMode) -> DynamicImage {
+        let Some(grid) = pixelation.grid() else { return image.clone() };
+        let (w, h) = (image.width().max(1), image.height().max(1));
+        let (gw, gh) = if w >= h { (grid, (grid * h / w).max(1)) } else { ((grid * w / h).max(1), grid) };
+        if gw >= w && gh >= h {
+            return image.clone();
+        }
+        image.resize_exact(gw, gh, FilterType::Nearest).resize_exact(w, h, FilterType::Nearest)
+    }
+
+    #[test]
+    fn pixelation_matches_resize_exact_pixel_for_pixel() {
+        // Shapes either side of the grid, wide and tall, and an odd size where
+        // the sampling rounds differently from plain integer division.
+        for (w, h) in [(256, 256), (320, 200), (200, 320), (640, 360), (37, 91), (8, 8), (512, 512)] {
+            let mut cover = image::RgbImage::new(w, h);
+            for (x, y, px) in cover.enumerate_pixels_mut() {
+                // Asymmetric, so a half-pixel shift anywhere shows up.
+                *px = image::Rgb([(x % 251) as u8, (y % 241) as u8, ((x * 7 + y * 13) % 239) as u8]);
+            }
+            let cover = DynamicImage::ImageRgb8(cover);
+            for mode in RetroMode::ALL {
+                let want = resized(&cover, mode).to_rgb8();
+                let got = pixelate(&cover, mode).to_rgb8();
+                assert_eq!(want.dimensions(), got.dimensions(), "{w}x{h} {mode:?}: size");
+                let differing = want.pixels().zip(got.pixels()).filter(|(a, b)| a != b).count();
+                assert_eq!(differing, 0, "{w}x{h} {mode:?}: {differing} pixels differ");
+            }
+        }
+    }
+
+    #[test]
+    fn a_cached_cover_is_the_same_pixels_as_an_uncached_one() {
+        let mut art = Art::default();
+        art.arrived("u".into(), Some(demo_cover("u")));
+        let image = art.images.get("u").cloned().expect("just arrived");
+        let palette = crate::theme::BUILT_IN[0].2;
+        for pixelation in RetroMode::ALL {
+            for art_tint in [ArtTint::Off, ArtTint::Duotone, ArtTint::Palette] {
+                let look = Look { mode: AlbumArt::Picture, pixelation, tint: art_tint, palette };
+                let want = tint(&pixelate(&image, pixelation), art_tint, &palette).to_rgb8();
+                // Twice: the second is the cache hit, and must match the first.
+                for pass in 0..2 {
+                    let got = art.prepared("u", &image, look).to_rgb8();
+                    let differing = want.pixels().zip(got.pixels()).filter(|(a, b)| a != b).count();
+                    assert_eq!(differing, 0, "{pixelation:?} {art_tint:?} pass {pass}: {differing} differ");
+                }
+            }
+        }
+    }
+
     #[test]
     fn pixelation_makes_big_square_pixels_at_the_same_size() {
         let cover = demo_cover("x");
@@ -525,6 +661,24 @@ mod tests {
         look.palette = crate::theme::BUILT_IN[1].2;
         assert!(art.protocol("u", look).is_some());
         assert_eq!(ptr(&art), Some(look), "rebuilt for the new theme");
+    }
+
+    #[test]
+    fn changing_the_level_swaps_the_cover_without_clearing_the_screen() {
+        let mut art = Art::default();
+        art.arrived("u".into(), Some(demo_cover("u")));
+        let mut sixel = Picker::halfblocks();
+        sixel.set_protocol_type(ProtocolType::Sixel);
+        art.set_graphics(Some(sixel));
+        let pic = look(AlbumArt::Picture, RetroMode::Hd);
+        assert!(art.protocol("u", pic).is_some_and(|p| !is_blocks(&p)));
+        art.needs_clear.take();
+        for level in [RetroMode::Bit32, RetroMode::Bit16, RetroMode::Bit2, RetroMode::Hd] {
+            let next = Look { pixelation: level, ..pic };
+            assert!(art.protocol("u", next).is_some_and(|p| !is_blocks(&p)), "{level:?} is still a picture");
+            assert!(!art.needs_clear.take(), "{level:?} needed no screen clear");
+            assert_eq!(art.shown.borrow().as_ref().map(|s| s.look), Some(next), "{level:?} was swapped in");
+        }
     }
 
     #[test]
@@ -629,7 +783,7 @@ mod tests {
 
     #[test]
     fn the_disk_cache_is_trimmed_oldest_first() {
-        let dir = std::env::temp_dir().join(format!("boxvibe-art-{}", std::process::id()));
+        let dir = crate::config::scratch_dir(&format!("boxvibe-art-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for (i, name) in ["a", "b", "c"].iter().enumerate() {
             let p = cache_path(&dir, name);

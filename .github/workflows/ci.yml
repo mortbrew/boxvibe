@@ -1,4 +1,4 @@
-# Build, test and lint on Linux for every push and pull request to main.
+# Build, test and lint on Linux for every push and pull request to main or dev.
 name: ci
 
 on:
@@ -13,7 +13,22 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+# A newer push to the same branch makes the run in flight pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # Formatting needs no build, so it answers in seconds.
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+
   ci:
     runs-on: ubuntu-latest
     steps:
@@ -21,7 +36,24 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
       - run: cargo build --release --locked
       - run: cargo test --locked
       - run: cargo clippy --locked --all-targets -- -D warnings
+
+  # The README promises Rust 1.90+, so build on exactly that. The version is
+  # read from Cargo.toml's `rust-version` so the two cannot drift apart.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read the minimum version from Cargo.toml
+        id: msrv
+        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      - run: cargo build --locked

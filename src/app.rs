@@ -20,7 +20,10 @@ use crate::backend::{Backend, KeychainJob, KeychainReply, Reply, Request};
 use crate::config::{self, AlbumArt, Config, ConfigWarning, GoodVibes, Secret};
 use crate::input::TextInput;
 use crate::keychain::{self, Keychain, NO_KEYCHAIN};
-use crate::pandora::{BrowseItem, BrowseSection, Quality, Rating, SearchHit, Song, Station, StationDetails};
+use crate::pandora::{
+    BrowseItem, BrowseSection, Quality, Rating, RecentSource, SearchHit, Song, Station, StationDetails,
+    station_ids_match,
+};
 use crate::theme::{self, Palette};
 use crate::update::{Progress, Replace, Update};
 
@@ -57,6 +60,9 @@ pub enum View {
     Browse,
     /// Songs pinned with Shift+I.
     Pinned,
+    /// The account's recently played sources, newest first: MY COLLECTION's
+    /// last row, from Pandora's GraphQL API.
+    Recent,
     Settings,
     /// What the bottom bar said, newest first.
     Notifications,
@@ -81,6 +87,9 @@ pub enum MenuItem {
     BrowsePin(usize),
     /// The songs pinned with Shift+I (hidden by `[look] pinned_in_menu`).
     Pinned,
+    /// The recently played list. Drawn only once Pandora sent something, so
+    /// it hides while empty the way FAVORITES does.
+    RecentlyPlayed,
     /// A starred station, by its index in `[playback] favorites`.
     Favorite(usize),
     Settings,
@@ -266,7 +275,7 @@ impl Setting {
             }
             Self::LogOut => "Stops the music and removes the saved password from your keychain.",
             Self::Quality => {
-                "high is 192 kbps MP3 where your plan has it (Plus, Premium), else 128 kbps; standard is 128. Saved as [playback] audio_quality."
+                "high asks for 192 kbps MP3 where your plan has it (Plus, Premium), else 128 kbps MP3; standard asks for 128. A free plan gets 64 kbps HE-AAC whatever you pick, so this is greyed out there and the row says what is really playing. Saved as [playback] audio_quality."
             }
             Self::Volume => "Also ← and → anywhere. Saved as [playback] volume.",
             Self::Autoplay => {
@@ -555,6 +564,20 @@ pub enum BrowseState {
     Failed(String),
 }
 
+/// The Browse page under a category shelf, so Esc returns to it.
+struct BrowsePlace {
+    state: BrowseState,
+    path: Option<String>,
+    cursor: usize,
+}
+
+enum BrowsePick {
+    Station(String, String),
+    Page(String),
+    Unsupported(String),
+    Header,
+}
+
 /// One line on the Browse page: a section title or an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrowseRow<'a> {
@@ -689,12 +712,13 @@ impl Details {
                 );
                 add(
                     "Audio",
-                    match s.audio_format {
-                        crate::pandora::AudioFormat::Mp3 => "MP3",
-                        crate::pandora::AudioFormat::Aac => "AAC",
-                        crate::pandora::AudioFormat::Unknown => "",
-                    }
-                    .into(),
+                    match (s.audio_format, s.bitrate) {
+                        (crate::pandora::AudioFormat::Mp3, 0) => "MP3".into(),
+                        (crate::pandora::AudioFormat::Mp3, kbps) => format!("MP3 {kbps} kbps"),
+                        (crate::pandora::AudioFormat::Aac, 0) => "AAC".into(),
+                        (crate::pandora::AudioFormat::Aac, kbps) => format!("AAC {kbps} kbps"),
+                        (crate::pandora::AudioFormat::Unknown, _) => String::new(),
+                    },
                 );
                 if s.gain != 0.0 {
                     add("Loudness fix", format!("{:+.1} dB", s.gain));
@@ -906,6 +930,20 @@ pub struct App {
     /// Where they are kept (`None`: in the demo, only in memory).
     pub pins_path: Option<PathBuf>,
     pub pinned_cursor: usize,
+    /// The account's recently played sources, newest first.
+    pub recent: Vec<RecentSource>,
+    pub recent_cursor: usize,
+    /// A recently played call is on its way.
+    pub recent_loading: bool,
+    /// The login's first fetch has been sent. Logout clears it.
+    recent_asked: bool,
+    /// A tune or a page open happened while a fetch was already in flight.
+    recent_dirty: bool,
+    /// Bumped on each ask and on logout. A reply from an older one is dropped.
+    recent_generation: u64,
+    /// Rows removed on this device only. Pandora's list is unchanged; refresh
+    /// may bring them back unless Pandora adds a remove API.
+    recent_hidden: std::collections::HashSet<String>,
     /// Up Next songs disliked with b: sent, and skipped, when their turn comes.
     pub held_dislikes: std::collections::HashSet<String>,
     /// `.`: the song menu, and the song it is for.
@@ -937,6 +975,8 @@ pub struct App {
     view_all: HashMap<String, Vec<BrowseSection>>,
     /// View-all path on screen or in flight. `None`: the page is the teaser.
     browse_path: Option<String>,
+    /// Page to restore when Esc leaves a category shelf.
+    browse_parent: Option<BrowsePlace>,
     /// Selected genre station, counted over the stations only (not the headings).
     /// A station is being made: a second Enter waits for it.
     creating: bool,
@@ -973,6 +1013,10 @@ pub struct App {
     pub edit_config: bool,
     /// After a login: whether the plan streams 192 kbps MP3.
     pub hifi: Option<bool>,
+    /// What Pandora actually sent for the song now playing: its format and
+    /// bitrate. `None` until a song plays. The plan's flag says what it
+    /// *should* send; this says what it did, which is not always the same.
+    pub stream: Option<(crate::pandora::AudioFormat, u32)>,
     /// Restart Now was pressed: once quit, start the new version.
     pub restart: bool,
     /// Shift+Q asked "Quit boxvibe?": y quits, any other key doesn't (like tubevibe).
@@ -1039,6 +1083,13 @@ impl App {
             pins_path: if demo { None } else { crate::pinned::default_path() },
             pins: Vec::new(),
             pinned_cursor: 0,
+            recent: Vec::new(),
+            recent_cursor: 0,
+            recent_loading: false,
+            recent_asked: false,
+            recent_dirty: false,
+            recent_generation: 0,
+            recent_hidden: Default::default(),
             held_dislikes: Default::default(),
             song_menu: None,
             panel: None,
@@ -1055,6 +1106,7 @@ impl App {
             browse_directory: BrowseState::Idle,
             view_all: HashMap::new(),
             browse_path: None,
+            browse_parent: None,
             creating: false,
             editor: None,
             ad: AdPhase::Off,
@@ -1075,6 +1127,7 @@ impl App {
             self_update: Progress::Idle,
             edit_config: false,
             hifi: None,
+            stream: None,
             restart: false,
             art: crate::art::Art::default(),
             quit: false,
@@ -1221,8 +1274,11 @@ impl App {
         let pins = (0..self.browse_menu_pins().len()).map(MenuItem::BrowsePin);
         top.into_iter()
             .chain([MenuItem::Stations])
-            .chain(pins)
+            // Recently Played sits where Pinned used to, above Pinned. An empty
+            // list keeps the row absent. Pinned stays above the Browse sections.
+            .chain(self.recent_row().then_some(MenuItem::RecentlyPlayed))
             .chain(self.config.ui.pinned_in_menu.then_some(MenuItem::Pinned))
+            .chain(pins)
             .chain(
                 (0..if self.config.ui.favorites_in_menu { self.config.ui.favorites.len() } else { 0 })
                     .map(MenuItem::Favorite),
@@ -1242,6 +1298,7 @@ impl App {
             MenuItem::Stations => self.show_stations(),
             MenuItem::BrowsePin(i) => self.show_browse_pin(i),
             MenuItem::Pinned => self.show_page(View::Pinned),
+            MenuItem::RecentlyPlayed => self.show_recently_played(),
             MenuItem::Favorite(i) => {
                 let Some(fav) = self.config.ui.favorites.get(i).cloned() else { return };
                 match self.stations.iter().position(|s| s.id == fav.id) {
@@ -1295,6 +1352,119 @@ impl App {
         self.view = view;
         self.point_menu_at_view();
         self.focus = Focus::Content;
+    }
+
+    /// How many rows the menu's recently played entry takes: one, or none
+    /// while the list is empty (FAVORITES hides the same way).
+    pub fn recent_row(&self) -> bool {
+        !self.recent.is_empty()
+    }
+
+    /// Asks Pandora for the recently played list, once after login.
+    fn ask_recently_played(&mut self) {
+        if self.recent_asked {
+            return;
+        }
+        self.refresh_recently_played();
+    }
+
+    /// One fetch for a login, a station start, or opening the page. A second
+    /// event while that fetch is in flight waits for it, then sends once more.
+    /// The list itself still comes only from Pandora's reply.
+    fn refresh_recently_played(&mut self) {
+        if self.session != Session::LoggedIn {
+            return;
+        }
+        if self.recent_loading {
+            self.recent_dirty = true;
+            return;
+        }
+        self.recent_dirty = false;
+        self.recent_asked = true;
+        self.recent_loading = true;
+        self.recent_generation = self.recent_generation.wrapping_add(1);
+        self.backend.send(Request::RecentlyPlayed { generation: self.recent_generation });
+    }
+
+    fn finish_recent_request(&mut self) {
+        self.recent_loading = false;
+        if self.recent_dirty {
+            self.refresh_recently_played();
+        }
+    }
+
+    /// The reply belongs to the login that asked for it.
+    fn accept_recent(&self, generation: u64) -> bool {
+        generation == self.recent_generation && self.session == Session::LoggedIn
+    }
+
+    /// Drops the list and invalidates an answer still in flight.
+    fn forget_recent(&mut self) {
+        self.recent_generation = self.recent_generation.wrapping_add(1);
+        self.recent.clear();
+        self.recent_cursor = 0;
+        self.recent_loading = false;
+        self.recent_asked = false;
+        self.recent_dirty = false;
+        self.recent_hidden.clear();
+    }
+
+    fn filter_recent(&self, sources: Vec<RecentSource>) -> Vec<RecentSource> {
+        sources.into_iter().filter(|s| !self.recent_hidden.contains(&s.id)).collect()
+    }
+
+    pub(crate) fn forget_recent_row(&mut self, at: usize) {
+        let Some(source) = self.recent.get(at).cloned() else { return };
+        self.recent_hidden.insert(source.id.clone());
+        self.recent.retain(|s| s.id != source.id);
+        self.recent_cursor = self.recent_cursor.min(self.recent.len().saturating_sub(1));
+        self.status = format!(
+            "Removed “{}” from Recently Played here (this device only; Pandora's history is unchanged)",
+            self.recent_title(&source)
+        );
+    }
+
+    /// The menu's RECENTLY PLAYED entry: the list of recent sources.
+    fn show_recently_played(&mut self) {
+        self.view = View::Recent;
+        self.focus = Focus::Content;
+        self.point_menu_at_view();
+        self.recent_cursor = self.recent_cursor.min(self.recent.len().saturating_sub(1));
+        self.refresh_recently_played();
+    }
+
+    /// A recent entry's title. A station's own fragment selects no name, so
+    /// the station list gives it one; anything else uses `name`, then the
+    /// artist, then the id rather than a blank row.
+    pub fn recent_title(&self, source: &RecentSource) -> String {
+        if let Some(station) = self.stations.iter().find(|s| station_ids_match(&s.id, &source.id)) {
+            return station.name.clone();
+        }
+        if !source.name.is_empty() {
+            return source.name.clone();
+        }
+        if !source.by.is_empty() {
+            return source.by.clone();
+        }
+        source.id.clone()
+    }
+
+    /// Enter on a recent entry: a station plays. Anything else (a track, an
+    /// album, a playlist) needs a station to play from, which Pandora's answer
+    /// does not name, so say so instead of guessing one.
+    fn play_recent(&mut self) {
+        let Some(source) = self.recent.get(self.recent_cursor.min(self.recent.len().saturating_sub(1))).cloned() else {
+            return;
+        };
+        if source.kind != "ST" {
+            self.status = format!("“{}” is not a station: play it from Pandora", self.recent_title(&source));
+            return;
+        }
+        match self.stations.iter().position(|s| station_ids_match(&s.id, &source.id)) {
+            Some(at) => self.tune(at),
+            None if self.stations.is_empty() => self.status = "The stations are still loading".into(),
+            None => self.status = format!("“{}” isn't one of your stations any more", self.recent_title(&source)),
+        }
     }
 
     /// My Stations (menu entry or `S`): the list, with the keys on it.
@@ -1359,6 +1529,7 @@ impl App {
     }
 
     fn open_browse_view(&mut self) {
+        self.browse_parent = None;
         self.view = View::Browse;
         self.focus = Focus::Content;
         self.point_menu_at_view();
@@ -1463,6 +1634,13 @@ impl App {
                 if self.browse_path.as_deref() != Some(path.as_str()) {
                     return;
                 }
+                if let Some(parent) = self.browse_parent.take() {
+                    self.browse = parent.state;
+                    self.browse_path = parent.path;
+                    self.browse_cursor = parent.cursor;
+                    self.status = format!("That page didn't load ({message})");
+                    return;
+                }
                 if let BrowseState::Loaded(sections) = &self.browse_directory {
                     self.browse_path = None;
                     self.browse = BrowseState::Loaded(sections.clone());
@@ -1515,24 +1693,81 @@ impl App {
         self.browse_cursor.min(self.browse_rows().len().saturating_sub(1))
     }
 
-    /// Enter on a Browse item: create+play when the row can start a station.
+    /// Enter on a Browse item: start a station, or open a category page the row names.
     fn activate_browse_row(&mut self) {
         let retry = matches!(self.browse, BrowseState::Idle | BrowseState::Failed(_));
         let loading = matches!(self.browse, BrowseState::Loading);
-        let picked = self.browse_rows().get(self.browse_index()).and_then(|row| match row {
-            BrowseRow::Item(item) => Some((item.create_id().map(str::to_owned), item.name.clone())),
-            BrowseRow::Header(_) => None,
+        let picked = self.browse_rows().get(self.browse_index()).map(|row| match row {
+            BrowseRow::Header(_) => BrowsePick::Header,
+            BrowseRow::Item(item) => {
+                if let Some(id) = item.create_id() {
+                    BrowsePick::Station(id.to_owned(), item.name.clone())
+                } else if let Some(path) = item.link.clone() {
+                    BrowsePick::Page(path)
+                } else {
+                    BrowsePick::Unsupported(item.name.clone())
+                }
+            }
         });
         match (loading, retry, picked) {
             (true, _, _) => {}
             (_, true, _) => self.retry_browse(),
-            (_, _, Some((Some(id), name))) => self.create_station(&id, &name),
-            (_, _, Some((None, name))) => {
-                self.status =
-                    format!("“{name}” can't start a station here (playlist, podcast, album, mood or category)");
+            (_, _, Some(BrowsePick::Station(id, name))) => self.create_station(&id, &name),
+            (_, _, Some(BrowsePick::Page(path))) => self.open_browse_link(path),
+            (_, _, Some(BrowsePick::Unsupported(name))) => {
+                let pandora_id = self.browse_rows().get(self.browse_index()).and_then(|r| match r {
+                    BrowseRow::Item(item) => Some(item.pandora_id.clone()),
+                    _ => None,
+                });
+                let hint = pandora_id.as_deref().and_then(|id| {
+                    if id.starts_with("PL:") {
+                        Some("playlists are browse-only in boxvibe right now")
+                    } else if id.starts_with("PC:") || id.starts_with("PE:") {
+                        Some("podcasts are browse-only in boxvibe right now")
+                    } else {
+                        None
+                    }
+                });
+                self.status = if let Some(why) = hint {
+                    format!("“{name}” can't play here ({why})")
+                } else {
+                    format!("“{name}” can't start a station here (playlist, podcast, album, mood or category)")
+                };
             }
+            (_, _, Some(BrowsePick::Header)) => self.status = "That's a heading. Pick a row under it.".into(),
             _ => {}
         }
+    }
+
+    /// A category shelf's site path. The page underneath is kept for Esc.
+    fn open_browse_link(&mut self, path: String) {
+        if self.browse_path.as_deref() == Some(path.as_str()) {
+            return;
+        }
+        if matches!(self.browse, BrowseState::Loaded(_)) {
+            self.browse_parent = Some(BrowsePlace {
+                state: self.browse.clone(),
+                path: self.browse_path.clone(),
+                cursor: self.browse_cursor,
+            });
+        }
+        self.fetch_view_all(path);
+    }
+
+    /// Esc on a category page returns to the page that opened it.
+    fn browse_back(&mut self) -> bool {
+        if self.view != View::Browse || self.focus != Focus::Content {
+            return false;
+        }
+        let Some(parent) = self.browse_parent.take() else { return false };
+        self.browse = parent.state;
+        self.browse_path = parent.path;
+        self.browse_cursor = parent.cursor;
+        true
+    }
+
+    pub fn browse_can_go_back(&self) -> bool {
+        self.view == View::Browse && self.focus == Focus::Content && self.browse_parent.is_some()
     }
 
     // --- Adding stations (a, Genres) ---
@@ -1957,6 +2192,7 @@ impl App {
                 None => None,
             },
             View::Pinned => Some(MenuItem::Pinned),
+            View::Recent => Some(MenuItem::RecentlyPlayed),
             View::Player if self.has_now_playing() => Some(MenuItem::NowPlaying),
             View::Player => None,
         };
@@ -1982,6 +2218,21 @@ impl App {
         }
         self.sleep_tick();
         if self.now.as_ref().is_some_and(|s| self.audio.finished(s.length)) {
+            if let Some(song) = &self.now {
+                crate::log::log!(
+                    "end: {} — {} after {:?} of {} s ({}), {}",
+                    song.title,
+                    song.artist,
+                    self.audio.position(),
+                    song.length,
+                    if self.audio.has_device() { "device" } else { "silent clock" },
+                    if self.audio.position().as_secs() < u64::from(song.length).saturating_sub(5) {
+                        "SHORT: ended early"
+                    } else {
+                        "played through"
+                    }
+                );
+            }
             if self.sleep == Some(Sleep::EndOfSong) {
                 self.sleep = None;
                 self.sleep_pause_next = true;
@@ -2108,6 +2359,9 @@ impl App {
                 let last = &self.config.pandora.last_station;
                 let at = self.stations.iter().position(|s| &s.id == last);
                 self.stations_cursor = at.unwrap_or(0);
+                // One call per session, after the list: a station entry carries
+                // no name, so the row joins names from `stations`.
+                self.ask_recently_played();
                 // Favorites keep the names Pandora uses now.
                 let mut renamed = false;
                 for f in &mut self.config.ui.favorites {
@@ -2236,6 +2490,7 @@ impl App {
                 }
                 self.requested.remove(&track_token);
                 if self.buffering.as_deref() == Some(&track_token) {
+                    crate::log::log!("download: failed for {track_token}: {message}");
                     self.buffering = None;
                     self.status = format!("⚠ {message}: skipping");
                     self.advance();
@@ -2248,8 +2503,47 @@ impl App {
             | Reply::SeedRemoved { .. }
             | Reply::Feedback { .. }
             | Reply::FeedbackDeleted { .. } => {}
+            Reply::Recent { generation, sources } => {
+                if !self.accept_recent(generation) {
+                    return;
+                }
+                // A new row is inserted above Pinned. Stay on the menu entry
+                // the cursor was already on, and on the same recent source.
+                let had = self.recent_row();
+                let selected = self.menu_selected();
+                let keep = self.recent.get(self.recent_cursor).map(|s| s.id.clone());
+                self.recent = self.filter_recent(sources);
+                if let Some(id) = keep
+                    && let Some(at) = self.recent.iter().position(|s| s.id == id)
+                {
+                    self.recent_cursor = at;
+                } else {
+                    self.recent_cursor = self.recent_cursor.min(self.recent.len().saturating_sub(1));
+                }
+                if !had && self.recent_row() {
+                    let items = self.menu_items();
+                    if let Some(i) = items.iter().position(|m| *m == selected) {
+                        self.menu_cursor = i;
+                    }
+                }
+                self.finish_recent_request();
+            }
+            Reply::RecentFailed { generation, message } => {
+                if !self.accept_recent(generation) {
+                    return;
+                }
+                self.status = format!("⚠ Recently Played: {message}");
+                self.finish_recent_request();
+            }
             Reply::Failed { what, message } => {
                 if self.editor_failed(what, &message) || self.panel_failed(what, &message) {
+                    return;
+                }
+                if what == "recently played" {
+                    if self.recent_loading {
+                        self.status = format!("⚠ Recently Played: {message}");
+                        self.finish_recent_request();
+                    }
                     return;
                 }
                 if what == "shuffle" {
@@ -2457,9 +2751,14 @@ impl App {
         self.audio.stop();
         self.ad = AdPhase::Off;
         self.now = None;
+        self.stream = None;
+        // The next account's plan is not known until it logs in, so Audio
+        // quality must not stay greyed out from this one.
+        self.hifi = None;
         self.queue.clear();
         self.history.clear();
         self.stations.clear();
+        self.forget_recent();
         self.current_station = None;
         self.menu_cursor = 0;
         self.view = View::Settings;
@@ -2501,6 +2800,7 @@ impl App {
         self.status = format!("Tuning in to {}", station.name);
         // Every way a station starts lands where Shift+P does: same function, no drift.
         self.show_now_playing();
+        self.refresh_recently_played();
     }
 
     fn push_history(&mut self, song: Song) {
@@ -2541,6 +2841,9 @@ impl App {
         let token = song.track_token.clone();
         let url = song.audio_url.clone();
         self.notify(&song);
+        // What Pandora really sent for this song, which is not always what was
+        // asked for: a free plan gets 64 kbps HE-AAC whatever `high` says.
+        self.stream = Some((song.audio_format, song.bitrate));
         self.now = Some(song);
         if let Some(data) = self.audio_cache.remove(&token) {
             self.play_now(Some(data));
@@ -2581,6 +2884,15 @@ impl App {
 
     fn play_now(&mut self, data: Option<Vec<u8>>) {
         let data = data.filter(|d| !d.is_empty());
+        if let Some(song) = &self.now {
+            crate::log::log!(
+                "play: {} — {}, Pandora says {} s, {} bytes",
+                song.title,
+                song.artist,
+                song.length,
+                data.as_ref().map_or(0, Vec::len)
+            );
+        }
         match self.audio.start(data, self.now.as_ref().map_or(0.0, |s| s.gain), false) {
             Ok(()) => {
                 // Pandora counts plays (and skips) from this report, like the website.
@@ -2589,6 +2901,7 @@ impl App {
                 }
             }
             Err(e) => {
+                crate::log::log!("play: failed: {e}");
                 self.status = format!("⚠ {e}: skipping");
                 self.advance();
             }
@@ -2596,7 +2909,9 @@ impl App {
     }
 
     fn notify(&self, song: &Song) {
-        if self.demo || !self.config.ui.notifications {
+        // Tests make non-demo apps that play songs: without this they would
+        // put a real notification on the screen for every one.
+        if self.demo || cfg!(test) || !self.config.ui.notifications {
             return;
         }
         let _ = std::process::Command::new("notify-send")
@@ -2654,6 +2969,42 @@ impl App {
         Setting::ALL[self.settings_cursor.min(Setting::ALL.len() - 1)].1
     }
 
+    /// The Audio quality row: the choice, and what Pandora is really sending.
+    /// The plan's flag says what it should send; a free plan gets 64 kbps
+    /// HE-AAC whatever `high` asks for, so the stream is what is shown once
+    /// a song has arrived.
+    fn quality_label(&self) -> String {
+        // A free plan has no choice to show: the row is greyed out, and this
+        // says what Pandora sends rather than what was asked for.
+        if self.quality_greyed() {
+            return match self.stream {
+                Some((crate::pandora::AudioFormat::Aac, kbps)) if kbps > 0 => {
+                    format!("your plan: AAC {kbps} kbps")
+                }
+                _ => "your plan: 64 kbps HE-AAC".into(),
+            };
+        }
+        let choice = Quality::parse(&self.config.pandora.audio_quality);
+        let asked = match (choice, self.hifi) {
+            (Quality::High, Some(true)) => "high (MP3 192 kbps)",
+            (Quality::High, None) => "high (MP3 192 kbps if your plan has it)",
+            (Quality::Standard, _) => "standard (MP3 128 kbps)",
+            // `Some(false)` returned above.
+            (Quality::High, Some(false)) => "high",
+        };
+        match self.stream {
+            Some((format, kbps)) if kbps > 0 => {
+                let what = match format {
+                    crate::pandora::AudioFormat::Mp3 => "MP3",
+                    crate::pandora::AudioFormat::Aac => "AAC",
+                    crate::pandora::AudioFormat::Unknown => "audio",
+                };
+                format!("{asked} · playing {what} {kbps} kbps")
+            }
+            _ => asked.into(),
+        }
+    }
+
     /// The value shown next to a setting.
     pub fn setting_value(&self, setting: Setting) -> String {
         let on = |b: bool| if b { "on" } else { "off" }.to_owned();
@@ -2675,12 +3026,7 @@ impl App {
                 Session::Failed(e) => e.clone(),
             },
             Setting::LogOut => String::new(),
-            Setting::Quality => match (Quality::parse(&self.config.pandora.audio_quality), self.hifi) {
-                (Quality::High, Some(true)) => "high (MP3 192 kbps)".into(),
-                (Quality::High, Some(false)) => "high (your plan: MP3 128 kbps)".into(),
-                (Quality::High, None) => "high (MP3 192 kbps if your plan has it)".into(),
-                (Quality::Standard, _) => "standard (MP3 128 kbps)".into(),
-            },
+            Setting::Quality => self.quality_label(),
             Setting::Volume => format!("{}%", self.config.player.volume),
             Setting::Autoplay => on(self.config.ui.autoplay_last_station),
             Setting::Notify => on(self.config.ui.notifications),
@@ -2738,6 +3084,9 @@ impl App {
             Setting::Password => self.forget_saved_password(true),
             Setting::LogIn => self.log_in(),
             Setting::LogOut => self.log_out(),
+            Setting::Quality if self.quality_greyed() => {
+                self.status = "Audio quality is Pandora's on a free plan: 64 kbps HE-AAC".into();
+            }
             Setting::Quality => {
                 let next = Quality::parse(&self.config.pandora.audio_quality).next();
                 self.config.pandora.audio_quality = next.as_str().into();
@@ -3025,6 +3374,9 @@ impl App {
             Cmd::NextFocus => self.next_focus(true),
             Cmd::PrevFocus => self.next_focus(false),
             Cmd::ToMenu => {
+                if self.browse_back() {
+                    return;
+                }
                 self.focus = Focus::Menu;
                 self.point_menu_at_view();
             }
@@ -3219,6 +3571,10 @@ impl App {
             }
             return;
         }
+        if self.focus == Focus::Content && self.view == View::Recent && !self.recent.is_empty() {
+            self.ask_forget_recent(self.recent_cursor.min(self.recent.len().saturating_sub(1)));
+            return;
+        }
         let Some((station, favorite)) = self.station_in_reach() else {
             return self.no_station_here("x deletes");
         };
@@ -3340,6 +3696,7 @@ impl App {
             }
             (Focus::Content, View::Browse) => self.activate_browse_row(),
             (Focus::Content, View::Pinned) => self.open_pin(),
+            (Focus::Content, View::Recent) => self.play_recent(),
             (Focus::Content, View::Notifications) => {}
             (Focus::Content, View::Player) => {}
         }
@@ -3381,6 +3738,7 @@ impl App {
                 self.notes_cursor = clamp(self.notes_cursor, self.notes.len().max(1))
             }
             (Focus::Content, View::Pinned) => self.pinned_cursor = clamp(self.pinned_cursor, self.pins.len().max(1)),
+            (Focus::Content, View::Recent) => self.recent_cursor = clamp(self.recent_cursor, self.recent.len().max(1)),
         }
     }
 
@@ -3396,7 +3754,6 @@ impl App {
     fn next_album_art(&mut self) {
         let next = self.config.ui.album_art.next();
         self.config.ui.album_art = next;
-        self.art.forget_shown();
         self.want_art();
         self.save(&[("look", "album_art", next.as_str().into())]);
         self.status = format!("Album art: {}", next.label());
@@ -3406,7 +3763,6 @@ impl App {
     fn next_retro_mode(&mut self) {
         let next = self.config.ui.retro_mode.next();
         self.config.ui.retro_mode = next;
-        self.art.forget_shown();
         self.save(&[("look", "retro_mode", next.as_str().into())]);
         self.status = format!("Retro mode: {}", next.label());
     }
@@ -3415,7 +3771,6 @@ impl App {
     fn next_art_tint(&mut self) {
         let next = self.config.ui.art_tint.next();
         self.config.ui.art_tint = next;
-        self.art.forget_shown();
         self.save(&[("look", "tint_art_with_theme_colors", next.as_str().into())]);
         self.status = format!("Tint art with theme colors: {}", next.label());
     }
@@ -3440,6 +3795,23 @@ impl App {
     /// Theme Select can't be used while Auto Mode follows Omarchy.
     pub fn theme_select_greyed(&self) -> bool {
         self.config.ui.theme_auto_mode == crate::config::ThemeAutoMode::Omarchy
+    }
+
+    /// Audio quality can't be chosen on a free plan: Pandora sends 64 kbps
+    /// HE-AAC whatever is asked for, so `high` and `standard` both request
+    /// `mp3` and the toggle would change nothing. `None` (not logged in yet)
+    /// leaves it usable, since the plan is not known.
+    pub fn quality_greyed(&self) -> bool {
+        self.hifi == Some(false)
+    }
+
+    /// Whether a setting is shown greyed out because it can't be used now.
+    pub fn setting_greyed(&self, setting: Setting) -> bool {
+        match setting {
+            Setting::ThemeSelect => self.theme_select_greyed(),
+            Setting::Quality => self.quality_greyed(),
+            _ => false,
+        }
     }
 
     /// Theme Select = `name` (Auto Mode off), applied and saved.
@@ -3876,6 +4248,201 @@ mod tests {
     }
 
     #[test]
+    fn the_recently_played_row_joins_the_collection_once_pandora_answers() {
+        let app = demo();
+        // The demo worker answers with three of its stations.
+        assert!(app.recent_row(), "the demo has a history: {:#?}", app.recent);
+        let items = app.menu_items();
+        let pinned = items.iter().position(|m| *m == MenuItem::Pinned).expect("Pinned");
+        let recent = items.iter().position(|m| *m == MenuItem::RecentlyPlayed).expect("Recently Played");
+        assert_eq!(recent + 1, pinned, "above Pinned, inside MY COLLECTION: {items:?}");
+        // Nothing asked for yet, or an empty history: no row at all, the way
+        // FAVORITES hides.
+        let fresh = App::new(Config::default(), None, &[], true);
+        assert!(!fresh.recent_row());
+        assert!(!fresh.menu_items().contains(&MenuItem::RecentlyPlayed), "{:?}", fresh.menu_items());
+    }
+
+    #[test]
+    fn enter_on_a_recent_station_plays_it_and_a_track_says_it_cannot() {
+        let mut app = demo();
+        let at = app.menu_items().iter().position(|m| *m == MenuItem::RecentlyPlayed).unwrap();
+        app.focus = Focus::Menu;
+        app.menu_cursor = at;
+        app.on_key(key(KeyCode::Enter));
+        // No status text in the message: it can carry the account, and CodeQL
+        // counts a panic message as a log sink (cleartext-logging).
+        assert_eq!((app.view, app.focus), (View::Recent, Focus::Content));
+        let first = app.recent[0].clone();
+        assert_eq!(first.kind, "ST", "{first:#?}");
+        app.recent_cursor = 0;
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.current_station.as_deref(), Some(first.id.as_str()));
+        assert_eq!(app.view, View::Player, "tuning lands on Now Playing, like Shift+P");
+        // A track cannot be played from here: Pandora's answer names no station
+        // to play it from, so the row says so rather than guessing one.
+        app.view = View::Recent;
+        app.recent =
+            vec![RecentSource { id: "TR:1".into(), kind: "TR".into(), name: "Kids".into(), by: "MGMT".into() }];
+        app.recent_cursor = 0;
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.view, View::Recent, "still here");
+        assert!(app.status.contains("Kids") && app.status.contains("not a station"));
+    }
+
+    #[test]
+    fn a_recent_entry_is_titled_by_its_station_then_its_own_fields() {
+        let app = demo();
+        let station = app.stations[1].clone();
+        let joined = RecentSource { id: station.id.clone(), kind: "ST".into(), ..Default::default() };
+        assert_eq!(app.recent_title(&joined), station.name, "a station's name comes from the station list");
+        let gone = RecentSource { id: "ST:0:99".into(), kind: "ST".into(), ..Default::default() };
+        assert_eq!(app.recent_title(&gone), "ST:0:99", "nowhere to get a name: the id, never a blank row");
+        let track = RecentSource { id: "TR:1".into(), kind: "TR".into(), name: "Kids".into(), by: "MGMT".into() };
+        assert_eq!(app.recent_title(&track), "Kids");
+        // ARTIST_TOP_SONGS answers an ArtistPlay: artist.name, no top-level name.
+        let artist = RecentSource { id: "AP:2".into(), kind: "AP".into(), name: String::new(), by: "MGMT".into() };
+        assert_eq!(app.recent_title(&artist), "MGMT");
+    }
+
+    #[test]
+    fn a_graphql_station_id_joins_and_plays_the_rest_station_without_moving_the_menu() {
+        let mut app = demo();
+        app.recent.clear();
+        app.recent_loading = true;
+        app.recent_generation = 7;
+        let at = app.menu_items().iter().position(|m| *m == MenuItem::Settings).unwrap();
+        app.focus = Focus::Menu;
+        app.menu_cursor = at;
+        let station = app.stations[2].clone();
+        app.on_reply(Reply::Recent {
+            generation: 7,
+            sources: vec![RecentSource { id: format!("ST:0:{}", station.id), kind: "ST".into(), ..Default::default() }],
+        });
+        assert!(app.recent_row());
+        assert_eq!(app.menu_selected(), MenuItem::Settings, "the new row must not steal the cursor");
+        assert_eq!(app.recent_title(&app.recent[0]), station.name);
+        app.view = View::Recent;
+        app.focus = Focus::Content;
+        app.recent_cursor = 0;
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.current_station.as_deref(), Some(station.id.as_str()));
+        assert_eq!(app.view, View::Player);
+    }
+
+    #[test]
+    fn a_stale_recently_played_answer_is_ignored_and_logout_asks_again() {
+        let mut app = demo();
+        let before = app.recent.clone();
+        app.recent_generation = 4;
+        app.recent_loading = true;
+        app.on_reply(Reply::Recent { generation: 3, sources: vec![] });
+        assert_eq!(app.recent, before);
+        assert!(app.recent_loading, "an older success must not clear the newer request");
+        app.on_reply(Reply::RecentFailed { generation: 3, message: "old".into() });
+        assert!(app.recent_loading, "an older failure must not clear the newer request");
+        assert!(!app.status.contains("old"));
+        let generation = app.recent_generation;
+        app.log_out();
+        assert!(app.recent.is_empty());
+        assert!(!app.recent_asked && !app.recent_loading);
+        assert_ne!(app.recent_generation, generation);
+        app.on_reply(Reply::Recent {
+            generation,
+            sources: vec![RecentSource { id: "ST:0:1".into(), kind: "ST".into(), ..Default::default() }],
+        });
+        assert!(app.recent.is_empty(), "a late answer from the old login is dropped");
+        app.session = Session::LoggedIn;
+        app.on_reply(Reply::Stations(vec![Station { id: "3815".into(), name: "Tee".into(), ..Default::default() }]));
+        assert!(app.recent_loading && app.recent_asked, "the next login asks once");
+    }
+
+    #[test]
+    fn a_failed_recently_played_call_stops_the_spinner_and_says_why() {
+        let mut app = demo();
+        app.recent_loading = true;
+        app.on_reply(Reply::Failed {
+            what: "recently played",
+            message: "Variable \"$types\" got invalid value \"ALBUM\" (HTTP 400)".into(),
+        });
+        assert!(!app.recent_loading, "the pending flag clears");
+        assert!(app.status.contains("Recently Played") && app.status.contains("invalid value"));
+    }
+
+    #[test]
+    fn playing_or_opening_recently_played_refreshes_once_and_keeps_the_selection() {
+        let mut app = demo();
+        let before = app.recent.clone();
+        let generation = app.recent_generation;
+        app.tune(2);
+        assert!(app.recent_loading);
+        assert_eq!(app.recent_generation, generation.wrapping_add(1));
+        assert_eq!(app.recent, before, "playback does not invent a row before Pandora answers");
+        app.tune(1);
+        assert_eq!(app.recent_generation, generation.wrapping_add(1), "a second start waits for the one in flight");
+        assert!(app.recent_dirty);
+        app.settle(Duration::from_millis(500));
+        assert!(!app.recent_loading && !app.recent_dirty);
+        assert!(app.recent_generation > generation.wrapping_add(1), "the waiting start sends once");
+        app.recent_cursor = app.recent.len() - 1;
+        let id = app.recent[app.recent_cursor].id.clone();
+        app.show_recently_played();
+        assert_eq!(app.view, View::Recent);
+        assert!(app.recent_loading);
+        app.settle(Duration::from_millis(400));
+        assert_eq!(app.recent[app.recent_cursor].id, id, "the open page keeps the selected source");
+    }
+
+    #[test]
+    fn a_failed_recently_played_fetch_can_be_asked_again_by_opening_the_page() {
+        let mut app = demo();
+        app.recent_loading = true;
+        app.recent_generation = 9;
+        app.on_reply(Reply::RecentFailed { generation: 9, message: "down".into() });
+        assert!(!app.recent_loading);
+        assert!(app.status.contains("down"));
+        let generation = app.recent_generation;
+        app.show_recently_played();
+        assert!(app.recent_loading && app.recent_generation == generation.wrapping_add(1));
+    }
+
+    #[test]
+    fn x_removes_a_recently_played_row_here_only() {
+        let mut app = demo();
+        app.view = View::Recent;
+        app.focus = Focus::Content;
+        let before = app.recent.len();
+        app.recent_cursor = 0;
+        app.on_key(key(KeyCode::Char('x')));
+        app.on_key(key(KeyCode::Char('y')));
+        assert_eq!(app.recent.len(), before - 1);
+        assert!(app.status.contains("device only"), "{}", app.status);
+        app.refresh_recently_played();
+        app.settle(Duration::from_millis(400));
+        assert_eq!(app.recent.len(), before - 1, "hidden rows stay filtered after refresh");
+    }
+
+    #[test]
+    fn a_recent_row_appearing_above_pinned_keeps_the_pinned_cursor() {
+        let mut app = demo();
+        app.recent.clear();
+        let pinned = app.menu_items().iter().position(|m| *m == MenuItem::Pinned).unwrap();
+        app.focus = Focus::Menu;
+        app.menu_cursor = pinned;
+        app.recent_loading = true;
+        app.recent_generation = 2;
+        app.on_reply(Reply::Recent {
+            generation: 2,
+            sources: vec![RecentSource { id: "ST:0:1".into(), kind: "ST".into(), ..Default::default() }],
+        });
+        assert_eq!(app.menu_selected(), MenuItem::Pinned);
+        let items = app.menu_items();
+        let recent = items.iter().position(|m| *m == MenuItem::RecentlyPlayed).unwrap();
+        let pinned = items.iter().position(|m| *m == MenuItem::Pinned).unwrap();
+        assert!(recent < pinned);
+    }
+
+    #[test]
     fn browse_menu_loads_directory_and_enter_starts_a_station() {
         let mut app = demo();
         let at = app.menu_items().iter().position(|m| *m == MenuItem::BrowsePin(0)).unwrap();
@@ -4113,10 +4680,15 @@ mod tests {
         let items = app.menu_items();
         assert_eq!(items[0], MenuItem::NowPlaying, "a station plays: NOW PLAYING on top");
         assert_eq!(items[1], MenuItem::Stations);
+        assert_eq!(items[2], MenuItem::RecentlyPlayed, "Recently Played takes Pinned's old place");
+        assert_eq!(items[3], MenuItem::Pinned);
         let pins = config::BROWSE_SECTIONS.len();
-        assert_eq!(&items[2..2 + pins], &(0..pins).map(MenuItem::BrowsePin).collect::<Vec<_>>()[..]);
-        assert_eq!(items[2 + pins], MenuItem::Pinned);
-        assert_eq!(items.len(), 2 + pins + 1 + 4, "NOW PLAYING, My Stations, all section pins, Pinned, no favorites");
+        assert_eq!(&items[4..4 + pins], &(0..pins).map(MenuItem::BrowsePin).collect::<Vec<_>>()[..]);
+        assert_eq!(
+            items.len(),
+            2 + 1 + 1 + pins + 4,
+            "NOW PLAYING, My Stations, Pinned, Recently Played, all section pins, no favorites"
+        );
         assert_eq!(
             &items[items.len() - 4..],
             [MenuItem::Settings, MenuItem::Notifications, MenuItem::About, MenuItem::Quit]
@@ -4204,10 +4776,10 @@ mod tests {
         app.on_key(key(KeyCode::Char('f')));
         let third = app.stations[2].clone();
         assert!(app.is_favorite(&third.id));
-        let mut want = vec![MenuItem::Stations];
+        // The demo's recently played answer lands during `settle`, above Pinned.
+        let mut want = vec![MenuItem::Stations, MenuItem::RecentlyPlayed, MenuItem::Pinned];
         want.extend((0..config::BROWSE_SECTIONS.len()).map(MenuItem::BrowsePin));
         want.extend([
-            MenuItem::Pinned,
             MenuItem::Favorite(0),
             MenuItem::Settings,
             MenuItem::Notifications,
@@ -5443,6 +6015,126 @@ mod tests {
     }
 
     #[test]
+    fn the_stream_label_follows_each_song_as_it_starts() {
+        let mut app = demo();
+        assert_eq!(app.stream, Some((crate::pandora::AudioFormat::Mp3, 192)), "the first demo song");
+        // A song in another format changes it, without touching the setting.
+        let mut next = app.queue.front().cloned().expect("a song is queued");
+        next.audio_format = crate::pandora::AudioFormat::Aac;
+        next.bitrate = 64;
+        app.queue.clear();
+        app.queue.push_back(next);
+        app.advance();
+        assert_eq!(app.stream, Some((crate::pandora::AudioFormat::Aac, 64)), "the song now playing");
+        assert_eq!(app.config.pandora.audio_quality, "high", "the setting is not what is shown");
+    }
+
+    /// Tests make non-demo apps that play songs. Without the guard in
+    /// `notify`, each song change put a real notification on the screen.
+    #[test]
+    fn a_test_never_puts_a_notification_on_the_screen() {
+        let mut app = saving_app("no-notify");
+        app.config.ui.notifications = true;
+        assert!(!app.demo, "the case that used to notify");
+        let song = demo().now.clone().expect("a demo song");
+        // The guard is what stops it; the setting alone would not.
+        app.notify(&song);
+    }
+
+    #[test]
+    fn the_quality_row_says_what_is_really_playing() {
+        let mut app = demo();
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.settings_cursor = Setting::at(Setting::Quality);
+
+        // A demo song is playing, so the row already says what it is.
+        assert!(app.stream.is_some(), "a song is playing");
+        assert!(
+            app.setting_value(Setting::Quality).ends_with("· playing MP3 192 kbps"),
+            "{}",
+            app.setting_value(Setting::Quality)
+        );
+
+        app.stream = None;
+
+        // Before a login, the choice alone.
+        app.hifi = None;
+        assert_eq!(app.setting_value(Setting::Quality), "high (MP3 192 kbps if your plan has it)");
+
+        // A free plan has no choice: the row is greyed out and says what
+        // Pandora sends, whatever the setting says.
+        app.hifi = Some(false);
+        assert!(app.quality_greyed());
+        assert_eq!(app.setting_value(Setting::Quality), "your plan: 64 kbps HE-AAC");
+        app.config.pandora.audio_quality = "standard".into();
+        assert_eq!(app.setting_value(Setting::Quality), "your plan: 64 kbps HE-AAC", "the setting is not shown");
+        // Once a song arrives, its real bitrate.
+        app.stream = Some((crate::pandora::AudioFormat::Aac, 64));
+        assert_eq!(app.setting_value(Setting::Quality), "your plan: AAC 64 kbps");
+
+        // Plus / Premium: the choice, and what is playing.
+        app.hifi = Some(true);
+        assert!(!app.quality_greyed());
+        app.config.pandora.audio_quality = "high".into();
+        assert_eq!(app.setting_value(Setting::Quality), "high (MP3 192 kbps) · playing AAC 64 kbps");
+        app.config.pandora.audio_quality = "standard".into();
+        assert_eq!(app.setting_value(Setting::Quality), "standard (MP3 128 kbps) · playing AAC 64 kbps");
+        app.stream = Some((crate::pandora::AudioFormat::Mp3, 192));
+        assert_eq!(app.setting_value(Setting::Quality), "standard (MP3 128 kbps) · playing MP3 192 kbps");
+        // A stream that did not say its bitrate adds nothing.
+        app.stream = Some((crate::pandora::AudioFormat::Mp3, 0));
+        assert_eq!(app.setting_value(Setting::Quality), "standard (MP3 128 kbps)");
+    }
+
+    #[test]
+    fn a_free_plan_cannot_toggle_the_quality_and_says_why() {
+        let mut app = saving_app("quality-greyed");
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.settings_cursor = Setting::at(Setting::Quality);
+        // Not logged in yet: the plan is unknown, so the toggle works.
+        app.hifi = None;
+        assert!(!app.quality_greyed());
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.config.pandora.audio_quality, "standard", "it toggled");
+        // A free plan: Enter explains instead of toggling.
+        app.hifi = Some(false);
+        assert!(app.quality_greyed());
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.config.pandora.audio_quality, "standard", "nothing changed");
+        assert_eq!(app.status, "Audio quality is Pandora's on a free plan: 64 kbps HE-AAC");
+        // Plus / Premium: it toggles again.
+        app.hifi = Some(true);
+        assert!(!app.quality_greyed());
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.config.pandora.audio_quality, "high");
+        // Logging out forgets the plan, so the next account is not greyed.
+        app.log_out();
+        assert_eq!(app.hifi, None);
+        assert!(!app.quality_greyed());
+        assert_eq!(app.stream, None);
+    }
+
+    #[test]
+    fn the_details_popup_names_the_bitrate_it_was_told() {
+        let song = demo().now.clone().unwrap();
+        let details = Details {
+            station_name: "Chill".into(),
+            station_id: song.station_id.clone(),
+            of: DetailsOf::Song(Box::new(crate::pandora::Song {
+                bitrate: 64,
+                audio_format: crate::pandora::AudioFormat::Aac,
+                ..song
+            })),
+            from_pandora: None,
+            why: false,
+        };
+        let rows = details.rows();
+        assert!(rows.iter().any(|(k, v)| k == "Audio" && v == "AAC 64 kbps"), "{rows:?}");
+    }
+
+    #[test]
     fn what_a_setting_says_about_where_it_is_saved_is_true() {
         for (_, setting) in Setting::ALL {
             // The account and the volume have their own flows (below).
@@ -5544,6 +6236,10 @@ mod tests {
     fn theme_select_actions_reach_the_app() {
         let mut app = demo();
         app.themes_dir = Some(crate::config::temp_dir("theme-actions"));
+        // A concrete theme turns Auto Mode off, so Theme Select is not greyed
+        // out on a machine that looks like Omarchy (where the default follows
+        // the system theme and Enter would only explain that).
+        app.config.ui.set_theme("kanagawa");
         app.focus = Focus::Content;
         app.view = View::Settings;
         app.settings_cursor = Setting::at(Setting::ThemeSelect);
@@ -6052,7 +6748,7 @@ mod tests {
     }
 
     #[test]
-    fn shift_g_opens_genres_view_all_caches_it_and_enter_plays_synthwave() {
+    fn shift_g_opens_genres_and_a_shelf_reaches_a_station() {
         let mut app = demo();
         app.settle(Duration::from_millis(300));
         app.on_key(shift('G'));
@@ -6068,32 +6764,148 @@ mod tests {
             .iter()
             .filter(|r| matches!(r, BrowseRow::Item(i) if i.pandora_id.starts_with("BR:50:")))
             .count();
-        assert_eq!(shelves, 27, "genres View-all is the BR:50 rows, not the one-row teaser");
-        // A BR:50 row does not start a station.
-        while !matches!(app.browse_rows().get(app.browse_index()), Some(BrowseRow::Item(i)) if i.pandora_id.starts_with("BR:50:"))
-        {
-            app.on_key(key(KeyCode::Char('j')));
-        }
-        let before = app.stations.len();
+        assert_eq!(shelves, 4, "named shelves plus one with no page");
+        app.browse_cursor = 0;
         app.on_key(key(KeyCode::Enter));
-        assert_eq!(app.stations.len(), before);
+        assert!(app.status.contains("heading"), "{}", app.status);
+        move_browse_to(&mut app, "Pop");
+        let cursor = app.browse_cursor;
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.browse, BrowseState::Loading);
+        app.settle(Duration::from_millis(400));
+        assert_eq!(app.browse_path.as_deref(), Some("/browse/music/genres/pop"));
+        assert!(app.browse_rows().iter().any(|r| matches!(r, BrowseRow::Item(i) if i.name == "Today's Hits")));
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.browse_path.as_deref(), Some("/browse/music/genres"));
+        assert_eq!(app.browse_cursor, cursor, "Esc returns to the shelf that opened");
+        assert_eq!(app.focus, Focus::Content);
+        app.on_key(key(KeyCode::Enter));
+        app.settle(Duration::from_millis(400));
+        let before = app.stations.len();
+        move_browse_to(&mut app, "Indie Pop");
+        app.on_key(key(KeyCode::Enter));
+        app.settle(Duration::from_millis(400));
+        assert_eq!(app.stations.len(), before + 1);
+        app.on_key(shift('G'));
+        app.settle(Duration::from_millis(200));
+        move_browse_to(&mut app, "No page");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.stations.len(), before + 1);
         assert!(app.status.contains("can't start a station"), "{}", app.status);
-        // Leaving and coming back uses the cache (no second View-all fetch).
         app.on_key(shift('S'));
         let loaded = app.browse.clone();
         app.on_key(shift('G'));
         assert_eq!(app.browse, loaded);
         assert!(app.backend.replies.recv_timeout(Duration::from_millis(100)).is_err(), "view-all is cached");
-        // Enter on Synthwave (the one playable genre on the demo page).
-        while !matches!(app.browse_rows().get(app.browse_index()), Some(BrowseRow::Item(i)) if i.name == "Synthwave") {
-            app.on_key(key(KeyCode::Char('j')));
+    }
+
+    #[test]
+    fn featured_playlists_and_podcasts_drill_down_in_browse() {
+        let mut app = demo();
+        for (section, shelf, list_path, detail_path, leaf) in [
+            (
+                "Featured Playlists",
+                "The Drop",
+                "/browse/music/featured-playlists",
+                "/browse/music/featured-playlists/the-drop",
+                "Midnight City",
+            ),
+            (
+                "Recommended Podcasts",
+                "Crime Junkie",
+                "/browse/podcasts",
+                "/browse/podcasts/crime-junkie",
+                "Latest episode",
+            ),
+        ] {
+            app.show_browse_section(section);
+            app.settle(Duration::from_millis(400));
+            assert_eq!(app.browse_path.as_deref(), Some(list_path));
+            move_browse_to(&mut app, shelf);
+            app.on_key(key(KeyCode::Enter));
+            app.settle(Duration::from_millis(400));
+            assert_eq!(app.browse_path.as_deref(), Some(detail_path));
+            move_browse_to(&mut app, leaf);
+            app.on_key(key(KeyCode::Enter));
+            assert!(app.status.contains("browse-only") || app.status.contains("can't"), "{section}: {}", app.status);
+            app.on_key(key(KeyCode::Esc));
+            assert_eq!(app.browse_path.as_deref(), Some(list_path));
         }
+    }
+
+    #[test]
+    fn decades_and_moods_open_the_same_way_and_a_failed_page_returns() {
+        let mut app = demo();
+        for (section, shelf, path, station) in [
+            ("Decades", "2010s", "/browse/music/decades/2010s", "Classic Rock"),
+            ("Moods and activities", "Happy", "/browse/music/activities/happy", "Indie Pop"),
+        ] {
+            app.show_browse_section(section);
+            app.settle(Duration::from_millis(400));
+            assert_eq!(
+                app.browse_path.as_deref(),
+                Some(match section {
+                    "Decades" => "/browse/music/decades",
+                    _ => "/browse/music/activities",
+                })
+            );
+            move_browse_to(&mut app, shelf);
+            app.on_key(key(KeyCode::Enter));
+            app.settle(Duration::from_millis(400));
+            assert_eq!(app.browse_path.as_deref(), Some(path));
+            app.on_key(key(KeyCode::Esc));
+            assert!(
+                app.browse_path
+                    .as_deref()
+                    .is_some_and(|p| p == "/browse/music/decades" || p == "/browse/music/activities")
+            );
+            app.on_key(key(KeyCode::Enter));
+            app.settle(Duration::from_millis(400));
+            move_browse_to(&mut app, station);
+            let before = app.stations.len();
+            app.on_key(key(KeyCode::Enter));
+            app.settle(Duration::from_millis(400));
+            assert_eq!(app.stations.len(), before + 1);
+            app.show_browse_section(section);
+            app.settle(Duration::from_millis(200));
+            move_browse_to(&mut app, "No page");
+            app.on_key(key(KeyCode::Enter));
+            assert!(app.status.contains("can't start a station"), "{}", app.status);
+        }
+        app.show_browse_section("Browse Genres");
+        app.settle(Duration::from_millis(400));
+        move_browse_to(&mut app, "Pop");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.browse, BrowseState::Loading);
+        app.on_reply(Reply::BrowseFailed { path: Some("/browse/music/genres/pop".into()), message: "nope".into() });
+        assert_eq!(app.browse_path.as_deref(), Some("/browse/music/genres"));
+        assert!(app.status.contains("didn't load") && app.status.contains("nope"), "{}", app.status);
+        if let BrowseState::Loaded(sections) = &mut app.browse {
+            sections[0].items.push(BrowseItem {
+                name: "Empty".into(),
+                detail: String::new(),
+                pandora_id: "BR:50:empty".into(),
+                station_factory: String::new(),
+                link: Some("/browse/music/genres/empty".into()),
+            });
+        }
+        move_browse_to(&mut app, "Empty");
         app.on_key(key(KeyCode::Enter));
         app.settle(Duration::from_millis(400));
-        assert_eq!(app.stations.len(), before + 1);
-        let at = usize::from(app.stations[0].is_shuffle);
-        assert_eq!(app.stations[at].name, "Synthwave");
-        assert_eq!(app.current_station.as_deref(), Some(app.stations[at].id.as_str()));
+        assert_eq!(app.browse_path.as_deref(), Some("/browse/music/genres/empty"));
+        assert_eq!(browse_item_count(&app), 0);
+        assert_eq!(browse_headers(&app), ["Empty"]);
+    }
+
+    fn move_browse_to(app: &mut App, name: &str) {
+        let rows = app.browse_rows().len();
+        for _ in 0..rows {
+            if matches!(app.browse_rows().get(app.browse_index()), Some(BrowseRow::Item(i)) if i.name == name) {
+                return;
+            }
+            app.on_key(key(KeyCode::Char('j')));
+        }
+        panic!("no browse row {name}");
     }
 
     #[test]
@@ -6206,7 +7018,9 @@ mod tests {
         let app = demo();
         let items = app.menu_items();
         let at = items.iter().position(|m| *m == MenuItem::Stations).unwrap();
-        assert_eq!(items[at + 1], MenuItem::BrowsePin(0), "section pins follow My Stations");
+        assert_eq!(items[at + 1], MenuItem::RecentlyPlayed, "Recently Played sits above Pinned");
+        assert_eq!(items[at + 2], MenuItem::Pinned, "Pinned stays above the Browse sections");
+        assert_eq!(items[at + 3], MenuItem::BrowsePin(0), "section pins follow MY COLLECTION");
         assert_eq!(
             items.iter().filter(|m| matches!(m, MenuItem::BrowsePin(_))).count(),
             config::BROWSE_SECTIONS.len(),

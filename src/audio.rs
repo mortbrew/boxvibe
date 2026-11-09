@@ -1,15 +1,23 @@
-//! Playback: rodio (cpal → ALSA/PipeWire) with symphonia decoding the MP3
-//! and AAC/MP4 files Pandora serves, no ffmpeg. Without a sound device
-//! (or in `--demo`) a silent clock stands in, so the interface still works.
+//! Playback: rodio (cpal → ALSA/PipeWire), with symphonia decoding MP3 and
+//! [`syom`] decoding AAC, no ffmpeg. Without a sound device (or in `--demo`)
+//! a silent clock stands in, so the interface still works.
+//!
+//! AAC goes to syom rather than symphonia because Pandora's free tier serves
+//! HE-AAC: a 22.05 kHz AAC-LC core that SBR doubles to 44.1 kHz, with PS for
+//! stereo. symphonia decodes only the core, so that stream came out at
+//! 22.05 kHz, mono, with no high band — audibly dull next to Pithos, which
+//! uses GStreamer (issue #11). syom applies SBR and PS.
 //!
 //! What reaches the speakers: the decoded song, resampled to the sound
 //! device's rate with a windowed-sinc filter ([`Resampled`]; rodio's own
-//! converter interpolates in straight lines, which adds a gritty edge to
-//! Pandora's 22 kHz AAC), kept inside ±1.0, then scaled by [`level`]: the
-//! volume curve times Pandora's per-song `fileGain`, never above 1.0.
+//! converter interpolates in straight lines, which adds a gritty edge), kept
+//! inside ±1.0, then scaled by [`level`]: the volume curve times Pandora's
+//! per-song `fileGain`, never above 1.0.
 
 use std::io::Cursor;
 use std::time::{Duration, Instant};
+
+use crate::log::log;
 
 /// A clock that can pause: where a song is when nothing makes a sound.
 #[derive(Default)]
@@ -97,11 +105,12 @@ impl Audio {
         self.clock = Clock::default();
         self.clock.resume();
         let (Some(device), Some(data)) = (&self.device, data) else { return Ok(()) };
-        let decoder = decoder(data).map_err(|e| format!("can't decode this song: {e}"))?;
+        let decoder = decoder(data)?;
         let player = rodio::Player::connect_new(device.mixer());
         player.set_volume(self.level());
         match self.rate {
             Some(rate) if rate != rodio::Source::sample_rate(&decoder).get() => {
+                log!("start: resampling to the device's {rate} Hz");
                 player.append(Resampled::new(decoder, rate))
             }
             _ => player.append(Clamped(decoder)),
@@ -206,22 +215,139 @@ impl Audio {
     }
 }
 
-/// A decoder for a whole downloaded song. symphonia only recognises MP4
-/// (Pandora's `aacplus`) when told the length and that it can seek, so the
-/// container is named from the file's first bytes.
-pub fn decoder(data: Vec<u8>) -> Result<rodio::Decoder<Cursor<Vec<u8>>>, rodio::decoder::DecoderError> {
-    let len = data.len() as u64;
-    let mime = match data.get(..8) {
-        Some([_, _, _, _, b'f', b't', b'y', b'p']) => "audio/mp4",
-        Some([0xff, b, ..]) if b & 0xf6 == 0xf0 => "audio/aac",
-        _ => "audio/mpeg",
+/// A decoder for a whole downloaded song.
+///
+/// MP3 goes through symphonia. AAC does not: symphonia decodes only the
+/// AAC-LC core of Pandora's `aacplus`, so an HE-AAC stream (a 22.05 kHz core
+/// with SBR to 44.1 kHz) comes out at half the rate with no high band, and
+/// mono. [`syom`] applies SBR and PS, so the same stream comes out at its
+/// real rate and channel count.
+pub fn decoder(data: Vec<u8>) -> Result<Box<dyn rodio::Source + Send>, String> {
+    // Which decoder gets it is decided by the container, not by trying one
+    // and reading its error: syom reports an MP3 behind an ID3 tag as
+    // `Malformed(AdtsLayer)`, not `NotAac`, so a fallback on the error alone
+    // sent every MP3 to syom and skipped it.
+    let tag = id3_len(&data);
+    let is_aac = is_aac(&data);
+    log!(
+        "decode: {} bytes, id3 {tag}, {}, head {}",
+        data.len(),
+        if is_aac { "aac" } else { "mp3" },
+        crate::log::head(&data)
+    );
+    let decoded = if is_aac {
+        // A container that looks like AAC but that syom cannot read is still
+        // worth trying as MP3: a wrong guess must not cost a song.
+        match aac(&data) {
+            Ok(source) => Ok(source),
+            Err(e) => {
+                log!("decode: syom could not read it ({e}), trying symphonia");
+                mp3(data)
+            }
+        }
+    } else {
+        mp3(data)
     };
+    match &decoded {
+        Ok(source) => {
+            use rodio::Source;
+            log!(
+                "decode: ok, {} Hz, {} ch, {:?}",
+                source.sample_rate().get(),
+                source.channels().get(),
+                source.total_duration()
+            );
+        }
+        Err(e) => log!("decode: failed: {e}"),
+    }
+    decoded
+}
+
+/// Whether `data` is AAC (ADTS, LATM/LOAS or MP4) rather than MP3.
+///
+/// Looks past an ID3v2 tag, which Pandora's MP3s carry and which hides the
+/// first frame from a plain header check.
+fn is_aac(data: &[u8]) -> bool {
+    let body = &data[id3_len(data)..];
+    match body {
+        // ADTS: 12 sync bits, then a layer that must be 0.
+        [0xff, b, ..] if b & 0xf6 == 0xf0 => true,
+        // LATM/LOAS: 11 sync bits.
+        [0x56, b, ..] if b & 0xe0 == 0xe0 => true,
+        _ => is_mp4(body),
+    }
+}
+
+/// Whether `data` is an MP4/M4A file: a `ftyp` box, which is not always the
+/// first one (a `free`, `skip` or `wide` box may come before it).
+fn is_mp4(data: &[u8]) -> bool {
+    let mut at = 0usize;
+    // A handful of boxes is plenty: `ftyp` is at or near the start.
+    for _ in 0..8 {
+        let Some(header) = data.get(at..at + 8) else { return false };
+        let size = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+        let kind = &header[4..8];
+        if kind == b"ftyp" {
+            return true;
+        }
+        // A box that is not one of the leading ones means this is not MP4.
+        if !matches!(kind, b"free" | b"skip" | b"wide" | b"mdat" | b"moov") {
+            return false;
+        }
+        // 0 means "to the end of the file", 1 means a 64-bit size follows.
+        if size < 8 {
+            return false;
+        }
+        at += size;
+    }
+    false
+}
+
+/// How many bytes an ID3v2 tag at the start of `data` takes up (0 if none).
+///
+/// The size is four 7-bit bytes after a 10-byte header, and a footer adds 10
+/// more when its flag is set.
+fn id3_len(data: &[u8]) -> usize {
+    let Some([b'I', b'D', b'3', _, _, flags, s0, s1, s2, s3, ..]) = data.get(..10) else { return 0 };
+    let size = (u32::from(*s0 & 0x7f) << 21)
+        | (u32::from(*s1 & 0x7f) << 14)
+        | (u32::from(*s2 & 0x7f) << 7)
+        | u32::from(*s3 & 0x7f);
+    let footer = if flags & 0x10 != 0 { 10 } else { 0 };
+    (10 + size as usize + footer).min(data.len())
+}
+
+/// AAC (ADTS or MP4) through syom, which decodes HE-AAC properly.
+fn aac(data: &[u8]) -> Result<Box<dyn rodio::Source + Send>, syom::AacError> {
+    let decoded = syom::decode_with(data, &syom::DecodeOptions::audio())?;
+    let channels = decoded.channels.len();
+    if channels == 0 || decoded.sample_rate == 0 {
+        return Err(syom::AacError::NotAac);
+    }
+    // syom hands back one plane per channel; rodio wants them interleaved.
+    let frames = decoded.channels[0].len();
+    let mut samples = Vec::with_capacity(frames * channels);
+    for i in 0..frames {
+        for plane in &decoded.channels {
+            samples.push(plane.get(i).copied().unwrap_or(0.0));
+        }
+    }
+    let channels = rodio::ChannelCount::new(channels as u16).ok_or(syom::AacError::NotAac)?;
+    let rate = rodio::SampleRate::new(decoded.sample_rate).ok_or(syom::AacError::NotAac)?;
+    Ok(Box::new(rodio::buffer::SamplesBuffer::new(channels, rate, samples)))
+}
+
+/// MP3 through symphonia, which handles it well.
+fn mp3(data: Vec<u8>) -> Result<Box<dyn rodio::Source + Send>, String> {
+    let len = data.len() as u64;
     rodio::Decoder::builder()
         .with_data(Cursor::new(data))
         .with_byte_len(len)
         .with_seekable(true)
-        .with_mime_type(mime)
+        .with_mime_type("audio/mpeg")
         .build()
+        .map(|d| Box::new(d) as Box<dyn rodio::Source + Send>)
+        .map_err(|e| format!("can't decode this song: {e}"))
 }
 
 /// 0–100 to an amplitude, on a curve so the low steps are still audible.
@@ -446,6 +572,92 @@ mod tests {
     #[test]
     fn junk_is_not_a_song() {
         assert!(decoder(b"not audio at all, just text".to_vec()).is_err());
+        // And it says so in terms of the song, not with syom's "Unsupported
+        // audio format" from the AAC attempt that was never going to work.
+        let Err(why) = decoder(b"<html>not a song</html>".to_vec()) else {
+            panic!("an HTML error page decoded as audio");
+        };
+        assert!(why.starts_with("can't decode this song: "), "{why}");
+        assert!(!why.contains("Unsupported audio format"), "{why}");
+    }
+
+    /// An MP3 frame: 128 kbps, 44.1 kHz, stereo, 417 bytes of silence.
+    fn mp3_frame() -> Vec<u8> {
+        let mut f = vec![0xff, 0xfb, 0x90, 0x64];
+        f.resize(417, 0);
+        f
+    }
+
+    /// An ID3v2.4 tag of `size` bytes, as Pandora's MP3s carry.
+    fn id3(size: usize) -> Vec<u8> {
+        let mut t = b"ID3\x04\x00\x00".to_vec();
+        t.extend([(size >> 21) as u8 & 0x7f, (size >> 14) as u8 & 0x7f, (size >> 7) as u8 & 0x7f, size as u8 & 0x7f]);
+        t.resize(10 + size, 0);
+        t
+    }
+
+    /// The bug behind the skipping: an MP3 behind an ID3 tag is not AAC, but
+    /// syom called it `Malformed(AdtsLayer)` rather than `NotAac`, so the
+    /// fallback never ran and every MP3 was skipped instead of played.
+    #[test]
+    fn an_mp3_behind_an_id3_tag_is_not_taken_for_aac() {
+        let mut tagged = id3(64);
+        tagged.extend(mp3_frame());
+        assert!(!super::is_aac(&tagged), "an MP3 with an ID3 tag is not AAC");
+        assert!(super::decoder(tagged).is_ok(), "and it decodes as MP3");
+    }
+
+    #[test]
+    fn the_container_is_recognised_past_an_id3_tag() {
+        // ADTS, with and without a tag in front.
+        let adts = [0xff, 0xf1, 0x50, 0x80];
+        assert!(super::is_aac(&adts));
+        let mut tagged = id3(32);
+        tagged.extend(adts);
+        assert!(super::is_aac(&tagged), "the tag is skipped, not the frame");
+        // LATM/LOAS and MP4.
+        assert!(super::is_aac(&[0x56, 0xe0, 0x00]));
+        assert!(super::is_aac(b"\0\0\0\x20ftypM4A "));
+        assert!(!super::is_aac(&mp3_frame()));
+        assert!(!super::is_aac(b""));
+        assert!(!super::is_aac(b"ID3"));
+    }
+
+    /// A `free` box before `ftyp` is legal, and ffmpeg writes one: such a
+    /// file was taken for MP3 and skipped before this was handled.
+    #[test]
+    fn an_mp4_is_recognised_behind_a_leading_free_box() {
+        let mut data = Vec::new();
+        data.extend(8u32.to_be_bytes());
+        data.extend(b"free");
+        data.extend(0x20u32.to_be_bytes());
+        data.extend(b"ftypM4A ");
+        assert!(super::is_aac(&data), "ftyp is not always the first box");
+        // A `wide` box too, and a 64-bit `mdat` size is not mistaken for one.
+        let mut wide = Vec::new();
+        wide.extend(8u32.to_be_bytes());
+        wide.extend(b"wide");
+        wide.extend(0x20u32.to_be_bytes());
+        wide.extend(b"ftypM4A ");
+        assert!(super::is_aac(&wide));
+        // A box that is not one of the leading ones is not MP4.
+        let mut other = Vec::new();
+        other.extend(8u32.to_be_bytes());
+        other.extend(b"junk");
+        other.extend(0x20u32.to_be_bytes());
+        other.extend(b"ftypM4A ");
+        assert!(!super::is_aac(&other));
+    }
+
+    #[test]
+    fn an_id3_tag_is_measured_by_its_own_size() {
+        assert_eq!(super::id3_len(b"not a tag at all"), 0);
+        assert_eq!(super::id3_len(&id3(0)), 10);
+        assert_eq!(super::id3_len(&id3(100)), 110);
+        // A tag claiming more than the file holds stops at the end.
+        let mut short = id3(100);
+        short.truncate(40);
+        assert_eq!(super::id3_len(&short), 40);
     }
 
     #[test]
@@ -559,5 +771,40 @@ mod tests {
             eprintln!("{file}: {rate:?} Hz, {channels:?} ch, {secs:.1} s, peak {peak:.3}, {over} samples over 1.0");
             assert!(n > 0, "{file} decodes to samples");
         }
+    }
+}
+
+#[cfg(test)]
+mod he_aac {
+    use rodio::Source;
+
+    /// A 64 kbps HE-AAC stream, the shape Pandora's free tier serves: a
+    /// 22.05 kHz core that SBR doubles to 44.1 kHz, in stereo.
+    fn he_aac() -> Vec<u8> {
+        let pcm: Vec<f32> = (0..44_100 * 2).map(|i| 0.3 * (i as f32 * 0.14).sin()).collect();
+        let opts = syom::EncodeOptions::adts().with_bitrate_bps(64_000).with_he(true);
+        syom::encode_with(&[&pcm[..]], 44_100, &opts).unwrap()
+    }
+
+    /// The bug behind issue #11: symphonia decodes only the AAC-LC core, so
+    /// this stream came out at 22.05 kHz, mono, with no high band. syom
+    /// applies SBR and PS, so it comes out at its real rate and channels.
+    #[test]
+    fn he_aac_keeps_its_rate_and_channels() {
+        let d = super::decoder(he_aac()).unwrap();
+        assert_eq!(d.sample_rate().get(), 44_100, "SBR applied, not the 22.05 kHz core");
+        assert_eq!(d.channels().get(), 2, "stereo kept, not mixed to mono");
+        let frames = d.count() / 2;
+        assert!((87_000..=89_000).contains(&frames), "{frames} frames for two seconds");
+    }
+
+    /// AAC-LC still decodes, and still through the same entry point.
+    #[test]
+    fn aac_lc_still_decodes() {
+        let pcm: Vec<f32> = (0..44_100).map(|i| 0.3 * (i as f32 * 0.14).sin()).collect();
+        let lc = syom::encode_with(&[&pcm[..]], 44_100, &syom::EncodeOptions::adts()).unwrap();
+        let d = super::decoder(lc).unwrap();
+        assert_eq!(d.sample_rate().get(), 44_100);
+        assert!(d.count() > 40_000);
     }
 }

@@ -1,0 +1,6 @@
+# Tests write config files, art logs and theme dirs into std::env::temp_dir().
+# On a machine where /tmp is a small tmpfs (or a sandbox redirects it), that
+# fills up and unrelated tests fail with "Disk quota exceeded". Keep them in
+# target/, which cargo clean removes.
+[env]
+TMPDIR = { value = "target/tmp", relative = true, force = true }

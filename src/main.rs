@@ -12,6 +12,7 @@ mod desktop;
 mod icons;
 mod input;
 mod keychain;
+mod log;
 mod mpris;
 mod pandora;
 mod pinned;

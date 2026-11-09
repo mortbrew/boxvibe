@@ -49,6 +49,24 @@ fn track(title: &str, kind: &str) -> Value {
 }
 
 #[test]
+fn the_bitrate_pandora_reports_is_kept() {
+    // What the free tier really sends: 64 kbps HE-AAC, whatever was asked for.
+    let mut free = track("Free", "Track");
+    free["audioEncoding"] = json!("aacplus");
+    free["bitrate"] = json!(64);
+    let s = parse_track(&free, "st").unwrap();
+    assert_eq!((s.audio_format, s.bitrate), (AudioFormat::Aac, 64));
+
+    // A number or text, as Pandora sends both.
+    let mut text = track("Text", "Track");
+    text["bitrate"] = json!("192");
+    assert_eq!(parse_track(&text, "st").unwrap().bitrate, 192);
+
+    // Saying nothing is 0, not a guess.
+    assert_eq!(parse_track(&track("Quiet", "Track"), "st").unwrap().bitrate, 0);
+}
+
+#[test]
 fn fragment_tracks_parse_and_non_songs_are_dropped() {
     let s = parse_track(&track("Slow Hands", "Track"), "fallback").unwrap();
     assert_eq!((s.title.as_str(), s.album.as_str(), s.length), ("Slow Hands", "Slow Hands (Single)", 188));
@@ -288,6 +306,50 @@ fn later_fragments_are_not_station_starts_and_plain_plans_get_mp3() {
     let f: Vec<&Seen> = seen.iter().filter(|s| s.path.ends_with("getFragment")).collect();
     assert_eq!((f[0].body["isStationStart"].clone(), f[1].body["isStationStart"].clone()), (json!(true), json!(false)));
     assert_eq!(f[0].body["audioFormat"], "mp3");
+    assert_eq!(
+        f[0].body["supportedFormats"],
+        json!(["mp3-hifi", "mp3", "aacplus"]),
+        "the formats we can play, best first, as the site sends them"
+    );
+}
+
+#[test]
+fn changing_the_quality_forgets_an_earlier_refusal() {
+    let (base, seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
+        "/api/v1/auth/login" => (200, json!({ "authToken": "t", "config": { "flags": [] } }).to_string()),
+        // The first MP3 ask is refused, so the client falls back to aacplus.
+        "/api/v1/playlist/getFragment" if r.body["audioFormat"] == "mp3" => {
+            (400, r#"{"errorString":"INVALID_REQUEST","errorCode":0}"#.into())
+        }
+        _ => (200, json!({ "tracks": [] }).to_string()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    c.fragment("st").unwrap();
+    c.fragment("st").unwrap();
+    {
+        let seen = seen.lock().unwrap();
+        let formats: Vec<&str> = seen
+            .iter()
+            .filter(|s| s.path.ends_with("getFragment"))
+            .map(|s| s.body["audioFormat"].as_str().unwrap())
+            .collect();
+        assert_eq!(formats, ["mp3", "aacplus", "aacplus"], "the refusal sticks for this quality");
+    }
+    // A new choice is tried rather than assumed to fail the same way.
+    c.set_quality(Quality::Standard);
+    c.fragment("st").unwrap();
+    let seen = seen.lock().unwrap();
+    let formats: Vec<&str> = seen
+        .iter()
+        .filter(|s| s.path.ends_with("getFragment"))
+        .map(|s| s.body["audioFormat"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        formats,
+        ["mp3", "aacplus", "aacplus", "mp3", "aacplus"],
+        "the new quality asks for MP3 again before falling back"
+    );
 }
 
 #[test]

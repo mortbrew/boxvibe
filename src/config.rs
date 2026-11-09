@@ -137,6 +137,7 @@ pub struct PandoraConfig {
     pub password: Secret,
     /// `high` (192 kbps MP3 where the plan has it, else 128) | `standard`
     /// (128 kbps MP3). Old `low` / `medium` values read as `standard`.
+    /// A free plan gets 64 kbps HE-AAC whichever is chosen.
     pub audio_quality: String,
     /// The User-Agent sent to pandora.com; empty is boxvibe's default (a
     /// desktop Firefox). Only for when Pandora's bot check starts refusing it.

@@ -244,6 +244,9 @@ pub struct Song {
     /// Signed CDN link, valid for a limited time.
     pub audio_url: String,
     pub audio_format: AudioFormat,
+    /// `bitrate`, kbps as Pandora reports it (0 when it says nothing). What
+    /// the stream really is, which is not always what was asked for.
+    pub bitrate: u32,
     /// The album cover Now Playing draws (about 500 px: [`art_for_box`]).
     pub cover_art_url: String,
     pub detail_url: String,
@@ -808,6 +811,10 @@ pub fn parse_track(v: &Value, station_id: &str) -> Option<Song> {
         } else {
             AudioFormat::Unknown
         },
+        bitrate: v
+            .get("bitrate")
+            .and_then(|b| b.as_u64().or_else(|| b.as_str().and_then(|s| s.trim().parse().ok())))
+            .unwrap_or(0) as u32,
         cover_art_url: art_for_box(v.get("albumArt")),
         detail_url: str_of(v, "songDetailURL"),
         artist_music_id: str_of(v, "artistMusicId"),
@@ -1323,11 +1330,24 @@ impl Client {
             "isStationStart": start,
             "fragmentRequestReason": "Normal",
             "audioFormat": format,
+            // What the site sends alongside `audioFormat`: the formats this
+            // client can play, best first. Pandora answers with the best one
+            // the account may have, which is not always the one asked for.
+            "supportedFormats": ["mp3-hifi", "mp3", "aacplus"],
             "startingAtTrackId": null,
             "onDemandArtistMessageArtistUidHex": null,
             "onDemandArtistMessageIdHex": null,
         });
         self.post("/api/v1/playlist/getFragment", &body)
+    }
+
+    /// The quality to ask fragments for. Changing it forgets an earlier
+    /// refusal, so a new choice is tried rather than assumed to fail too.
+    pub fn set_quality(&mut self, quality: Quality) {
+        if self.quality != quality {
+            self.aac_only = false;
+        }
+        self.quality = quality;
     }
 
     /// `v1/station/addFeedback`: thumbs up (`positive`) or down.

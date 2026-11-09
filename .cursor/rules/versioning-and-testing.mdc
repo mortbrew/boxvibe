@@ -19,6 +19,18 @@ package, and does not test an installed copy.
 - "Self-update could overwrite an installed build" is not a concern here; source builds under
   `target/` are already dev builds (`update::is_dev_build`, `src/main.rs`).
 
+## Keep builds and test files under `target/`
+
+`/tmp` on this machine is a 7.7 GB tmpfs, and the sandbox points `CARGO_TARGET_DIR` at a
+per-session directory inside it. A debug build is about 4 GB, so a session or two fills `/tmp`
+and unrelated tests start failing with `Disk quota exceeded (os error 122)`.
+
+- Run cargo with `CARGO_TARGET_DIR=$PWD/target` so builds land in the repo, not the tmpfs.
+- `.cargo/config.toml` forces `TMPDIR=target/tmp` for every cargo command, so the config files,
+  art logs and theme dirs the tests write go under `target/` too. Don't remove it; without it
+  the suite leaks a directory per test into `/tmp` and eventually fails the same way.
+- `cargo clean` therefore clears both. Nothing else needs cleaning up.
+
 ## Don't "fix" the version
 
 `dev` carries a higher version than the latest release on purpose, so the version on screen

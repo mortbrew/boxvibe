@@ -555,19 +555,32 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette;
     let color = if app.status.starts_with('⚠') { p.yellow } else { p.fg };
     frame.render_widget(Block::new().bg(p.highlight), area);
-    // The right side (sleep timer, look, account) gets at most half the bar,
-    // and never less than the status.
+    // The right side (sleep timer, look, stream, account) gets at most half
+    // the bar, and never less than the status.
     let room = (area.width / 2).saturating_sub(3) as usize;
     let account = account_label(app, room);
-    let used = |extra: &[String]| -> usize {
-        let parts = extra.iter().map(|s| safe_width(s) + 3).sum::<usize>();
+    let mut sleep = sleep_label(app);
+    let mut looks = look_labels(app);
+    let mut stream = stream_label(app);
+    // What goes when the bar is narrow, first to last: the look labels (from
+    // the last), then the stream, then the timer. The account never goes.
+    let used = |sleep: &Option<String>, looks: &[String], stream: &Option<String>| -> usize {
+        let parts = sleep.iter().chain(looks).chain(stream).map(|s| safe_width(s) + 3).sum::<usize>();
         parts + account.as_ref().map_or(0, |a| safe_width(a))
     };
-    // The look labels go first (from the last) when the bar is narrow, then the timer.
-    let mut extra: Vec<String> = sleep_label(app).into_iter().chain(look_labels(app)).collect();
-    while !extra.is_empty() && used(&extra) > room {
-        extra.pop();
+    while used(&sleep, &looks, &stream) > room {
+        if looks.pop().is_some() {
+            continue;
+        }
+        if stream.take().is_some() {
+            continue;
+        }
+        if sleep.take().is_some() {
+            continue;
+        }
+        break;
     }
+    let extra: Vec<String> = sleep.into_iter().chain(looks).chain(stream).collect();
     let extra_w = extra.iter().map(|s| safe_width(s) + 3).sum::<usize>();
     let want = match &account {
         Some(a) => extra_w + safe_width(a) + 3,
@@ -582,9 +595,10 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
     let mut spans = Vec::new();
-    for (i, label) in extra.iter().enumerate() {
-        // The look labels share the account's colour; the sleep timer stays yellow.
-        let color = if i == 0 && app.sleep.is_some() { p.yellow } else { p.blue };
+    for label in &extra {
+        // The look and stream labels share the account's colour; the sleep
+        // timer stays yellow.
+        let color = if label.starts_with('☾') { p.yellow } else { p.blue };
         spans.push(Span::styled(label.clone(), Style::new().fg(color)));
         spans.push(Span::styled(" · ", Style::new().fg(p.muted)));
     }
@@ -608,6 +622,20 @@ fn sleep_label(app: &App) -> Option<String> {
         crate::app::Sleep::Minutes(..) => app.sleep_left().map(|d| format!("☾ {}", crate::app::clock_text(d))),
         crate::app::Sleep::EndOfSong => Some("☾ end of song".into()),
     }
+}
+
+/// What the song now playing is really streamed as: "AAC 64 kbps", "MP3 192
+/// kbps". Pandora does not always send what was asked for (a free plan gets
+/// HE-AAC whatever `high` says), so this is read from the song, and it changes
+/// with every song that arrives in a different format.
+fn stream_label(app: &App) -> Option<String> {
+    let (format, kbps) = app.stream?;
+    let what = match format {
+        crate::pandora::AudioFormat::Mp3 => "MP3",
+        crate::pandora::AudioFormat::Aac => "AAC",
+        crate::pandora::AudioFormat::Unknown => return None,
+    };
+    Some(if kbps > 0 { format!("{what} {kbps} kbps") } else { what.to_owned() })
 }
 
 /// The look in a few words, in the order they are dropped last to first:
@@ -2107,17 +2135,14 @@ fn draw_settings(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             }
             (Setting::EditFile, _) => Style::new().fg(p.cyan),
             (Setting::ThemeSelect, _) if app.theme_select_greyed() => Style::new().fg(p.muted),
+            (Setting::Quality, _) if app.quality_greyed() => Style::new().fg(p.muted),
             _ => Style::new().fg(p.yellow).bold(),
         };
         items.push(ListItem::new(Line::from(vec![
             Span::raw(format!("   {} ", pad(ic.setting[i], 2))),
             Span::styled(
                 pad(setting.label(), label_w),
-                Style::new().fg(if *setting == Setting::ThemeSelect && app.theme_select_greyed() {
-                    p.muted
-                } else {
-                    p.fg
-                }),
+                Style::new().fg(if app.setting_greyed(*setting) { p.muted } else { p.fg }),
             ),
             Span::styled(value, value_style),
         ])));
@@ -4439,13 +4464,15 @@ mod tests {
         app.status = "hi".into();
         let bar = screen(&app, 200, 36).0[34].clone();
         assert!(
-            bar.trim_end().ends_with("Gruvbox · Art Picture · 8-bit · Tint Duotone · Logged In As: toby@example.com"),
+            bar.trim_end().ends_with(
+                "Gruvbox · Art Picture · 8-bit · Tint Duotone · MP3 192 kbps · Logged In As: toby@example.com"
+            ),
             "{bar}"
         );
         // The look is in the account's colour; the separators stay muted.
         let (lines, buffer) = screen(&app, 200, 36);
         let col = |s: &str| lines[34].chars().take(lines[34].find(s).unwrap()).count() as u16;
-        for label in ["Gruvbox", "Art Picture", "8-bit", "Tint Duotone", "Logged In As"] {
+        for label in ["Gruvbox", "Art Picture", "8-bit", "Tint Duotone", "MP3 192 kbps", "Logged In As"] {
             assert_eq!(buffer[(col(label), 34)].fg, app.palette.blue, "{label}");
         }
         assert_eq!(buffer[(col("Gruvbox") + 8, 34)].fg, app.palette.muted);
@@ -4459,6 +4486,69 @@ mod tests {
         assert!(bar.contains("☾ 1") && !bar.contains("Gruvbox") && bar.contains("toby@example.com"), "{bar}");
         app.sleep = Some(crate::app::Sleep::EndOfSong);
         assert!(screen(&app, 200, 36).0[34].contains("☾ end of song"));
+    }
+
+    #[test]
+    fn a_free_plans_quality_row_is_greyed_out_like_a_greyed_theme_select() {
+        let mut app = demo();
+        app.config.ui.icons = crate::config::IconSet::Unicode;
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        // Off the row: a selected row is drawn in the selection colours.
+        app.settings_cursor = Setting::at(Setting::Volume);
+        let row = |app: &App| {
+            let (lines, buffer) = screen(app, 120, 40);
+            let y = lines.iter().position(|l| l.contains("Audio quality")).expect("the row") as u16;
+            // Find the label's column by its cells: the icon before it is
+            // double-width, so a char index would land in the wrong place.
+            let x = (0..120u16)
+                .find(|&x| (0..13).map(|i| buffer[(x + i, y)].symbol()).collect::<String>() == "Audio quality")
+                .expect("the label");
+            (lines[y as usize].clone(), buffer[(x, y)].fg)
+        };
+        // Plus / Premium: the label is the normal text colour.
+        app.hifi = Some(true);
+        let (line, fg) = row(&app);
+        assert_eq!(fg, app.palette.fg, "{line}");
+        // A free plan: greyed, like Theme Select under Auto Mode.
+        app.hifi = Some(false);
+        let (line, fg) = row(&app);
+        assert_eq!(fg, app.palette.muted, "{line}");
+        assert!(line.contains("your plan: 64 kbps HE-AAC"), "{line}");
+        // Not logged in: the plan is unknown, so it stays usable.
+        app.hifi = None;
+        assert_eq!(row(&app).1, app.palette.fg);
+    }
+
+    #[test]
+    fn the_status_bar_names_the_stream_left_of_the_account_and_follows_the_song() {
+        let mut app = demo();
+        app.config.ui.icons = crate::config::IconSet::Unicode;
+        app.config.pandora.username = "toby@example.com".into();
+        app.session = Session::LoggedIn;
+        app.status = "hi".into();
+        // The demo songs are 192 kbps MP3.
+        let bar = screen(&app, 200, 36).0[34].clone();
+        assert!(bar.trim_end().ends_with("MP3 192 kbps · Logged In As: toby@example.com"), "{bar}");
+        // A free plan's HE-AAC: the label follows the song, not the setting.
+        app.stream = Some((crate::pandora::AudioFormat::Aac, 64));
+        let bar = screen(&app, 200, 36).0[34].clone();
+        assert!(bar.trim_end().ends_with("AAC 64 kbps · Logged In As: toby@example.com"), "{bar}");
+        // A stream that did not say its bitrate names the format alone.
+        app.stream = Some((crate::pandora::AudioFormat::Mp3, 0));
+        assert!(screen(&app, 200, 36).0[34].contains("· MP3 · Logged In As"));
+        // Nothing known yet, or an unknown format: no label at all.
+        app.stream = Some((crate::pandora::AudioFormat::Unknown, 128));
+        assert!(!screen(&app, 200, 36).0[34].contains("kbps"));
+        app.stream = None;
+        assert!(!screen(&app, 200, 36).0[34].contains("kbps"));
+        // Narrow: the look goes before the stream, which goes before the timer.
+        app.stream = Some((crate::pandora::AudioFormat::Aac, 64));
+        app.sleep = Some(crate::app::Sleep::Minutes(15, std::time::Instant::now()));
+        let bar = screen(&app, 150, 36).0[34].clone();
+        assert!(bar.contains("AAC 64 kbps") && bar.contains("☾ 1") && !bar.contains("Tint"), "{bar}");
+        let bar = screen(&app, 96, 36).0[34].clone();
+        assert!(bar.contains("☾ 1") && bar.contains("toby@example.com") && !bar.contains("kbps"), "{bar}");
     }
 
     #[test]

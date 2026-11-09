@@ -520,7 +520,7 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
 
 fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Quality, user_agent: &str) {
     let mut client = Client::new(user_agent);
-    client.quality = quality;
+    client.set_quality(quality);
     let mut login: Option<(String, String)> = None;
     for request in requests {
         let mut took_over = false;
@@ -674,7 +674,7 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                 Reply::TookOver
             }
             Request::Quality(quality) => {
-                client.quality = quality;
+                client.set_quality(quality);
                 continue;
             }
             Request::Audio { .. } | Request::Art { .. } => continue,

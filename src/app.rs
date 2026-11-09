@@ -275,7 +275,7 @@ impl Setting {
             }
             Self::LogOut => "Stops the music and removes the saved password from your keychain.",
             Self::Quality => {
-                "high is 192 kbps MP3 where your plan has it (Plus, Premium), else 128 kbps; standard is 128. Saved as [playback] audio_quality."
+                "high asks for 192 kbps MP3 where your plan has it (Plus, Premium), else 128 kbps MP3; standard asks for 128. A free plan gets 64 kbps HE-AAC whatever you pick, so this is greyed out there and the row says what is really playing. Saved as [playback] audio_quality."
             }
             Self::Volume => "Also ← and → anywhere. Saved as [playback] volume.",
             Self::Autoplay => {
@@ -712,12 +712,13 @@ impl Details {
                 );
                 add(
                     "Audio",
-                    match s.audio_format {
-                        crate::pandora::AudioFormat::Mp3 => "MP3",
-                        crate::pandora::AudioFormat::Aac => "AAC",
-                        crate::pandora::AudioFormat::Unknown => "",
-                    }
-                    .into(),
+                    match (s.audio_format, s.bitrate) {
+                        (crate::pandora::AudioFormat::Mp3, 0) => "MP3".into(),
+                        (crate::pandora::AudioFormat::Mp3, kbps) => format!("MP3 {kbps} kbps"),
+                        (crate::pandora::AudioFormat::Aac, 0) => "AAC".into(),
+                        (crate::pandora::AudioFormat::Aac, kbps) => format!("AAC {kbps} kbps"),
+                        (crate::pandora::AudioFormat::Unknown, _) => String::new(),
+                    },
                 );
                 if s.gain != 0.0 {
                     add("Loudness fix", format!("{:+.1} dB", s.gain));
@@ -1012,6 +1013,10 @@ pub struct App {
     pub edit_config: bool,
     /// After a login: whether the plan streams 192 kbps MP3.
     pub hifi: Option<bool>,
+    /// What Pandora actually sent for the song now playing: its format and
+    /// bitrate. `None` until a song plays. The plan's flag says what it
+    /// *should* send; this says what it did, which is not always the same.
+    pub stream: Option<(crate::pandora::AudioFormat, u32)>,
     /// Restart Now was pressed: once quit, start the new version.
     pub restart: bool,
     /// Shift+Q asked "Quit boxvibe?": y quits, any other key doesn't (like tubevibe).
@@ -1122,6 +1127,7 @@ impl App {
             self_update: Progress::Idle,
             edit_config: false,
             hifi: None,
+            stream: None,
             restart: false,
             art: crate::art::Art::default(),
             quit: false,
@@ -2212,6 +2218,21 @@ impl App {
         }
         self.sleep_tick();
         if self.now.as_ref().is_some_and(|s| self.audio.finished(s.length)) {
+            if let Some(song) = &self.now {
+                crate::log::log!(
+                    "end: {} — {} after {:?} of {} s ({}), {}",
+                    song.title,
+                    song.artist,
+                    self.audio.position(),
+                    song.length,
+                    if self.audio.has_device() { "device" } else { "silent clock" },
+                    if self.audio.position().as_secs() < u64::from(song.length).saturating_sub(5) {
+                        "SHORT: ended early"
+                    } else {
+                        "played through"
+                    }
+                );
+            }
             if self.sleep == Some(Sleep::EndOfSong) {
                 self.sleep = None;
                 self.sleep_pause_next = true;
@@ -2469,6 +2490,7 @@ impl App {
                 }
                 self.requested.remove(&track_token);
                 if self.buffering.as_deref() == Some(&track_token) {
+                    crate::log::log!("download: failed for {track_token}: {message}");
                     self.buffering = None;
                     self.status = format!("⚠ {message}: skipping");
                     self.advance();
@@ -2729,6 +2751,10 @@ impl App {
         self.audio.stop();
         self.ad = AdPhase::Off;
         self.now = None;
+        self.stream = None;
+        // The next account's plan is not known until it logs in, so Audio
+        // quality must not stay greyed out from this one.
+        self.hifi = None;
         self.queue.clear();
         self.history.clear();
         self.stations.clear();
@@ -2815,6 +2841,9 @@ impl App {
         let token = song.track_token.clone();
         let url = song.audio_url.clone();
         self.notify(&song);
+        // What Pandora really sent for this song, which is not always what was
+        // asked for: a free plan gets 64 kbps HE-AAC whatever `high` says.
+        self.stream = Some((song.audio_format, song.bitrate));
         self.now = Some(song);
         if let Some(data) = self.audio_cache.remove(&token) {
             self.play_now(Some(data));
@@ -2855,6 +2884,15 @@ impl App {
 
     fn play_now(&mut self, data: Option<Vec<u8>>) {
         let data = data.filter(|d| !d.is_empty());
+        if let Some(song) = &self.now {
+            crate::log::log!(
+                "play: {} — {}, Pandora says {} s, {} bytes",
+                song.title,
+                song.artist,
+                song.length,
+                data.as_ref().map_or(0, Vec::len)
+            );
+        }
         match self.audio.start(data, self.now.as_ref().map_or(0.0, |s| s.gain), false) {
             Ok(()) => {
                 // Pandora counts plays (and skips) from this report, like the website.
@@ -2863,6 +2901,7 @@ impl App {
                 }
             }
             Err(e) => {
+                crate::log::log!("play: failed: {e}");
                 self.status = format!("⚠ {e}: skipping");
                 self.advance();
             }
@@ -2870,7 +2909,9 @@ impl App {
     }
 
     fn notify(&self, song: &Song) {
-        if self.demo || !self.config.ui.notifications {
+        // Tests make non-demo apps that play songs: without this they would
+        // put a real notification on the screen for every one.
+        if self.demo || cfg!(test) || !self.config.ui.notifications {
             return;
         }
         let _ = std::process::Command::new("notify-send")
@@ -2928,6 +2969,42 @@ impl App {
         Setting::ALL[self.settings_cursor.min(Setting::ALL.len() - 1)].1
     }
 
+    /// The Audio quality row: the choice, and what Pandora is really sending.
+    /// The plan's flag says what it should send; a free plan gets 64 kbps
+    /// HE-AAC whatever `high` asks for, so the stream is what is shown once
+    /// a song has arrived.
+    fn quality_label(&self) -> String {
+        // A free plan has no choice to show: the row is greyed out, and this
+        // says what Pandora sends rather than what was asked for.
+        if self.quality_greyed() {
+            return match self.stream {
+                Some((crate::pandora::AudioFormat::Aac, kbps)) if kbps > 0 => {
+                    format!("your plan: AAC {kbps} kbps")
+                }
+                _ => "your plan: 64 kbps HE-AAC".into(),
+            };
+        }
+        let choice = Quality::parse(&self.config.pandora.audio_quality);
+        let asked = match (choice, self.hifi) {
+            (Quality::High, Some(true)) => "high (MP3 192 kbps)",
+            (Quality::High, None) => "high (MP3 192 kbps if your plan has it)",
+            (Quality::Standard, _) => "standard (MP3 128 kbps)",
+            // `Some(false)` returned above.
+            (Quality::High, Some(false)) => "high",
+        };
+        match self.stream {
+            Some((format, kbps)) if kbps > 0 => {
+                let what = match format {
+                    crate::pandora::AudioFormat::Mp3 => "MP3",
+                    crate::pandora::AudioFormat::Aac => "AAC",
+                    crate::pandora::AudioFormat::Unknown => "audio",
+                };
+                format!("{asked} · playing {what} {kbps} kbps")
+            }
+            _ => asked.into(),
+        }
+    }
+
     /// The value shown next to a setting.
     pub fn setting_value(&self, setting: Setting) -> String {
         let on = |b: bool| if b { "on" } else { "off" }.to_owned();
@@ -2949,12 +3026,7 @@ impl App {
                 Session::Failed(e) => e.clone(),
             },
             Setting::LogOut => String::new(),
-            Setting::Quality => match (Quality::parse(&self.config.pandora.audio_quality), self.hifi) {
-                (Quality::High, Some(true)) => "high (MP3 192 kbps)".into(),
-                (Quality::High, Some(false)) => "high (your plan: MP3 128 kbps)".into(),
-                (Quality::High, None) => "high (MP3 192 kbps if your plan has it)".into(),
-                (Quality::Standard, _) => "standard (MP3 128 kbps)".into(),
-            },
+            Setting::Quality => self.quality_label(),
             Setting::Volume => format!("{}%", self.config.player.volume),
             Setting::Autoplay => on(self.config.ui.autoplay_last_station),
             Setting::Notify => on(self.config.ui.notifications),
@@ -3012,6 +3084,9 @@ impl App {
             Setting::Password => self.forget_saved_password(true),
             Setting::LogIn => self.log_in(),
             Setting::LogOut => self.log_out(),
+            Setting::Quality if self.quality_greyed() => {
+                self.status = "Audio quality is Pandora's on a free plan: 64 kbps HE-AAC".into();
+            }
             Setting::Quality => {
                 let next = Quality::parse(&self.config.pandora.audio_quality).next();
                 self.config.pandora.audio_quality = next.as_str().into();
@@ -3720,6 +3795,23 @@ impl App {
     /// Theme Select can't be used while Auto Mode follows Omarchy.
     pub fn theme_select_greyed(&self) -> bool {
         self.config.ui.theme_auto_mode == crate::config::ThemeAutoMode::Omarchy
+    }
+
+    /// Audio quality can't be chosen on a free plan: Pandora sends 64 kbps
+    /// HE-AAC whatever is asked for, so `high` and `standard` both request
+    /// `mp3` and the toggle would change nothing. `None` (not logged in yet)
+    /// leaves it usable, since the plan is not known.
+    pub fn quality_greyed(&self) -> bool {
+        self.hifi == Some(false)
+    }
+
+    /// Whether a setting is shown greyed out because it can't be used now.
+    pub fn setting_greyed(&self, setting: Setting) -> bool {
+        match setting {
+            Setting::ThemeSelect => self.theme_select_greyed(),
+            Setting::Quality => self.quality_greyed(),
+            _ => false,
+        }
     }
 
     /// Theme Select = `name` (Auto Mode off), applied and saved.
@@ -5923,6 +6015,126 @@ mod tests {
     }
 
     #[test]
+    fn the_stream_label_follows_each_song_as_it_starts() {
+        let mut app = demo();
+        assert_eq!(app.stream, Some((crate::pandora::AudioFormat::Mp3, 192)), "the first demo song");
+        // A song in another format changes it, without touching the setting.
+        let mut next = app.queue.front().cloned().expect("a song is queued");
+        next.audio_format = crate::pandora::AudioFormat::Aac;
+        next.bitrate = 64;
+        app.queue.clear();
+        app.queue.push_back(next);
+        app.advance();
+        assert_eq!(app.stream, Some((crate::pandora::AudioFormat::Aac, 64)), "the song now playing");
+        assert_eq!(app.config.pandora.audio_quality, "high", "the setting is not what is shown");
+    }
+
+    /// Tests make non-demo apps that play songs. Without the guard in
+    /// `notify`, each song change put a real notification on the screen.
+    #[test]
+    fn a_test_never_puts_a_notification_on_the_screen() {
+        let mut app = saving_app("no-notify");
+        app.config.ui.notifications = true;
+        assert!(!app.demo, "the case that used to notify");
+        let song = demo().now.clone().expect("a demo song");
+        // The guard is what stops it; the setting alone would not.
+        app.notify(&song);
+    }
+
+    #[test]
+    fn the_quality_row_says_what_is_really_playing() {
+        let mut app = demo();
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.settings_cursor = Setting::at(Setting::Quality);
+
+        // A demo song is playing, so the row already says what it is.
+        assert!(app.stream.is_some(), "a song is playing");
+        assert!(
+            app.setting_value(Setting::Quality).ends_with("· playing MP3 192 kbps"),
+            "{}",
+            app.setting_value(Setting::Quality)
+        );
+
+        app.stream = None;
+
+        // Before a login, the choice alone.
+        app.hifi = None;
+        assert_eq!(app.setting_value(Setting::Quality), "high (MP3 192 kbps if your plan has it)");
+
+        // A free plan has no choice: the row is greyed out and says what
+        // Pandora sends, whatever the setting says.
+        app.hifi = Some(false);
+        assert!(app.quality_greyed());
+        assert_eq!(app.setting_value(Setting::Quality), "your plan: 64 kbps HE-AAC");
+        app.config.pandora.audio_quality = "standard".into();
+        assert_eq!(app.setting_value(Setting::Quality), "your plan: 64 kbps HE-AAC", "the setting is not shown");
+        // Once a song arrives, its real bitrate.
+        app.stream = Some((crate::pandora::AudioFormat::Aac, 64));
+        assert_eq!(app.setting_value(Setting::Quality), "your plan: AAC 64 kbps");
+
+        // Plus / Premium: the choice, and what is playing.
+        app.hifi = Some(true);
+        assert!(!app.quality_greyed());
+        app.config.pandora.audio_quality = "high".into();
+        assert_eq!(app.setting_value(Setting::Quality), "high (MP3 192 kbps) · playing AAC 64 kbps");
+        app.config.pandora.audio_quality = "standard".into();
+        assert_eq!(app.setting_value(Setting::Quality), "standard (MP3 128 kbps) · playing AAC 64 kbps");
+        app.stream = Some((crate::pandora::AudioFormat::Mp3, 192));
+        assert_eq!(app.setting_value(Setting::Quality), "standard (MP3 128 kbps) · playing MP3 192 kbps");
+        // A stream that did not say its bitrate adds nothing.
+        app.stream = Some((crate::pandora::AudioFormat::Mp3, 0));
+        assert_eq!(app.setting_value(Setting::Quality), "standard (MP3 128 kbps)");
+    }
+
+    #[test]
+    fn a_free_plan_cannot_toggle_the_quality_and_says_why() {
+        let mut app = saving_app("quality-greyed");
+        app.view = View::Settings;
+        app.focus = Focus::Content;
+        app.settings_cursor = Setting::at(Setting::Quality);
+        // Not logged in yet: the plan is unknown, so the toggle works.
+        app.hifi = None;
+        assert!(!app.quality_greyed());
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.config.pandora.audio_quality, "standard", "it toggled");
+        // A free plan: Enter explains instead of toggling.
+        app.hifi = Some(false);
+        assert!(app.quality_greyed());
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.config.pandora.audio_quality, "standard", "nothing changed");
+        assert_eq!(app.status, "Audio quality is Pandora's on a free plan: 64 kbps HE-AAC");
+        // Plus / Premium: it toggles again.
+        app.hifi = Some(true);
+        assert!(!app.quality_greyed());
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.config.pandora.audio_quality, "high");
+        // Logging out forgets the plan, so the next account is not greyed.
+        app.log_out();
+        assert_eq!(app.hifi, None);
+        assert!(!app.quality_greyed());
+        assert_eq!(app.stream, None);
+    }
+
+    #[test]
+    fn the_details_popup_names_the_bitrate_it_was_told() {
+        let song = demo().now.clone().unwrap();
+        let details = Details {
+            station_name: "Chill".into(),
+            station_id: song.station_id.clone(),
+            of: DetailsOf::Song(Box::new(crate::pandora::Song {
+                bitrate: 64,
+                audio_format: crate::pandora::AudioFormat::Aac,
+                ..song
+            })),
+            from_pandora: None,
+            why: false,
+        };
+        let rows = details.rows();
+        assert!(rows.iter().any(|(k, v)| k == "Audio" && v == "AAC 64 kbps"), "{rows:?}");
+    }
+
+    #[test]
     fn what_a_setting_says_about_where_it_is_saved_is_true() {
         for (_, setting) in Setting::ALL {
             // The account and the volume have their own flows (below).
@@ -6024,6 +6236,10 @@ mod tests {
     fn theme_select_actions_reach_the_app() {
         let mut app = demo();
         app.themes_dir = Some(crate::config::temp_dir("theme-actions"));
+        // A concrete theme turns Auto Mode off, so Theme Select is not greyed
+        // out on a machine that looks like Omarchy (where the default follows
+        // the system theme and Enter would only explain that).
+        app.config.ui.set_theme("kanagawa");
         app.focus = Focus::Content;
         app.view = View::Settings;
         app.settings_cursor = Setting::at(Setting::ThemeSelect);

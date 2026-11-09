@@ -62,6 +62,12 @@ Covers download in the background and are cached in `~/.cache/boxvibe/art`
 (50 MB). A failed one is retried; why it failed goes to
 `~/.cache/boxvibe/art.log`, never the screen.
 
+Playback writes `~/.cache/boxvibe/boxvibe.log`: each song as it starts (what
+Pandora sent, what it decoded to, whether it was resampled), each as it ends
+(how far it got against how long it should have been), and every reason a song
+was skipped. It is capped at 512 KB and rolls over to `.old`, so it can be left
+on. `BOXVIBE_LOG=off` silences it; `BOXVIBE_LOG=<file>` writes somewhere else.
+
 ## Make and shape stations
 
 **Create a station** with `a` on the My Stations page: type an artist or song,
@@ -107,8 +113,9 @@ Highlights:
 - **Good Vibes Only** (on by default) plays Pandora's audio ads the way the
   website does, so your account looks like any other listener's. **Muted**
   plays them silently; **Off** skips them, at your own risk (see the popup).
-- **Audio quality**: 192 kbps MP3 on Plus / Premium, with Pandora's per-song
-  loudness applied.
+- **Audio quality**: 192 kbps MP3 on Plus / Premium, 64 kbps HE-AAC on a free
+  plan, with Pandora's per-song loudness applied. HE-AAC is decoded with its
+  high band (SBR) and stereo (PS), so a free plan sounds as good as it can.
 - **App menu entry** adds boxvibe to your app launcher.
 
 ## Install
@@ -211,6 +218,7 @@ genre_edit_popup = true        # true: renaming or editing a genre station opens
 [playback]
 audio_quality = "high"         # high: MP3 192 kbps if your plan has it (Plus, Premium), else 128
                                # standard: MP3 128 kbps (old low / medium values mean standard)
+                               # A free plan gets 64 kbps HE-AAC either way; Settings shows what is playing
 volume = 70                    # 0–100
 song_change_notifications = true   # Settings → Song change notifications: a desktop notification when the song changes (Settings toggles it)
 autoplay_last_station = true   # start the station played last when boxvibe opens

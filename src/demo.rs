@@ -89,6 +89,7 @@ pub fn playlist(station_id: &str, round: usize) -> Vec<Song> {
                 station_id: station_id.into(),
                 audio_url: String::new(),
                 audio_format: AudioFormat::Mp3,
+                bitrate: 192,
                 cover_art_url: format!("https://example.invalid/art/{n}.jpg"),
                 detail_url: String::new(),
                 artist_music_id: format!("R-demo-{}", artist.to_lowercase().replace(' ', "-")),

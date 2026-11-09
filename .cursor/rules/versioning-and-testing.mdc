@@ -44,3 +44,16 @@ details.
 
 `dev` is the default branch and the only one worked on. `main` accepts changes only through a
 pull request; `dev` is merged into it only to cut a release. Feature PRs target `dev`.
+
+## Before merging or releasing, read every check
+
+The "Protect main" ruleset only *requires* `fmt`, `ci` and `msrv`, so a pull request can merge
+with other checks red. That happened once: `CodeQL` was failing on the release PR and the merge
+went ahead because only the required three were looked at.
+
+- Run `gh pr checks <n>` and read **all** of it, not just the required contexts. Anything not
+  `pass` is a blocker until it is understood.
+- `CodeQL` failing means new code-scanning alerts. Read them with
+  `gh api repos/mortbrew/boxvibe/code-scanning/alerts?state=open` and fix or dismiss each one
+  with a reason; do not merge on top of them.
+- After a release, bump `dev`'s version ahead of the tag that was just cut.

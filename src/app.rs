@@ -3679,7 +3679,6 @@ impl App {
     fn next_album_art(&mut self) {
         let next = self.config.ui.album_art.next();
         self.config.ui.album_art = next;
-        self.art.forget_shown();
         self.want_art();
         self.save(&[("look", "album_art", next.as_str().into())]);
         self.status = format!("Album art: {}", next.label());
@@ -3689,7 +3688,6 @@ impl App {
     fn next_retro_mode(&mut self) {
         let next = self.config.ui.retro_mode.next();
         self.config.ui.retro_mode = next;
-        self.art.forget_shown();
         self.save(&[("look", "retro_mode", next.as_str().into())]);
         self.status = format!("Retro mode: {}", next.label());
     }
@@ -3698,7 +3696,6 @@ impl App {
     fn next_art_tint(&mut self) {
         let next = self.config.ui.art_tint.next();
         self.config.ui.art_tint = next;
-        self.art.forget_shown();
         self.save(&[("look", "tint_art_with_theme_colors", next.as_str().into())]);
         self.status = format!("Tint art with theme colors: {}", next.label());
     }

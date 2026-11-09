@@ -311,9 +311,9 @@ targets `dev`.
 ### Versions
 
 `dev`'s `Cargo.toml` version runs **ahead** of the newest published release
-(`0.7.0` while the latest release is `v0.6.0`). That is deliberate. The version
+(`0.6.1` while the latest release is `v0.6.0`). That is deliberate. The version
 string is drawn on the splash, the About panel, the status bar and the box
-frames, so seeing `v0.7.0` confirms the running binary is a build from source
+frames, so seeing `v0.6.1` confirms the running binary is a build from source
 rather than the released one.
 
 - Keep the bump in `Cargo.toml` only; `env!("CARGO_PKG_VERSION")` propagates it.

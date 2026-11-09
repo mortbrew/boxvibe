@@ -2,6 +2,14 @@
 
 Short and scannable; the git history has the details.
 
+## 0.6.1 (2026-11-09)
+
+### Internal
+- `toml` 1.1.8 → 1.2.0 and `toml_edit` 0.25.17 → 0.25.18, which bring
+  `toml_writer` 1.2.0 with them. Both are performance releases upstream:
+  pre-allocated serialization buffers, faster writing of syntax, strings and
+  keys, and reused key allocations. No API changes.
+
 ## 0.6.0 (2026-11-09)
 
 ### Fixed

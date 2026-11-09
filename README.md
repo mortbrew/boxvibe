@@ -287,6 +287,12 @@ cargo build --release
 
 Tests run in demo mode or against a fake server, never live Pandora.
 
+CI runs on every push and pull request to `main` and `dev`: `fmt` (rustfmt),
+`ci` (release build, tests, clippy), `msrv` (a build on the `rust-version` in
+`Cargo.toml`, so the README's minimum stays honest), `audit` (`cargo audit`
+against RustSec) and `codeql`. A pull request into `main` needs `fmt`, `ci` and
+`msrv` green before it can merge.
+
 ### Branches
 
 `dev` is the default branch and the only one worked on. `main` is a release

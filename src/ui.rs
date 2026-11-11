@@ -5111,8 +5111,8 @@ mod tests {
 }
 
 /// The README's screenshots: `cargo test --release screenshots -- --ignored`
-/// writes each screen (demo mode, no account) as cells to
-/// `target/screenshots/*.json`; `scripts/screenshots.py` draws them to PNG.
+/// draws each screen (demo mode, no account) and rasterizes it to
+/// `docs/screenshots/*.png`; see `crate::screenshots`.
 #[cfg(test)]
 mod screenshots {
     use super::*;
@@ -5120,7 +5120,6 @@ mod screenshots {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use ratatui::style::Color;
 
     const COLS: u16 = 160;
     const ROWS: u16 = 40;
@@ -5185,34 +5184,11 @@ mod screenshots {
         app.settle(std::time::Duration::from_millis(300));
     }
 
-    fn hex(c: Color, reset: Color) -> String {
-        match c {
-            Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
-            Color::Reset => hex(reset, Color::Rgb(0, 0, 0)),
-            other => format!("{other:?}"),
-        }
-    }
-
     fn shot(app: &App, name: &str) {
         let mut terminal = Terminal::new(TestBackend::new(COLS, ROWS)).unwrap();
         terminal.draw(|frame| draw(frame, app)).unwrap();
-        let buffer = terminal.backend().buffer();
-        let p = app.palette;
-        let cells: Vec<serde_json::Value> = buffer
-            .content()
-            .iter()
-            .map(|c| {
-                let bold = c.modifier.contains(ratatui::style::Modifier::BOLD);
-                let rev = c.modifier.contains(ratatui::style::Modifier::REVERSED);
-                let (fg, bg) = (hex(c.fg, p.fg), hex(c.bg, p.background));
-                let (fg, bg) = if rev { (bg, fg) } else { (fg, bg) };
-                serde_json::json!([c.symbol(), fg, bg, bold])
-            })
-            .collect();
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/screenshots");
-        std::fs::create_dir_all(&dir).unwrap();
-        let doc = serde_json::json!({ "cols": COLS, "rows": ROWS, "cells": cells });
-        std::fs::write(dir.join(format!("{name}.json")), doc.to_string()).unwrap();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/screenshots");
+        crate::screenshots::write(terminal.backend().buffer(), &app.palette, &dir.join(format!("{name}.png"))).unwrap();
     }
 
     #[test]

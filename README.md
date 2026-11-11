@@ -280,9 +280,15 @@ The images in `docs/screenshots/` are drawn from demo mode at 160×40 in Tokyo
 Night, with a made-up cover:
 
 ```sh
-cargo test --release screenshots -- --ignored   # writes target/screenshots/*.json
-python3 scripts/screenshots.py                  # draws docs/screenshots/*.png
+cargo test --release screenshots -- --ignored   # writes docs/screenshots/*.png
 ```
+
+The test rasterizes each frame itself (`src/screenshots.rs`), so it needs no
+browser and no Python. It does need DejaVu Sans Mono and the Nerd Font symbols
+(`ttf-dejavu` and `ttf-nerd-fonts-symbols-mono` on Arch); set
+`BOXVIBE_SCREENSHOT_FONT`, `BOXVIBE_SCREENSHOT_FONT_BOLD` and
+`BOXVIBE_SCREENSHOT_FONT_NERD` to point at the `.ttf` files if they live
+somewhere unusual.
 
 ## Development
 

@@ -16,6 +16,8 @@ mod log;
 mod mpris;
 mod pandora;
 mod pinned;
+#[cfg(test)]
+mod screenshots;
 mod snapshot;
 mod splash;
 mod theme;

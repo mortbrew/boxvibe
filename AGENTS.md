@@ -22,7 +22,7 @@ CI (`.github/workflows/ci.yml`) also runs `cargo build --release --locked`. Linu
 - `src/pandora/` — Pandora client
 - `src/audio.rs`, `src/art.rs`, `src/config.rs` — playback, covers, `config.toml`
 - `docs/setup.md` — branch, CI, and repo-settings checklist
-- `docs/screenshots/`, `scripts/screenshots.py` — generated images
+- `docs/screenshots/`, `src/screenshots.rs` — generated images
 - `packaging/` — linux package notes
 
 Unit tests sit next to the code (`mod tests`). Scratch dirs go under `target/tmp`.

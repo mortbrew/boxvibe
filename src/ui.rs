@@ -67,6 +67,9 @@ pub fn menu_width(app: &App, screen: u16) -> u16 {
     app.config.ui.menu_width.min(screen / 2)
 }
 
+/// Blank columns between the menu and the page, so the two frames do not touch.
+pub const PANE_GAP: u16 = 1;
+
 pub fn draw(frame: &mut Frame, app: &App) {
     BORDERS.set(app.config.ui.border_style);
     let p = app.palette;
@@ -83,7 +86,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let [body, status, keys] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1)]).areas(area);
     let side = menu_width(app, body.width);
-    let [left, right] = Layout::horizontal([Constraint::Length(side), Constraint::Fill(1)]).areas(body);
+    let [left, _, right] =
+        Layout::horizontal([Constraint::Length(side), Constraint::Length(PANE_GAP), Constraint::Fill(1)]).areas(body);
     draw_menu(frame, app, ic, left);
     match app.view {
         View::Player => draw_player(frame, app, ic, right),
@@ -1727,7 +1731,9 @@ fn draw_player(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 }
 
 /// Below this many columns Up Next and History stack instead of sharing a row.
-pub const STACK_BELOW: u16 = 90;
+/// It is the page's width, which is [`PANE_GAP`] narrower than the terminal
+/// leaves it, so the same terminal keeps the layout it had before the gap.
+pub const STACK_BELOW: u16 = 89;
 
 pub fn stack_songs(width: u16) -> bool {
     width < STACK_BELOW
@@ -3275,7 +3281,7 @@ mod tests {
                     "Today's Hits",    // genre, starred
                 ]
                 .iter()
-                .map(|n| (*n, name_column(&buffer, n, 31, 120)))
+                .map(|n| (*n, name_column(&buffer, n, 32, 120)))
                 .collect();
                 let first = offsets[0].1.expect("Shuffle is listed");
                 for (name, at) in &offsets {
@@ -3287,8 +3293,8 @@ mod tests {
             let buffer = screen(&app, 120, 34).1;
             let x_of = |glyph: &str, name: &str| {
                 (0..buffer.area.height).find_map(|y| {
-                    let line: String = (31..120).map(|i| buffer[(i, y)].symbol()).collect();
-                    line.contains(name).then(|| (31..120).find(|&i| buffer[(i, y)].symbol() == glyph))?
+                    let line: String = (32..120).map(|i| buffer[(i, y)].symbol()).collect();
+                    line.contains(name).then(|| (32..120).find(|&i| buffer[(i, y)].symbol() == glyph))?
                 })
             };
             let person = [x_of(ic.own_station, "M83 Radio"), x_of(ic.own_station, "Thumbprint Radio")];
@@ -4381,12 +4387,14 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_and_the_page_touch() {
+    fn a_blank_column_separates_the_menu_from_the_page() {
         let app = demo();
         let (lines, _) = screen(&app, 120, 36);
         let top: Vec<char> = lines[0].chars().collect();
         let end = top.iter().position(|c| *c == '┐').unwrap();
-        assert_eq!(top[end + 1], '┌', "no blank column between the frames, like tubevibe: {}", lines[0]);
+        assert_eq!(end + 1, usize::from(menu_width(&app, 120)), "the menu keeps its width: {}", lines[0]);
+        assert_eq!(top[end + 1], ' ', "a blank column between the frames: {}", lines[0]);
+        assert_eq!(top[end + 2], '┌', "the page starts after it: {}", lines[0]);
     }
 
     #[test]

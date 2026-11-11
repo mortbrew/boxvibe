@@ -308,12 +308,17 @@ marker: it accepts changes only through a pull request (the "Protect main"
 ruleset), and `dev` is merged into it only to cut a release. Feature work
 targets `dev`.
 
+The whole model — branches, workflows, repository settings, the ruleset and the
+security settings — is specified in [`docs/setup.md`](docs/setup.md). That file
+is the checklist a repository must satisfy; when it and a repo disagree, the
+file wins.
+
 ### Versions
 
 `dev`'s `Cargo.toml` version runs **ahead** of the newest published release
-(`0.6.0` while the latest release is `v0.5.0`). That is deliberate. The version
+(`0.6.1` while the latest release is `v0.6.0`). That is deliberate. The version
 string is drawn on the splash, the About panel, the status bar and the box
-frames, so seeing `v0.6.0` confirms the running binary is a build from source
+frames, so seeing `v0.6.1` confirms the running binary is a build from source
 rather than the released one.
 
 - Keep the bump in `Cargo.toml` only; `env!("CARGO_PKG_VERSION")` propagates it.

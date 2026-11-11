@@ -2573,7 +2573,7 @@ fn draw_keys(frame: &mut Frame, p: &Palette, keys: &[(&str, &str)], area: Rect) 
         ["j/k ↑↓", "⇧←→", "U/D", "N", "space", "l/b", "Esc", "v", "P", "a", "Tab", "x", "f", "Enter"];
     let split = keys.len().saturating_sub(2);
     let mut shown: Vec<&(&str, &str)> = keys.iter().collect();
-    let cost = |shown: &[&(&str, &str)]| 2 + shown.iter().map(|k| width(&cap(k))).sum::<usize>();
+    let cost = |shown: &[&(&str, &str)]| shown.iter().map(|k| width(&cap(k))).sum::<usize>();
     for gone in DROP_FIRST {
         if cost(&shown) <= area.width as usize {
             break;
@@ -2584,8 +2584,8 @@ fn draw_keys(frame: &mut Frame, p: &Palette, keys: &[(&str, &str)], area: Rect) 
     }
     let (rest, last) = shown.split_at(shown.len().saturating_sub(2));
     let last: Vec<Span> = last.iter().copied().flat_map(cap).collect();
-    let mut spans = vec![Span::raw(" ")];
-    let room = (area.width as usize).saturating_sub(width(&last) + 1);
+    let mut spans: Vec<Span> = Vec::new();
+    let room = (area.width as usize).saturating_sub(width(&last));
     for k in rest {
         let next = cap(k);
         if width(&spans) + width(&next) > room {
@@ -2594,7 +2594,16 @@ fn draw_keys(frame: &mut Frame, p: &Palette, keys: &[(&str, &str)], area: Rect) 
         spans.extend(next);
     }
     spans.extend(last);
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    // The gap after the last label is not part of the bar: without it the
+    // centring below would leave two more columns on the right than the left.
+    if let Some(end) = spans.last_mut() {
+        *end = Span::styled(end.content.trim_end().to_owned(), end.style);
+    }
+    // Centred: as much blank space on the left as on the right.
+    let pad = (area.width as usize).saturating_sub(width(&spans)) / 2;
+    let mut line = vec![Span::raw(" ".repeat(pad))];
+    line.extend(spans);
+    frame.render_widget(Paragraph::new(Line::from(line)), area);
 }
 
 /// Help's sections: (title, [(keys, what they do)]). A test holds this to
@@ -3046,6 +3055,20 @@ mod tests {
             app.menu_cursor = app.menu_items().iter().position(|m| *m == MenuItem::Stations).unwrap();
             let bar = key_bar_line(&app, cols);
             assert!(!bar.contains("Edit") && !bar.contains("Menu Size"), "{cols} Stations entry: {bar}");
+        }
+    }
+
+    #[test]
+    fn the_key_bar_is_centred_with_as_much_room_on_the_left_as_the_right() {
+        let mut app = demo();
+        app.settle(std::time::Duration::from_millis(400));
+        for cols in [200u16, 140, 120, 100, 80, 60, 40] {
+            let lines = screen(&app, cols, 36).0;
+            let bar = lines.last().expect("the key bar");
+            let left = bar.chars().take_while(|c| *c == ' ').count();
+            let right = bar.chars().rev().take_while(|c| *c == ' ').count();
+            assert!(left > 0, "{cols} cols: the bar starts away from the edge: {bar:?}");
+            assert!(left.abs_diff(right) <= 1, "{cols} cols: {left} left, {right} right: {bar:?}");
         }
     }
 

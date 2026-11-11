@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
-use image::{Rgb, RgbImage};
+use image::{ImageEncoder, Rgb, RgbImage};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
 
@@ -129,7 +129,23 @@ pub fn write(buffer: &Buffer, palette: &Palette, out: &Path) -> anyhow::Result<(
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    img.save(out)?;
+    save(&img, out)?;
+    Ok(())
+}
+
+/// Writes `img` as a PNG at the best compression the encoder offers. The
+/// default is fast but leaves the files about twice the size: these frames are
+/// mostly flat colour, so the adaptive filter and the slowest deflate pay off.
+fn save(img: &RgbImage, out: &Path) -> anyhow::Result<()> {
+    let file = std::fs::File::create(out).map_err(|e| anyhow::anyhow!("{}: {e}", out.display()))?;
+    let mut writer = std::io::BufWriter::new(file);
+    image::codecs::png::PngEncoder::new_with_quality(
+        &mut writer,
+        image::codecs::png::CompressionType::Best,
+        image::codecs::png::FilterType::Adaptive,
+    )
+    .write_image(img.as_raw(), img.width(), img.height(), image::ExtendedColorType::Rgb8)
+    .map_err(|e| anyhow::anyhow!("{}: {e}", out.display()))?;
     Ok(())
 }
 
@@ -277,5 +293,21 @@ mod tests {
         // Out of bounds is a no-op, not a panic: glyphs overhang their cell.
         blend(&mut img, -1, 1, Rgb([255, 255, 255]), 1.0);
         blend(&mut img, 4, 1, Rgb([255, 255, 255]), 1.0);
+    }
+
+    #[test]
+    fn a_saved_png_round_trips_and_is_smaller_than_the_raw_pixels() {
+        let dir = crate::config::scratch_dir("screenshots-save");
+        let out = dir.join("frame.png");
+        // Flat colour, like a frame: the encoder should beat the raw bytes.
+        let img = RgbImage::from_pixel(64, 64, Rgb([0x1a, 0x1b, 0x26]));
+        save(&img, &out).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"), "a PNG");
+        assert!(bytes.len() < 64 * 64 * 3, "{} bytes for {} raw", bytes.len(), 64 * 64 * 3);
+        let back = image::open(&out).unwrap().to_rgb8();
+        assert_eq!(back.dimensions(), (64, 64));
+        assert_eq!(*back.get_pixel(10, 10), Rgb([0x1a, 0x1b, 0x26]));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

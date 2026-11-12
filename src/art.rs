@@ -4,7 +4,6 @@
 //! thread, kept in memory (and in `~/.cache/boxvibe/art`, capped), and
 //! encoded for the terminal only when shown or resized.
 
-use std::cell::{RefCell, RefMut};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -120,19 +119,19 @@ pub struct Art {
     requested: HashSet<String>,
     failed: HashMap<String, Failure>,
     /// Covers the terminal's graphics couldn't encode: drawn in half blocks.
-    unencodable: RefCell<HashSet<String>>,
-    shown: RefCell<Option<Shown>>,
+    unencodable: HashSet<String>,
+    shown: Option<Shown>,
     /// A picture protocol was drawn and then replaced: clear the screen once.
-    pub needs_clear: std::cell::Cell<bool>,
+    pub needs_clear: bool,
     /// A popup (Help, the quit box) is open: a terminal picture would draw
     /// over it, so none is shown until it closes.
-    suspended: std::cell::Cell<bool>,
+    suspended: bool,
     /// Where the art box was last drawn (the cover, or the message that there is none).
-    pub last_area: std::cell::Cell<ratatui::layout::Rect>,
+    pub last_area: ratatui::layout::Rect,
     /// Where the cover itself was last drawn inside that box.
-    pub last_cover: std::cell::Cell<ratatui::layout::Rect>,
+    pub last_cover: ratatui::layout::Rect,
     /// Prepared covers, newest last: Shift+R cycles back through the levels.
-    cache: RefCell<VecDeque<(String, LookKey, Arc<DynamicImage>)>>,
+    cache: VecDeque<(String, LookKey, Arc<DynamicImage>)>,
 }
 
 impl Art {
@@ -147,10 +146,10 @@ impl Art {
     /// Opening or closing one clears the screen once, so no remnant stays
     /// behind, and the picture is encoded and sent again, whole, after it.
     pub fn set_overlay(&mut self, open: bool) {
-        if self.suspended.get() == open {
+        if self.suspended == open {
             return;
         }
-        self.suspended.set(open);
+        self.suspended = open;
         // The cover is needed again when a popup closes: any that failed get
         // a fresh set of tries.
         if !open {
@@ -158,7 +157,7 @@ impl Art {
         }
         if self.graphics.is_some() {
             self.forget_shown();
-            self.needs_clear.set(true);
+            self.needs_clear = true;
         }
     }
 
@@ -227,63 +226,63 @@ impl Art {
 
     /// Settings changed: build the protocol again on the next frame.
     pub fn forget_shown(&mut self) {
-        if self.shown.get_mut().take().is_some_and(|s| !is_blocks(&s.protocol)) {
-            self.needs_clear.set(true);
+        if self.shown.take().is_some_and(|s| !is_blocks(&s.protocol)) {
+            self.needs_clear = true;
         }
     }
 
     /// The encoded cover for `url`, built when the song or a setting changed.
     /// A new theme rebuilds it too (the tint uses its colours).
-    pub fn protocol(&self, url: &str, look: Look) -> Option<RefMut<'_, StatefulProtocol>> {
+    pub fn protocol(&mut self, url: &str, look: Look) -> Option<&mut StatefulProtocol> {
         let mode = look.mode;
-        let mut shown = self.shown.borrow_mut();
         // Half blocks without graphics, under a popup, or when
         // the terminal couldn't encode this cover.
         let picture = match (mode, &self.graphics) {
-            (AlbumArt::Picture, Some(p)) if !self.suspended.get() && !self.unencodable.borrow().contains(url) => {
-                Some(p)
-            }
+            (AlbumArt::Picture, Some(p)) if !self.suspended && !self.unencodable.contains(url) => Some(p.clone()),
             _ => None,
         };
-        let current = shown
+        let current = self
+            .shown
             .as_ref()
             .is_some_and(|s| s.url == url && s.look == look && is_blocks(&s.protocol) == picture.is_none());
         if !current {
-            let image = match (mode, self.images.get(url)) {
+            let image = match (mode, self.images.get(url).cloned()) {
                 (AlbumArt::Off, _) | (_, None) => {
-                    if shown.take().is_some_and(|s| !is_blocks(&s.protocol)) {
-                        self.needs_clear.set(true);
+                    if self.shown.take().is_some_and(|s| !is_blocks(&s.protocol)) {
+                        self.needs_clear = true;
                     }
                     return None;
                 }
                 (_, Some(image)) => image,
             };
-            let ready = self.prepared(url, image, look);
+            let ready = self.prepared(url, &image, look);
             // Changing a setting on the same cover keeps the same kind of
             // protocol, so the cover is swapped in place. Tearing it down
             // instead cleared the screen and re-sent the picture, which is what
             // made Shift+R flash.
-            let same_kind = shown.as_ref().is_some_and(|s| s.url == url && is_blocks(&s.protocol) == picture.is_none());
+            let same_kind =
+                self.shown.as_ref().is_some_and(|s| s.url == url && is_blocks(&s.protocol) == picture.is_none());
             if same_kind {
-                let shown = shown.as_mut().expect("just checked");
+                let picker = picture.unwrap_or_else(|| self.blocks_picker());
+                let shown = self.shown.as_mut().expect("just checked");
                 shown.look = look;
-                shown.protocol = picture.unwrap_or(&self.blocks_picker()).new_resize_protocol(ready);
+                shown.protocol = picker.new_resize_protocol(ready);
             } else {
-                if shown.take().is_some_and(|s| !is_blocks(&s.protocol)) {
-                    self.needs_clear.set(true);
+                if self.shown.take().is_some_and(|s| !is_blocks(&s.protocol)) {
+                    self.needs_clear = true;
                 }
-                let picker = picture.cloned().unwrap_or_else(|| self.blocks_picker());
+                let picker = picture.unwrap_or_else(|| self.blocks_picker());
                 let protocol = picker.new_resize_protocol(ready);
-                *shown = Some(Shown { url: url.into(), look, protocol });
+                self.shown = Some(Shown { url: url.into(), look, protocol });
             }
         }
-        Some(RefMut::map(shown, |s| &mut s.as_mut().expect("just set").protocol))
+        Some(&mut self.shown.as_mut().expect("just set").protocol)
     }
 
     /// The cover for `look`, pixelated and tinted: from the cache when this
     /// look has been drawn before, else built once and kept. The cache stores
     /// exactly what the uncached path computes, so it cannot change the pixels.
-    fn prepared(&self, url: &str, image: &Arc<DynamicImage>, look: Look) -> DynamicImage {
+    fn prepared(&mut self, url: &str, image: &Arc<DynamicImage>, look: Look) -> DynamicImage {
         // The palette only distinguishes looks that are tinted, as in `Look`'s
         // equality: an untinted cover is the same whatever the theme.
         let key = LookKey {
@@ -291,17 +290,16 @@ impl Art {
             tint: look.tint,
             palette: (look.tint != ArtTint::Off).then_some(look.palette),
         };
-        let mut cache = self.cache.borrow_mut();
-        if let Some(at) = cache.iter().position(|(u, k, _)| u == url && *k == key) {
-            let hit = cache.remove(at).expect("just found").2;
-            cache.push_back((url.into(), key, hit.clone()));
+        if let Some(at) = self.cache.iter().position(|(u, k, _)| u == url && *k == key) {
+            let hit = self.cache.remove(at).expect("just found").2;
+            self.cache.push_back((url.into(), key, hit.clone()));
             return (*hit).clone();
         }
         let ready = Arc::new(tint(&pixelate(image, look.pixelation), look.tint, &look.palette));
         // One cover's worth of levels, plus this song and the one before it.
-        cache.push_back((url.into(), key, ready.clone()));
-        while cache.len() > CACHED_COVERS {
-            cache.pop_front();
+        self.cache.push_back((url.into(), key, ready.clone()));
+        while self.cache.len() > CACHED_COVERS {
+            self.cache.pop_front();
         }
         (*ready).clone()
     }
@@ -309,22 +307,21 @@ impl Art {
     /// Call after drawing the cover: when the terminal's graphics couldn't
     /// encode it, it is drawn in half blocks from the next frame on rather
     /// than leaving the box empty.
-    pub fn check_encoding(&self, url: &str) {
-        let mut shown = self.shown.borrow_mut();
-        let failed = shown.as_mut().is_some_and(|s| {
+    pub fn check_encoding(&mut self, url: &str) {
+        let failed = self.shown.as_mut().is_some_and(|s| {
             s.url == url && !is_blocks(&s.protocol) && matches!(s.protocol.last_encoding_result(), Some(Err(_)))
         });
         if failed {
-            self.unencodable.borrow_mut().insert(url.into());
-            shown.take();
-            self.needs_clear.set(true);
+            self.unencodable.insert(url.into());
+            self.shown.take();
+            self.needs_clear = true;
         }
     }
 
     /// Nothing to show (no song, no cover): a picture left on screen goes.
-    pub fn hide(&self) {
-        if self.shown.borrow_mut().take().is_some_and(|s| !is_blocks(&s.protocol)) {
-            self.needs_clear.set(true);
+    pub fn hide(&mut self) {
+        if self.shown.take().is_some_and(|s| !is_blocks(&s.protocol)) {
+            self.needs_clear = true;
         }
     }
 }
@@ -333,7 +330,7 @@ impl Art {
     /// Tests: the cover being shown, and whether it is in half blocks.
     #[cfg(test)]
     pub fn shown_cover(&self) -> Option<(String, bool)> {
-        self.shown.borrow().as_ref().map(|s| (s.url.clone(), is_blocks(&s.protocol)))
+        self.shown.as_ref().map(|s| (s.url.clone(), is_blocks(&s.protocol)))
     }
 
     /// Half blocks sized with the terminal's real font when graphics are on,
@@ -432,18 +429,25 @@ pub fn tint(image: &DynamicImage, tint: ArtTint, p: &Palette) -> DynamicImage {
     }
     let mut out = image.to_rgb8();
     for px in out.pixels_mut() {
-        let [r, g, b] = px.0.map(f32::from);
         px.0 = match tint {
             ArtTint::Duotone => {
+                let [r, g, b] = px.0.map(f32::from);
                 let t = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0;
                 let (lo, hi) = (colors[0], colors[1]);
                 std::array::from_fn(|i| (f32::from(lo[i]) + (f32::from(hi[i]) - f32::from(lo[i])) * t).round() as u8)
             }
+            // Nearest theme colour by a weighted squared distance, in integers:
+            // the eye is most sensitive to green, least to blue. This runs for
+            // every pixel of every cover on the UI thread, so it stays integer
+            // arithmetic — the float version was ~5M `powi` calls per cover.
             _ => *colors
                 .iter()
                 .min_by_key(|c| {
-                    let d = |i: usize| (f32::from(c[i]) - [r, g, b][i]).powi(2);
-                    (2.0 * d(0) + 4.0 * d(1) + 3.0 * d(2)) as u32
+                    let d = |i: usize| {
+                        let diff = i32::from(c[i]) - i32::from(px.0[i]);
+                        diff * diff
+                    };
+                    (2 * d(0) + 4 * d(1) + 3 * d(2)) as u32
                 })
                 .expect("two or more"),
         };

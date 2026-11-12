@@ -1077,6 +1077,24 @@ fn a_download_that_never_answers_is_given_up_on() {
 }
 
 #[test]
+fn a_run_of_held_dislikes_is_walked_in_one_call() {
+    // `next_song` used to reach the next song by calling `advance`, which called
+    // `next_song` again, so a run of songs to skip was a recursion. It is a loop
+    // now: every held dislike in the queue is cleared in this one call.
+    let mut app = demo();
+    let queued = app.queue.len();
+    assert!(queued >= 2, "the demo queue has songs to skip through");
+    let tokens: Vec<String> = app.queue.iter().map(|s| s.track_token.clone()).collect();
+    for token in &tokens {
+        app.held_dislikes.insert(token.clone());
+    }
+    app.next_song();
+    assert!(app.held_dislikes.is_empty(), "every held dislike was sent and cleared");
+    assert!(app.queue.is_empty(), "the whole run was walked");
+    assert!(app.history.len() >= tokens.len(), "each skipped song went to History");
+}
+
+#[test]
 fn an_up_next_dislike_waits_for_its_turn_and_b_again_cancels_it() {
     let mut app = demo();
     app.focus = Focus::Content;

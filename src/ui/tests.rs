@@ -14,7 +14,7 @@ fn the_theme_picker_never_cuts_its_tags_or_hints() {
     app.settings_cursor = crate::app::Setting::at(crate::app::Setting::ThemeSelect);
     app.on_key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Enter));
     for cols in [80, 100, 160] {
-        let (lines, _) = screen(&app, cols, 32);
+        let (lines, _) = screen(&mut app, cols, 32);
         let all = lines.join("\n");
         assert!(all.contains(vibekit::picker::SEARCH_HINT), "{cols}: search hint cut\n{all}");
         assert!(all.contains("in use "), "{cols}: tag cut\n{all}");
@@ -22,7 +22,7 @@ fn the_theme_picker_never_cuts_its_tags_or_hints() {
     }
     app.on_key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Tab));
     for cols in [80, 160] {
-        let all = screen(&app, cols, 32).0.join("\n");
+        let all = screen(&mut app, cols, 32).0.join("\n");
         assert!(all.contains(vibekit::picker::INSTALLED_HINT), "{cols}: installed hint cut\n{all}");
     }
 }
@@ -36,18 +36,18 @@ fn the_add_station_hint_always_fits() {
         app.on_key(KeyEvent::from(k));
     }
     for cols in [80, 100, 160] {
-        let all = screen(&app, cols, 40).0.join("\n");
+        let all = screen(&mut app, cols, 40).0.join("\n");
         assert!(all.contains("Enter search · Esc cancel"), "{cols}: typing hint cut\n{all}");
     }
     app.on_key(KeyEvent::from(KeyCode::Enter));
     app.settle(std::time::Duration::from_millis(300));
     for cols in [80, 100, 160] {
-        let all = screen(&app, cols, 40).0.join("\n");
+        let all = screen(&mut app, cols, 40).0.join("\n");
         assert!(all.contains(ADD_RESULTS_HINT), "{cols}: results hint cut\n{all}");
     }
 }
 
-fn screen(app: &App, cols: u16, rows: u16) -> (Vec<String>, ratatui::buffer::Buffer) {
+fn screen(app: &mut App, cols: u16, rows: u16) -> (Vec<String>, ratatui::buffer::Buffer) {
     let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
     terminal.draw(|frame| draw(frame, app)).unwrap();
     let buffer = terminal.backend().buffer().clone();
@@ -74,7 +74,7 @@ fn the_ad_card_says_advertisement_with_a_countdown_and_no_rating_line() {
         app.settle(std::time::Duration::from_millis(300));
     }
     assert!(app.ad_view().is_some());
-    let text = screen(&app, 110, 34).0.join("\n");
+    let text = screen(&mut app, 110, 34).0.join("\n");
     assert!(text.contains("Advertisement") && text.contains("Ad 1 of 2"), "{text}");
     assert!(text.contains("playing") && text.contains("-0:06"), "{text}");
     assert!(text.contains("your music comes right after"), "{text}");
@@ -83,13 +83,13 @@ fn the_ad_card_says_advertisement_with_a_countdown_and_no_rating_line() {
 /// The Now Playing art box as (top, bottom, left, right), each one
 /// cell outside the area the art may use (the old frame's position).
 fn art_box(app: &App) -> (usize, usize, usize, usize) {
-    let a = app.art.last_area.get();
+    let a = app.art.last_area;
     assert!(a.width > 0 && a.height > 0, "art box drawn");
     (a.y as usize - 1, (a.y + a.height) as usize, a.x as usize - 1, (a.x + a.width) as usize)
 }
 
 /// Where the terminal's cursor is after drawing `app`, and the screen text.
-fn cursor_of(app: &App, cols: u16, rows: u16) -> (Position, Vec<String>) {
+fn cursor_of(app: &mut App, cols: u16, rows: u16) -> (Position, Vec<String>) {
     let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
     terminal.draw(|frame| draw(frame, app)).unwrap();
     let cursor = terminal.get_cursor_position().unwrap();
@@ -145,7 +145,7 @@ fn the_notifications_page_lists_messages_under_its_menu_entry() {
     app.note_status();
     app.view = View::Notifications;
     app.focus = Focus::Content;
-    let (lines, _) = screen(&app, 120, 30);
+    let (lines, _) = screen(&mut app, 120, 30);
     let text = lines.join("\n");
     assert!(text.contains("Notifications"), "{text}");
     assert!(text.contains("just now"), "{text}");
@@ -212,7 +212,7 @@ fn closing_the_editor_or_the_rename_box_leaves_the_keys_on_now_playing() {
 fn renaming_the_playing_station_changes_its_title_in_now_playing() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let mut app = playing_demo("M83 Radio", false);
-    assert!(screen(&app, 120, 36).0.join("\n").contains("M83 Radio"));
+    assert!(screen(&mut app, 120, 36).0.join("\n").contains("M83 Radio"));
     press(&mut app, 'r');
     app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
     for c in "Night Drive".chars() {
@@ -221,7 +221,7 @@ fn renaming_the_playing_station_changes_its_title_in_now_playing() {
     app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     app.settle(std::time::Duration::from_millis(500));
     assert_eq!(app.station_name(), Some("Night Drive"));
-    let text = screen(&app, 120, 36).0.join("\n");
+    let text = screen(&mut app, 120, 36).0.join("\n");
     assert!(text.contains("Night Drive") && !text.contains("M83 Radio"), "{text}");
     assert_eq!((app.view, app.focus, app.pane), (View::Player, crate::app::Focus::Content, Pane::NowPlaying));
 }
@@ -255,7 +255,7 @@ fn on_now_playing_a_genre_station_gets_the_popup_and_shuffle_just_the_message() 
 }
 
 /// The key bar line of a drawn screen: the last row with text.
-fn key_bar_line(app: &App, cols: u16) -> String {
+fn key_bar_line(app: &mut App, cols: u16) -> String {
     let lines = screen(app, cols, 36).0;
     lines.iter().rev().find(|l| !l.trim().is_empty()).unwrap().trim().to_owned()
 }
@@ -266,8 +266,8 @@ fn the_key_bar_has_no_menu_size_hint_and_shows_e_where_the_editor_opens() {
     for cols in [110u16, 50] {
         // The playing station, from the Now Playing pane and from the menu's NOW PLAYING entry.
         for menu in [false, true] {
-            let app = playing_demo("M83 Radio", menu);
-            let bar = key_bar_line(&app, cols);
+            let mut app = playing_demo("M83 Radio", menu);
+            let bar = key_bar_line(&mut app, cols);
             assert!(!bar.contains("Menu Size") && !bar.contains("{/}"), "{cols}: {bar}");
             assert!(bar.contains("r  Rename") && bar.contains("e  Edit"), "{cols} menu={menu}: {bar}");
             assert!(bar.contains("?  Help") && bar.contains("Q  Quit"), "{cols}: {bar}");
@@ -277,22 +277,22 @@ fn the_key_bar_has_no_menu_size_hint_and_shows_e_where_the_editor_opens() {
         let id = app.stations.iter().find(|s| s.name == "Lo-Fi Beats").unwrap().id.clone();
         app.config.ui.favorites = vec![Favorite { id, name: "Lo-Fi Beats".into() }];
         app.menu_cursor = app.menu_items().iter().position(|m| matches!(m, MenuItem::Favorite(_))).unwrap();
-        let bar = key_bar_line(&app, cols);
+        let bar = key_bar_line(&mut app, cols);
         assert!(!bar.contains("Menu Size") && bar.contains("?  Help") && bar.contains("Q  Quit"), "{cols}: {bar}");
         assert!(bar.contains("r  Rename") && bar.contains("e  Edit"), "{cols} favorite: {bar}");
         // Never for a station Pandora won't let you change, nor on the plain Stations entry.
-        let genre = playing_demo("Today's Hits", false);
-        assert!(!key_bar_line(&genre, cols).contains("Edit"), "genre station");
+        let mut genre = playing_demo("Today's Hits", false);
+        assert!(!key_bar_line(&mut genre, cols).contains("Edit"), "genre station");
         // The Stations page: a station row has r and e too.
         let mut app = playing_demo("M83 Radio", true);
         app.view = View::Stations;
         app.focus = crate::app::Focus::Content;
         app.stations_cursor = 2;
-        let bar = key_bar_line(&app, cols);
+        let bar = key_bar_line(&mut app, cols);
         assert!(bar.contains("r  Rename") && bar.contains("e  Edit") && !bar.contains("Menu Size"), "{bar}");
         app.focus = crate::app::Focus::Menu;
         app.menu_cursor = app.menu_items().iter().position(|m| *m == MenuItem::Stations).unwrap();
-        let bar = key_bar_line(&app, cols);
+        let bar = key_bar_line(&mut app, cols);
         assert!(!bar.contains("Edit") && !bar.contains("Menu Size"), "{cols} Stations entry: {bar}");
     }
 }
@@ -302,7 +302,7 @@ fn the_key_bar_is_centred_with_as_much_room_on_the_left_as_the_right() {
     let mut app = demo();
     app.settle(std::time::Duration::from_millis(400));
     for cols in [200u16, 140, 120, 100, 80, 60, 40] {
-        let lines = screen(&app, cols, 36).0;
+        let lines = screen(&mut app, cols, 36).0;
         let bar = lines.last().expect("the key bar");
         let left = bar.chars().take_while(|c| *c == ' ').count();
         let right = bar.chars().rev().take_while(|c| *c == ' ').count();
@@ -325,15 +325,15 @@ fn r_and_e_still_do_nothing_on_up_next_and_history() {
 
 #[test]
 fn the_seeds_tab_says_what_seeds_are_and_a_short_screen_goes_without() {
-    let app = editor_demo();
-    let tall = screen(&app, 120, 40).0.join("\n");
+    let mut app = editor_demo();
+    let tall = screen(&mut app, 120, 40).0.join("\n");
     for line in EDITOR_SEEDS_INTRO {
         assert!(tall.contains(line), "intro line {line:?}\n{tall}");
     }
     assert!(tall.contains("Seeds (") && tall.contains("1 of "), "the list is still there\n{tall}");
     // The two lines are dim and never longer than the popup is wide.
     assert!(EDITOR_SEEDS_INTRO.iter().all(|l| l.width() <= 74), "fits the 76-cell popup");
-    let short = screen(&app, 120, 18).0.join("\n");
+    let short = screen(&mut app, 120, 18).0.join("\n");
     assert!(!short.contains("plays music like") && short.contains("Seeds ("), "dropped when short\n{short}");
 }
 
@@ -343,7 +343,7 @@ fn the_thumbs_tab_has_column_heads_and_dates_that_line_up_under_thumbed_on() {
     let mut app = editor_demo();
     app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     app.settle(std::time::Duration::from_millis(300));
-    let lines = screen(&app, 120, 40).0;
+    let lines = screen(&mut app, 120, 40).0;
     let text = lines.join("\n");
     assert!(text.contains("Songs you gave a thumbs up") && !text.contains("press t"), "{text}");
     let head = lines.iter().find(|l| l.contains(EDITOR_THUMBS_SONG)).expect("the header row");
@@ -363,15 +363,15 @@ fn the_thumbs_tab_has_column_heads_and_dates_that_line_up_under_thumbed_on() {
     // The thumbs-down side says so, and the header is dropped on a short screen.
     app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     app.settle(std::time::Duration::from_millis(300));
-    let down = screen(&app, 120, 40).0.join("\n");
+    let down = screen(&mut app, 120, 40).0.join("\n");
     assert!(down.contains("Songs you gave a thumbs down") && !down.contains("press t"), "{down}");
     assert!(down.contains(EDITOR_THUMBS_SONG) && down.contains(EDITOR_THUMBS_DATE), "{down}");
-    let short = screen(&app, 120, 16).0.join("\n");
+    let short = screen(&mut app, 120, 16).0.join("\n");
     assert!(!short.contains(EDITOR_THUMBS_DATE) && short.contains("Songs you gave"), "{short}");
 }
 
 /// The editor's tab row and its key bar, as drawn.
-fn editor_tab_row(app: &App, cols: u16, rows: u16) -> String {
+fn editor_tab_row(app: &mut App, cols: u16, rows: u16) -> String {
     let lines = screen(app, cols, rows).0;
     let at = lines.iter().position(|l| l.contains("Edit station")).expect("the editor");
     lines[at + 2].split_whitespace().collect::<Vec<_>>().join(" ")
@@ -379,8 +379,8 @@ fn editor_tab_row(app: &App, cols: u16, rows: u16) -> String {
 
 #[test]
 fn now_playing_keeps_three_blank_columns_inside_each_side() {
-    let app = playing_demo("Today's Hits", false);
-    let lines = screen(&app, 160, 40).0;
+    let mut app = playing_demo("Today's Hits", false);
+    let lines = screen(&mut app, 160, 40).0;
     let top = lines.iter().position(|l| l.contains("Now Playing ·")).expect("the card");
     let chars: Vec<char> = lines[top].chars().collect();
     let title_at = lines[top].find("Now Playing").map(|b| lines[top][..b].chars().count()).unwrap();
@@ -406,11 +406,11 @@ fn a_genre_station_editor_shows_only_the_two_thumbs_tabs() {
     let ed = app.editor.as_mut().unwrap();
     ed.thumbs_only = true;
     ed.tab = EditorTab::ThumbsDown;
-    let row = editor_tab_row(&app, 120, 40);
+    let row = editor_tab_row(&mut app, 120, 40);
     assert!(!row.contains("Seeds") && row.contains("Thumbs Up") && row.contains("Thumbs Down"), "{row}");
-    let bar = key_bar_line(&app, 120);
+    let bar = key_bar_line(&mut app, 120);
     assert!(bar.contains("Tab  Thumbs Up") && !bar.contains("Add Seed"), "{bar}");
-    let text = screen(&app, 120, 40).0.join("\n");
+    let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("x = take back · Tab = Thumbs Up"), "{text}");
 }
 
@@ -427,32 +427,32 @@ fn the_editor_has_three_tabs_with_the_thumb_icons_and_counts_in_their_titles() {
     // Wide: names and counts (the counts are in before a tab is opened).
     let ed = app.editor.as_ref().unwrap();
     let (seeds, ups, downs) = (ed.seed_list().len(), ed.count(true).unwrap(), ed.count(false).unwrap());
-    let row = editor_tab_row(&app, 120, 40);
+    let row = editor_tab_row(&mut app, 120, 40);
     assert!(row.contains(&format!("Seeds ({seeds}) {up} Thumbs Up {ups} {down} Thumbs Down {downs}")), "{row}");
     // Narrow: just the icon and the count, still three tabs.
-    let row = editor_tab_row(&app, 50, 30);
+    let row = editor_tab_row(&mut app, 50, 30);
     assert!(
         row.contains(&format!("{up} {ups}")) && row.contains(&format!("{down} {downs}")) && !row.contains("Thumbs"),
         "{row}"
     );
     // The hints name the tab Tab goes to, and `t` is gone from them.
-    let bar = key_bar_line(&app, 120);
+    let bar = key_bar_line(&mut app, 120);
     assert!(bar.contains("Tab  Thumbs Up") && bar.contains("a  Add Seed"), "{bar}");
-    let text = screen(&app, 120, 40).0.join("\n");
+    let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("Tab = Thumbs Up") && !text.contains("t = up/down"), "{text}");
     press(&mut app, KeyCode::Tab);
-    let bar = key_bar_line(&app, 120);
+    let bar = key_bar_line(&mut app, 120);
     assert!(bar.contains("Tab  Thumbs Down") && bar.contains("x  Take Back"), "{bar}");
     assert!(!bar.contains("Show Down") && !bar.contains("t  "), "{bar}");
-    let text = screen(&app, 120, 40).0.join("\n");
+    let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("x = take back · Tab = Thumbs Down") && !text.contains("t = up/down"), "{text}");
     press(&mut app, KeyCode::Tab);
-    let bar = key_bar_line(&app, 120);
+    let bar = key_bar_line(&mut app, 120);
     assert!(bar.contains("Tab  Seeds") && bar.contains("x  Take Back"), "{bar}");
-    let text = screen(&app, 120, 40).0.join("\n");
+    let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("x = take back · Tab = Seeds"), "{text}");
     // Once a list is loaded its total is the count in the title.
-    let row = editor_tab_row(&app, 120, 40);
+    let row = editor_tab_row(&mut app, 120, 40);
     assert!(row.contains(&format!("{down} Thumbs Down {downs}")), "{row}");
     press(&mut app, KeyCode::Tab);
     assert_eq!(app.editor.as_ref().unwrap().tab, crate::app::EditorTab::Seeds);
@@ -468,7 +468,7 @@ fn a_thumb_without_a_date_shows_a_blank_not_junk() {
     let list = &mut ed.up;
     list.items[0].date = String::new();
     list.items[1].date = "not a date".to_owned();
-    let text = screen(&app, 120, 40).0.join("\n");
+    let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(!text.contains("not a date") && !text.contains("None"), "{text}");
 }
 
@@ -477,7 +477,7 @@ fn help_explains_seeds_and_thumbs_under_the_editor() {
     for (cols, rows) in [(255u16, 70u16), (160, 40)] {
         let mut app = demo();
         app.open_help();
-        let text = screen(&app, cols, rows).0.join("\n");
+        let text = screen(&mut app, cols, rows).0.join("\n");
         assert!(text.contains("Seeds: the artists, songs and genres it plays music like"), "{cols}x{rows}\n{text}");
         assert!(
             text.contains("Thumbs Up / Down: songs you rated and the day you thumbed each"),
@@ -503,7 +503,7 @@ fn every_station_row_starts_its_name_in_the_same_column() {
         app.current_station = app.stations.iter().find(|s| s.name == "Lo-Fi Beats").map(|s| s.id.clone());
         for cursor in [0, 3] {
             app.stations_cursor = cursor; // the highlighted row lines up too
-            let buffer = screen(&app, 120, 34).1;
+            let buffer = screen(&mut app, 120, 34).1;
             let offsets: Vec<(&str, Option<u16>)> = [
                 "Shuffle",          // starred, no kind icon
                 "Thumbprint Radio", // yours, no star
@@ -523,7 +523,7 @@ fn every_station_row_starts_its_name_in_the_same_column() {
         }
         // The logo and person sit in one column: same x on every row that has one.
         let ic = icons(set);
-        let buffer = screen(&app, 120, 34).1;
+        let buffer = screen(&mut app, 120, 34).1;
         let x_of = |glyph: &str, name: &str| {
             (0..buffer.area.height).find_map(|y| {
                 let line: String = (32..120).map(|i| buffer[(i, y)].symbol()).collect();
@@ -550,7 +550,7 @@ fn favorites_in_the_menu_line_up_and_the_add_row_sits_over_the_radio_icons() {
             app.config.ui.favorites.push(Favorite { id: st.id.clone(), name: st.name.clone() });
         }
         app.config.ui.favorites.push(Favorite { id: "gone".into(), name: "Quiet Storm".into() });
-        let buffer = screen(&app, 120, 34).1;
+        let buffer = screen(&mut app, 120, 34).1;
         let at: Vec<_> = ["Today's Hits", "M83 Radio", "Shuffle", "Quiet Storm"]
             .iter()
             .map(|n| (*n, name_column(&buffer, n, 1, 29)))
@@ -567,7 +567,7 @@ fn a_narrow_stations_list_cuts_the_names_and_keeps_the_icons() {
         app.config.ui.icons = set;
         app.view = View::Stations;
         let ic = icons(set);
-        let (lines, _) = screen(&app, 56, 34);
+        let (lines, _) = screen(&mut app, 56, 34);
         let row = lines.iter().find(|l| l.contains(ic.genre_station)).expect("the genre row");
         assert!(row.contains(ic.station), "{set:?}: {row}");
         let rows: Vec<&String> = lines.iter().filter(|l| l.contains(ic.own_station)).collect();
@@ -582,7 +582,7 @@ fn the_genre_popup_explains_the_problem_and_both_icons() {
     for set in [IconSet::Emoji, IconSet::Nerd, IconSet::Unicode] {
         let ic = icons(set);
         let mut app = genre_popup_demo(set);
-        let (lines, _) = screen(&app, 110, 34);
+        let (lines, _) = screen(&mut app, 110, 34);
         let text = lines.join("\n");
         for want in [
             "Genre station ─",
@@ -610,13 +610,13 @@ fn the_genre_popup_explains_the_problem_and_both_icons() {
         );
         // The box ticks with Space.
         app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-        let text = screen(&app, 110, 34).0.join("\n");
+        let text = screen(&mut app, 110, 34).0.join("\n");
         assert!(text.contains("[x] Don't show this again") && !text.contains("[ ] Don't"), "{text}");
     }
     // A small terminal keeps the box, the checkbox and the keys.
-    let app = genre_popup_demo(IconSet::Unicode);
+    let mut app = genre_popup_demo(IconSet::Unicode);
     for (cols, rows) in [(60u16, 24u16), (60, 18), (50, 16)] {
-        let lines = screen(&app, cols, rows).0;
+        let lines = screen(&mut app, cols, rows).0;
         let text = lines.join("\n");
         assert!(text.contains("Genre station ─") && text.contains("[ ] Don't show"), "{cols}x{rows}:\n{text}");
         // The hint line is the first to go on a very short screen; the key bar always has the keys.
@@ -636,7 +636,7 @@ fn help_explains_the_station_icons_in_the_active_set() {
         // Short screens scroll Help; the icons and footer are at its end.
         app.on_key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Char('G')));
         for (cols, rows) in [(160u16, 40u16), (255, 70)] {
-            let lines = screen(&app, cols, rows).0;
+            let lines = screen(&mut app, cols, rows).0;
             let all = lines.join("\n");
             assert!(all.contains("STATION ICONS"), "{set:?} {cols}x{rows}:\n{all}");
             let row = |what: &str| lines.iter().find(|l| l.contains(what)).cloned().unwrap_or_default();
@@ -668,7 +668,7 @@ fn the_settings_page_lists_the_genre_popup_row() {
     app.view = View::Settings;
     app.focus = crate::app::Focus::Content;
     app.settings_cursor = crate::app::Setting::at(crate::app::Setting::GenrePopup);
-    let text = screen(&app, 120, 40).0.join("\n");
+    let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("Genre station edit popup"), "{text}");
     let line = text.lines().find(|l| l.contains("Genre station edit popup")).unwrap();
     assert!(line.contains(" on"), "{line}");
@@ -683,7 +683,7 @@ fn the_password_is_asked_in_a_popup_that_says_where_it_goes() {
     app.keychain_state = KeychainState::NotSaved;
     app.ask_password_for_snapshot("s3cret");
     assert!(app.overlay_open(), "a popup: the page behind is dimmed and its keys are off");
-    let (cursor, lines) = cursor_of(&app, 110, 34);
+    let (cursor, lines) = cursor_of(&mut app, 110, 34);
     let text = lines.join("\n");
     for want in [
         "Pandora password",
@@ -703,19 +703,19 @@ fn the_password_is_asked_in_a_popup_that_says_where_it_goes() {
     assert!(lines[row].chars().nth(usize::from(cursor.x) - 1) == Some('•'), "right after the dots: {}", lines[row]);
     // Without a keychain it says the password lasts this session only.
     app.keychain_state = KeychainState::Unavailable;
-    let text = screen(&app, 110, 34).0.join("\n");
+    let text = screen(&mut app, 110, 34).0.join("\n");
     assert!(text.contains("No system keychain was found"), "{text}");
     assert!(text.contains("session only"), "{text}");
     assert!(text.contains("never written to config.toml"), "{text}");
     assert!(text.contains("Enter = log in ·") && !text.contains("and save"), "{text}");
     // Keychain not asked yet: it says what it will try.
     app.keychain_state = KeychainState::Unknown;
-    let text = screen(&app, 110, 34).0.join("\n");
+    let text = screen(&mut app, 110, 34).0.join("\n");
     assert!(text.contains("If there is no keychain it is kept for this session only"), "{text}");
     // The risk notice is in every variant (checked on one line: it wraps).
     for state in [KeychainState::NotSaved, KeychainState::Unavailable, KeychainState::Unknown] {
         app.keychain_state = state;
-        let (_, lines) = cursor_of(&app, 110, 34);
+        let (_, lines) = cursor_of(&mut app, 110, 34);
         let flat: String =
             lines.iter().map(|l| l.chars().skip(22).take(66).collect::<String>()).collect::<Vec<_>>().join(" ");
         let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -725,7 +725,7 @@ fn the_password_is_asked_in_a_popup_that_says_where_it_goes() {
     }
     // Small terminals still fit all of it, with the input and its cursor on screen.
     for (cols, rows) in [(60u16, 20u16), (60, 24), (70, 18), (50, 16)] {
-        let (cursor, lines) = cursor_of(&app, cols, rows);
+        let (cursor, lines) = cursor_of(&mut app, cols, rows);
         let text = lines.join("\n");
         assert!(text.contains("Pandora password"), "{cols}x{rows}:\n{text}");
         assert!(rows < 18 || text.contains("Esc = cancel"), "{cols}x{rows}:\n{text}");
@@ -735,16 +735,16 @@ fn the_password_is_asked_in_a_popup_that_says_where_it_goes() {
     }
     app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.prompt.is_none() && !app.overlay_open(), "Esc closes it");
-    let text = screen(&app, 110, 34).0.join("\n");
+    let text = screen(&mut app, 110, 34).0.join("\n");
     assert!(!text.contains("Pandora password"), "{text}");
     app.open_prompt(Prompt::Email);
     assert!(app.prompt == Some(Prompt::Email) && !app.overlay_open(), "the email box is not a popup");
-    let text = screen(&app, 110, 34).0.join("\n");
+    let text = screen(&mut app, 110, 34).0.join("\n");
     assert!(!text.contains("Pandora password"), "the email stays in its own box: {text}");
 }
 
 /// The words inside the "Turn off Good Vibes Only?" popup, joined by single spaces.
-fn good_vibes_popup_words(app: &App, cols: u16, rows: u16) -> Option<String> {
+fn good_vibes_popup_words(app: &mut App, cols: u16, rows: u16) -> Option<String> {
     let lines = screen(app, cols, rows).0;
     let width = usize::from(66.min(cols.saturating_sub(4)).max(cols.min(8)));
     let top = lines.iter().position(|l| l.contains("Turn off Good Vibes"))?;
@@ -769,13 +769,13 @@ fn turning_good_vibes_only_off_asks_first_in_a_risk_popup_that_fits_small_termin
     app.focus = crate::app::Focus::Content;
     app.settings_cursor = crate::app::Setting::at(crate::app::Setting::GoodVibesOnly);
     // The row and its description use the new name.
-    let text = screen(&app, 120, 40).0.join("\n");
+    let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("Good Vibes Only") && !text.contains("Good Guy"), "{text}");
-    assert!(good_vibes_popup_words(&app, 120, 40).is_none(), "no popup yet");
+    assert!(good_vibes_popup_words(&mut app, 120, 40).is_none(), "no popup yet");
     // On → Muted asks first, with its own gray-area notice.
     app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.confirm_good_vibes, Some(GoodVibes::Muted));
-    let text = screen(&app, 120, 40).0.join("\n");
+    let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("Mute Pandora's ads?") && text.contains("Enter = mute them anyway"), "{text}");
     assert!(text.contains("gray area") && text.contains("Mute Anyway"), "{text}");
     app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -784,26 +784,26 @@ fn turning_good_vibes_only_off_asks_first_in_a_risk_popup_that_fits_small_termin
     app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.confirm_good_vibes == Some(GoodVibes::Off) && app.overlay_open());
     assert_eq!(app.config.player.good_vibes_only, GoodVibes::Muted);
-    let text = screen(&app, 120, 40).0.join("\n");
+    let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("Turn off Good Vibes Only?") && text.contains("Enter = turn it off anyway"), "{text}");
     assert!(text.contains("Esc = keep it as it was") && !text.contains("http"), "{text}");
     assert!(text.contains("Turn Off Anyway") && text.contains("Keep As Is"), "the key bar: {text}");
     // The whole risk notice is there, at any size that has room for it.
     for (cols, rows) in [(120u16, 40u16), (80, 24), (60, 20), (50, 16), (40, 16), (40, 14)] {
-        let words = good_vibes_popup_words(&app, cols, rows).unwrap_or_default();
+        let words = good_vibes_popup_words(&mut app, cols, rows).unwrap_or_default();
         assert!(words.contains(GOOD_VIBES_DISCLAIMER), "{cols}x{rows}: {words}");
         assert!(words.contains("Esc = keep"), "{cols}x{rows}: {words}");
     }
     // A tiny terminal still draws a popup inside the screen, from the start of the notice.
     for (cols, rows) in [(30u16, 8u16), (24, 6)] {
-        let (lines, _) = screen(&app, cols, rows);
+        let (lines, _) = screen(&mut app, cols, rows);
         assert!(lines.iter().any(|l| l.contains("Turn off")), "{cols}x{rows}");
         assert!(lines.iter().any(|l| l.contains("Skipping")), "{cols}x{rows}: {lines:?}");
     }
     // Esc leaves it on, closes the popup; Enter in a second round turns it off.
     app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.confirm_good_vibes.is_none() && app.config.player.good_vibes_only == GoodVibes::Muted);
-    assert!(!screen(&app, 120, 40).0.join("\n").contains("Turn off Good Vibes Only?"));
+    assert!(!screen(&mut app, 120, 40).0.join("\n").contains("Turn off Good Vibes Only?"));
 }
 
 #[test]
@@ -815,17 +815,17 @@ fn the_rename_box_edits_in_the_middle_and_draws_the_cursor_there() {
     app.on_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
     press(&mut app, KeyCode::Char('r'));
     let name = app.rename.as_ref().unwrap().text.text().to_owned();
-    let (end, lines) = cursor_of(&app, 120, 36);
+    let (end, lines) = cursor_of(&mut app, 120, 36);
     let row = lines.iter().position(|l| l.contains(" › ")).expect("the input row");
     assert_eq!(usize::from(end.y), row);
     // Home puts the cursor on the first letter; typing goes in before it.
     press(&mut app, KeyCode::Home);
-    let (home, _) = cursor_of(&app, 120, 36);
+    let (home, _) = cursor_of(&mut app, 120, 36);
     assert_eq!(end.x - home.x, name.width() as u16, "the cursor moved to the start");
     press(&mut app, KeyCode::Char('>'));
     press(&mut app, KeyCode::Right);
     press(&mut app, KeyCode::Delete);
-    let (moved, lines) = cursor_of(&app, 120, 36);
+    let (moved, lines) = cursor_of(&mut app, 120, 36);
     let shown = lines[row].split(" › ").nth(1).unwrap().trim_end_matches(['│', ' ']).to_owned();
     let mut chars = name.chars();
     let first = chars.next().unwrap();
@@ -844,12 +844,12 @@ fn the_password_prompt_masks_and_keeps_the_cursor_where_it_is() {
     for c in "secret".chars() {
         app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
-    let (end, lines) = cursor_of(&app, 100, 30);
+    let (end, lines) = cursor_of(&mut app, 100, 30);
     assert!(lines.iter().any(|l| l.contains("••••••")), "masked");
     assert!(!lines.iter().any(|l| l.contains("secret")));
     app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
     app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
-    let (back, _) = cursor_of(&app, 100, 30);
+    let (back, _) = cursor_of(&mut app, 100, 30);
     assert_eq!(end.x - back.x, 2);
     assert_eq!(end.y, back.y);
 }
@@ -859,7 +859,7 @@ fn the_time_line_ends_as_far_from_the_right_border_as_the_cover_starts_from_the_
     let mut app = demo();
     app.settle(std::time::Duration::from_millis(300));
     for (cols, rows) in [(200u16, 50u16), (160, 40), (120, 36)] {
-        let (lines, _) = screen(&app, cols, rows);
+        let (lines, _) = screen(&mut app, cols, rows);
         let grid: Vec<Vec<char>> = lines.iter().map(|l| l.chars().collect()).collect();
         let y = grid.iter().position(|r| r.contains(&'●')).expect("time line");
         let row = &grid[y];
@@ -889,8 +889,8 @@ fn the_half_block_stand_in_fills_the_pictures_rectangle_and_nothing_moves() {
                 app.open_help();
             }
             app.art.set_overlay(help);
-            let (lines, buf) = screen(&app, cols, rows);
-            let cover = app.art.last_cover.get();
+            let (lines, buf) = screen(&mut app, cols, rows);
+            let cover = app.art.last_cover;
             // The time line's total, at its right end (the start may be under Help).
             let time = lines
                 .iter()
@@ -952,7 +952,7 @@ fn a_song_change_under_help_fetches_and_shows_the_new_cover() {
 fn settings_has_no_column_headers_and_starts_with_its_first_section() {
     let mut app = demo();
     app.view = View::Settings;
-    let (lines, _) = screen(&app, 160, 40);
+    let (lines, _) = screen(&mut app, 160, 40);
     let all = lines.join("\n");
     assert!(!all.contains("SETTING") && !all.contains("VALUE"), "{all}");
     let top = lines.iter().position(|l| l.contains("Settings")).unwrap();
@@ -977,9 +977,9 @@ fn a_popup_dims_everything_behind_it_but_not_itself() {
     let mut app = demo();
     app.settle(std::time::Duration::from_millis(300));
     app.art.set_overlay(true);
-    let (_, before) = screen(&app, 255, 70);
+    let (_, before) = screen(&mut app, 255, 70);
     app.open_help();
-    let (lines, after) = screen(&app, 255, 70);
+    let (lines, after) = screen(&mut app, 255, 70);
     let top = lines.iter().position(|l| l.contains("boxvibe Help")).unwrap() as u16;
     let left = lines[top as usize].chars().position(|c| c == '┌' || c == '╭').unwrap_or(0) as u16;
     let brightness = |c: Color| match c {
@@ -1045,11 +1045,11 @@ fn help_fits_its_longest_line_and_its_keys_line_up() {
     let mut app = demo();
     app.open_help();
     for (cols, rows) in [(255u16, 70u16), (160, 40)] {
-        let (lines, _) = screen(&app, cols, rows);
+        let (lines, _) = screen(&mut app, cols, rows);
         let mut end = demo();
         end.open_help();
         end.on_key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Char('G')));
-        let all = lines.join("\n") + "\n" + &screen(&end, cols, rows).0.join("\n");
+        let all = lines.join("\n") + "\n" + &screen(&mut end, cols, rows).0.join("\n");
         for whole in [
             "play the station · open Settings / About",
             "Now Playing: the pane gets the keys",
@@ -1074,7 +1074,7 @@ fn help_fits_its_longest_line_and_its_keys_line_up() {
 #[test]
 fn the_pinned_page_lists_the_pins_and_the_menu_has_its_entry() {
     let mut app = demo();
-    let (lines, _) = screen(&app, 140, 40);
+    let (lines, _) = screen(&mut app, 140, 40);
     assert!(lines.iter().any(|l| l.contains("Pinned")), "the menu entry, shown by default");
     // I still pins, but the bar leaves it to the `.` menu.
     assert!(!key_caps(&app).iter().any(|(k, _)| *k == "I"));
@@ -1086,7 +1086,7 @@ fn the_pinned_page_lists_the_pins_and_the_menu_has_its_entry() {
     let title = app.pins[0].title.clone();
     app.view = View::Pinned;
     app.focus = Focus::Content;
-    let (lines, _) = screen(&app, 140, 40);
+    let (lines, _) = screen(&mut app, 140, 40);
     let all = lines.join("\n");
     assert!(all.contains("Pinned (1)") && all.contains(&title) && all.contains(&app.pins[0].pinned), "{all}");
     assert!(all.contains("device only"), "local-only note: {all}");
@@ -1094,7 +1094,7 @@ fn the_pinned_page_lists_the_pins_and_the_menu_has_its_entry() {
     app.config.ui.pinned_in_menu = false;
     app.view = View::Player;
     app.status.clear();
-    let (lines, _) = screen(&app, 140, 40);
+    let (lines, _) = screen(&mut app, 140, 40);
     assert!(!lines.iter().any(|l| l.contains("Pinned")), "hidden");
 }
 
@@ -1270,7 +1270,7 @@ fn the_cover_draws_in_half_blocks_inside_the_art_box() {
     let song = app.now.clone().expect("a song");
     assert_eq!(app.art.status(&song.cover_art_url), crate::art::Cover::None, "demo cover arrived");
     assert!(app.art.protocol(&song.cover_art_url, crate::art::Look::of(&app.config.ui, app.palette)).is_some());
-    let (lines, _) = screen(&app, 120, 36);
+    let (lines, _) = screen(&mut app, 120, 36);
     let (top, bottom, left, right) = art_box(&app);
     assert!(bottom > top + 2);
     let inside: String = lines[top + 1..bottom]
@@ -1289,7 +1289,7 @@ fn the_cover_draws_in_half_blocks_inside_the_art_box() {
 
 /// What the art box holds, row by row (no border: it is the area itself).
 fn art_rows(app: &App, lines: &[String]) -> Vec<String> {
-    let a = app.art.last_area.get();
+    let a = app.art.last_area;
     lines[a.y as usize..(a.y + a.height) as usize]
         .iter()
         .map(|l| l.chars().skip(a.x as usize).take(a.width as usize).collect())
@@ -1297,14 +1297,14 @@ fn art_rows(app: &App, lines: &[String]) -> Vec<String> {
 }
 
 /// The art box shows just `message`, centred, and no picture or bars.
-fn assert_only_message(app: &App, message: &str) {
+fn assert_only_message(app: &mut App, message: &str) {
     let (lines, _) = screen(app, 120, 36);
-    let rows = art_rows(app, &lines);
+    let rows = art_rows(&*app, &lines);
     let shown: Vec<(usize, &String)> = rows.iter().enumerate().filter(|(_, r)| !r.trim().is_empty()).collect();
     let [(row, text)] = shown[..] else { panic!("one line of text in the art box:\n{}", rows.join("\n")) };
     assert_eq!(text.trim(), message);
     assert_eq!(row, rows.len() / 2, "in the middle, top to bottom");
-    let width = app.art.last_area.get().width as usize;
+    let width = app.art.last_area.width as usize;
     let left = text.chars().take_while(|c| *c == ' ').count();
     let right = width - left - message.width();
     assert!(left.abs_diff(right) <= 1, "centred: {left} left, {right} right");
@@ -1317,17 +1317,17 @@ fn assert_only_message(app: &App, message: &str) {
 fn with_album_art_off_the_space_says_cover_art_off() {
     let mut app = demo();
     app.config.ui.album_art = crate::config::AlbumArt::Off;
-    assert_only_message(&app, "Cover art off");
+    assert_only_message(&mut app, "Cover art off");
     // Playing music changes nothing: there is no visualizer to fall back on.
-    assert_only_message(&app, "Cover art off");
+    assert_only_message(&mut app, "Cover art off");
     // Off by choice wins over a song that has no cover anyway.
     if let Some(song) = app.now.as_mut() {
         song.cover_art_url.clear();
     }
-    assert_only_message(&app, "Cover art off");
+    assert_only_message(&mut app, "Cover art off");
     // Turning it back on says "No cover art" for that song.
     app.config.ui.album_art = crate::config::AlbumArt::Picture;
-    assert_only_message(&app, "No cover art");
+    assert_only_message(&mut app, "No cover art");
 }
 
 #[test]
@@ -1337,10 +1337,10 @@ fn shift_c_flips_between_the_picture_and_cover_art_off() {
     app.config.ui.album_art = crate::config::AlbumArt::Picture;
     app.on_key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT));
     assert_eq!(app.config.ui.album_art, crate::config::AlbumArt::Off);
-    assert_only_message(&app, "Cover art off");
+    assert_only_message(&mut app, "Cover art off");
     app.on_key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT));
     assert_eq!(app.config.ui.album_art, crate::config::AlbumArt::Picture);
-    assert!(!screen(&app, 120, 36).0.join("\n").contains("Cover art off"));
+    assert!(!screen(&mut app, 120, 36).0.join("\n").contains("Cover art off"));
 }
 
 #[test]
@@ -1349,7 +1349,7 @@ fn without_a_cover_the_space_says_so_and_not_a_visualizer() {
     if let Some(song) = app.now.as_mut() {
         song.cover_art_url.clear();
     }
-    assert_only_message(&app, "No cover art");
+    assert_only_message(&mut app, "No cover art");
 }
 
 #[test]
@@ -1358,10 +1358,10 @@ fn a_cover_on_its_way_says_loading_and_a_lost_one_says_no_cover() {
     app.art = crate::art::Art::default();
     let url = app.now.as_ref().map(|s| s.cover_art_url.clone()).unwrap();
     assert!(app.art.want(&url), "the download starts");
-    assert_only_message(&app, "Loading cover art…");
+    assert_only_message(&mut app, "Loading cover art…");
     // Art off while one downloads: nothing is coming, and the space says art is off.
     app.config.ui.album_art = crate::config::AlbumArt::Off;
-    assert_only_message(&app, "Cover art off");
+    assert_only_message(&mut app, "Cover art off");
     // A cover that has been given up on (every try failed).
     app.config.ui.album_art = crate::config::AlbumArt::Picture;
     let mut gone = crate::art::Art::default();
@@ -1369,14 +1369,14 @@ fn a_cover_on_its_way_says_loading_and_a_lost_one_says_no_cover() {
         gone.arrived(url.clone(), None);
     }
     app.art = gone;
-    assert_only_message(&app, "No cover art");
+    assert_only_message(&mut app, "No cover art");
 }
 
 #[test]
 fn the_quit_question_is_vibekits_confirm_with_a_blank_line_above_the_question() {
     let mut app = demo();
     app.ask_quit();
-    let (lines, _) = screen(&app, 120, 36);
+    let (lines, _) = screen(&mut app, 120, 36);
     let top = lines.iter().position(|l| l.contains("┌ Quit ")).expect("quit box");
     assert!(lines[top + 1].contains("│ ") && !lines[top + 1].contains("Quit boxvibe?"), "blank line first");
     assert!(lines[top + 2].contains("Quit boxvibe?"), "{}", lines[top + 2]);
@@ -1394,7 +1394,7 @@ fn a_long_question_wraps_and_cuts_to_fit() {
 fn shift_q_shows_the_quit_box_and_says_q_again_quits() {
     let mut app = demo();
     app.ask_quit();
-    let all = screen(&app, 120, 36).0.join("\n");
+    let all = screen(&mut app, 120, 36).0.join("\n");
     for want in ["Quit boxvibe?", "Quit (y)", "No (n)", "Q again to quit · Esc stay"] {
         assert!(all.contains(want), "{want:?}\n{all}");
     }
@@ -1408,7 +1408,7 @@ fn the_logo_and_version_sit_on_the_menus_top_border() {
     let mut app = demo();
     app.config.ui.icons = crate::config::IconSet::Unicode;
     app.status = "hello status".into();
-    let (lines, buffer) = screen(&app, 120, 36);
+    let (lines, buffer) = screen(&mut app, 120, 36);
     let top = &lines[0];
     assert!(top.starts_with(&format!("┌ {} boxvibe ─", crate::icons::LOGO)), "{top}");
     let menu_end = top.find('┐').unwrap();
@@ -1428,7 +1428,7 @@ fn the_logo_and_version_sit_on_the_menus_top_border() {
 fn help_is_titled_boxvibe_help_and_says_how_to_close() {
     let mut app = demo();
     app.open_help();
-    let all = screen(&app, 120, 40).0.join("\n");
+    let all = screen(&mut app, 120, 40).0.join("\n");
     assert!(all.contains("┌ boxvibe Help "), "{all}");
     assert!(all.contains("? or Esc close") && !all.contains("Any Key"), "{all}");
 }
@@ -1444,14 +1444,14 @@ fn every_border_style_draws_and_the_menu_width_holds() {
         (BorderStyle::None, ' '),
     ] {
         app.config.ui.border_style = style;
-        let (lines, _) = screen(&app, 120, 36);
+        let (lines, _) = screen(&mut app, 120, 36);
         assert_eq!(lines[0].chars().next(), Some(corner), "{style:?}: {}", lines[0]);
         assert!(lines[0].contains("boxvibe") && lines[0].contains("Now Playing"), "titles stay: {}", lines[0]);
     }
     app.config.ui.border_style = BorderStyle::Plain;
     for (width, cols, menu) in [(20, 120, 20), (40, 120, 40), (40, 60, 30)] {
         app.config.ui.menu_width = width;
-        let (lines, _) = screen(&app, cols, 30);
+        let (lines, _) = screen(&mut app, cols, 30);
         let end = lines[0].chars().position(|c| c == '┐').unwrap();
         assert_eq!(end + 1, menu, "menu_width {width} at {cols} columns");
     }
@@ -1462,7 +1462,7 @@ fn now_playing_heads_the_menu_with_an_inset_rule() {
     let mut app = demo();
     app.view = View::Settings;
     app.focus = crate::app::Focus::Content;
-    let (lines, _) = screen(&app, 120, 36);
+    let (lines, _) = screen(&mut app, 120, 36);
     assert!(lines[1].starts_with("│ ▶  NOW PLAYING"), "{}", lines[1]);
     let menu: String = lines[2].chars().take(30).collect();
     assert!(menu.starts_with("│  ──") && menu.ends_with("──  │"), "inset rule: {menu:?}");
@@ -1470,7 +1470,7 @@ fn now_playing_heads_the_menu_with_an_inset_rule() {
     assert!(lines[3].starts_with("│ MY COLLECTION"), "{}", lines[3]);
     // Nothing playing: that rule is absent, and MY COLLECTION is the first row.
     app.current_station = None;
-    let (idle, _) = screen(&app, 120, 36);
+    let (idle, _) = screen(&mut app, 120, 36);
     assert!(idle[1].starts_with("│ MY COLLECTION"), "no rule before playback: {}", idle[1]);
     assert!(!idle[1].contains('─'), "{}", idle[1]);
     if std::env::var_os("BOXVIBE_SHOTS").is_some() {
@@ -1480,7 +1480,7 @@ fn now_playing_heads_the_menu_with_an_inset_rule() {
         let mut genres = demo();
         genres.show_browse_section("Browse Genres");
         genres.settle(std::time::Duration::from_millis(400));
-        let (page, _) = screen(&genres, 120, 36);
+        let (page, _) = screen(&mut genres, 120, 36);
         let _ = std::fs::write("/opt/cursor/artifacts/genres.txt", page.join("\n"));
     }
     assert!(lines[4].contains("My Stations ("), "{}", lines[4]);
@@ -1493,7 +1493,7 @@ fn song_panes_fit_ten_rows_and_now_playing_takes_the_rest() {
     // Side by side: Up Next and History are SONG_PANE (13) tall, Now Playing the rest.
     for (rows, want) in [(36, 21), (50, 35), (20, 11)] {
         assert_eq!(now_playing_height(rows - 2, false), want, "{rows} rows");
-        let (lines, _) = screen(&app, 120, rows);
+        let (lines, _) = screen(&mut app, 120, rows);
         let up = lines.iter().position(|l| l.contains("Up Next (")).expect("Up Next");
         assert_eq!(up, usize::from(want), "Up Next right under Now Playing");
     }
@@ -1508,7 +1508,7 @@ fn song_panes_fit_ten_rows_and_now_playing_takes_the_rest() {
         app.history.insert(0, s);
     }
     app.history.truncate(10);
-    let (lines, _) = screen(&app, 120, 36);
+    let (lines, _) = screen(&mut app, 120, 36);
     let hist = lines.iter().position(|l| l.contains("History (")).unwrap();
     assert!(lines[hist + 11].contains("Old song"), "10th row: {}", lines[hist + 11]);
     assert!(lines[hist + 12].contains('└') || lines[hist + 12].contains('╰'), "{}", lines[hist + 12]);
@@ -1517,27 +1517,27 @@ fn song_panes_fit_ten_rows_and_now_playing_takes_the_rest() {
 #[test]
 fn stations_page_and_favorites_section() {
     let mut app = demo();
-    let (lines, _) = screen(&app, 120, 36);
+    let (lines, _) = screen(&mut app, 120, 36);
     assert!(!lines.iter().any(|l| l.contains("FAVORITES")), "hidden while empty");
     let fav = app.stations[1].clone();
     app.config.ui.favorites.push(crate::config::Favorite { id: fav.id.clone(), name: fav.name.clone() });
     // Starred but logged out: the section is not there at all.
     let stations = std::mem::take(&mut app.stations);
     app.session = crate::app::Session::LoggedOut;
-    let (lines, _) = screen(&app, 120, 36);
+    let (lines, _) = screen(&mut app, 120, 36);
     assert!(!lines.iter().any(|l| l.contains("FAVORITES")), "hidden while logged out");
     // Signed in, before the list arrives: the heading stays and a loading
     // row stands in, rather than rows with a blank where the Pandora /
     // your-own mark goes.
     app.session = crate::app::Session::LoggedIn;
-    let (lines, _) = screen(&app, 120, 36);
+    let (lines, _) = screen(&mut app, 120, 36);
     assert!(lines.iter().any(|l| l.starts_with("│ FAVORITES (1)")), "the heading stays");
     assert!(lines.iter().any(|l| l.contains("Loading favorites")), "a loading row stands in");
     assert!(!lines.iter().any(|l| l.contains(&fav.name)), "no row until the list arrives");
     app.stations = stations;
     app.view = View::Stations;
     app.focus = crate::app::Focus::Content;
-    let (lines, _) = screen(&app, 120, 36);
+    let (lines, _) = screen(&mut app, 120, 36);
     assert!(lines.iter().any(|l| l.starts_with("│ FAVORITES (1)")), "the menu's section");
     let side = |l: &String, menu: bool| -> String {
         if menu { l.chars().take(30).collect() } else { l.chars().skip(30).collect() }
@@ -1574,7 +1574,7 @@ fn a_station_icon_sits_between_the_star_and_the_name() {
         assert_eq!((ic.genre_station, ic.own_station), (logo, person));
         assert_eq!(ic.genre_station, crate::icons::LOGO, "the same icon as the logo");
         app.config.ui.icons = set;
-        let (lines, _) = screen(&app, 120, 36);
+        let (lines, _) = screen(&mut app, 120, 36);
         let row = |name: &str| {
             let page = lines.iter().map(|l| l.chars().skip(30).collect::<String>());
             page.into_iter().find(|l| l.contains(name)).unwrap()
@@ -1598,11 +1598,11 @@ fn a_station_icon_sits_between_the_star_and_the_name() {
     // Favorites in the menu too, once the station is loaded.
     app.config.ui.icons = IconSet::Unicode;
     app.config.ui.favorites.push(crate::config::Favorite { id: genre.id.clone(), name: genre.name.clone() });
-    let (lines, _) = screen(&app, 120, 36);
+    let (lines, _) = screen(&mut app, 120, 36);
     let menu: Vec<String> = lines.iter().map(|l| l.chars().take(30).collect()).collect();
     assert!(menu.iter().any(|l| l.contains("\u{f1b2}") && l.contains("Today's Hits")), "{menu:#?}");
     // A narrow list cuts the name, never the icon.
-    let (lines, _) = screen(&app, 52, 36);
+    let (lines, _) = screen(&mut app, 52, 36);
     let row = lines.iter().rfind(|l| l.contains("Today")).unwrap();
     assert!(row.find("\u{f1b2}").unwrap() < row.find("Today").unwrap(), "{row}");
 }
@@ -1616,7 +1616,7 @@ fn the_browse_genres_page_shows_neither_station_icon() {
     for set in [IconSet::Emoji, IconSet::Nerd, IconSet::Unicode] {
         app.config.ui.icons = set;
         let ic = icons(set);
-        let (lines, _) = screen(&app, 120, 36);
+        let (lines, _) = screen(&mut app, 120, 36);
         let page: String = lines.iter().map(|l| l.chars().skip(30).collect::<String>()).collect::<Vec<_>>().join("\n");
         assert!(page.contains("Browse Genres") || page.contains("Synthwave"), "{page}");
         assert!(!page.contains(ic.genre_station) && !page.contains(ic.own_station), "{set:?}: {page}");
@@ -1625,8 +1625,8 @@ fn the_browse_genres_page_shows_neither_station_icon() {
 
 #[test]
 fn a_blank_column_separates_the_menu_from_the_page() {
-    let app = demo();
-    let (lines, _) = screen(&app, 120, 36);
+    let mut app = demo();
+    let (lines, _) = screen(&mut app, 120, 36);
     let top: Vec<char> = lines[0].chars().collect();
     let end = top.iter().position(|c| *c == '┐').unwrap();
     assert_eq!(end + 1, usize::from(menu_width(&app, 120)), "the menu keeps its width: {}", lines[0]);
@@ -1636,8 +1636,8 @@ fn a_blank_column_separates_the_menu_from_the_page() {
 
 #[test]
 fn up_next_and_history_sit_side_by_side() {
-    let app = demo();
-    let (lines, _) = screen(&app, 120, 36);
+    let mut app = demo();
+    let (lines, _) = screen(&mut app, 120, 36);
     let row = lines.iter().find(|l| l.contains("Up Next (")).expect("Up Next pane");
     let (next, history) = (row.find("Up Next").unwrap(), row.find("History (").expect("on the same row"));
     assert!(next < history, "{row}");
@@ -1647,7 +1647,7 @@ fn up_next_and_history_sit_side_by_side() {
 fn menu_text_is_left_justified_like_tubevibe() {
     let mut app = demo();
     app.config.ui.icons = crate::config::IconSet::Unicode;
-    let (lines, _) = screen(&app, 120, 36);
+    let (lines, _) = screen(&mut app, 120, 36);
     for word in ["NOW PLAYING", "My Stations", "Settings", "About", "Quit"] {
         let line = lines.iter().find(|l| l.chars().take(30).collect::<String>().contains(word)).expect(word);
         let menu: Vec<char> = line.chars().take(30).collect();
@@ -1658,9 +1658,9 @@ fn menu_text_is_left_justified_like_tubevibe() {
 
 #[test]
 fn up_next_and_history_stack_when_narrow() {
-    let app = demo();
+    let mut app = demo();
     assert!(stack_songs(STACK_BELOW - 1) && !stack_songs(STACK_BELOW));
-    let (lines, _) = screen(&app, 100, 40);
+    let (lines, _) = screen(&mut app, 100, 40);
     let next = lines.iter().position(|l| l.contains("Up Next (")).expect("Up Next");
     let history = lines.iter().position(|l| l.contains("History (")).expect("History");
     assert!(history > next, "History under Up Next on a narrow window");
@@ -1678,7 +1678,7 @@ fn long_song_text_is_cut_and_the_rating_stays_visible() {
     }
     app.history[0].rating = Rating::Up;
     for cols in [80u16, 100, 120, 160] {
-        let (lines, _) = screen(&app, cols, 40);
+        let (lines, _) = screen(&mut app, cols, 40);
         let rated = lines.iter().any(|l| l.contains("liked"));
         assert!(rated, "{cols} cols: the rating shows: {lines:#?}");
         assert!(lines.iter().any(|l| l.contains('…')), "{cols} cols: cut with an ellipsis");
@@ -1696,7 +1696,7 @@ fn the_account_sits_at_the_right_of_the_status_bar() {
     app.config.pandora.username = "toby@example.com".into();
     app.status = "hello status".into();
     app.session = Session::LoggedIn;
-    let (lines, buffer) = screen(&app, 120, 36);
+    let (lines, buffer) = screen(&mut app, 120, 36);
     let bar = &lines[34];
     assert!(bar.starts_with(" hello status"), "{bar}");
     assert!(bar.trim_end().ends_with("Logged In As: toby@example.com"), "{bar}");
@@ -1705,7 +1705,7 @@ fn the_account_sits_at_the_right_of_the_status_bar() {
     assert_eq!(buffer[(x, 34)].fg, app.palette.blue, "tubevibe's account colour");
     // Narrow, with a long status: both cut, never overlapping.
     app.status = "a very long status message that goes on and on and on".into();
-    let (lines, _) = screen(&app, 40, 36);
+    let (lines, _) = screen(&mut app, 40, 36);
     let bar = &lines[34];
     assert!(bar.contains('…') && bar.contains('@'), "{bar}");
     assert!(bar.trim_end().ends_with("toby@example.com"), "narrow: just the email, whole: {bar}");
@@ -1715,7 +1715,7 @@ fn the_account_sits_at_the_right_of_the_status_bar() {
     assert!(status_end < bar.find('@').unwrap());
     // Logged out: nothing on the right.
     app.session = Session::LoggedOut;
-    let (lines, _) = screen(&app, 120, 36);
+    let (lines, _) = screen(&mut app, 120, 36);
     assert!(!lines[34].contains("toby@"), "{}", lines[34]);
 }
 
@@ -1730,29 +1730,29 @@ fn the_status_bar_shows_the_look_and_the_sleep_timer_left_of_the_account_and_dro
     app.config.ui.art_tint = crate::config::ArtTint::Duotone;
     app.session = Session::LoggedIn;
     app.status = "hi".into();
-    let bar = screen(&app, 200, 36).0[34].clone();
+    let bar = screen(&mut app, 200, 36).0[34].clone();
     assert!(
         bar.trim_end()
             .ends_with("Gruvbox · Art Picture · 8-bit · Tint Duotone · MP3 192 kbps · Logged In As: toby@example.com"),
         "{bar}"
     );
     // The look is in the account's colour; the separators stay muted.
-    let (lines, buffer) = screen(&app, 200, 36);
+    let (lines, buffer) = screen(&mut app, 200, 36);
     let col = |s: &str| lines[34].chars().take(lines[34].find(s).unwrap()).count() as u16;
     for label in ["Gruvbox", "Art Picture", "8-bit", "Tint Duotone", "MP3 192 kbps", "Logged In As"] {
         assert_eq!(buffer[(col(label), 34)].fg, app.palette.blue, "{label}");
     }
     assert_eq!(buffer[(col("Gruvbox") + 8, 34)].fg, app.palette.muted);
     app.sleep = Some(crate::app::Sleep::Minutes(15, std::time::Instant::now()));
-    let bar = screen(&app, 200, 36).0[34].clone();
+    let bar = screen(&mut app, 200, 36).0[34].clone();
     assert!(bar.contains("☾ 15:00 · Gruvbox") || bar.contains("☾ 14:59 · Gruvbox"), "{bar}");
     // Narrower: the tint goes first, then the rest of the look; the timer stays.
-    let bar = screen(&app, 150, 36).0[34].clone();
+    let bar = screen(&mut app, 150, 36).0[34].clone();
     assert!(bar.contains("☾ 1") && bar.contains("Logged In As") && !bar.contains("Tint"), "{bar}");
-    let bar = screen(&app, 96, 36).0[34].clone();
+    let bar = screen(&mut app, 96, 36).0[34].clone();
     assert!(bar.contains("☾ 1") && !bar.contains("Gruvbox") && bar.contains("toby@example.com"), "{bar}");
     app.sleep = Some(crate::app::Sleep::EndOfSong);
-    assert!(screen(&app, 200, 36).0[34].contains("☾ end of song"));
+    assert!(screen(&mut app, 200, 36).0[34].contains("☾ end of song"));
 }
 
 #[test]
@@ -1763,7 +1763,7 @@ fn a_free_plans_quality_row_is_greyed_out_like_a_greyed_theme_select() {
     app.focus = Focus::Content;
     // Off the row: a selected row is drawn in the selection colours.
     app.settings_cursor = Setting::at(Setting::Volume);
-    let row = |app: &App| {
+    let row = |app: &mut App| {
         let (lines, buffer) = screen(app, 120, 40);
         let y = lines.iter().position(|l| l.contains("Audio quality")).expect("the row") as u16;
         // Find the label's column by its cells: the icon before it is
@@ -1775,16 +1775,16 @@ fn a_free_plans_quality_row_is_greyed_out_like_a_greyed_theme_select() {
     };
     // Plus / Premium: the label is the normal text colour.
     app.hifi = Some(true);
-    let (line, fg) = row(&app);
+    let (line, fg) = row(&mut app);
     assert_eq!(fg, app.palette.fg, "{line}");
     // A free plan: greyed, like Theme Select under Auto Mode.
     app.hifi = Some(false);
-    let (line, fg) = row(&app);
+    let (line, fg) = row(&mut app);
     assert_eq!(fg, app.palette.muted, "{line}");
     assert!(line.contains("your plan: 64 kbps HE-AAC"), "{line}");
     // Not logged in: the plan is unknown, so it stays usable.
     app.hifi = None;
-    assert_eq!(row(&app).1, app.palette.fg);
+    assert_eq!(row(&mut app).1, app.palette.fg);
 }
 
 #[test]
@@ -1795,26 +1795,26 @@ fn the_status_bar_names_the_stream_left_of_the_account_and_follows_the_song() {
     app.session = Session::LoggedIn;
     app.status = "hi".into();
     // The demo songs are 192 kbps MP3.
-    let bar = screen(&app, 200, 36).0[34].clone();
+    let bar = screen(&mut app, 200, 36).0[34].clone();
     assert!(bar.trim_end().ends_with("MP3 192 kbps · Logged In As: toby@example.com"), "{bar}");
     // A free plan's HE-AAC: the label follows the song, not the setting.
     app.stream = Some((crate::pandora::AudioFormat::Aac, 64));
-    let bar = screen(&app, 200, 36).0[34].clone();
+    let bar = screen(&mut app, 200, 36).0[34].clone();
     assert!(bar.trim_end().ends_with("AAC 64 kbps · Logged In As: toby@example.com"), "{bar}");
     // A stream that did not say its bitrate names the format alone.
     app.stream = Some((crate::pandora::AudioFormat::Mp3, 0));
-    assert!(screen(&app, 200, 36).0[34].contains("· MP3 · Logged In As"));
+    assert!(screen(&mut app, 200, 36).0[34].contains("· MP3 · Logged In As"));
     // Nothing known yet, or an unknown format: no label at all.
     app.stream = Some((crate::pandora::AudioFormat::Unknown, 128));
-    assert!(!screen(&app, 200, 36).0[34].contains("kbps"));
+    assert!(!screen(&mut app, 200, 36).0[34].contains("kbps"));
     app.stream = None;
-    assert!(!screen(&app, 200, 36).0[34].contains("kbps"));
+    assert!(!screen(&mut app, 200, 36).0[34].contains("kbps"));
     // Narrow: the look goes before the stream, which goes before the timer.
     app.stream = Some((crate::pandora::AudioFormat::Aac, 64));
     app.sleep = Some(crate::app::Sleep::Minutes(15, std::time::Instant::now()));
-    let bar = screen(&app, 150, 36).0[34].clone();
+    let bar = screen(&mut app, 150, 36).0[34].clone();
     assert!(bar.contains("AAC 64 kbps") && bar.contains("☾ 1") && !bar.contains("Tint"), "{bar}");
-    let bar = screen(&app, 96, 36).0[34].clone();
+    let bar = screen(&mut app, 96, 36).0[34].clone();
     assert!(bar.contains("☾ 1") && bar.contains("toby@example.com") && !bar.contains("kbps"), "{bar}");
 }
 
@@ -1825,17 +1825,17 @@ fn following_omarchy_the_status_bar_names_its_theme_in_the_account_colour() {
     app.session = Session::LoggedIn;
     app.config.ui.set_theme("omarchy");
     app.omarchy_theme = Some("Tokyo Night".into());
-    let (lines, buffer) = screen(&app, 200, 36);
+    let (lines, buffer) = screen(&mut app, 200, 36);
     let bar = &lines[34];
     assert!(bar.contains("omarchy: Tokyo Night · Art"), "{bar}");
     let x = bar.chars().take(bar.find("omarchy: Tokyo").unwrap()).count() as u16;
     assert_eq!((buffer[(x, 34)].fg, buffer[(x + 12, 34)].fg), (app.palette.blue, app.palette.blue));
     // Its name not known yet: just "Omarchy"; a picked theme: its own name.
     app.omarchy_theme = None;
-    assert!(screen(&app, 200, 36).0[34].contains("Omarchy · Art"));
+    assert!(screen(&mut app, 200, 36).0[34].contains("Omarchy · Art"));
     app.config.ui.set_theme("gruvbox");
     app.omarchy_theme = Some("Tokyo Night".into());
-    let bar = screen(&app, 200, 36).0[34].clone();
+    let bar = screen(&mut app, 200, 36).0[34].clone();
     assert!(bar.contains("Gruvbox · Art") && !bar.contains("omarchy:"), "{bar}");
 }
 
@@ -1846,19 +1846,19 @@ fn up_next_shows_each_songs_thumbs_and_updates_after_l() {
     app.focus = crate::app::Focus::Content;
     app.view = View::Player;
     app.pane = Pane::UpNext;
-    let up_next = |app: &App| {
+    let up_next = |app: &mut App| {
         let (lines, _) = screen(app, 160, 40);
         let y0 = lines.iter().position(|l| l.contains("Up Next (")).expect("Up Next");
         let x0 = lines[y0].chars().position(|c| c == 'U').unwrap();
         let rows: Vec<String> = lines[y0 + 1..y0 + 4].iter().map(|l| l.chars().skip(x0).take(70).collect()).collect();
         rows
     };
-    let before = up_next(&app);
+    let before = up_next(&mut app);
     assert!(before[0].contains("TIME") && before[0].contains("RATED"), "{before:?}");
     assert!(before[1].contains('—') && before[1].contains(':'), "not rated, time kept: {before:?}");
     app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('l')));
     assert_eq!(app.queue[app.next_index()].rating, Rating::Up);
-    let after = up_next(&app);
+    let after = up_next(&mut app);
     assert!(after.iter().any(|r| r.contains("liked")), "{after:?}");
 }
 
@@ -1871,7 +1871,7 @@ fn up_next_keeps_a_blank_cell_before_its_right_border() {
     app.pane = Pane::UpNext;
     // Side by side (wide) and stacked (narrow).
     for cols in [80u16, 100, 120, 140, 160, 200] {
-        let (lines, buffer) = screen(&app, cols, 40);
+        let (lines, buffer) = screen(&mut app, cols, 40);
         let y0 = lines.iter().position(|l| l.contains("Up Next (")).expect("Up Next");
         let row: Vec<char> = lines[y0].chars().collect();
         let start = lines[y0].chars().position(|c| c == 'U').unwrap();
@@ -1901,10 +1901,10 @@ fn clean_and_truncate_keep_cells_honest() {
 fn now_playing_art_fills_the_pane_with_info_time_and_volume_beside_it() {
     let mut app = demo();
     app.config.ui.icons = crate::config::IconSet::Unicode;
-    let (lines, _) = screen(&app, 120, 36);
+    let (lines, _) = screen(&mut app, 120, 36);
     let rows = usize::from(now_playing_height(34, false));
     let menu = |l: &String| l.chars().skip(30).collect::<String>();
-    let art = app.art.last_area.get();
+    let art = app.art.last_area;
     assert_eq!(
         (art.y, art.y + art.height),
         (2, rows as u16 - 2),
@@ -1951,7 +1951,7 @@ fn song_text_never_reaches_the_rating_column_at_any_width() {
                 song.rating = Rating::Up;
             }
             for cols in [60u16, 80, 89, 90, 100, 120, 160, 200] {
-                let (_, buf) = screen(&app, cols, 44);
+                let (_, buf) = screen(&mut app, cols, 44);
                 let mut found = 0;
                 for y in 0..44 {
                     let row: Vec<&str> = (0..cols).map(|x| buf[(x, y)].symbol()).collect();
@@ -2016,13 +2016,13 @@ fn a_failed_search_in_the_seed_box_says_so_in_plain_words() {
     app.on_key(KeyEvent::from(KeyCode::Char('a')));
     // Pandora's raw answer to the old suggestions path, then a search that failed the same way.
     app.on_reply(Reply::Failed { what: Failed::Suggestions, message: "Service method not found (HTTP 404)".into() });
-    let text = all_text(&screen(&app, 120, 40).0);
+    let text = all_text(&screen(&mut app, 120, 40).0);
     assert!(
         !text.contains("Service method") && !text.contains("no suggestions") && !text.contains("Search failed"),
         "{text}"
     );
     app.on_reply(Reply::Failed { what: Failed::Search, message: "Service method not found (HTTP 404)".into() });
-    let text = all_text(&screen(&app, 120, 40).0);
+    let text = all_text(&screen(&mut app, 120, 40).0);
     assert!(text.contains("Couldn't search Pandora right now") && !text.contains("Service method"), "{text}");
 }
 
@@ -2034,7 +2034,7 @@ fn the_add_station_box_shows_the_text_the_results_and_their_kind() {
     app.settle(std::time::Duration::from_millis(400));
     app.on_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
     assert_eq!(app.focus, Focus::Content);
-    let (lines, _) = screen(&app, 120, 36);
+    let (lines, _) = screen(&mut app, 120, 36);
     assert!(lines.iter().any(|l| l.contains("Add station…")), "the first row of the list");
     let caps = key_caps(&app);
     assert!(caps.iter().any(|(k, w)| *k == "a" && *w == "Add Station"), "{caps:?}");
@@ -2046,7 +2046,7 @@ fn the_add_station_box_shows_the_text_the_results_and_their_kind() {
     assert!(caps.iter().any(|(k, _)| *k == "Enter") && caps.iter().any(|(k, _)| *k == "Esc"), "{caps:?}");
     app.on_key(KeyEvent::from(KeyCode::Enter));
     app.settle(std::time::Duration::from_millis(300));
-    let (lines, _) = screen(&app, 120, 36);
+    let (lines, _) = screen(&mut app, 120, 36);
     let text = all_text(&lines);
     assert!(text.contains("Add station") && text.contains("m83"), "{text}");
     assert!(text.contains("M83") && text.contains("Midnight City"), "artist and song: {text}");
@@ -2056,7 +2056,7 @@ fn the_add_station_box_shows_the_text_the_results_and_their_kind() {
     assert!(!caps.iter().any(|(k, _)| *k == "a" || *k == "f"), "other keys are not live: {caps:?}");
     // Narrow and short windows do not panic.
     for (c, r) in [(40, 10), (20, 6), (120, 8)] {
-        let _ = screen(&app, c, r);
+        let _ = screen(&mut app, c, r);
     }
 }
 
@@ -2067,7 +2067,7 @@ fn the_browse_genres_page_lists_items_and_pins_on_the_menu() {
     app.settle(std::time::Duration::from_millis(400));
     app.on_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT));
     app.settle(std::time::Duration::from_millis(300));
-    let (lines, _) = screen(&app, 120, 36);
+    let (lines, _) = screen(&mut app, 120, 36);
     let text = all_text(&lines);
     assert!(text.contains("Browse Genres") && text.contains("Synthwave"), "{text}");
     assert!(text.contains("1.2M Listeners"), "detail: {text}");
@@ -2077,26 +2077,26 @@ fn the_browse_genres_page_lists_items_and_pins_on_the_menu() {
     // Pin Browse Genres on the main menu.
     app.config.browse.set_pinned("Browse Genres", true);
     let genre_icon = crate::icons::icons(app.config.ui.icons).genre;
-    let menu: Vec<String> = screen(&app, 120, 36).0.iter().map(|l| l.chars().take(30).collect()).collect();
+    let menu: Vec<String> = screen(&mut app, 120, 36).0.iter().map(|l| l.chars().take(30).collect()).collect();
     assert!(
         menu.iter().any(|l| l.contains("Browse Genres") && l.contains(genre_icon)),
         "pinned in the menu with its icon: {menu:#?}"
     );
     // Loading / failed use the Browse directory state.
     app.browse = crate::app::BrowseState::Loading;
-    let (lines, _) = screen(&app, 120, 36);
+    let (lines, _) = screen(&mut app, 120, 36);
     assert!(all_text(&lines).contains("Loading"), "{}", all_text(&lines));
     assert!(!key_caps(&app).iter().any(|(k, _)| k.contains("j/k")));
     app.browse = crate::app::BrowseState::Failed("offline".into());
-    assert!(all_text(&screen(&app, 120, 36).0).contains("offline"));
+    assert!(all_text(&screen(&mut app, 120, 36).0).contains("offline"));
     assert!(key_caps(&app).iter().any(|(_, w)| *w == "Try Again"));
-    let _ = screen(&app, 30, 8);
+    let _ = screen(&mut app, 30, 8);
 }
 
 #[test]
 fn browse_sections_sit_under_a_browse_heading() {
-    let app = demo();
-    let (lines, _) = screen(&app, 120, 40);
+    let mut app = demo();
+    let (lines, _) = screen(&mut app, 120, 40);
     let menu = |l: &str| -> String { l.chars().take(30).collect() };
     let at = |want: &dyn Fn(&str) -> bool| lines.iter().map(|l| menu(l)).position(|l| want(&l));
     let head = at(&|l| l.starts_with("│ BROWSE (10)")).expect("the BROWSE heading, with the pin count");
@@ -2111,8 +2111,8 @@ fn browse_sections_sit_under_a_browse_heading() {
 
 #[test]
 fn my_collection_heads_the_personal_rows_and_hides_when_empty() {
-    let app = demo();
-    let (lines, _) = screen(&app, 120, 40);
+    let mut app = demo();
+    let (lines, _) = screen(&mut app, 120, 40);
     let menu = |l: &str| -> String { l.chars().take(30).collect() };
     let at = |want: &dyn Fn(&str) -> bool| lines.iter().map(|l| menu(l)).position(|l| want(&l));
     let head = at(&|l| l.starts_with("│ MY COLLECTION")).expect("the MY COLLECTION heading");
@@ -2128,7 +2128,7 @@ fn my_collection_heads_the_personal_rows_and_hides_when_empty() {
     // An empty collection draws no heading, the way an empty FAVORITES does.
     let mut empty = App::new(Config::default(), None, &[], true);
     empty.config.ui.icons = crate::config::IconSet::Emoji;
-    let (lines, _) = screen(&empty, 120, 40);
+    let (lines, _) = screen(&mut empty, 120, 40);
     assert!(
         !lines.iter().any(|l| l.contains("MY COLLECTION")),
         "hidden while empty:\n{}",
@@ -2137,14 +2137,14 @@ fn my_collection_heads_the_personal_rows_and_hides_when_empty() {
     assert!(lines.iter().any(|l| l.contains("My Stations")), "the row itself stays");
     // Short and narrow windows still draw it without panicking.
     for (c, r) in [(40, 10), (20, 6), (120, 8)] {
-        let _ = screen(&app, c, r);
+        let _ = screen(&mut app, c, r);
     }
 }
 
 #[test]
 fn recently_played_sits_above_pinned_and_hides_while_empty() {
-    let app = demo();
-    let (lines, _) = screen(&app, 120, 40);
+    let mut app = demo();
+    let (lines, _) = screen(&mut app, 120, 40);
     let menu = |l: &str| -> String { l.chars().take(30).collect() };
     let at = |want: &dyn Fn(&str) -> bool| lines.iter().map(|l| menu(l)).position(|l| want(&l));
     let stations = at(&|l| l.contains("My Stations")).expect("My Stations");
@@ -2159,7 +2159,7 @@ fn recently_played_sits_above_pinned_and_hides_while_empty() {
     );
     // Short and narrow windows still draw it without panicking.
     for (c, r) in [(40, 10), (20, 6), (120, 8)] {
-        let _ = screen(&app, c, r);
+        let _ = screen(&mut app, c, r);
     }
 }
 
@@ -2170,7 +2170,7 @@ fn recently_played_keeps_the_collection_heading_when_stations_are_gone() {
     app.config.ui.pinned_in_menu = false;
     app.stations.clear();
     app.recent = vec![crate::pandora::RecentSource { id: "ST:0:1".into(), kind: "ST".into(), ..Default::default() }];
-    let text = all_text(&screen(&app, 120, 40).0);
+    let text = all_text(&screen(&mut app, 120, 40).0);
     assert!(text.contains("MY COLLECTION"), "{text}");
     assert!(text.contains("Recently Played (1)"), "{text}");
 }
@@ -2179,7 +2179,7 @@ fn recently_played_keeps_the_collection_heading_when_stations_are_gone() {
 fn an_empty_history_draws_no_recently_played_state() {
     let mut fresh = App::new(crate::config::Config::default(), None, &[], true);
     fresh.config.ui.icons = crate::config::IconSet::Emoji;
-    let (lines, _) = screen(&fresh, 120, 40);
+    let (lines, _) = screen(&mut fresh, 120, 40);
     assert!(!lines.iter().any(|l| l.contains("Recently Played")), "hidden while empty:\n{}", lines.join("\n"));
 }
 
@@ -2189,7 +2189,7 @@ fn the_recently_played_page_lists_its_rows_and_offers_play() {
     app.view = View::Recent;
     app.focus = crate::app::Focus::Content;
     app.recent_cursor = 0;
-    let (lines, _) = screen(&app, 120, 40);
+    let (lines, _) = screen(&mut app, 120, 40);
     assert!(lines[0].contains("Recently Played (3)"), "the page title: {}", lines[0]);
     let all = lines.join("\n");
     for name in app.recent.iter().map(|s| app.recent_title(s)) {
@@ -2205,10 +2205,10 @@ fn the_recently_played_page_says_loading_and_nothing_played() {
     blank.config.ui.icons = crate::config::IconSet::Emoji;
     blank.view = View::Recent;
     blank.focus = crate::app::Focus::Content;
-    let text = all_text(&screen(&blank, 120, 40).0);
+    let text = all_text(&screen(&mut blank, 120, 40).0);
     assert!(text.contains("Nothing played"), "{text}");
     blank.recent_loading = true;
-    let text = all_text(&screen(&blank, 120, 40).0);
+    let text = all_text(&screen(&mut blank, 120, 40).0);
     assert!(text.contains("Loading"), "{text}");
     // One row: no "move" hint, and no Enter: there is nothing else to play.
     let caps = key_caps(&blank);
@@ -2227,7 +2227,7 @@ fn only_the_active_browse_pin_is_shaded_in_the_menu() {
     assert_eq!(app.focus, Focus::Content);
     assert_eq!(app.browse_filter.as_deref(), Some("Artists Picked For You"));
     let highlight = app.palette.highlight;
-    let (lines, buf) = screen(&app, 120, 40);
+    let (lines, buf) = screen(&mut app, 120, 40);
     let menu_w = 28u16;
     let labels = ["Artists Picked For You", "New Music", "Browse Genres", "Decades", "My Stations", "Pinned"];
     let mut shaded = Vec::new();
@@ -2268,7 +2268,7 @@ fn the_system_check_lists_what_is_missing_and_that_is_all() {
         keychain: Some(false),
     });
     assert!(app.system_open());
-    let all = screen(&app, 110, 30).0.join("\n");
+    let all = screen(&mut app, 110, 30).0.join("\n");
     for want in [
         "System Check",
         "✘ Nerd Font symbols",
@@ -2303,12 +2303,12 @@ fn the_system_check_lists_what_is_missing_and_that_is_all() {
         &Facts { families: Some("X Nerd Font\n".into()), glyph_fonts: None, notify_send: true, keychain: Some(true) },
     ));
     app.system_changed();
-    let all = screen(&app, 110, 30).0.join("\n");
+    let all = screen(&mut app, 110, 30).0.join("\n");
     assert!(all.contains("✔ Nerd Font symbols") && !all.contains("package:"), "{all}");
     // While it looks again.
     app.system = None;
     app.system_changed();
-    assert!(screen(&app, 110, 30).0.join("\n").contains("Checking…"));
+    assert!(screen(&mut app, 110, 30).0.join("\n").contains("Checking…"));
 }
 
 #[test]
@@ -2327,9 +2327,9 @@ fn the_system_check_is_plain_text_and_fits_a_small_terminal() {
     let private = |all: &str| all.chars().filter(|c| ('\u{e000}'..='\u{f8ff}').contains(c) || *c > '\u{f0000}').count();
     for (cols, rows) in [(110, 30), (60, 24), (40, 14)] {
         app.dialogs.clear();
-        let without = private(&screen(&app, cols, rows).0.join(""));
+        let without = private(&screen(&mut app, cols, rows).0.join(""));
         app.open_system();
-        let with = private(&screen(&app, cols, rows).0.join(""));
+        let with = private(&screen(&mut app, cols, rows).0.join(""));
         assert!(with <= without, "{cols}x{rows}");
     }
 }

@@ -106,6 +106,42 @@ fn tint_uses_only_the_themes_colours() {
 }
 
 #[test]
+fn the_palette_snaps_to_the_nearest_colour_by_the_weighted_distance() {
+    // The distance is integer arithmetic now (it runs per pixel on the UI
+    // thread), so this pins the choice it makes: green counts most, blue least.
+    let p = crate::theme::BUILT_IN.iter().find(|t| t.0 == "gruvbox").unwrap().2;
+    let rgb = |c| rgb_of(c).unwrap();
+    let theme = [
+        p.background,
+        p.fg,
+        p.muted,
+        p.highlight,
+        p.line,
+        p.blue,
+        p.cyan,
+        p.magenta,
+        p.green,
+        p.orange,
+        p.yellow,
+        p.red,
+    ]
+    .map(rgb);
+    // A pixel exactly on a theme colour snaps to that colour, not a neighbour.
+    for want in theme {
+        let mut one = RgbImage::new(1, 1);
+        one.put_pixel(0, 0, Rgb(want));
+        let got = tint(&DynamicImage::ImageRgb8(one), ArtTint::Palette, &p).to_rgb8();
+        assert_eq!(got.get_pixel(0, 0).0, want, "a theme colour is its own nearest");
+    }
+    // A pixel between two colours goes to the closer one.
+    let mut two = RgbImage::new(2, 1);
+    two.put_pixel(0, 0, Rgb([0, 0, 0]));
+    two.put_pixel(1, 0, Rgb([255, 255, 255]));
+    let got = tint(&DynamicImage::ImageRgb8(two), ArtTint::Palette, &p).to_rgb8();
+    assert!(theme.contains(&got.get_pixel(0, 0).0) && theme.contains(&got.get_pixel(1, 0).0));
+}
+
+#[test]
 fn a_new_theme_or_tint_rebuilds_the_cover() {
     let mut art = Art::default();
     art.arrived("u".into(), Some(demo_cover("u")));
@@ -113,7 +149,7 @@ fn a_new_theme_or_tint_rebuilds_the_cover() {
     let mut look = Look { mode: AlbumArt::Picture, pixelation: RetroMode::Hd, tint: ArtTint::Duotone, palette: p };
     let first = art.protocol("u", look).map(|_| ()).is_some();
     assert!(first);
-    let ptr = |art: &Art| art.shown.borrow().as_ref().map(|s| s.look);
+    let ptr = |art: &Art| art.shown.as_ref().map(|s| s.look);
     assert_eq!(ptr(&art), Some(look));
     look.palette = crate::theme::BUILT_IN[1].2;
     assert!(art.protocol("u", look).is_some());
@@ -128,13 +164,13 @@ fn changing_the_level_swaps_the_cover_without_clearing_the_screen() {
     sixel.set_protocol_type(ProtocolType::Sixel);
     art.set_graphics(Some(sixel));
     let pic = look(AlbumArt::Picture, RetroMode::Hd);
-    assert!(art.protocol("u", pic).is_some_and(|p| !is_blocks(&p)));
-    art.needs_clear.take();
+    assert!(art.protocol("u", pic).is_some_and(|p| !is_blocks(p)));
+    std::mem::take(&mut art.needs_clear);
     for level in [RetroMode::Bit32, RetroMode::Bit16, RetroMode::Bit2, RetroMode::Hd] {
         let next = Look { pixelation: level, ..pic };
-        assert!(art.protocol("u", next).is_some_and(|p| !is_blocks(&p)), "{level:?} is still a picture");
-        assert!(!art.needs_clear.take(), "{level:?} needed no screen clear");
-        assert_eq!(art.shown.borrow().as_ref().map(|s| s.look), Some(next), "{level:?} was swapped in");
+        assert!(art.protocol("u", next).is_some_and(|p| !is_blocks(p)), "{level:?} is still a picture");
+        assert!(!std::mem::take(&mut art.needs_clear), "{level:?} needed no screen clear");
+        assert_eq!(art.shown.as_ref().map(|s| s.look), Some(next), "{level:?} was swapped in");
     }
 }
 
@@ -145,23 +181,23 @@ fn a_popup_shows_the_cover_in_half_blocks_and_clears_around_it() {
     let pic = look(AlbumArt::Picture, RetroMode::Hd);
     // Half blocks are plain text: a popup covers them, nothing to do.
     art.set_overlay(true);
-    assert!(!art.needs_clear.take());
+    assert!(!std::mem::take(&mut art.needs_clear));
     art.set_overlay(false);
     let mut sixel = Picker::halfblocks();
     sixel.set_protocol_type(ProtocolType::Sixel);
     art.set_graphics(Some(sixel));
-    art.needs_clear.take();
-    assert!(art.protocol("u", pic).is_some_and(|p| !is_blocks(&p)), "a sixel");
+    std::mem::take(&mut art.needs_clear);
+    assert!(art.protocol("u", pic).is_some_and(|p| !is_blocks(p)), "a sixel");
     art.set_overlay(true);
-    assert!(art.needs_clear.take(), "the picture is wiped when the popup opens");
+    assert!(std::mem::take(&mut art.needs_clear), "the picture is wiped when the popup opens");
     let tinted = Look { tint: ArtTint::Duotone, ..look(AlbumArt::Picture, RetroMode::Bit2) };
-    assert!(art.protocol("u", tinted).is_some_and(|p| is_blocks(&p)), "the cover, in half blocks, over Help");
-    assert!(!art.needs_clear.take(), "half blocks need no clearing");
+    assert!(art.protocol("u", tinted).is_some_and(|p| is_blocks(p)), "the cover, in half blocks, over Help");
+    assert!(!std::mem::take(&mut art.needs_clear), "half blocks need no clearing");
     art.set_overlay(true);
-    assert!(!art.needs_clear.take(), "once, not every frame");
+    assert!(!std::mem::take(&mut art.needs_clear), "once, not every frame");
     art.set_overlay(false);
-    assert!(art.needs_clear.take(), "a clean screen when it closes");
-    assert!(art.protocol("u", tinted).is_some_and(|p| !is_blocks(&p)), "the sixel, sent again");
+    assert!(std::mem::take(&mut art.needs_clear), "a clean screen when it closes");
+    assert!(art.protocol("u", tinted).is_some_and(|p| !is_blocks(p)), "the sixel, sent again");
 }
 
 #[test]
@@ -261,11 +297,11 @@ fn sixel() -> Picker {
 }
 
 /// Draws the cover into a 20x10 box and returns the sixel sent, if any.
-fn draw_sixel(art: &Art, look: Look) -> Option<String> {
+fn draw_sixel(art: &mut Art, look: Look) -> Option<String> {
     use ratatui::{buffer::Buffer, layout::Rect, widgets::StatefulWidget};
     let area = Rect::new(0, 0, 20, 10);
     let mut buf = Buffer::empty(area);
-    let mut cover = art.protocol("u", look)?;
+    let cover = art.protocol("u", look)?;
     ratatui_image::StatefulImage::default().render(area, &mut buf, &mut *cover);
     assert!(matches!(cover.last_encoding_result(), Some(Ok(()))), "{look:?} encodes");
     let sym = buf[(0, 0)].symbol().to_owned();
@@ -280,7 +316,7 @@ fn tinted_covers_without_pixelation_are_sent_as_sixels() {
     for tint in [ArtTint::Off, ArtTint::Duotone, ArtTint::Palette] {
         for pixelation in [RetroMode::Hd, RetroMode::Bit2] {
             let look = Look { tint, ..look(AlbumArt::Picture, pixelation) };
-            assert!(draw_sixel(&art, look).is_some(), "{look:?} shows the picture");
+            assert!(draw_sixel(&mut art, look).is_some(), "{look:?} shows the picture");
         }
     }
 }
@@ -300,10 +336,10 @@ fn a_cover_the_terminal_cant_encode_falls_back_to_half_blocks() {
     art.set_graphics(Some(sixel()));
     art.arrived("u".into(), Some(demo_cover("u")));
     let l = look(AlbumArt::Picture, RetroMode::Hd);
-    drop(art.protocol("u", l));
-    art.unencodable.borrow_mut().insert("u".into());
+    art.protocol("u", l);
+    art.unencodable.insert("u".into());
     art.forget_shown();
-    assert!(art.protocol("u", l).is_some_and(|p| is_blocks(&p)));
+    assert!(art.protocol("u", l).is_some_and(|p| is_blocks(p)));
 }
 
 #[test]

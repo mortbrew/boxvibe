@@ -67,8 +67,6 @@ pub struct Station {
     pub is_shuffle: bool,
     /// Someone else's station shared with me.
     pub is_shared: bool,
-    /// The largest station art there is (not drawn yet).
-    pub art_url: String,
     /// Pandora lets this station be renamed (`allowRename`; not Shuffle).
     pub allow_rename: bool,
     /// Pandora lets this station be removed (`allowDelete`; not Shuffle).
@@ -369,19 +367,6 @@ fn str_of(v: &Value, key: &str) -> String {
     }
 }
 
-/// The URL of the biggest image in an `art` / `albumArt` list.
-pub fn largest_art(list: Option<&Value>) -> String {
-    list.and_then(Value::as_array)
-        .and_then(|items| {
-            items
-                .iter()
-                .filter(|a| a.get("url").and_then(Value::as_str).is_some_and(|u| !u.is_empty()))
-                .max_by_key(|a| a.get("size").and_then(Value::as_u64).unwrap_or(0))
-        })
-        .map(|a| str_of(a, "url"))
-        .unwrap_or_default()
-}
-
 /// The cover for Now Playing's art box: the smallest one at least `ART_SIZE`
 /// pixels across (sharp enough for sixel, a small download), else the largest.
 pub fn art_for_box(list: Option<&Value>) -> String {
@@ -414,7 +399,6 @@ pub fn parse_station(v: &Value) -> Option<Station> {
         name: str_of(v, "name"),
         is_shuffle,
         is_shared: v.get("isShared").and_then(Value::as_bool).unwrap_or(false),
-        art_url: largest_art(v.get("art")),
         // The site says what it allows; Shuffle never allows either.
         allow_rename: flag(v, "allowRename").unwrap_or(!is_shuffle),
         allow_delete: flag(v, "allowDelete").unwrap_or(!is_shuffle),

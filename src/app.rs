@@ -2360,7 +2360,10 @@ impl App {
         }
     }
 
-    pub fn settle(&mut self, timeout: Duration) {
+    /// Handles replies until none arrives within `timeout`: the demo and
+    /// snapshot screens use it to let the fake backend catch up, and so do the
+    /// tests. Not part of the running app's loop, which never blocks on a reply.
+    pub(crate) fn settle(&mut self, timeout: Duration) {
         while let Ok(reply) = self.backend.replies.recv_timeout(timeout) {
             self.on_reply(reply);
             self.want_art();
@@ -2555,7 +2558,10 @@ impl App {
                 let Some(data) = self.ad_audio_arrived(&track_token, data) else { return };
                 if self.buffering.as_ref().is_some_and(|(t, _)| *t == track_token) {
                     self.buffering = None;
-                    self.play_now(Some(data));
+                    if !self.play_now(Some(data)) {
+                        // The audio would not start: skip on, as `next_song` does.
+                        self.advance();
+                    }
                 } else if self.queue.iter().any(|s| s.track_token == track_token) {
                     self.keep_audio(track_token, data);
                 }
@@ -2729,7 +2735,7 @@ impl App {
     }
 
     /// The password popup with `typed` already in it (the snapshot screens).
-    pub fn ask_password_for_snapshot(&mut self, typed: &str) {
+    pub(crate) fn ask_password_for_snapshot(&mut self, typed: &str) {
         self.ask_password();
         for c in typed.chars() {
             self.query.key(
@@ -2904,6 +2910,10 @@ impl App {
     }
 
     /// Starts the next song of the queue (or asks for more).
+    ///
+    /// A song whose audio will not start is skipped here, in this loop, rather
+    /// than by calling back into [`App::advance`]: a run of bad songs is then a
+    /// loop over the queue instead of a recursion through three functions.
     fn next_song(&mut self) {
         // Dislikes held on Up Next rows count now, at their turn: sent, and skipped.
         while let Some(front) = self.queue.front()
@@ -2917,27 +2927,40 @@ impl App {
             self.audio_order.retain(|t| *t != song.track_token);
             self.push_history(song);
         }
-        let Some(song) = self.queue.pop_front() else {
-            self.request_more();
-            return;
-        };
-        let token = song.track_token.clone();
-        let url = song.audio_url.clone();
-        self.notify(&song);
-        // What Pandora really sent for this song, which is not always what was
-        // asked for: a free plan gets 64 kbps HE-AAC whatever `high` says.
-        self.stream = Some((song.audio_format, song.bitrate));
-        self.now = Some(song);
-        if let Some(data) = self.audio_cache.remove(&token) {
-            self.audio_order.retain(|t| *t != token);
-            self.play_now(Some(data));
-        } else if self.demo || !self.audio.has_device() {
-            self.play_now(None);
-        } else {
-            self.buffering = Some((token.clone(), Instant::now()));
-            if self.requested.insert(token.clone()) {
-                self.backend.send(Request::Audio { track_token: token, url });
+        loop {
+            let Some(song) = self.queue.pop_front() else {
+                self.request_more();
+                return;
+            };
+            let token = song.track_token.clone();
+            let url = song.audio_url.clone();
+            self.notify(&song);
+            // What Pandora really sent for this song, which is not always what was
+            // asked for: a free plan gets 64 kbps HE-AAC whatever `high` says.
+            self.stream = Some((song.audio_format, song.bitrate));
+            self.now = Some(song);
+            let data = if let Some(data) = self.audio_cache.remove(&token) {
+                self.audio_order.retain(|t| *t != token);
+                Some(data)
+            } else if self.demo || !self.audio.has_device() {
+                None
+            } else {
+                // The download answers later and calls `play_now` itself.
+                self.buffering = Some((token.clone(), Instant::now()));
+                if self.requested.insert(token.clone()) {
+                    self.backend.send(Request::Audio { track_token: token, url });
+                }
+                break;
+            };
+            if self.play_now(data) {
+                break;
             }
+            // The audio would not start: this song is done, so try the next one.
+            if let Some(song) = self.now.take() {
+                self.push_history(song);
+            }
+            self.buffering = None;
+            self.audio.stop();
         }
         if self.queue.len() < 2 {
             self.request_more();
@@ -2994,7 +3017,9 @@ impl App {
         self.advance();
     }
 
-    fn play_now(&mut self, data: Option<Vec<u8>>) {
+    /// Starts the audio for `now`. `false`: it would not start, so the caller
+    /// moves on to the next song.
+    fn play_now(&mut self, data: Option<Vec<u8>>) -> bool {
         let data = data.filter(|d| !d.is_empty());
         if let Some(song) = &self.now {
             crate::log::log!(
@@ -3011,11 +3036,12 @@ impl App {
                 if let Some(song) = &self.now {
                     self.backend.send(Request::Started { track_token: song.track_token.clone() });
                 }
+                true
             }
             Err(e) => {
                 crate::log::log!("play: failed: {e}");
                 self.status = format!("⚠ {e}: skipping");
-                self.advance();
+                false
             }
         }
     }
@@ -4151,8 +4177,9 @@ impl App {
         }
     }
 
-    /// For screenshots: play a few demo songs so History and the clock have something.
-    pub fn demo_warm_up(&mut self, skips: usize, at: Duration) {
+    /// For the snapshot screens and the tests: play a few demo songs so History
+    /// and the clock have something to show.
+    pub(crate) fn demo_warm_up(&mut self, skips: usize, at: Duration) {
         self.settle(Duration::from_millis(150));
         for _ in 0..skips {
             self.advance();

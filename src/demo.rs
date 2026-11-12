@@ -28,7 +28,6 @@ pub fn stations() -> Vec<Station> {
             name: (*name).into(),
             is_shuffle: *shuffle,
             is_shared: *shared,
-            art_url: format!("https://example.invalid/station/{i}.jpg"),
             // Shuffle can't be renamed or deleted; "Today's Hits" is a genre
             // station like Pandora's: it can be deleted but not renamed.
             allow_rename: !*shuffle && *name != "Today's Hits",
@@ -543,7 +542,6 @@ pub fn new_station(pandora_id: &str, existing: usize) -> Option<Station> {
         name,
         is_shuffle: false,
         is_shared: false,
-        art_url: String::new(),
         allow_rename: !name_is_genre,
         allow_delete: true,
         allow_edit_seeds: !name_is_genre,

@@ -109,7 +109,7 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
         _ => {}
     }
     let mut terminal = Terminal::new(TestBackend::new(cols, rows))?;
-    terminal.draw(|frame| ui::draw(frame, &app))?;
+    terminal.draw(|frame| ui::draw(frame, &mut app))?;
     let html = to_html(terminal.backend().buffer(), &app.palette);
     std::fs::write(out, html)?;
     Ok(())

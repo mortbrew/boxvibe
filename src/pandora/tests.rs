@@ -23,7 +23,7 @@ fn quality_remaps_old_values() {
 }
 
 #[test]
-fn stations_parse_with_the_biggest_art() {
+fn stations_parse_with_their_flags() {
     let v = json!({
         "stationId": "12345", "name": "Chill Out Radio", "isShuffle": false, "isShared": true,
         "art": [ { "url": "https://a/90.jpg", "size": 90 }, { "url": "https://a/1080.jpg", "size": 1080 },
@@ -31,10 +31,9 @@ fn stations_parse_with_the_biggest_art() {
     });
     let s = parse_station(&v).unwrap();
     assert_eq!((s.id.as_str(), s.name.as_str(), s.is_shared), ("12345", "Chill Out Radio", true));
-    assert_eq!(s.art_url, "https://a/1080.jpg");
     assert_eq!(parse_station(&json!({ "name": "no id" })), None);
     let n = parse_station(&json!({ "stationId": 42, "name": "Shuffle", "isShuffle": true })).unwrap();
-    assert_eq!((n.id.as_str(), n.is_shuffle, n.art_url.as_str()), ("42", true, ""));
+    assert_eq!((n.id.as_str(), n.is_shuffle), ("42", true));
 }
 
 fn track(title: &str, kind: &str) -> Value {

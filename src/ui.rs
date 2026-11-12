@@ -70,7 +70,7 @@ pub fn menu_width(app: &App, screen: u16) -> u16 {
 /// Blank columns between the menu and the page, so the two frames do not touch.
 pub const PANE_GAP: u16 = 1;
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     BORDERS.set(app.config.ui.border_style);
     let p = app.palette;
     let area = frame.area();
@@ -1724,7 +1724,7 @@ pub fn now_playing_height(height: u16, stacked: bool) -> u16 {
     height.saturating_sub(songs).max(NOW_PLAYING_MIN).min(height)
 }
 
-fn draw_player(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
+fn draw_player(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
     let stacked = stack_songs(area.width);
     let card_h = now_playing_height(area.height, stacked);
     let [card, songs] = Layout::vertical([Constraint::Length(card_h), Constraint::Fill(1)]).areas(area);
@@ -1749,7 +1749,7 @@ pub fn stack_songs(width: u16) -> bool {
     width < STACK_BELOW
 }
 
-fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
+fn draw_now_playing(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
     let p = app.palette;
     let station = app.station_name().unwrap_or("no station");
     let focused = app.in_songs() && app.pane == Pane::NowPlaying;
@@ -1769,7 +1769,7 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         draw_ad(frame, app, ic, &ad, inner);
         return;
     }
-    let Some(song) = &app.now else {
+    let Some(song) = app.now.clone() else {
         let text = match (&app.session, &app.current_station) {
             (Session::LoggedIn, Some(_)) => format!("{} Getting songs from Pandora…", ic.loading),
             (Session::LoggedIn, None) => "Open My Stations on the left, pick one and press Enter".into(),
@@ -1789,7 +1789,7 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let art = Rect { width: art_w, ..inner };
     // The picture sits against the left padding; the info starts a few
     // cells after wherever the picture really ended.
-    let drawn = draw_art(frame, app, song, art);
+    let drawn = draw_art(frame, app, &song, art);
     let info_x = (drawn.right() + 3).min(inner.right());
     let info = Rect { x: info_x, width: inner.right() - info_x, ..inner };
     let label = |text: &str| Span::styled(format!("{text:<9}"), Style::new().fg(p.muted));
@@ -1825,16 +1825,16 @@ fn draw_now_playing(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     .areas(stack);
     let buttons = Rect { y: buttons.y + 1, height: buttons.height.saturating_sub(1), ..buttons };
     frame.render_widget(Paragraph::new(lines), text);
-    draw_progress(frame, app, song, progress);
+    draw_progress(frame, app, &song, progress);
     draw_volume(frame, app, ic, volume);
     if buttons_h > 0 {
-        draw_buttons(frame, app, ic, song, buttons);
+        draw_buttons(frame, app, ic, &song, buttons);
     }
 }
 
 /// Now Playing while one of Pandora's audio ads plays (Good Vibes Only): no
 /// cover, no skip or thumbs, a countdown instead of the song's time.
-fn draw_ad(frame: &mut Frame, app: &App, ic: &Icons, ad: &crate::app::AdView, area: Rect) {
+fn draw_ad(frame: &mut Frame, app: &mut App, ic: &Icons, ad: &crate::app::AdView, area: Rect) {
     let p = app.palette;
     app.art.hide();
     let w = area.width as usize;
@@ -1873,26 +1873,25 @@ pub const NOW_PLAYING_PAD: u16 = 1;
 pub const NOW_PLAYING_SIDE_PAD: u16 = 3;
 
 /// Draws the cover, or a message that there is none, and returns where it went.
-fn draw_art(frame: &mut Frame, app: &App, song: &Song, area: Rect) -> Rect {
+fn draw_art(frame: &mut Frame, app: &mut App, song: &Song, area: Rect) -> Rect {
     let p = app.palette;
     // No frame: the cover (or the message) fills the box itself.
     let inner = area;
-    app.art.last_area.set(inner);
+    app.art.last_area = inner;
     if inner.width == 0 || inner.height == 0 {
         return inner;
     }
     let look = crate::art::Look::of(&app.config.ui, p);
-    if let Some(mut cover) = app.art.protocol(&song.cover_art_url, look) {
+    if let Some(cover) = app.art.protocol(&song.cover_art_url, look) {
         // Against the left edge of the box (the pane's padding), centred
         // top to bottom: the picture keeps its shape.
         let fit = cover.size_for(Resize::Fit(None), inner.as_size());
         let x = inner.x;
         let y = inner.y + inner.height.saturating_sub(fit.height) / 2;
         let at = Rect::new(x, y, fit.width.min(inner.width), fit.height.min(inner.height));
-        frame.render_stateful_widget(StatefulImage::default(), at, &mut *cover);
-        drop(cover);
+        frame.render_stateful_widget(StatefulImage::default(), at, cover);
         app.art.check_encoding(&song.cover_art_url);
-        app.art.last_cover.set(at);
+        app.art.last_cover = at;
         return at;
     }
     app.art.hide();
@@ -2872,7 +2871,7 @@ mod screenshots {
         app.settle(std::time::Duration::from_millis(300));
     }
 
-    fn shot(app: &App, name: &str) {
+    fn shot(app: &mut App, name: &str) {
         let mut terminal = Terminal::new(TestBackend::new(COLS, ROWS)).unwrap();
         terminal.draw(|frame| draw(frame, app)).unwrap();
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/screenshots");
@@ -2882,7 +2881,7 @@ mod screenshots {
     #[test]
     #[ignore = "writes the README screenshots"]
     fn screenshots() {
-        shot(&app(), "now-playing");
+        shot(&mut app(), "now-playing");
 
         let styles = [
             ("hd", RetroMode::Hd, ArtTint::Off),
@@ -2900,11 +2899,11 @@ mod screenshots {
             a.config.ui.album_art = AlbumArt::Picture;
             a.config.ui.retro_mode = retro;
             a.config.ui.art_tint = tint;
-            shot(&a, &format!("art-{name}"));
+            shot(&mut a, &format!("art-{name}"));
         }
         let mut a = app();
         a.config.ui.album_art = AlbumArt::Off;
-        shot(&a, "art-off");
+        shot(&mut a, "art-off");
 
         // The station editor: seeds, then thumbs up.
         let mut a = app();
@@ -2912,9 +2911,9 @@ mod screenshots {
         a.focus = crate::app::Focus::Content;
         a.stations_cursor = a.stations.iter().position(|s| s.name == "M83 Radio").unwrap();
         key(&mut a, KeyCode::Char('e'));
-        shot(&a, "editor-seeds");
+        shot(&mut a, "editor-seeds");
         key(&mut a, KeyCode::Tab);
-        shot(&a, "editor-thumbs");
+        shot(&mut a, "editor-thumbs");
 
         // Creating a station from a search.
         let mut a = app();
@@ -2924,7 +2923,7 @@ mod screenshots {
             a.on_key(KeyEvent::from(KeyCode::Char(c)));
         }
         key(&mut a, KeyCode::Enter);
-        shot(&a, "create-station");
+        shot(&mut a, "create-station");
 
         // Favorites: a few starred stations in the menu and on the Stations page.
         let mut a = app();
@@ -2933,11 +2932,11 @@ mod screenshots {
         }
         a.view = View::Stations;
         a.focus = crate::app::Focus::Content;
-        shot(&a, "favorites");
+        shot(&mut a, "favorites");
 
         let mut a = app();
         a.view = View::Settings;
         a.focus = crate::app::Focus::Content;
-        shot(&a, "settings");
+        shot(&mut a, "settings");
     }
 }

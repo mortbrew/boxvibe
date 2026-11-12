@@ -129,7 +129,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow::Result
             edit_config(terminal, app)?;
         }
         app.art.set_overlay(app.overlay_open());
-        if app.art.needs_clear.take() {
+        if std::mem::take(&mut app.art.needs_clear) {
             terminal.clear()?;
         }
         terminal.draw(|frame| ui::draw(frame, app))?;

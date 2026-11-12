@@ -321,16 +321,23 @@ file wins.
 
 ### Versions
 
-`dev`'s `Cargo.toml` version runs **ahead** of the newest published release
-(`0.6.2` while the latest release is `v0.6.1`). That is deliberate. The version
-string is drawn on the splash, the About panel, the status bar and the box
-frames, so seeing `v0.6.2` confirms the running binary is a build from source
-rather than the released one.
+`dev`'s `Cargo.toml` version is a **prerelease**: the number of the next release
+with a `-dev` suffix (`0.7.0-dev` while the latest release is `v0.6.1`). That is
+deliberate. The version string is drawn on the splash, the About panel, the
+status bar and the box frames, so seeing `v0.7.0-dev` confirms the running
+binary is a build from source rather than the released one.
+
+The suffix is what makes one string do both jobs: semver orders `0.7.0-dev`
+below `0.7.0`, and the updater compares only the numeric core, so a source
+build never reports a spurious update.
 
 - Keep the bump in `Cargo.toml` only; `env!("CARGO_PKG_VERSION")` propagates it.
   Update `Cargo.lock` with `cargo update --workspace --offline`, never by hand.
+- To cut a release: drop the suffix on `dev`, merge to `main`, tag that commit,
+  then bump `dev` to the next number with a fresh suffix. The tag must point at
+  a commit with no suffix, or the archive name and the binary disagree.
 - `CHANGELOG.md` sections are historical records of shipped releases, so they
-  keep the version that shipped.
+  keep the version that shipped, without the suffix.
 - The literal `"0.4.0"` in `src/snapshot.rs` is fabricated update data for the
   screenshots; leave it.
 - A source build reporting no update available is expected, not a bug.

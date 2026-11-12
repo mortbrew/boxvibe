@@ -485,16 +485,39 @@ does not need this approval.
 
 ## 9. Versions
 
-`dev`'s `Cargo.toml` version runs **ahead** of the newest published release.
-That is deliberate: the version string is drawn on screen, so seeing the higher
-number confirms the running binary is a build from source rather than the
-released one.
+`dev` carries a **prerelease** version: the number of the next release with a
+`-dev` suffix, so `Cargo.toml` says `0.7.0-dev` rather than `0.7.0`. That is
+deliberate: the version string is drawn on screen, so seeing `v0.7.0-dev`
+confirms at a glance that the running binary is a build from source rather than
+a released one.
 
-- Keep the bump in `Cargo.toml` only; `env!("CARGO_PKG_VERSION")` propagates it.
+The suffix is what lets one string do both jobs:
+
+- Semver orders a prerelease *below* its release, so `0.6.2-dev < 0.6.2 < 0.7.0-dev`.
+- The updater compares only the numeric core (`vibekit::update::version` strips
+  everything after `-`), so `0.6.2-dev == 0.6.2`: no spurious "update available"
+  on a source build.
+- The number moves forward at each release instead of being reconciled after it.
+
+Cutting a release:
+
+1. On `dev`, drop the suffix (`0.7.0-dev` → `0.7.0`) and update `Cargo.lock`
+   with `cargo update --workspace --offline`.
+2. Commit ("Release 0.7.0") and push `dev`.
+3. Pull request `dev` into `main`, and merge it.
+4. Tag the merge commit on `main` as `v0.7.0`. The tag must point at a commit
+   whose `Cargo.toml` has no suffix: `release.yml` names the archives from the
+   git tag while the binary reports `Cargo.toml`, so a mismatch ships an archive
+   called one thing whose binary says another.
+5. Back on `dev`, bump to the next number with a fresh suffix (`0.8.0-dev`) and
+   carry on ahead of the tag.
+
+- Keep every bump in `Cargo.toml` only; `env!("CARGO_PKG_VERSION")` propagates it.
 - Update `Cargo.lock` with `cargo update --workspace --offline`, never by hand.
 - `CHANGELOG.md` sections are historical records of shipped releases, so they
-  keep the version that shipped.
-- After a release, bump `dev` ahead of the tag that was just cut.
+  keep the version that shipped, without the suffix.
+- The literal `"0.4.0"` in `src/snapshot.rs` is fabricated update data for the
+  screenshots; leave it.
 - A source build reporting no update available is expected, not a bug.
 
 ## 10. Verification

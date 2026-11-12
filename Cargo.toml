@@ -1,6 +1,6 @@
 [package]
 name = "boxvibe"
-version = "0.6.2"
+version = "0.7.0-dev"
 edition = "2024"
 rust-version = "1.90"
 description = "Pandora in the terminal: a CarPlay-style TUI with stations, thumbs, themes and icon sets (Rust + ratatui)"

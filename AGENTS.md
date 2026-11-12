@@ -35,6 +35,7 @@ numbers move. Scratch dirs go under `target/tmp`.
 ## Conventions
 
 - Run the binary from `target/`. Do not install it to `PATH`.
-- `dev`'s version stays ahead of the latest release on purpose. Do not revert it or hand-edit `Cargo.lock`.
+- `dev`'s version is a prerelease (`0.7.0-dev`) so a source build is obvious on
+  screen. Do not revert it or hand-edit `Cargo.lock`.
 - `rustfmt.toml`: `max_width = 120`. Do not set `TMPDIR` in `.cargo/config.toml`.
 - `main` changes only through a pull request, and only to cut a release.

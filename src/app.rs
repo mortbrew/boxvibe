@@ -33,6 +33,7 @@ mod browse;
 mod browse_pages;
 mod dialogs;
 mod editor;
+mod in_flight;
 mod panel;
 mod pending_password;
 mod playback;
@@ -978,8 +979,8 @@ pub struct App {
     /// View-all pages already fetched (see [`view_all`]).
     view_all: view_all::ViewAllCache,
     /// Selected genre station, counted over the stations only (not the headings).
-    /// A station is being made: a second Enter waits for it.
-    creating: bool,
+    /// A station being made and a playlist asked for (see [`in_flight`]).
+    in_flight: in_flight::InFlight,
     /// `v`: the details popup.
     /// `e`: the seeds and thumbs editor.
     pub editor: Option<Editor>,
@@ -995,7 +996,6 @@ pub struct App {
     /// The covers.
     pub art: crate::art::Art,
     requested: HashSet<String>,
-    playlist_pending: bool,
     pub audio: Audio,
     backend: Backend,
     /// Where the Pandora password is kept (see [`crate::keychain`]).
@@ -1111,7 +1111,7 @@ impl App {
             browse_filter: None,
             pages: browse_pages::BrowsePages::default(),
             view_all: view_all::ViewAllCache::default(),
-            creating: false,
+            in_flight: in_flight::InFlight::default(),
             editor: None,
             ad: AdPhase::Off,
             ad_serial: 0,
@@ -1119,7 +1119,6 @@ impl App {
             buffering: None,
             audio_cache: audio_cache::AudioCache::default(),
             requested: HashSet::new(),
-            playlist_pending: false,
             audio,
             backend,
             keychain,
@@ -1454,11 +1453,10 @@ impl App {
 
     /// Asks Pandora for a station seeded by `pandora_id` (it plays when it arrives).
     fn create_station(&mut self, pandora_id: &str, name: &str) {
-        if self.creating {
+        if !self.in_flight.begin_station() {
             self.status = "Still making the last station…".into();
             return;
         }
-        self.creating = true;
         self.status = format!("Making a station from {name}…");
         self.backend.send(Request::CreateStation { pandora_id: pandora_id.to_owned() });
     }
@@ -1495,7 +1493,7 @@ impl App {
     }
 
     fn station_created(&mut self, station: Station) {
-        self.creating = false;
+        self.in_flight.end_station();
         let at = match self.stations.iter().position(|s| s.id == station.id) {
             Some(at) => at,
             None => {
@@ -2077,7 +2075,7 @@ impl App {
                 if self.current_station.as_deref() != Some(&station_id) {
                     return;
                 }
-                self.playlist_pending = false;
+                self.in_flight.end_playlist();
                 if songs.is_empty() && self.now.is_none() {
                     self.status = "Pandora sent no songs for this station".into();
                 }
@@ -2197,7 +2195,7 @@ impl App {
                         self.ad_ask_failed(&message);
                         return;
                     }
-                    Failed::Playlist => self.playlist_pending = false,
+                    Failed::Playlist => self.in_flight.end_playlist(),
                     Failed::Search => {
                         if let Some(search) = self.add_station.as_mut() {
                             search.waiting = false;
@@ -2205,7 +2203,7 @@ impl App {
                             return;
                         }
                     }
-                    Failed::CreateStation => self.creating = false,
+                    Failed::CreateStation => self.in_flight.end_station(),
                     Failed::Details => {
                         if let Some(d) = self.details_mut().filter(|d| d.from_pandora.is_none()) {
                             d.from_pandora = Some(Err(message.clone()));
@@ -3073,7 +3071,7 @@ impl App {
             self.queue.clear();
             self.audio_cache.clear();
             self.buffering = None;
-            self.playlist_pending = false;
+            self.in_flight.end_playlist();
             self.current_station = None;
             if self.view == View::Player {
                 self.view = View::Stations;

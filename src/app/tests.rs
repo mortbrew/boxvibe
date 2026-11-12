@@ -2791,11 +2791,11 @@ fn a_second_create_is_ignored_while_one_is_on_its_way() {
     app.create_station("AR:demo-mgmt", "MGMT");
     assert!(app.status.contains("Still"), "{}", app.status);
     app.settle(Duration::from_millis(300));
-    assert!(!app.creating);
+    assert!(!app.in_flight.creating_station());
     assert_eq!(app.stations.iter().filter(|s| s.name == "M83 Radio").count(), 1);
     assert!(!app.stations.iter().any(|s| s.name == "MGMT Radio"), "the second was dropped");
     app.on_reply(Reply::Failed { what: Failed::CreateStation, message: "no".into() });
-    assert!(!app.creating);
+    assert!(!app.in_flight.creating_station());
 }
 
 fn browse_headers(app: &App) -> Vec<&str> {

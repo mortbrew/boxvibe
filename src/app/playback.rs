@@ -24,7 +24,7 @@ impl App {
         if first {
             self.menu_cursor += 1;
         }
-        self.playlist_pending = true;
+        self.in_flight.begin_playlist();
         self.backend.send(Request::Playlist { station_id: station.id.clone() });
         if self.config.pandora.last_station != station.id {
             self.config.pandora.last_station = station.id.clone();
@@ -112,11 +112,9 @@ impl App {
     }
 
     pub(super) fn request_more(&mut self) {
-        if self.playlist_pending {
-            return;
-        }
-        if let Some(id) = self.current_station.clone() {
-            self.playlist_pending = true;
+        if let Some(id) = self.current_station.clone()
+            && self.in_flight.begin_playlist()
+        {
             self.backend.send(Request::Playlist { station_id: id });
         }
     }

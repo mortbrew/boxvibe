@@ -43,6 +43,7 @@ All of these are required. Copy them from boxvibe rather than retyping.
 .github/workflows/audit.yml
 .github/workflows/codeql.yml
 .github/workflows/release.yml
+.github/codeql/codeql-config.yml
 .github/dependabot.yml
 .cursor/rules/versioning-and-testing.mdc
 docs/setup.md          <- this file
@@ -184,9 +185,34 @@ jobs:
         with:
           languages: rust
           build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
       - uses: github/codeql-action/analyze@v4
         with:
           category: "/language:rust"
+```
+
+### `.github/codeql/codeql-config.yml`
+
+```yaml
+# What CodeQL reads.
+#
+# The tests are excluded. They are not compiled into the shipped binary, and
+# they trip two queries that have nothing to say about them:
+#
+# - `rust/cleartext-logging`: a test that fails prints what it was looking at,
+#   `assert!(cond, "{}", app.status)`. `status` can hold the account name
+#   ("Signing in as …"), so the taint chain is real, but the sink is a panic
+#   message in a test binary, not a log file.
+# - `rust/hard-coded-cryptographic-value`: the fake Pandora server's fixtures
+#   carry a made-up password for the stub to expect.
+#
+# Rust has no inline suppression (`// codeql[...]` needs an AlertSuppression
+# query that Rust does not have yet: github/codeql#21637), so a whole-file
+# ignore is the only way to say this once instead of dismissing each alert as
+# line numbers move. That is why every `mod tests` lives in its own file.
+name: boxvibe
+paths-ignore:
+  - "**/tests.rs"
 ```
 
 ### `.github/workflows/release.yml`
@@ -436,6 +462,10 @@ CodeQL was failing, because only the required three were looked at.
 - `codeql` failing means new code-scanning alerts. Read them with
   `gh api repos/mortbrew/<repo>/code-scanning/alerts?state=open` and fix or
   dismiss each one with a reason. Do not merge on top of them.
+  Test-only alerts should not appear at all: `.github/codeql/codeql-config.yml`
+  ignores `**/tests.rs`, which is why every `mod tests` lives in its own file.
+  An alert in a `tests.rs` means the ignore stopped matching, not that the test
+  needs changing.
 - `audit` failing means a RustSec advisory in `Cargo.lock`. Bump the dependency;
   do not ignore it.
 

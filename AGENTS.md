@@ -25,7 +25,12 @@ CI (`.github/workflows/ci.yml`) also runs `cargo build --release --locked`. Linu
 - `docs/screenshots/`, `src/screenshots.rs` — generated images
 - `packaging/` — linux package notes
 
-Unit tests sit next to the code (`mod tests`). Scratch dirs go under `target/tmp`.
+Unit tests sit next to the code, in a `tests.rs` beside it (`src/app/tests.rs` for
+`src/app.rs`, declared as `#[cfg(test)] mod tests;`). Keeping them in their own file
+is what lets `.github/codeql/codeql-config.yml` ignore them: Rust has no inline
+CodeQL suppression, so a whole-file ignore is the only way to stop the test-only
+`cleartext-logging` and `hard-coded-cryptographic-value` alerts coming back as line
+numbers move. Scratch dirs go under `target/tmp`.
 
 ## Conventions
 

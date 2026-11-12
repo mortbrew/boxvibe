@@ -282,6 +282,12 @@ impl Art {
     /// The cover for `look`, pixelated and tinted: from the cache when this
     /// look has been drawn before, else built once and kept. The cache stores
     /// exactly what the uncached path computes, so it cannot change the pixels.
+    ///
+    /// The returned image is a copy of the cached one, not the `Arc` itself:
+    /// `Picker::new_resize_protocol` takes an owned `DynamicImage`, so the copy
+    /// is unavoidable there. It is also cheap in practice — this runs only when
+    /// the cover or a setting changed, never per frame (`protocol` returns early
+    /// while the shown cover still matches).
     fn prepared(&mut self, url: &str, image: &Arc<DynamicImage>, look: Look) -> DynamicImage {
         // The palette only distinguishes looks that are tinted, as in `Look`'s
         // equality: an untinted cover is the same whatever the theme.

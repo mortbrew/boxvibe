@@ -203,3 +203,43 @@ fn decodes_real_files() {
         assert!(n > 0, "{file} decodes to samples");
     }
 }
+
+#[test]
+fn a_stream_that_stops_moving_is_noticed() {
+    // A dead stream keeps its queue, so `finished` never fires; only the
+    // position standing still gives it away.
+    let mut stall = Stall::default();
+    let t0 = Instant::now();
+    assert!(!stall.stuck(Duration::from_secs(5), t0), "first sighting is not a stall");
+    assert!(!stall.stuck(Duration::from_secs(5), t0 + Duration::from_secs(1)), "still within the grace");
+    assert!(stall.stuck(Duration::from_secs(5), t0 + STALL_AFTER), "no movement for the whole grace");
+}
+
+#[test]
+fn a_stream_that_moves_is_never_a_stall() {
+    let mut stall = Stall::default();
+    let t0 = Instant::now();
+    let mut pos = Duration::ZERO;
+    for step in 0..20 {
+        pos += Duration::from_millis(250);
+        assert!(!stall.stuck(pos, t0 + Duration::from_secs(step)), "moving, so not stuck");
+    }
+}
+
+#[test]
+fn a_stall_is_forgotten_when_the_song_changes() {
+    let mut stall = Stall::default();
+    let t0 = Instant::now();
+    stall.stuck(Duration::from_secs(5), t0);
+    assert!(stall.stuck(Duration::from_secs(5), t0 + STALL_AFTER));
+    stall.reset();
+    assert!(!stall.stuck(Duration::from_secs(5), t0 + STALL_AFTER), "a new song gets its own grace");
+}
+
+#[test]
+fn a_silent_clock_never_stalls() {
+    // No device: the clock is what moves, and it always does.
+    let mut a = Audio::open(true, 60);
+    a.start(None, 0.0, false).unwrap();
+    assert!(!a.stalled(), "nothing to stall without a stream");
+}

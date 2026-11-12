@@ -2822,7 +2822,7 @@ fn shift_g_opens_genres_and_a_shelf_reaches_a_station() {
     assert_eq!(app.browse, BrowseState::Loading);
     app.settle(Duration::from_millis(400));
     assert!(matches!(app.browse, BrowseState::Loaded(_)));
-    assert_eq!(app.browse_path.as_deref(), Some("/browse/music/genres"));
+    assert_eq!(app.pages.path(), Some("/browse/music/genres"));
     assert_eq!(browse_headers(&app), ["Browse Genres"]);
     let shelves = app
         .browse_rows()
@@ -2838,10 +2838,10 @@ fn shift_g_opens_genres_and_a_shelf_reaches_a_station() {
     app.on_key(key(KeyCode::Enter));
     assert_eq!(app.browse, BrowseState::Loading);
     app.settle(Duration::from_millis(400));
-    assert_eq!(app.browse_path.as_deref(), Some("/browse/music/genres/pop"));
+    assert_eq!(app.pages.path(), Some("/browse/music/genres/pop"));
     assert!(app.browse_rows().iter().any(|r| matches!(r, BrowseRow::Item(i) if i.name == "Today's Hits")));
     app.on_key(key(KeyCode::Esc));
-    assert_eq!(app.browse_path.as_deref(), Some("/browse/music/genres"));
+    assert_eq!(app.pages.path(), Some("/browse/music/genres"));
     assert_eq!(app.browse_cursor, cursor, "Esc returns to the shelf that opened");
     assert_eq!(app.focus, Focus::Content);
     app.on_key(key(KeyCode::Enter));
@@ -2879,16 +2879,16 @@ fn featured_playlists_and_podcasts_drill_down_in_browse() {
     ] {
         app.show_browse_section(section);
         app.settle(Duration::from_millis(400));
-        assert_eq!(app.browse_path.as_deref(), Some(list_path));
+        assert_eq!(app.pages.path(), Some(list_path));
         move_browse_to(&mut app, shelf);
         app.on_key(key(KeyCode::Enter));
         app.settle(Duration::from_millis(400));
-        assert_eq!(app.browse_path.as_deref(), Some(detail_path));
+        assert_eq!(app.pages.path(), Some(detail_path));
         move_browse_to(&mut app, leaf);
         app.on_key(key(KeyCode::Enter));
         assert!(app.status.contains("browse-only") || app.status.contains("can't"), "{section}: {}", app.status);
         app.on_key(key(KeyCode::Esc));
-        assert_eq!(app.browse_path.as_deref(), Some(list_path));
+        assert_eq!(app.pages.path(), Some(list_path));
     }
 }
 
@@ -2902,7 +2902,7 @@ fn decades_and_moods_open_the_same_way_and_a_failed_page_returns() {
         app.show_browse_section(section);
         app.settle(Duration::from_millis(400));
         assert_eq!(
-            app.browse_path.as_deref(),
+            app.pages.path(),
             Some(match section {
                 "Decades" => "/browse/music/decades",
                 _ => "/browse/music/activities",
@@ -2911,11 +2911,9 @@ fn decades_and_moods_open_the_same_way_and_a_failed_page_returns() {
         move_browse_to(&mut app, shelf);
         app.on_key(key(KeyCode::Enter));
         app.settle(Duration::from_millis(400));
-        assert_eq!(app.browse_path.as_deref(), Some(path));
+        assert_eq!(app.pages.path(), Some(path));
         app.on_key(key(KeyCode::Esc));
-        assert!(
-            app.browse_path.as_deref().is_some_and(|p| p == "/browse/music/decades" || p == "/browse/music/activities")
-        );
+        assert!(app.pages.path().is_some_and(|p| p == "/browse/music/decades" || p == "/browse/music/activities"));
         app.on_key(key(KeyCode::Enter));
         app.settle(Duration::from_millis(400));
         move_browse_to(&mut app, station);
@@ -2935,7 +2933,7 @@ fn decades_and_moods_open_the_same_way_and_a_failed_page_returns() {
     app.on_key(key(KeyCode::Enter));
     assert_eq!(app.browse, BrowseState::Loading);
     app.on_reply(Reply::BrowseFailed { path: Some("/browse/music/genres/pop".into()), message: "nope".into() });
-    assert_eq!(app.browse_path.as_deref(), Some("/browse/music/genres"));
+    assert_eq!(app.pages.path(), Some("/browse/music/genres"));
     assert!(app.status.contains("didn't load") && app.status.contains("nope"), "{}", app.status);
     if let BrowseState::Loaded(sections) = &mut app.browse {
         sections[0].items.push(BrowseItem {
@@ -2949,7 +2947,7 @@ fn decades_and_moods_open_the_same_way_and_a_failed_page_returns() {
     move_browse_to(&mut app, "Empty");
     app.on_key(key(KeyCode::Enter));
     app.settle(Duration::from_millis(400));
-    assert_eq!(app.browse_path.as_deref(), Some("/browse/music/genres/empty"));
+    assert_eq!(app.pages.path(), Some("/browse/music/genres/empty"));
     assert_eq!(browse_item_count(&app), 0);
     assert_eq!(browse_headers(&app), ["Empty"]);
 }
@@ -2998,7 +2996,7 @@ fn other_view_all_pins_use_their_path_and_artists_stay_a_teaser() {
         app.show_browse_section(title);
         app.settle(Duration::from_millis(400));
         let teaser = crate::demo::browse().into_iter().find(|s| s.title == title).unwrap();
-        assert_eq!(app.browse_path.as_deref(), teaser.view_all_path.as_deref(), "{title}");
+        assert_eq!(app.pages.path(), teaser.view_all_path.as_deref(), "{title}");
         assert!(browse_item_count(&app) > teaser.items.len(), "{title} should be the View-all list");
         let names: Vec<_> = app
             .browse_rows()
@@ -3011,7 +3009,7 @@ fn other_view_all_pins_use_their_path_and_artists_stay_a_teaser() {
         assert!(names.iter().any(|n| n.contains("extra")), "{title}: {names:?}");
     }
     app.show_browse_section("Artists Picked For You");
-    assert_eq!(app.browse_path, None, "no viewAll: stay on the teaser");
+    assert_eq!(app.pages.path(), None, "no viewAll: stay on the teaser");
     assert!(matches!(app.browse, BrowseState::Loaded(_)), "the teaser is already cached");
     assert_eq!(browse_headers(&app), ["Artists Picked For You"]);
     assert_eq!(browse_item_count(&app), 1);
@@ -3025,17 +3023,17 @@ fn a_failed_view_all_falls_back_to_the_teaser_and_a_late_page_is_not_shown() {
     app.show_browse_section("New Music");
     app.on_reply(Reply::Browse { path: None, sections: crate::demo::browse() });
     assert!(matches!(app.browse, BrowseState::Loading));
-    assert_eq!(app.browse_path.as_deref(), Some("/browse/music/new-music"));
+    assert_eq!(app.pages.path(), Some("/browse/music/new-music"));
     app.on_reply(Reply::BrowseFailed { path: Some("/browse/music/new-music".into()), message: "offline".into() });
     assert!(app.status.contains("short list") && app.status.contains("offline"), "{}", app.status);
-    assert_eq!(app.browse_path, None);
+    assert_eq!(app.pages.path(), None);
     assert_eq!(browse_headers(&app), ["New Music"]);
     assert!(app.browse_rows().iter().any(|r| matches!(r, BrowseRow::Item(i) if i.name == "Midnight City")));
     assert!(!browse_headers(&app).contains(&"Recommended new releases"));
 
     // A late page for a section the user already left is cached, not shown.
     app.show_browse_section("Browse Genres");
-    assert_eq!(app.browse_path.as_deref(), Some("/browse/music/genres"));
+    assert_eq!(app.pages.path(), Some("/browse/music/genres"));
     assert!(matches!(app.browse, BrowseState::Loading));
     app.on_reply(Reply::Browse {
         path: Some("/browse/music/new-music".into()),
@@ -3063,7 +3061,7 @@ fn view_all_pages_are_capped_and_the_page_on_screen_is_never_dropped() {
     assert!(app.view_all.contains(&format!("/browse/page-{}", view_all::KEPT + 4)), "the newest stayed");
 
     // A page on screen is kept even when it is the oldest.
-    app.browse_path = Some("/browse/page-5".into());
+    app.pages.open("/browse/page-5".into());
     for i in 0..view_all::KEPT {
         app.on_reply(Reply::Browse { path: Some(format!("/browse/fresh-{i}")), sections: Vec::new() });
     }

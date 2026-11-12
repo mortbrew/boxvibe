@@ -706,7 +706,10 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let now_h = if app.has_now_playing() { 2 } else { 0 };
-    let section_pins = app.browse_menu_pins().len() as u16;
+    // Built once: it allocates a Vec and owned titles, and the menu asks for
+    // it three times a frame.
+    let pins = app.browse_menu_pins();
+    let section_pins = pins.len() as u16;
     let pinned = app.config.ui.pinned_in_menu;
     // MY COLLECTION groups the personal rows -- My Stations, the optional
     // Pinned songs, and Recently Played once it has something to show -- ruled
@@ -741,10 +744,9 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         | (MenuItem::Stations, View::Stations)
         | (MenuItem::Pinned, View::Pinned)
         | (MenuItem::RecentlyPlayed, View::Recent) => true,
-        (MenuItem::BrowsePin(i), View::Browse) => app
-            .browse_filter
-            .as_ref()
-            .is_some_and(|want| app.browse_menu_pins().get(i).is_some_and(|(_, title)| title == want)),
+        (MenuItem::BrowsePin(i), View::Browse) => {
+            app.browse_filter.as_ref().is_some_and(|want| pins.get(i).is_some_and(|(_, title)| title == want))
+        }
         _ => false,
     };
     let row_style = |item: MenuItem| {
@@ -810,7 +812,7 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             head,
         );
         let mut lines = Vec::new();
-        for (i, (_, title)) in app.browse_menu_pins().into_iter().enumerate() {
+        for (i, (_, title)) in pins.iter().enumerate() {
             let icon = if title == "Browse Genres" { ic.genre } else { ic.browse };
             let mut style = Style::new().fg(p.fg);
             if let Some(sel) = row_style(MenuItem::BrowsePin(i)) {
@@ -2514,8 +2516,14 @@ fn page_key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
         }
         (Focus::Content, View::Browse) => {
             match &app.browse {
-                BrowseState::Loaded(_) if app.browse_rows().iter().any(|r| matches!(r, BrowseRow::Item(_))) => {
-                    let open = app.browse_rows().get(app.browse_index()).is_some_and(|row| match row {
+                BrowseState::Loaded(_)
+                    if {
+                        let rows = app.browse_rows();
+                        rows.iter().any(|r| matches!(r, BrowseRow::Item(_)))
+                    } =>
+                {
+                    let rows = app.browse_rows();
+                    let open = rows.get(app.browse_index()).is_some_and(|row| match row {
                         BrowseRow::Item(item) => item.create_id().is_none() && item.link.is_some(),
                         BrowseRow::Header(_) => false,
                     });

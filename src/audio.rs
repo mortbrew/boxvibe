@@ -15,9 +15,42 @@
 //! per-song `fileGain`, never above 1.0.
 
 use std::io::Cursor;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::log::log;
+
+/// A stream that has not moved for this long has lost its device (unplugged,
+/// or PipeWire restarted): no samples are being pulled any more.
+const STALL_AFTER: Duration = Duration::from_secs(3);
+
+/// Spots a stream that stopped moving.
+///
+/// A dead stream does not report anything through [`Audio::finished`]: its
+/// queue still holds the song, so it never looks empty, and its position stops
+/// advancing because nothing is consuming samples. Without this the player sat
+/// on a frozen progress bar for ever.
+#[derive(Default)]
+struct Stall {
+    seen: Option<(Duration, Instant)>,
+}
+
+impl Stall {
+    /// Whether `pos` has not moved since it was last seen moving.
+    fn stuck(&mut self, pos: Duration, now: Instant) -> bool {
+        match self.seen {
+            Some((last, at)) if pos == last => now.duration_since(at) >= STALL_AFTER,
+            _ => {
+                self.seen = Some((pos, now));
+                false
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.seen = None;
+    }
+}
 
 /// A clock that can pause: where a song is when nothing makes a sound.
 #[derive(Default)]
@@ -58,15 +91,20 @@ pub struct Audio {
     rate: Option<u32>,
     /// Why there is no sound, when there is none.
     pub problem: Option<String>,
+    /// The last error the sound device reported, if any (see [`Audio::take_device_error`]).
+    device_error: Arc<Mutex<Option<String>>>,
+    /// Spots a stream that stopped moving (see [`Stall`]).
+    stall: Stall,
 }
 
 impl Audio {
     /// Opens the default sound device; `silent` (demo) skips it.
     pub fn open(silent: bool, volume: u8) -> Self {
+        let device_error: Arc<Mutex<Option<String>>> = Arc::default();
         let (device, problem) = if silent {
             (None, None)
         } else {
-            match open_device() {
+            match open_device(Arc::clone(&device_error)) {
                 Ok(mut device) => {
                     device.log_on_drop(false);
                     (Some(device), None)
@@ -87,11 +125,31 @@ impl Audio {
             fade: 1.0,
             rate,
             problem,
+            device_error,
+            stall: Stall::default(),
         }
     }
 
     pub fn has_device(&self) -> bool {
         self.device.is_some()
+    }
+
+    /// The sound device's last error, once (the stream died under us).
+    ///
+    /// rodio's default callback prints to stderr, which the interface owns:
+    /// the message would land in the middle of the screen and be wiped by the
+    /// next frame. Taking it here puts it in the log and the status line.
+    pub fn take_device_error(&mut self) -> Option<String> {
+        self.device_error.lock().ok()?.take()
+    }
+
+    /// Whether the stream has stopped moving (the device went away).
+    pub fn stalled(&mut self) -> bool {
+        if self.player.is_none() || self.paused {
+            return false;
+        }
+        let pos = self.position();
+        self.stall.stuck(pos, Instant::now())
     }
 
     /// Starts a song from its downloaded bytes (`None`: the silent clock
@@ -104,6 +162,7 @@ impl Audio {
         self.active = true;
         self.clock = Clock::default();
         self.clock.resume();
+        self.stall.reset();
         let (Some(device), Some(data)) = (&self.device, data) else { return Ok(()) };
         let decoder = decoder(data)?;
         let player = rodio::Player::connect_new(device.mixer());
@@ -128,6 +187,7 @@ impl Audio {
         self.muted = false;
         self.gain_db = 0.0;
         self.clock = Clock::default();
+        self.stall.reset();
     }
 
     /// Mutes or unmutes what is playing; the volume stays what it was.
@@ -370,10 +430,24 @@ const BUFFER_FRAMES: u32 = 4096;
 
 /// The default sound device with a roomier buffer; rodio's own choice when
 /// the device won't take it.
-fn open_device() -> Result<rodio::MixerDeviceSink, rodio::DeviceSinkError> {
+///
+/// The error callback is ours rather than rodio's default, which prints to
+/// stderr: the interface owns the screen, so that message would appear over
+/// the UI and be wiped by the next frame. It is kept for [`Audio::take_device_error`].
+fn open_device(device_error: Arc<Mutex<Option<String>>>) -> Result<rodio::MixerDeviceSink, rodio::DeviceSinkError> {
+    let on_error = move |e: rodio::cpal::Error| {
+        if let Ok(mut slot) = device_error.lock() {
+            *slot = Some(e.to_string());
+        }
+    };
     rodio::DeviceSinkBuilder::from_default_device()
+        .map(|b| b.with_error_callback(on_error.clone()))
         .and_then(|b| b.with_buffer_size(rodio::cpal::BufferSize::Fixed(BUFFER_FRAMES)).open_stream())
-        .or_else(|_| rodio::DeviceSinkBuilder::open_default_sink())
+        .or_else(|_| {
+            rodio::DeviceSinkBuilder::from_default_device()
+                .map(|b| b.with_error_callback(on_error))
+                .and_then(|b| b.open_stream())
+        })
 }
 
 /// A source with every sample kept inside ±1.0.

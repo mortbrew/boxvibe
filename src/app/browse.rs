@@ -57,7 +57,7 @@ impl App {
     }
 
     fn open_browse_view(&mut self) {
-        self.browse_parent = None;
+        self.pages.reset();
         self.view = View::Browse;
         self.focus = Focus::Content;
         self.point_menu_at_view();
@@ -66,15 +66,16 @@ impl App {
 
     /// Show the teaser, or fetch the section's View-all page once the teaser is known.
     fn sync_browse_page(&mut self) {
-        match &self.browse_directory {
+        match self.pages.directory() {
             BrowseState::Idle => self.start_directory_fetch(),
             BrowseState::Loading => {
-                self.browse_path = None;
+                self.pages.show_teaser();
                 self.browse = BrowseState::Loading;
             }
             BrowseState::Failed(why) => {
-                self.browse_path = None;
-                self.browse = BrowseState::Failed(why.clone());
+                let why = why.clone();
+                self.pages.show_teaser();
+                self.browse = BrowseState::Failed(why);
             }
             BrowseState::Loaded(_) => {
                 if let Some(path) = self.wanted_view_all_path() {
@@ -92,8 +93,8 @@ impl App {
             self.browse = BrowseState::Idle;
             return;
         }
-        self.browse_directory = BrowseState::Loading;
-        self.browse_path = None;
+        self.pages.set_directory(BrowseState::Loading);
+        self.pages.show_teaser();
         self.browse = BrowseState::Loading;
         self.backend.send(Request::Browse { path: None });
     }
@@ -101,29 +102,31 @@ impl App {
     /// The open pin's `viewAll.webUrl`, once the main teaser has been parsed.
     fn wanted_view_all_path(&self) -> Option<String> {
         let want = self.browse_filter.as_ref()?;
-        let BrowseState::Loaded(sections) = &self.browse_directory else { return None };
+        let BrowseState::Loaded(sections) = self.pages.directory() else { return None };
         sections.iter().find(|s| same_browse_section(s, want)).and_then(|s| s.view_all_path.clone())
     }
 
     fn show_directory_rows(&mut self) {
-        self.browse_path = None;
-        if let BrowseState::Loaded(sections) = &self.browse_directory {
-            self.browse = BrowseState::Loaded(sections.clone());
+        self.pages.show_teaser();
+        if let BrowseState::Loaded(sections) = self.pages.directory() {
+            let sections = sections.clone();
+            self.browse = BrowseState::Loaded(sections);
         }
         self.place_browse_cursor();
     }
 
     fn fetch_view_all(&mut self, path: String) {
         if let Some(sections) = self.view_all.get(&path) {
-            self.browse_path = Some(path);
-            self.browse = BrowseState::Loaded(sections.clone());
+            let sections = sections.clone();
+            self.pages.open(path);
+            self.browse = BrowseState::Loaded(sections);
             self.place_browse_cursor();
             return;
         }
-        if self.browse_path.as_deref() == Some(path.as_str()) && matches!(self.browse, BrowseState::Loading) {
+        if self.pages.is_on(&path) && matches!(self.browse, BrowseState::Loading) {
             return;
         }
-        self.browse_path = Some(path.clone());
+        self.pages.open(path.clone());
         self.browse = BrowseState::Loading;
         self.backend.send(Request::Browse { path: Some(path) });
     }
@@ -135,14 +138,14 @@ impl App {
     pub(super) fn browse_loaded(&mut self, path: Option<String>, sections: Vec<BrowseSection>) {
         match path {
             None => {
-                self.browse_directory = BrowseState::Loaded(sections);
+                self.pages.set_directory(BrowseState::Loaded(sections));
                 if self.view == View::Browse {
                     self.sync_browse_page();
                 }
             }
             Some(path) => {
                 self.keep_view_all(path.clone(), sections.clone());
-                if self.browse_path.as_deref() == Some(path.as_str()) {
+                if self.pages.is_on(&path) {
                     self.browse = BrowseState::Loaded(sections);
                     self.place_browse_cursor();
                 }
@@ -153,32 +156,33 @@ impl App {
     /// Remembers a View-all page, dropping the oldest once there are more than
     /// [`view_all::KEPT`]. A page on screen is never the one dropped.
     fn keep_view_all(&mut self, path: String, sections: Vec<BrowseSection>) {
-        let on_screen = self.browse_path.clone();
+        let on_screen = self.pages.path().map(str::to_owned);
         self.view_all.keep(path, sections, on_screen.as_deref());
     }
 
     pub(super) fn note_browse_failure(&mut self, path: Option<String>, message: String) {
         match path {
             None => {
-                self.browse_directory = BrowseState::Failed(message.clone());
-                if self.view == View::Browse && self.browse_path.is_none() {
+                let why = message.clone();
+                self.pages.set_directory(BrowseState::Failed(why));
+                if self.view == View::Browse && self.pages.path().is_none() {
                     self.browse = BrowseState::Failed(message);
                 }
             }
             Some(path) => {
-                if self.browse_path.as_deref() != Some(path.as_str()) {
+                if !self.pages.is_on(&path) {
                     return;
                 }
-                if let Some(parent) = self.browse_parent.take() {
-                    self.browse = parent.state;
-                    self.browse_path = parent.path;
-                    self.browse_cursor = parent.cursor;
+                if let Some((state, cursor)) = self.pages.back() {
+                    self.browse = state;
+                    self.browse_cursor = cursor;
                     self.status = format!("That page didn't load ({message})");
                     return;
                 }
-                if let BrowseState::Loaded(sections) = &self.browse_directory {
-                    self.browse_path = None;
-                    self.browse = BrowseState::Loaded(sections.clone());
+                if let BrowseState::Loaded(sections) = self.pages.directory() {
+                    let sections = sections.clone();
+                    self.pages.show_teaser();
+                    self.browse = BrowseState::Loaded(sections);
                     self.place_browse_cursor();
                     self.status = format!("View-all didn't load ({message}): showing the short list");
                 } else {
@@ -189,13 +193,13 @@ impl App {
     }
 
     fn retry_browse(&mut self) {
-        if let Some(path) = self.browse_path.clone() {
+        if let Some(path) = self.pages.path().map(str::to_owned) {
             self.view_all.forget(&path);
             self.browse = BrowseState::Idle;
             self.fetch_view_all(path);
             return;
         }
-        self.browse_directory = BrowseState::Idle;
+        self.pages.set_directory(BrowseState::Idle);
         self.browse = BrowseState::Idle;
         self.open_browse_view();
     }
@@ -210,7 +214,7 @@ impl App {
         };
         let mut rows = Vec::new();
         for section in sections {
-            if self.browse_path.is_none()
+            if self.pages.path().is_none()
                 && let Some(want) = &self.browse_filter
                 && !same_browse_section(section, want)
             {
@@ -276,15 +280,13 @@ impl App {
 
     /// A category shelf's site path. The page underneath is kept for Esc.
     fn open_browse_link(&mut self, path: String) {
-        if self.browse_path.as_deref() == Some(path.as_str()) {
+        if self.pages.is_on(&path) {
             return;
         }
         if matches!(self.browse, BrowseState::Loaded(_)) {
-            self.browse_parent = Some(BrowsePlace {
-                state: self.browse.clone(),
-                path: self.browse_path.clone(),
-                cursor: self.browse_cursor,
-            });
+            let state = self.browse.clone();
+            let cursor = self.browse_cursor;
+            self.pages.remember(state, cursor);
         }
         self.fetch_view_all(path);
     }
@@ -294,14 +296,13 @@ impl App {
         if self.view != View::Browse || self.focus != Focus::Content {
             return false;
         }
-        let Some(parent) = self.browse_parent.take() else { return false };
-        self.browse = parent.state;
-        self.browse_path = parent.path;
-        self.browse_cursor = parent.cursor;
+        let Some((state, cursor)) = self.pages.back() else { return false };
+        self.browse = state;
+        self.browse_cursor = cursor;
         true
     }
 
     pub fn browse_can_go_back(&self) -> bool {
-        self.view == View::Browse && self.focus == Focus::Content && self.browse_parent.is_some()
+        self.view == View::Browse && self.focus == Focus::Content && self.pages.can_go_back()
     }
 }

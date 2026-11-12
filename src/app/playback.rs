@@ -154,6 +154,25 @@ impl App {
         self.advance();
     }
 
+    /// Every frame: a sound device that went away is noticed, so the player
+    /// does not sit on a frozen progress bar for ever.
+    ///
+    /// A dead stream reports nothing through [`Audio::finished`]: its queue
+    /// still holds the song, so it never looks empty, and its position stops
+    /// advancing because nothing is pulling samples. Both are checked here.
+    pub(super) fn device_tick(&mut self) {
+        if let Some(why) = self.audio.take_device_error() {
+            crate::log::log!("device: {why}");
+            self.status = format!("⚠ The sound device stopped ({why})");
+        }
+        if !self.audio.stalled() {
+            return;
+        }
+        crate::log::log!("device: the stream stopped moving: skipping");
+        self.status = "⚠ The sound device stopped: skipping".into();
+        self.advance();
+    }
+
     /// Starts the audio for `now`. `false`: it would not start, so the caller
     /// moves on to the next song.
     pub(super) fn play_now(&mut self, data: Option<Vec<u8>>) -> bool {

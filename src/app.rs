@@ -30,6 +30,7 @@ use crate::update::{Progress, Replace, Update};
 mod ad;
 mod audio_cache;
 mod browse;
+mod browse_pages;
 mod dialogs;
 mod editor;
 mod panel;
@@ -971,14 +972,11 @@ pub struct App {
     pub browse_cursor: usize,
     /// `None`: full teaser (every section). `Some(title)`: one pinned section's page.
     pub browse_filter: Option<String>,
-    /// Main `/browse` teaser. View-all paths are read from here.
-    browse_directory: BrowseState,
+    /// Main `/browse` teaser, the View-all page on screen, and the page Esc
+    /// returns to (see [`browse_pages`]).
+    pages: browse_pages::BrowsePages,
     /// View-all pages already fetched (see [`view_all`]).
     view_all: view_all::ViewAllCache,
-    /// View-all path on screen or in flight. `None`: the page is the teaser.
-    browse_path: Option<String>,
-    /// Page to restore when Esc leaves a category shelf.
-    browse_parent: Option<BrowsePlace>,
     /// Selected genre station, counted over the stations only (not the headings).
     /// A station is being made: a second Enter waits for it.
     creating: bool,
@@ -1111,10 +1109,8 @@ impl App {
             browse: BrowseState::Idle,
             browse_cursor: 0,
             browse_filter: None,
-            browse_directory: BrowseState::Idle,
+            pages: browse_pages::BrowsePages::default(),
             view_all: view_all::ViewAllCache::default(),
-            browse_path: None,
-            browse_parent: None,
             creating: false,
             editor: None,
             ad: AdPhase::Off,
@@ -1838,6 +1834,7 @@ impl App {
             self.system_checked(&facts);
         }
         self.sleep_tick();
+        self.device_tick();
         if self.now.as_ref().is_some_and(|s| self.audio.finished(s.length)) {
             if let Some(song) = &self.now {
                 crate::log::log!(

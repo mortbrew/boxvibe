@@ -17,8 +17,9 @@ use ratatui_image::protocol::StatefulProtocol;
 use crate::config::{AlbumArt, ArtTint, RetroMode};
 use crate::theme::Palette;
 
-/// Covers kept in memory.
-const MEMORY: usize = 24;
+mod images;
+use images::ImageCache;
+
 /// The disk cache is trimmed (oldest first) to this many bytes.
 pub const DISK_CAP: u64 = 50 * 1024 * 1024;
 /// Covers are shrunk to at most this many pixels across once downloaded.
@@ -114,8 +115,7 @@ const CACHED_COVERS: usize = 16;
 pub struct Art {
     /// The terminal's graphics, when it has any (Picture).
     graphics: Option<Picker>,
-    images: HashMap<String, Arc<DynamicImage>>,
-    order: VecDeque<String>,
+    images: ImageCache,
     requested: HashSet<String>,
     failed: HashMap<String, Failure>,
     /// Covers the terminal's graphics couldn't encode: drawn in half blocks.
@@ -179,7 +179,7 @@ impl Art {
     /// [`Art::want`] at a given moment: a cover that failed is asked for again
     /// once its wait is over, until it has used up its tries.
     pub fn want_at(&mut self, url: &str, now: Instant) -> bool {
-        if url.is_empty() || self.images.contains_key(url) || self.requested.contains(url) {
+        if url.is_empty() || self.images.contains(url) || self.requested.contains(url) {
             return false;
         }
         if let Some(failure) = self.failed.get(url)
@@ -209,13 +209,7 @@ impl Art {
             return;
         };
         self.failed.remove(&url);
-        if self.order.len() >= MEMORY
-            && let Some(old) = self.order.pop_front()
-        {
-            self.images.remove(&old);
-        }
-        self.order.push_back(url.clone());
-        self.images.insert(url, Arc::new(image));
+        self.images.keep(url, Arc::new(image));
     }
 
     /// Loading while it is downloading or waiting for another try.

@@ -821,9 +821,11 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         }
         frame.render_widget(Paragraph::new(lines), rows);
     }
-    // FAVORITES, like tubevibe's tabs: only once a station is starred.
+    // FAVORITES, like tubevibe's tabs: only once a station is starred. While
+    // the stations load the rows would have a blank where the Pandora /
+    // your-own mark goes, so one loading row stands in for them.
     let favorites = &app.config.ui.favorites;
-    if app.config.ui.favorites_in_menu && !favorites.is_empty() && favs_area.height > 1 {
+    if app.favorites_in_menu() && favs_area.height > 1 {
         let [gap, head, list_area] =
             Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(favs_area);
         frame.render_widget(inset_rule(&p, gap.width), gap);
@@ -831,32 +833,40 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             Paragraph::new(Span::styled(format!(" FAVORITES ({})", favorites.len()), Style::new().fg(p.orange).bold())),
             head,
         );
-        let c_fav = column(&[ic.play, ic.favorite]);
-        let c_mark = column(&[ic.genre_station, ic.own_station]);
-        let items: Vec<ListItem> = favorites
-            .iter()
-            .enumerate()
-            .map(|(i, f)| {
-                let playing = app.current_station.as_deref() == Some(f.id.as_str());
-                let mut style = if playing { Style::new().fg(p.green).bold() } else { Style::new().fg(p.fg) };
-                if let Some(sel) = row_style(MenuItem::Favorite(i)) {
-                    style = style.patch(sel);
-                }
-                let icon = if playing { ic.play } else { ic.favorite };
-                // The favorite's station may not be loaded yet: a blank mark until it is.
-                let mark = app.stations.iter().find(|s| s.id == f.id).and_then(|s| station_mark(s, ic));
-                let head = format!(" {} {} ", cell(Some(icon), c_fav), cell(mark, c_mark));
-                let room = (list_area.width as usize).saturating_sub(safe_width(&head));
-                let line = format!("{head}{}", truncate(&clean(&f.name), room));
-                ListItem::new(Line::from(pad(&line, list_area.width as usize))).style(style)
-            })
-            .collect();
-        let at = match selected {
-            MenuItem::Favorite(i) => Some(i),
-            _ => None,
-        };
-        let mut state = ListState::default().with_selected(at);
-        frame.render_stateful_widget(List::new(items), list_area, &mut state);
+        if app.favorites_loading() {
+            let text = format!(" {} Loading favorites…", ic.loading);
+            frame.render_widget(
+                Paragraph::new(Line::from(pad(&text, list_area.width as usize))).style(Style::new().fg(p.muted)),
+                list_area,
+            );
+        } else {
+            let c_fav = column(&[ic.play, ic.favorite]);
+            let c_mark = column(&[ic.genre_station, ic.own_station]);
+            let items: Vec<ListItem> = favorites
+                .iter()
+                .enumerate()
+                .map(|(i, f)| {
+                    let playing = app.current_station.as_deref() == Some(f.id.as_str());
+                    let mut style = if playing { Style::new().fg(p.green).bold() } else { Style::new().fg(p.fg) };
+                    if let Some(sel) = row_style(MenuItem::Favorite(i)) {
+                        style = style.patch(sel);
+                    }
+                    let icon = if playing { ic.play } else { ic.favorite };
+                    // The favorite's station may not be loaded yet: a blank mark until it is.
+                    let mark = app.stations.iter().find(|s| s.id == f.id).and_then(|s| station_mark(s, ic));
+                    let head = format!(" {} {} ", cell(Some(icon), c_fav), cell(mark, c_mark));
+                    let room = (list_area.width as usize).saturating_sub(safe_width(&head));
+                    let line = format!("{head}{}", truncate(&clean(&f.name), room));
+                    ListItem::new(Line::from(pad(&line, list_area.width as usize))).style(style)
+                })
+                .collect();
+            let at = match selected {
+                MenuItem::Favorite(i) => Some(i),
+                _ => None,
+            };
+            let mut state = ListState::default().with_selected(at);
+            frame.render_stateful_widget(List::new(items), list_area, &mut state);
+        }
     }
     frame.render_widget(inset_rule(&p, rule.width), rule);
     let entries = [
@@ -4297,6 +4307,20 @@ mod tests {
         assert!(!lines.iter().any(|l| l.contains("FAVORITES")), "hidden while empty");
         let fav = app.stations[1].clone();
         app.config.ui.favorites.push(crate::config::Favorite { id: fav.id.clone(), name: fav.name.clone() });
+        // Starred but logged out: the section is not there at all.
+        let stations = std::mem::take(&mut app.stations);
+        app.session = crate::app::Session::LoggedOut;
+        let (lines, _) = screen(&app, 120, 36);
+        assert!(!lines.iter().any(|l| l.contains("FAVORITES")), "hidden while logged out");
+        // Signed in, before the list arrives: the heading stays and a loading
+        // row stands in, rather than rows with a blank where the Pandora /
+        // your-own mark goes.
+        app.session = crate::app::Session::LoggedIn;
+        let (lines, _) = screen(&app, 120, 36);
+        assert!(lines.iter().any(|l| l.starts_with("│ FAVORITES (1)")), "the heading stays");
+        assert!(lines.iter().any(|l| l.contains("Loading favorites")), "a loading row stands in");
+        assert!(!lines.iter().any(|l| l.contains(&fav.name)), "no row until the list arrives");
+        app.stations = stations;
         app.view = View::Stations;
         app.focus = crate::app::Focus::Content;
         let (lines, _) = screen(&app, 120, 36);

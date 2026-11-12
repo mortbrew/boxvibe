@@ -987,7 +987,9 @@ pub struct App {
     pub ad: AdPhase,
     ad_serial: u32,
     ad_tracker: ads::Tracker,
-    pub buffering: Option<String>,
+    /// The song whose audio is downloading, and since when (a download that
+    /// never answers must not hold the player forever).
+    pub buffering: Option<(String, Instant)>,
     audio_cache: HashMap<String, Vec<u8>>,
     /// The covers.
     pub art: crate::art::Art,
@@ -1030,6 +1032,8 @@ const MAX_STATION_NAME: usize = 80;
 const MAX_PROMPT: usize = 256;
 /// How long the boot screen stays when no key skips it.
 pub const SPLASH: Duration = Duration::from_millis(2000);
+/// A song's audio gets this long to download before it is given up on.
+const BUFFER_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl App {
     pub fn new(config: Config, config_path: Option<PathBuf>, warnings: &[ConfigWarning], demo: bool) -> Self {
@@ -1269,6 +1273,23 @@ impl App {
         self.current_station.is_some()
     }
 
+    /// The menu lists FAVORITES: the setting is on, something is starred, and
+    /// an account is signed in. A favorite is saved config (an id and a name)
+    /// while `stations` is fetched per login, so logged out there is nothing
+    /// for a row to play or to say about it.
+    pub fn favorites_in_menu(&self) -> bool {
+        self.config.ui.favorites_in_menu
+            && !self.config.ui.favorites.is_empty()
+            && matches!(self.session, Session::LoggedIn | Session::SigningIn)
+    }
+
+    /// Signed in but the stations are not in yet, so a favorite row cannot say
+    /// whether its station is Pandora's or yours: the section shows a loading
+    /// row instead of rows with a blank where that mark goes.
+    pub fn favorites_loading(&self) -> bool {
+        self.favorites_in_menu() && self.stations.is_empty()
+    }
+
     pub fn menu_items(&self) -> Vec<MenuItem> {
         let top = self.has_now_playing().then_some(MenuItem::NowPlaying);
         let pins = (0..self.browse_menu_pins().len()).map(MenuItem::BrowsePin);
@@ -1280,8 +1301,7 @@ impl App {
             .chain(self.config.ui.pinned_in_menu.then_some(MenuItem::Pinned))
             .chain(pins)
             .chain(
-                (0..if self.config.ui.favorites_in_menu { self.config.ui.favorites.len() } else { 0 })
-                    .map(MenuItem::Favorite),
+                (0..if self.favorites_in_menu() { self.config.ui.favorites.len() } else { 0 }).map(MenuItem::Favorite),
             )
             .chain([MenuItem::Settings, MenuItem::Notifications, MenuItem::About, MenuItem::Quit])
             .collect()
@@ -1341,6 +1361,10 @@ impl App {
             }
             None if !self.config.ui.favorites_in_menu => {
                 self.status = "Favorites are hidden from the menu (Settings: Favorites in menu)".into()
+            }
+            // Starred, but no account is signed in: the section is not there.
+            None if !self.config.ui.favorites.is_empty() => {
+                self.status = "Log in to see FAVORITES: they are kept for your account".into()
             }
             None => self.status = "No favorites yet: f on a station stars it".into(),
         }
@@ -2150,12 +2174,13 @@ impl App {
         }
         let link = pin.link.clone();
         if !self.demo {
-            let _ = std::process::Command::new("xdg-open")
+            let mut command = std::process::Command::new("xdg-open");
+            command
                 .arg(&link)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
+                .stderr(std::process::Stdio::null());
+            let _ = crate::proc::detached(command);
         }
         self.status = format!("Opening {link}");
     }
@@ -2241,6 +2266,7 @@ impl App {
             self.end_song(End::Played);
         }
         self.ad_tick();
+        self.buffer_tick();
         self.mpris_tick();
         self.theme_tick();
         self.want_art();
@@ -2362,8 +2388,18 @@ impl App {
                 // One call per session, after the list: a station entry carries
                 // no name, so the row joins names from `stations`.
                 self.ask_recently_played();
-                // Favorites keep the names Pandora uses now.
+                // Favorites keep the names Pandora uses now, and one whose
+                // station Pandora no longer has goes -- but only on a list we
+                // can trust: a logged-in account that really has stations. An
+                // empty list is a logged-out or brand-new account, and pruning
+                // on it would throw away every star.
                 let mut renamed = false;
+                let trusted = self.session == Session::LoggedIn && !self.stations.is_empty();
+                let before = self.config.ui.favorites.len();
+                if trusted {
+                    self.config.ui.favorites.retain(|f| self.stations.iter().any(|s| s.id == f.id));
+                }
+                let pruned = before - self.config.ui.favorites.len();
                 for f in &mut self.config.ui.favorites {
                     if let Some(s) = self.stations.iter().find(|s| s.id == f.id)
                         && s.name != f.name
@@ -2372,7 +2408,7 @@ impl App {
                         renamed = true;
                     }
                 }
-                if renamed {
+                if renamed || pruned > 0 {
                     self.save_favorites();
                 }
                 if self.stations.is_empty() {
@@ -2386,6 +2422,13 @@ impl App {
                 } else if self.current_station.is_none() && self.status.is_empty() {
                     // Startup always stays on Now Playing (idle); Stations is opened by hand.
                     self.status = "Nothing playing: open My Stations (Shift+S) to pick one".into();
+                }
+                // Last, so autoplay's "Tuning in to …" does not hide it.
+                if pruned > 0 {
+                    self.status = match pruned {
+                        1 => "A favorite was removed: that station is gone from Pandora".into(),
+                        n => format!("{n} favorites were removed: those stations are gone from Pandora"),
+                    };
                 }
             }
             Reply::StationRenamed { station_id, name } => {
@@ -2476,7 +2519,7 @@ impl App {
             Reply::AdList { station_id, ads } => self.ad_list_arrived(&station_id, ads),
             Reply::Audio { track_token, data } => {
                 let Some(data) = self.ad_audio_arrived(&track_token, data) else { return };
-                if self.buffering.as_deref() == Some(&track_token) {
+                if self.buffering.as_ref().is_some_and(|(t, _)| *t == track_token) {
                     self.buffering = None;
                     self.play_now(Some(data));
                 } else if self.queue.iter().any(|s| s.track_token == track_token) {
@@ -2489,7 +2532,7 @@ impl App {
                     return;
                 }
                 self.requested.remove(&track_token);
-                if self.buffering.as_deref() == Some(&track_token) {
+                if self.buffering.as_ref().is_some_and(|(t, _)| *t == track_token) {
                     crate::log::log!("download: failed for {track_token}: {message}");
                     self.buffering = None;
                     self.status = format!("⚠ {message}: skipping");
@@ -2758,6 +2801,8 @@ impl App {
         self.queue.clear();
         self.history.clear();
         self.stations.clear();
+        // A dislike held on an Up Next row belongs to the account that held it.
+        self.held_dislikes.clear();
         self.forget_recent();
         self.current_station = None;
         self.menu_cursor = 0;
@@ -2783,6 +2828,8 @@ impl App {
         self.queue.clear();
         self.audio_cache.clear();
         self.requested.clear();
+        // Held dislikes are for songs of the station being left.
+        self.held_dislikes.clear();
         self.buffering = None;
         self.next_cursor = 0;
         // The NOW PLAYING entry appears on top: the cursor stays on its entry.
@@ -2850,7 +2897,7 @@ impl App {
         } else if self.demo || !self.audio.has_device() {
             self.play_now(None);
         } else {
-            self.buffering = Some(token.clone());
+            self.buffering = Some((token.clone(), Instant::now()));
             if self.requested.insert(token.clone()) {
                 self.backend.send(Request::Audio { track_token: token, url });
             }
@@ -2880,6 +2927,21 @@ impl App {
         {
             self.backend.send(Request::Audio { track_token: next.track_token.clone(), url: next.audio_url.clone() });
         }
+    }
+
+    /// Every frame: a download that never answers is given up on, so the
+    /// player cannot sit on "buffering…" forever.
+    fn buffer_tick(&mut self) {
+        let Some((token, since)) = &self.buffering else { return };
+        if since.elapsed() <= BUFFER_TIMEOUT {
+            return;
+        }
+        let token = token.clone();
+        crate::log::log!("download: no answer for {token} in {BUFFER_TIMEOUT:?}: skipping");
+        self.buffering = None;
+        self.requested.remove(&token);
+        self.status = "⚠ The song took too long to download: skipping".into();
+        self.advance();
     }
 
     fn play_now(&mut self, data: Option<Vec<u8>>) {
@@ -2914,12 +2976,13 @@ impl App {
         if self.demo || cfg!(test) || !self.config.ui.notifications {
             return;
         }
-        let _ = std::process::Command::new("notify-send")
+        let mut command = std::process::Command::new("notify-send");
+        command
             .args(["-a", "boxvibe", "-t", "4000", &song.title, &format!("{} — {}", song.artist, song.album)])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+            .stderr(std::process::Stdio::null());
+        let _ = crate::proc::detached(command);
     }
 
     // --- Up Next and History ---
@@ -4082,6 +4145,15 @@ mod tests {
         let mut groups: Vec<&str> = Setting::ALL.iter().map(|(g, _)| *g).collect();
         groups.dedup();
         assert_eq!(groups, ["ACCOUNT", "BOXVIBE", "PLAYBACK", "LOOK", "BROWSE"]);
+        // Every Browse section has a Settings row: `Setting::ALL` lists them by
+        // hand, so a new section would otherwise get a menu pin and no row.
+        let rows = Setting::ALL.iter().filter(|(_, s)| matches!(s, Setting::BrowseSection(_))).count();
+        assert_eq!(rows, config::BROWSE_SECTIONS.len(), "one BROWSE row per section in config::BROWSE_SECTIONS");
+        for (i, (key, title)) in config::BROWSE_SECTIONS.iter().enumerate() {
+            let setting = Setting::BrowseSection(i as u8);
+            assert_eq!(setting.label(), *title);
+            assert_eq!(setting.saved_as(), Some(("browse", *key)));
+        }
         assert_eq!(Setting::ALL[0].1, Setting::Email, "the account is on top");
         assert!(Setting::at(Setting::Splash) > Setting::at(Setting::ThemeAutoMode), "the boot screen is under LOOK");
         assert_eq!(App::new(Config::default(), None, &[], true).setting(), Setting::Email, "the cursor starts on it");
@@ -4355,6 +4427,50 @@ mod tests {
         app.session = Session::LoggedIn;
         app.on_reply(Reply::Stations(vec![Station { id: "3815".into(), name: "Tee".into(), ..Default::default() }]));
         assert!(app.recent_loading && app.recent_asked, "the next login asks once");
+    }
+
+    #[test]
+    fn favorites_wait_for_the_station_list_and_stale_ones_are_pruned() {
+        let mut app = demo();
+        let (keep, gone) = (app.stations[1].clone(), app.stations[2].clone());
+        app.config.ui.favorites = vec![
+            crate::config::Favorite { id: keep.id.clone(), name: "an old name".into() },
+            crate::config::Favorite { id: gone.id.clone(), name: gone.name.clone() },
+        ];
+        // Logged out: no account, so the section is not there at all -- but the
+        // stars are kept for when one signs in.
+        app.log_out();
+        assert!(app.stations.is_empty());
+        assert!(!app.favorites_in_menu(), "hidden while logged out");
+        assert!(!app.favorites_loading());
+        assert_eq!(app.config.ui.favorites.len(), 2, "kept while logged out");
+        // Signed in, before the list arrives: the section is back with a
+        // loading row instead of rows that cannot say what kind of station it is.
+        app.session = Session::LoggedIn;
+        assert!(app.favorites_in_menu() && app.favorites_loading(), "a loading row stands in");
+        // The list arrives without `gone`: that favorite goes, and the one that
+        // stayed takes the name Pandora uses now.
+        app.on_reply(Reply::Stations(vec![keep.clone()]));
+        assert!(app.favorites_in_menu() && !app.favorites_loading());
+        let ids: Vec<&str> = app.config.ui.favorites.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, vec![keep.id.as_str()], "the stale favorite is pruned");
+        assert_eq!(app.config.ui.favorites[0].name, keep.name, "renamed to Pandora's");
+        assert!(app.status.contains("removed"), "{}", app.status);
+    }
+
+    #[test]
+    fn an_empty_or_logged_out_list_never_prunes_favorites() {
+        let mut app = demo();
+        let starred = app.stations[1].clone();
+        app.config.ui.favorites = vec![crate::config::Favorite { id: starred.id.clone(), name: starred.name.clone() }];
+        // Logged out: the list is cleared, and the star must survive it.
+        app.log_out();
+        assert!(app.stations.is_empty());
+        assert_eq!(app.config.ui.favorites.len(), 1, "logging out keeps the stars");
+        // A logged-in account with no stations at all: still no pruning.
+        app.session = Session::LoggedIn;
+        app.on_reply(Reply::Stations(Vec::new()));
+        assert_eq!(app.config.ui.favorites.len(), 1, "an empty list is not proof a station is gone");
     }
 
     #[test]
@@ -5090,6 +5206,23 @@ mod tests {
     }
 
     #[test]
+    fn a_download_that_never_answers_is_given_up_on() {
+        // A reply for a token nobody waits for is dropped, so without this the
+        // player would sit on "buffering…" for the rest of the session.
+        let mut app = demo();
+        let playing = app.now.as_ref().unwrap().track_token.clone();
+        app.buffering = Some((playing.clone(), Instant::now()));
+        app.buffer_tick();
+        assert!(app.buffering.is_some(), "a download still in time is left alone");
+
+        app.buffering = Some((playing.clone(), Instant::now() - BUFFER_TIMEOUT - Duration::from_secs(1)));
+        app.buffer_tick();
+        assert!(app.buffering.is_none(), "the wait is over");
+        assert!(app.status.contains("took too long"), "{}", app.status);
+        assert_ne!(app.now.as_ref().unwrap().track_token, playing, "the next song starts");
+    }
+
+    #[test]
     fn an_up_next_dislike_waits_for_its_turn_and_b_again_cancels_it() {
         let mut app = demo();
         app.focus = Focus::Content;
@@ -5106,6 +5239,27 @@ mod tests {
         assert_eq!(app.now.as_ref().unwrap().track_token, second, "the held song is skipped at its turn");
         assert!(app.history.iter().any(|s| s.track_token == first && s.rating == Rating::Down));
         assert!(app.held_dislikes.is_empty());
+    }
+
+    #[test]
+    fn a_held_dislike_does_not_outlive_its_station_or_its_login() {
+        // A dislike held on an Up Next row is for a song of this station: tuning
+        // away or logging out must not leave it to skip a song later.
+        let mut app = demo();
+        app.focus = Focus::Content;
+        app.pane = Pane::UpNext;
+        app.on_key(key(KeyCode::Char('b')));
+        assert_eq!(app.held_dislikes.len(), 1);
+        app.tune(1);
+        assert!(app.held_dislikes.is_empty(), "tuning away drops the held dislike");
+
+        app.settle(Duration::from_millis(150));
+        app.focus = Focus::Content;
+        app.pane = Pane::UpNext;
+        app.on_key(key(KeyCode::Char('b')));
+        assert_eq!(app.held_dislikes.len(), 1);
+        app.log_out();
+        assert!(app.held_dislikes.is_empty(), "logging out drops the held dislike");
     }
 
     #[test]
@@ -5650,7 +5804,23 @@ mod tests {
         app.on_key(shift('F'));
         assert!(app.status.contains("No favorites"), "{}", app.status);
         assert_eq!(app.focus, Focus::Content);
+        // Starred but logged out: the section is not there, and F says why.
         app.config.ui.favorites.push(crate::config::Favorite { id: "1".into(), name: "One".into() });
+        app.session = Session::LoggedOut;
+        app.on_key(shift('F'));
+        assert!(app.status.contains("Log in"), "{}", app.status);
+        assert_eq!(app.focus, Focus::Content);
+        // Signed in, before the list arrives: the section is back with a
+        // loading row, and F lands on it.
+        app.session = Session::LoggedIn;
+        app.on_key(shift('F'));
+        assert_eq!((app.focus, app.menu_selected()), (Focus::Menu, MenuItem::Favorite(0)));
+        // With the list in, F still lands on the first favorite. A favorite
+        // whose station Pandora no longer has is pruned as the list arrives, so
+        // this one names a station the demo really has.
+        app.demo_warm_up(0, Duration::ZERO);
+        let real = app.stations.first().map(|s| (s.id.clone(), s.name.clone())).unwrap();
+        app.config.ui.favorites = vec![crate::config::Favorite { id: real.0, name: real.1 }];
         app.on_key(shift('F'));
         assert_eq!((app.focus, app.menu_selected()), (Focus::Menu, MenuItem::Favorite(0)));
         let theme = app.config.ui.theme().to_owned();
@@ -5721,6 +5891,9 @@ mod tests {
     #[test]
     fn the_settings_hide_favorites_and_pinned_from_the_menu() {
         let mut app = saving_app("menu-entries");
+        // The section needs the stations in: a favorite is only an id and a
+        // name until the list says what kind of station it is.
+        app.stations = crate::demo::stations();
         app.config.ui.favorites.push(crate::config::Favorite { id: "x".into(), name: "X".into() });
         assert!(app.menu_items().contains(&MenuItem::Pinned) && app.menu_items().contains(&MenuItem::Favorite(0)));
         app.view = View::Settings;

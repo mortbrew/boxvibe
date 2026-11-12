@@ -707,12 +707,25 @@ fn audio_worker(requests: Receiver<Request>, replies: Sender<Reply>, user_agent:
     let client = Client::new(user_agent);
     for request in requests {
         let Request::Audio { track_token, url } = request else { continue };
-        let reply = if url.is_empty() {
-            Reply::AudioFailed { track_token, message: "Pandora gave no audio URL for this song".into() }
-        } else {
-            match client.fetch_audio(&url) {
-                Ok(data) => Reply::Audio { track_token, data },
-                Err(e) => Reply::AudioFailed { track_token, message: e.to_string() },
+        // A panic here must not take the worker with it: every later song would
+        // then wait for an answer that never comes.
+        let fetched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if url.is_empty() {
+                return Err("Pandora gave no audio URL for this song".to_owned());
+            }
+            client.fetch_audio(&url).map_err(|e| e.to_string())
+        }));
+        let reply = match fetched {
+            Ok(Ok(data)) => Reply::Audio { track_token, data },
+            Ok(Err(message)) => Reply::AudioFailed { track_token, message },
+            Err(payload) => {
+                let why = payload
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_owned())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                crate::log::log!("download: crashed for {track_token}: {why}");
+                Reply::AudioFailed { track_token, message: "the download crashed".into() }
             }
         };
         if replies.send(reply).is_err() {

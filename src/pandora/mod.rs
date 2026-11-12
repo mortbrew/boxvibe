@@ -127,6 +127,10 @@ pub const FEEDBACK_PAGE: usize = 30;
 /// How many recently played entries one call asks for.
 pub const RECENT_PAGE: usize = 20;
 
+/// The most a JSON answer may be. Pandora's own are a few KB; a broken or
+/// hostile one must not fill memory.
+const MAX_JSON: u64 = 8 * 1024 * 1024;
+
 /// `RecentlyPlayedSourceType` values this client sends. The public bundle
 /// (`web-app.c532b8d045d20ffdc585.js`) still lists the long names
 /// `ALBUM, SONG, PLAYLIST, STATION, ARTIST_TOP_SONGS, PODCAST`, and that list
@@ -953,7 +957,13 @@ impl Client {
         }
         let mut response = request.send(body.to_string()).map_err(|e| Error::Http(e.to_string()))?;
         let status = response.status().as_u16();
-        let text = response.body_mut().read_to_string().map_err(|e| Error::Http(e.to_string()))?;
+        // Capped like `fetch`: a broken or hostile answer must not fill memory.
+        let text = response
+            .body_mut()
+            .with_config()
+            .limit(MAX_JSON)
+            .read_to_string()
+            .map_err(|e| Error::Http(e.to_string()))?;
         if status != 200 {
             return Err(classify(status, &text));
         }

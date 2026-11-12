@@ -224,6 +224,17 @@ fn login_sends_the_site_headers_and_reads_the_flags() {
 }
 
 #[test]
+fn an_answer_past_the_cap_is_refused_instead_of_read_into_memory() {
+    // Pandora's own answers are a few KB. A broken or hostile one must not be
+    // read whole: `post` caps the body like `fetch` does.
+    let huge = format!(r#"{{"authToken":"tok","pad":"{}"}}"#, "x".repeat(MAX_JSON as usize + 1024));
+    let (base, _seen) = fake_pandora(Box::new(move |_| (200, huge.clone())));
+    let mut c = Client::with_base(&base, "");
+    let error = c.login("me@example.com", "pw").unwrap_err();
+    assert!(matches!(error, Error::Http(_)), "{error:?}");
+}
+
+#[test]
 fn an_expired_login_logs_in_again_once() {
     let mut logins = 0;
     let (base, seen) = fake_pandora(Box::new(move |r| match r.path.as_str() {

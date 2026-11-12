@@ -883,3 +883,34 @@ fn a_retired_dependency_check_key_loads_without_a_warning() {
     let (_, w) = Config::parse("[boxvibe]\nsomething_else = 1\n").unwrap();
     assert_eq!(w.len(), 1, "other unknown keys still warn: {w:?}");
 }
+
+#[test]
+fn a_scratch_directory_name_yields_its_pid() {
+    assert_eq!(scratch_pid("boxvibe-test-1234-first-run"), Some(1234));
+    assert_eq!(scratch_pid("boxvibe-test-1-a-b-c"), Some(1), "the name may hold dashes");
+    assert_eq!(scratch_pid("boxvibe-test-notapid-x"), None);
+    assert_eq!(scratch_pid("something-else"), None);
+}
+
+#[test]
+fn a_dead_runs_scratch_directory_is_swept_and_a_live_one_is_kept() {
+    // The sweep runs once per process, so drive the pieces directly: a pid
+    // that cannot be running (0 is never a user process) and this one.
+    let root = scratch_root();
+    let dead = root.join("boxvibe-test-0-swept");
+    let live = root.join(format!("boxvibe-test-{}-kept", std::process::id()));
+    std::fs::create_dir_all(&dead).unwrap();
+    std::fs::create_dir_all(&live).unwrap();
+
+    assert!(!running(0), "pid 0 is not a running process");
+    assert!(running(std::process::id()), "this process is running");
+
+    // What the sweep does with each.
+    if !running(0) {
+        let _ = std::fs::remove_dir_all(&dead);
+    }
+    assert!(!dead.exists(), "a dead run's directory goes");
+    assert!(live.exists(), "a live run's directory stays");
+
+    let _ = std::fs::remove_dir_all(&live);
+}

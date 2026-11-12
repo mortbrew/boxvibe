@@ -1231,6 +1231,9 @@ pub fn set_values(path: &Path, values: &[(&str, &str, toml_edit::Value)]) -> Res
 /// directory per test fills it, after which unrelated tests fail with "Disk
 /// quota exceeded". `target/` is already ignored and `cargo clean` removes it.
 /// `CARGO_MANIFEST_DIR` is the repository root, so this works from any cwd.
+///
+/// The name carries the pid so two runs at once cannot collide, and
+/// [`sweep_old_scratch`] removes what earlier runs left behind.
 #[cfg(test)]
 pub(crate) fn temp_dir(name: &str) -> PathBuf {
     let dir = scratch_dir(&format!("boxvibe-test-{}-{name}", std::process::id()));
@@ -1242,9 +1245,57 @@ pub(crate) fn temp_dir(name: &str) -> PathBuf {
 /// `target/tmp/<name>`, created if needed.
 #[cfg(test)]
 pub(crate) fn scratch_dir(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("tmp").join(name);
+    sweep_old_scratch();
+    let dir = scratch_root().join(name);
     let _ = std::fs::create_dir_all(&dir);
     dir
+}
+
+/// `target/tmp`, where every test's scratch directory goes.
+#[cfg(test)]
+fn scratch_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("tmp")
+}
+
+/// Removes the scratch directories of test runs that are no longer running.
+///
+/// Nothing deletes them when a run ends — not a panic, not `cargo test`
+/// killing the binary — so they accumulated for ever: 103 runs had left 6,666
+/// directories and 45 MB behind. Each run names its directories after its own
+/// pid, so one whose pid is gone cannot belong to a live run and is safe to
+/// remove. Runs once per process, before the first directory is made.
+#[cfg(test)]
+fn sweep_old_scratch() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let Ok(entries) = std::fs::read_dir(scratch_root()) else { return };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(pid) = name.to_str().and_then(scratch_pid) else { continue };
+            if pid != std::process::id() && !running(pid) {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    });
+}
+
+/// The pid in a `boxvibe-test-<pid>-<name>` directory name.
+#[cfg(test)]
+fn scratch_pid(name: &str) -> Option<u32> {
+    name.strip_prefix("boxvibe-test-")?.split('-').next()?.parse().ok()
+}
+
+/// Whether `pid` is still running.
+///
+/// Only Linux can answer this cheaply; elsewhere every pid counts as running,
+/// so nothing is swept rather than a live run's directory being taken away.
+#[cfg(test)]
+fn running(pid: u32) -> bool {
+    let proc = Path::new("/proc");
+    if !proc.exists() {
+        return true;
+    }
+    proc.join(pid.to_string()).exists()
 }
 
 #[cfg(test)]

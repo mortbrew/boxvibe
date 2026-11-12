@@ -1769,7 +1769,10 @@ fn draw_now_playing(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
         draw_ad(frame, app, ic, &ad, inner);
         return;
     }
-    let Some(song) = app.now.clone() else {
+    // The look is read before the song is borrowed: `draw_art` needs
+    // `&mut app.art`, and a borrow of `app.now` would cover the whole struct.
+    let look = crate::art::Look::of(&app.config.ui, p);
+    let Some(song) = &app.now else {
         let text = match (&app.session, &app.current_station) {
             (Session::LoggedIn, Some(_)) => format!("{} Getting songs from Pandora…", ic.loading),
             (Session::LoggedIn, None) => "Open My Stations on the left, pick one and press Enter".into(),
@@ -1789,7 +1792,7 @@ fn draw_now_playing(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
     let art = Rect { width: art_w, ..inner };
     // The picture sits against the left padding; the info starts a few
     // cells after wherever the picture really ended.
-    let drawn = draw_art(frame, app, &song, art);
+    let drawn = draw_art(frame, &mut app.art, look, song, art);
     let info_x = (drawn.right() + 3).min(inner.right());
     let info = Rect { x: info_x, width: inner.right() - info_x, ..inner };
     let label = |text: &str| Span::styled(format!("{text:<9}"), Style::new().fg(p.muted));
@@ -1825,10 +1828,10 @@ fn draw_now_playing(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
     .areas(stack);
     let buttons = Rect { y: buttons.y + 1, height: buttons.height.saturating_sub(1), ..buttons };
     frame.render_widget(Paragraph::new(lines), text);
-    draw_progress(frame, app, &song, progress);
+    draw_progress(frame, app, song, progress);
     draw_volume(frame, app, ic, volume);
     if buttons_h > 0 {
-        draw_buttons(frame, app, ic, &song, buttons);
+        draw_buttons(frame, app, ic, song, buttons);
     }
 }
 
@@ -1873,16 +1876,15 @@ pub const NOW_PLAYING_PAD: u16 = 1;
 pub const NOW_PLAYING_SIDE_PAD: u16 = 3;
 
 /// Draws the cover, or a message that there is none, and returns where it went.
-fn draw_art(frame: &mut Frame, app: &mut App, song: &Song, area: Rect) -> Rect {
-    let p = app.palette;
+fn draw_art(frame: &mut Frame, art: &mut crate::art::Art, look: crate::art::Look, song: &Song, area: Rect) -> Rect {
+    let p = look.palette;
     // No frame: the cover (or the message) fills the box itself.
     let inner = area;
-    app.art.last_area = inner;
+    art.last_area = inner;
     if inner.width == 0 || inner.height == 0 {
         return inner;
     }
-    let look = crate::art::Look::of(&app.config.ui, p);
-    if let Some(cover) = app.art.protocol(&song.cover_art_url, look) {
+    if let Some(cover) = art.protocol(&song.cover_art_url, look) {
         // Against the left edge of the box (the pane's padding), centred
         // top to bottom: the picture keeps its shape.
         let fit = cover.size_for(Resize::Fit(None), inner.as_size());
@@ -1890,17 +1892,17 @@ fn draw_art(frame: &mut Frame, app: &mut App, song: &Song, area: Rect) -> Rect {
         let y = inner.y + inner.height.saturating_sub(fit.height) / 2;
         let at = Rect::new(x, y, fit.width.min(inner.width), fit.height.min(inner.height));
         frame.render_stateful_widget(StatefulImage::default(), at, cover);
-        app.art.check_encoding(&song.cover_art_url);
-        app.art.last_cover = at;
+        art.check_encoding(&song.cover_art_url);
+        art.last_cover = at;
         return at;
     }
-    app.art.hide();
+    art.hide();
     // No cover to draw: say so, in the middle of the space the cover would fill.
-    let loading = app.config.ui.album_art == AlbumArt::Picture
+    let loading = look.mode == AlbumArt::Picture
         && !song.cover_art_url.is_empty()
-        && matches!(app.art.status(&song.cover_art_url), Cover::Loading);
+        && matches!(art.status(&song.cover_art_url), Cover::Loading);
     // Off by choice (Shift+C) says so; a song with no cover, or one that failed, says there is none.
-    let message = if app.config.ui.album_art == AlbumArt::Off {
+    let message = if look.mode == AlbumArt::Off {
         "Cover art off"
     } else if loading {
         "Loading cover art…"
@@ -2826,7 +2828,7 @@ mod screenshots {
     /// A made-up synthwave cover with detail, so the art styles show their difference.
     fn cover(app: &mut App) {
         use image::{DynamicImage, Rgb, RgbImage};
-        let Some(song) = app.now.clone() else { return };
+        let Some(song) = &app.now else { return };
         let n = 256u32;
         let img = RgbImage::from_fn(n, n, |x, y| {
             let (fx, fy) = (x as f32 / n as f32, y as f32 / n as f32);

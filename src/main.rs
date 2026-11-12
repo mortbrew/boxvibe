@@ -23,6 +23,7 @@ mod snapshot;
 mod splash;
 mod theme;
 mod theme_store;
+mod time;
 mod ui;
 mod update;
 

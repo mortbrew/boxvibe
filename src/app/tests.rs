@@ -340,7 +340,7 @@ fn a_failed_recently_played_call_stops_the_spinner_and_says_why() {
     let mut app = demo();
     app.recent_loading = true;
     app.on_reply(Reply::Failed {
-        what: "recently played",
+        what: Failed::RecentlyPlayed,
         message: "Variable \"$types\" got invalid value \"ALBUM\" (HTTP 400)".into(),
     });
     assert!(!app.recent_loading, "the pending flag clears");
@@ -932,7 +932,7 @@ fn a_failed_artist_page_says_so_in_the_panel() {
     app.focus = Focus::Content;
     app.pane = Pane::NowPlaying;
     menu_pick(&mut app, SongAction::Artist);
-    app.on_reply(Reply::Failed { what: "artist", message: "Pandora is down".into() });
+    app.on_reply(Reply::Failed { what: Failed::Artist, message: "Pandora is down".into() });
     let panel = app.panel.as_ref().unwrap();
     assert!(panel.intro.contains("Pandora is down") && panel.items.is_empty());
     app.on_key(key(KeyCode::Enter));
@@ -979,7 +979,7 @@ fn no_modes_from_pandora_fails_gracefully() {
     app.focus = Focus::Content;
     app.pane = Pane::NowPlaying;
     app.on_key(key(KeyCode::Char('m')));
-    app.on_reply(Reply::Failed { what: "mode", message: "Pandora doesn't offer station modes here".into() });
+    app.on_reply(Reply::Failed { what: Failed::Mode, message: "Pandora doesn't offer station modes here".into() });
     let panel = app.panel.as_ref().unwrap();
     assert!(panel.intro.starts_with("No station modes") && !panel.loading);
     assert_eq!(crate::ui::key_caps(&app), [("Esc", "Close")]);
@@ -1508,7 +1508,7 @@ fn an_ad_question_that_fails_or_never_answers_goes_on_to_the_next_song() {
     let mut app = ad_demo();
     app.end_song(End::Skipped);
     assert!(matches!(app.ad, AdPhase::Asking(_)) && app.now.is_none());
-    app.on_reply(Reply::Failed { what: "ads", message: "boom".into() });
+    app.on_reply(Reply::Failed { what: Failed::Ads, message: "boom".into() });
     assert!(!app.ad_break() && app.now.is_some(), "{}", app.status);
     assert!(app.status.starts_with("Ads:") && app.status.contains("playing on"), "{}", app.status);
     // No answer at all.
@@ -2751,7 +2751,7 @@ fn a_late_answer_to_an_older_search_is_not_shown_and_errors_are() {
     app.on_key(key(KeyCode::Enter));
     app.settle(Duration::from_millis(300));
     assert!(!app.add_station.as_ref().unwrap().hits.is_empty());
-    app.on_reply(Reply::Failed { what: "search", message: "Pandora is down".into() });
+    app.on_reply(Reply::Failed { what: Failed::Search, message: "Pandora is down".into() });
     let search = app.add_station.as_ref().unwrap();
     assert_eq!((search.waiting, search.error.as_deref()), (false, Some("Pandora is down")));
 }
@@ -2780,7 +2780,7 @@ fn a_second_create_is_ignored_while_one_is_on_its_way() {
     assert!(!app.creating);
     assert_eq!(app.stations.iter().filter(|s| s.name == "M83 Radio").count(), 1);
     assert!(!app.stations.iter().any(|s| s.name == "MGMT Radio"), "the second was dropped");
-    app.on_reply(Reply::Failed { what: "create station", message: "no".into() });
+    app.on_reply(Reply::Failed { what: Failed::CreateStation, message: "no".into() });
     assert!(!app.creating);
 }
 
@@ -3038,11 +3038,48 @@ fn a_failed_view_all_falls_back_to_the_teaser_and_a_late_page_is_not_shown() {
 }
 
 #[test]
+fn view_all_pages_are_capped_and_the_page_on_screen_is_never_dropped() {
+    let mut app = demo();
+    // Fill past the cap with pages that are not on screen.
+    for i in 0..VIEW_ALL_KEPT + 5 {
+        app.on_reply(Reply::Browse { path: Some(format!("/browse/page-{i}")), sections: Vec::new() });
+    }
+    assert_eq!(app.view_all.len(), VIEW_ALL_KEPT, "the map stops growing");
+    assert_eq!(app.view_all_order.len(), VIEW_ALL_KEPT, "the order stays in step");
+    assert!(!app.view_all.contains_key("/browse/page-0"), "the oldest page went");
+    assert!(app.view_all.contains_key(&format!("/browse/page-{}", VIEW_ALL_KEPT + 4)), "the newest stayed");
+
+    // A page on screen is kept even when it is the oldest.
+    app.browse_path = Some("/browse/page-5".into());
+    for i in 0..VIEW_ALL_KEPT {
+        app.on_reply(Reply::Browse { path: Some(format!("/browse/fresh-{i}")), sections: Vec::new() });
+    }
+    assert!(app.view_all.contains_key("/browse/page-5"), "the page on screen is never dropped");
+}
+
+#[test]
+fn downloaded_songs_are_capped_so_a_long_session_does_not_grow_without_end() {
+    let mut app = demo();
+    for i in 0..AUDIO_CACHE_KEPT + 4 {
+        app.keep_audio(format!("token-{i}"), vec![0u8; 8]);
+    }
+    assert_eq!(app.audio_cache.len(), AUDIO_CACHE_KEPT, "the cache stops growing");
+    assert_eq!(app.audio_order.len(), AUDIO_CACHE_KEPT, "the order stays in step");
+    assert!(!app.audio_cache.contains_key("token-0"), "the oldest song went");
+    assert!(app.audio_cache.contains_key(&format!("token-{}", AUDIO_CACHE_KEPT + 3)), "the newest stayed");
+
+    // Asking for a song already held moves it to the young end, not a second copy.
+    app.keep_audio(format!("token-{}", AUDIO_CACHE_KEPT + 3), vec![1u8; 8]);
+    assert_eq!(app.audio_order.len(), AUDIO_CACHE_KEPT, "no duplicate entry");
+    assert_eq!(app.audio_cache[&format!("token-{}", AUDIO_CACHE_KEPT + 3)], vec![1u8; 8], "the new bytes win");
+}
+
+#[test]
 fn a_browse_list_that_failed_is_asked_for_again_and_logged_out_says_so() {
     let mut app = demo();
     app.settle(Duration::from_millis(300));
     app.on_key(shift('G'));
-    app.on_reply(Reply::Failed { what: "browse", message: "no".into() });
+    app.on_reply(Reply::BrowseFailed { path: None, message: "no".into() });
     assert_eq!(app.browse, BrowseState::Failed("no".into()));
     app.on_key(key(KeyCode::Enter));
     assert_eq!(app.browse, BrowseState::Loading, "Enter tries again");

@@ -11,7 +11,7 @@
 //! its own short-lived threads with short timeouts, https only.
 
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use serde_json::Value;
 
@@ -261,36 +261,13 @@ pub fn fill_macros(url: &str, playhead: Duration, asset: &str, now: SystemTime) 
     url.replace("[PLAYERSTATE]", "foreground")
         .replace("[ADPLAYHEAD]", &clock(playhead))
         .replace("[ASSETURI]", &percent_encode(asset))
-        .replace("[TIMESTAMP]", &iso_utc(now))
+        .replace("[TIMESTAMP]", &crate::time::iso_utc(now))
 }
 
 /// `00:00:30.000`.
 fn clock(at: Duration) -> String {
     let ms = at.as_millis();
     format!("{:02}:{:02}:{:02}.{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000)
-}
-
-/// `2026-10-25T14:03:05.123Z`.
-pub(crate) fn iso_utc(at: SystemTime) -> String {
-    let d = at.duration_since(UNIX_EPOCH).unwrap_or_default();
-    let (days, rest) = (d.as_secs() / 86_400, d.as_secs() % 86_400);
-    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
-    let z = days as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
-        rest / 3600,
-        rest / 60 % 60,
-        rest % 60,
-        d.subsec_millis()
-    )
 }
 
 /// Everything but letters, digits and `-._~` as `%XX`.

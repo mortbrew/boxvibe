@@ -5,7 +5,7 @@ fn a_line_is_one_line_whatever_it_was_given() {
     let dir = crate::config::scratch_dir(&format!("boxvibe-log-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let file = dir.join("boxvibe.log");
-    write(&file, "a\nb\tc");
+    append(&file, CAP, "a\nb\tc");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "a b c\n");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -17,7 +17,7 @@ fn a_full_log_moves_aside_and_starts_again() {
     let file = dir.join("boxvibe.log");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(&file, vec![b'x'; CAP as usize + 1]).unwrap();
-    write(&file, "after the cap");
+    append(&file, CAP, "after the cap");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "after the cap\n");
     assert!(file.with_extension("log.old").exists(), "the old log is kept");
     let _ = std::fs::remove_dir_all(&dir);

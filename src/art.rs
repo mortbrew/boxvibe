@@ -494,18 +494,9 @@ pub fn log_path() -> Option<PathBuf> {
 /// and why it failed. Past [`LOG_CAP`] the log moves to `.old` and starts again.
 /// Errors writing the log are ignored: a cover is not worth a crash or a message.
 pub fn log_failure(path: &std::path::Path, url: &str, why: &str) {
-    use std::io::Write;
-    if std::fs::metadata(path).is_ok_and(|m| m.len() > LOG_CAP) {
-        let _ = std::fs::rename(path, path.with_extension("log.old"));
-    }
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     let url = url.split(['?', '#']).next().unwrap_or_default();
-    let why: String = why.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{} {url}: {why}", crate::ads::iso_utc(std::time::SystemTime::now()));
-    }
+    let line = format!("{} {url}: {why}", crate::time::iso_utc(std::time::SystemTime::now()));
+    crate::log::append(path, LOG_CAP, &line);
 }
 
 /// `~/.cache/boxvibe/art` (XDG).

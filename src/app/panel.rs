@@ -163,10 +163,12 @@ impl App {
     }
 
     /// A failed artist or mode call: said in the panel (it stays open).
-    pub(super) fn panel_failed(&mut self, what: &str, message: &str) -> bool {
+    pub(super) fn panel_failed(&mut self, what: Failed, message: &str) -> bool {
         let Some(panel) = self.panel.as_mut() else { return false };
-        let ours =
-            matches!((&panel.kind, what), (PanelKind::Artist { .. }, "artist") | (PanelKind::Modes { .. }, "mode"));
+        let ours = matches!(
+            (&panel.kind, what),
+            (PanelKind::Artist { .. }, Failed::Artist) | (PanelKind::Modes { .. }, Failed::Mode)
+        );
         if !ours {
             return false;
         }

@@ -1072,8 +1072,10 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    // Write next to it and rename, so a crash never leaves half a config.
-    let tmp = path.with_extension("toml.tmp");
+    // Write next to it and rename, so a crash never leaves half a config. The
+    // temporary name carries the pid, so two boxvibes writing at once cannot
+    // clobber each other's half-written file.
+    let tmp = path.with_extension(format!("toml.{}.tmp", std::process::id()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]

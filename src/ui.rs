@@ -2305,33 +2305,45 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.splash.is_some() {
         return Vec::new();
     }
+    popup_key_caps(app).unwrap_or_else(|| page_key_caps(app))
+}
+
+/// The key bar while a popup owns the screen: its own keys only. `None` when
+/// no popup is open and the page's keys apply.
+fn popup_key_caps(app: &App) -> Option<Vec<(&'static str, &'static str)>> {
     if app.system_open() {
-        return vec![("Enter", "Check Again"), ("Esc", "Close")];
+        return Some(vec![("Enter", "Check Again"), ("Esc", "Close")]);
     }
     if app.rename.is_some() {
-        return vec![("Enter", "Rename"), ("Esc", "Cancel"), ("← →", "Move"), ("Ctrl+u", "Clear"), ("Ctrl+c", "Quit")];
+        return Some(vec![
+            ("Enter", "Rename"),
+            ("Esc", "Cancel"),
+            ("← →", "Move"),
+            ("Ctrl+u", "Clear"),
+            ("Ctrl+c", "Quit"),
+        ]);
     }
     if app.confirm_delete().is_some() {
-        return vec![("y", "Yes, Delete"), ("n Esc", "No"), ("← → Enter", "Choose")];
+        return Some(vec![("y", "Yes, Delete"), ("n Esc", "No"), ("← → Enter", "Choose")]);
     }
     if app.confirm_unpin().is_some() {
-        return vec![("y", "Yes, Unpin"), ("n Esc", "No"), ("← → Enter", "Choose")];
+        return Some(vec![("y", "Yes, Unpin"), ("n Esc", "No"), ("← → Enter", "Choose")]);
     }
     if app.confirm_forget_recent().is_some() {
-        return vec![("y", "Yes, Remove"), ("n Esc", "No"), ("← → Enter", "Choose")];
+        return Some(vec![("y", "Yes, Remove"), ("n Esc", "No"), ("← → Enter", "Choose")]);
     }
     if app.theme_delete_asked().is_some() {
-        return vec![("y", "Yes, Delete"), ("n Esc", "No"), ("← → Enter", "Choose")];
+        return Some(vec![("y", "Yes, Delete"), ("n Esc", "No"), ("← → Enter", "Choose")]);
     }
     if app.editor_confirm().is_some() {
-        return vec![("y", "Yes"), ("n Esc", "No"), ("← → Enter", "Choose")];
+        return Some(vec![("y", "Yes"), ("n Esc", "No"), ("← → Enter", "Choose")]);
     }
     if let Some(mode) = app.confirm_good_vibes {
         let yes = if mode == GoodVibes::Muted { "Mute Anyway" } else { "Turn Off Anyway" };
-        return vec![("Enter", yes), ("Esc", "Keep As Is"), ("Ctrl+c", "Quit")];
+        return Some(vec![("Enter", yes), ("Esc", "Keep As Is"), ("Ctrl+c", "Quit")]);
     }
     if app.genre_notice.is_some() {
-        return vec![("Space", "Tick Box"), ("Enter", "OK"), ("Esc", "Close"), ("Ctrl+c", "Quit")];
+        return Some(vec![("Space", "Tick Box"), ("Enter", "OK"), ("Esc", "Close"), ("Ctrl+c", "Quit")]);
     }
     if let Some(panel) = &app.panel {
         let enter = match panel.kind {
@@ -2343,16 +2355,16 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
             keys.extend([("j/k ↑↓", "Move"), ("Enter", enter)]);
         }
         keys.push(("Esc", "Close"));
-        return keys;
+        return Some(keys);
     }
     if let Some(picker) = &app.theme_picker {
-        return picker.key_caps();
+        return Some(picker.key_caps());
     }
     if let Some(ed) = &app.editor {
-        return editor_key_caps(ed);
+        return Some(editor_key_caps(ed));
     }
     if let Some(search) = &app.add_station {
-        return match search.mode {
+        return Some(match search.mode {
             SearchMode::Typing if search.hits.is_empty() => {
                 vec![("Enter", "Search"), ("Esc", "Cancel"), ("← →", "Move"), ("Ctrl+u", "Clear"), ("Ctrl+c", "Quit")]
             }
@@ -2373,20 +2385,31 @@ pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
                     ("Ctrl+c", "Quit"),
                 ]
             }
-        };
+        });
     }
     if app.prompt.is_some() {
-        return vec![("Enter", "Save"), ("Esc", "Cancel"), ("← →", "Move"), ("Ctrl+u", "Clear"), ("Ctrl+c", "Quit")];
+        return Some(vec![
+            ("Enter", "Save"),
+            ("Esc", "Cancel"),
+            ("← →", "Move"),
+            ("Ctrl+u", "Clear"),
+            ("Ctrl+c", "Quit"),
+        ]);
     }
     if app.quit_asked() {
-        return vec![("Q y", "Yes, Quit"), ("n Esc", "No"), ("← → Enter", "Choose")];
+        return Some(vec![("Q y", "Yes, Quit"), ("n Esc", "No"), ("← → Enter", "Choose")]);
     }
     if app.details().is_some() {
-        return vec![("Esc", "Close")];
+        return Some(vec![("Esc", "Close")]);
     }
     if app.help_open() {
-        return vec![("j/k ↑↓", "Scroll"), ("? Esc", "Close")];
+        return Some(vec![("j/k ↑↓", "Scroll"), ("? Esc", "Close")]);
     }
+    None
+}
+
+/// The key bar for the page on screen: what the focused pane offers.
+fn page_key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     let pause = if app.audio.is_paused() { "Play" } else { "Pause" };
     // A key is hinted only where it does something: what each one acts on
     // (a station row, a song row, the playing song) has to be there.

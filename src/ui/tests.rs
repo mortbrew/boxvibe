@@ -1,4 +1,5 @@
 use super::*;
+use crate::backend::Failed;
 use crate::config::Config;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -2014,13 +2015,13 @@ fn a_failed_search_in_the_seed_box_says_so_in_plain_words() {
     let mut app = editor_demo();
     app.on_key(KeyEvent::from(KeyCode::Char('a')));
     // Pandora's raw answer to the old suggestions path, then a search that failed the same way.
-    app.on_reply(Reply::Failed { what: "suggestions", message: "Service method not found (HTTP 404)".into() });
+    app.on_reply(Reply::Failed { what: Failed::Suggestions, message: "Service method not found (HTTP 404)".into() });
     let text = all_text(&screen(&app, 120, 40).0);
     assert!(
         !text.contains("Service method") && !text.contains("no suggestions") && !text.contains("Search failed"),
         "{text}"
     );
-    app.on_reply(Reply::Failed { what: "search", message: "Service method not found (HTTP 404)".into() });
+    app.on_reply(Reply::Failed { what: Failed::Search, message: "Service method not found (HTTP 404)".into() });
     let text = all_text(&screen(&app, 120, 40).0);
     assert!(text.contains("Couldn't search Pandora right now") && !text.contains("Service method"), "{text}");
 }

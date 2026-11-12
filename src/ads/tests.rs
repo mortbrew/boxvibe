@@ -123,11 +123,7 @@ fn the_website_macros_are_filled_in() {
 }
 
 #[test]
-fn dates_are_written_in_utc() {
-    let at = |s: u64, ms: u64| SystemTime::UNIX_EPOCH + Duration::from_millis(s * 1000 + ms);
-    assert_eq!(iso_utc(at(0, 0)), "1970-01-01T00:00:00.000Z");
-    assert_eq!(iso_utc(at(951_782_400, 7)), "2000-02-29T00:00:00.007Z");
-    assert_eq!(iso_utc(at(1_709_251_199, 999)), "2024-02-29T23:59:59.999Z");
+fn the_clock_and_percent_encoding_are_as_the_site_writes_them() {
     assert_eq!(clock(Duration::from_millis(59_999)), "00:00:59.999");
     assert_eq!(percent_encode("aZ09-._~ /é"), "aZ09-._~%20%2F%C3%A9");
 }

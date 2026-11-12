@@ -64,6 +64,22 @@ fn saved_settings_keep_comments_and_are_private() {
 }
 
 #[test]
+fn two_writers_do_not_share_a_temporary_file() {
+    // The temporary name carries the pid, so a second boxvibe writing at the
+    // same moment cannot truncate the first one's half-written file.
+    let dir = temp_dir("two-writers");
+    let path = dir.join("config.toml");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mine = path.with_extension(format!("toml.{}.tmp", std::process::id()));
+    let other = path.with_extension("toml.999999.tmp");
+    assert_ne!(mine, other, "each writer gets its own temporary file");
+    set_values(&path, &[("playback", "volume", 40_i64.into())]).unwrap();
+    assert!(!mine.exists(), "the temporary file is renamed away, not left behind");
+    assert!(!other.exists());
+    assert_eq!(Config::load(&path).0.player.volume, 40);
+}
+
+#[test]
 fn good_vibes_only_takes_true_false_or_muted_and_saves_them_back() {
     for (text, want) in [
         ("true", GoodVibes::On),

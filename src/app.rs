@@ -16,7 +16,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::ads;
 use crate::audio::Audio;
-use crate::backend::{Backend, KeychainJob, KeychainReply, Reply, Request};
+use crate::backend::{Backend, Failed, KeychainJob, KeychainReply, Reply, Request};
 use crate::config::{self, AlbumArt, Config, ConfigWarning, GoodVibes, Secret};
 use crate::input::TextInput;
 use crate::keychain::{self, Keychain, NO_KEYCHAIN};
@@ -971,8 +971,11 @@ pub struct App {
     pub browse_filter: Option<String>,
     /// Main `/browse` teaser. View-all paths are read from here.
     browse_directory: BrowseState,
-    /// View-all pages already fetched, keyed by `viewAll.webUrl`.
+    /// View-all pages already fetched, keyed by `viewAll.webUrl`. At most
+    /// [`VIEW_ALL_KEPT`], oldest first.
     view_all: HashMap<String, Vec<BrowseSection>>,
+    /// The order `view_all` was filled in, so the oldest page can go.
+    view_all_order: VecDeque<String>,
     /// View-all path on screen or in flight. `None`: the page is the teaser.
     browse_path: Option<String>,
     /// Page to restore when Esc leaves a category shelf.
@@ -991,6 +994,8 @@ pub struct App {
     /// never answers must not hold the player forever).
     pub buffering: Option<(String, Instant)>,
     audio_cache: HashMap<String, Vec<u8>>,
+    /// The order `audio_cache` was filled in, so the oldest song can go.
+    audio_order: VecDeque<String>,
     /// The covers.
     pub art: crate::art::Art,
     requested: HashSet<String>,
@@ -1026,6 +1031,14 @@ pub struct App {
 }
 
 const HISTORY_LEN: usize = 10;
+/// How many View-all pages are kept. Each is a whole Browse page, and there
+/// are only ever a handful of pinned sections, so this is generous; it exists
+/// so a long session cannot grow the map without end.
+const VIEW_ALL_KEPT: usize = 24;
+/// How many downloaded songs are kept for the next one. Each is a whole MP3
+/// (up to 64 MB by `fetch_audio`'s limit), so this stays small: the queue is
+/// prefetched one song ahead, and a song that is skipped is not needed again.
+const AUDIO_CACHE_KEPT: usize = 3;
 /// The longest station name the rename box takes.
 const MAX_STATION_NAME: usize = 80;
 /// The longest email or password the prompts take.
@@ -1109,6 +1122,7 @@ impl App {
             browse_filter: None,
             browse_directory: BrowseState::Idle,
             view_all: HashMap::new(),
+            view_all_order: VecDeque::new(),
             browse_path: None,
             browse_parent: None,
             creating: false,
@@ -1118,6 +1132,7 @@ impl App {
             ad_tracker: ads::Tracker::new(!demo, true, &user_agent),
             buffering: None,
             audio_cache: HashMap::new(),
+            audio_order: VecDeque::new(),
             requested: HashSet::new(),
             playlist_pending: false,
             audio,
@@ -1637,12 +1652,29 @@ impl App {
                 }
             }
             Some(path) => {
-                self.view_all.insert(path.clone(), sections.clone());
+                self.keep_view_all(path.clone(), sections.clone());
                 if self.browse_path.as_deref() == Some(path.as_str()) {
                     self.browse = BrowseState::Loaded(sections);
                     self.place_browse_cursor();
                 }
             }
+        }
+    }
+
+    /// Remembers a View-all page, dropping the oldest once there are more than
+    /// [`VIEW_ALL_KEPT`]. A page on screen is never the one dropped.
+    fn keep_view_all(&mut self, path: String, sections: Vec<BrowseSection>) {
+        if self.view_all.insert(path.clone(), sections).is_none() {
+            self.view_all_order.push_back(path);
+        }
+        while self.view_all_order.len() > VIEW_ALL_KEPT {
+            // The oldest page that is not the one on screen.
+            let Some(at) = self.view_all_order.iter().position(|p| self.browse_path.as_deref() != Some(p.as_str()))
+            else {
+                break;
+            };
+            let gone = self.view_all_order.remove(at).expect("just found");
+            self.view_all.remove(&gone);
         }
     }
 
@@ -1680,6 +1712,7 @@ impl App {
     fn retry_browse(&mut self) {
         if let Some(path) = self.browse_path.clone() {
             self.view_all.remove(&path);
+            self.view_all_order.retain(|p| *p != path);
             self.browse = BrowseState::Idle;
             self.fetch_view_all(path);
             return;
@@ -2026,6 +2059,7 @@ impl App {
                     self.held_dislikes.remove(&song.track_token);
                     self.requested.remove(&song.track_token);
                     self.audio_cache.remove(&song.track_token);
+                    self.audio_order.retain(|t| *t != song.track_token);
                 }
                 self.status = format!("Tired of “{}”: Pandora rests it for a month", song.title);
             }
@@ -2523,7 +2557,7 @@ impl App {
                     self.buffering = None;
                     self.play_now(Some(data));
                 } else if self.queue.iter().any(|s| s.track_token == track_token) {
-                    self.audio_cache.insert(track_token, data);
+                    self.keep_audio(track_token, data);
                 }
             }
             Reply::Art { url, image } => self.art.arrived(url, image),
@@ -2582,44 +2616,40 @@ impl App {
                 if self.editor_failed(what, &message) || self.panel_failed(what, &message) {
                     return;
                 }
-                if what == "recently played" {
-                    if self.recent_loading {
-                        self.status = format!("⚠ Recently Played: {message}");
-                        self.finish_recent_request();
+                match what {
+                    Failed::RecentlyPlayed => {
+                        if self.recent_loading {
+                            self.status = format!("⚠ Recently Played: {message}");
+                            self.finish_recent_request();
+                        }
+                        return;
                     }
-                    return;
+                    Failed::Shuffle => {
+                        self.status = format!("⚠ No Shuffle: {message}");
+                        return;
+                    }
+                    Failed::Ads => {
+                        self.ad_ask_failed(&message);
+                        return;
+                    }
+                    Failed::Playlist => self.playlist_pending = false,
+                    Failed::Search => {
+                        if let Some(search) = self.add_station.as_mut() {
+                            search.waiting = false;
+                            search.error = Some(message);
+                            return;
+                        }
+                    }
+                    Failed::CreateStation => self.creating = false,
+                    Failed::Details => {
+                        if let Some(d) = self.details_mut().filter(|d| d.from_pandora.is_none()) {
+                            d.from_pandora = Some(Err(message.clone()));
+                            return;
+                        }
+                    }
+                    _ => {}
                 }
-                if what == "shuffle" {
-                    self.status = format!("⚠ No Shuffle: {message}");
-                    return;
-                }
-                if what == "ads" {
-                    self.ad_ask_failed(&message);
-                    return;
-                }
-                if what == "playlist" {
-                    self.playlist_pending = false;
-                }
-                if what == "search"
-                    && let Some(search) = self.add_station.as_mut()
-                {
-                    search.waiting = false;
-                    search.error = Some(message);
-                    return;
-                }
-                if what == "create station" {
-                    self.creating = false;
-                }
-                if what == "browse" {
-                    self.note_browse_failure(None, message.clone());
-                }
-                if what == "details"
-                    && let Some(d) = self.details_mut().filter(|d| d.from_pandora.is_none())
-                {
-                    d.from_pandora = Some(Err(message.clone()));
-                    return;
-                }
-                self.status = format!("⚠ {what}: {message}");
+                self.status = format!("⚠ {}: {message}", what.what());
             }
             Reply::UpdateFound(update) => {
                 self.status = format!(
@@ -2831,6 +2861,7 @@ impl App {
         self.ad = AdPhase::Off;
         self.queue.clear();
         self.audio_cache.clear();
+        self.audio_order.clear();
         self.requested.clear();
         // Held dislikes are for songs of the station being left.
         self.held_dislikes.clear();
@@ -2883,6 +2914,7 @@ impl App {
             self.backend.send(Request::Rate { track_token: song.track_token.clone(), positive: false });
             self.status = format!("Disliked and skipped: {}", song.title);
             self.audio_cache.remove(&song.track_token);
+            self.audio_order.retain(|t| *t != song.track_token);
             self.push_history(song);
         }
         let Some(song) = self.queue.pop_front() else {
@@ -2897,6 +2929,7 @@ impl App {
         self.stream = Some((song.audio_format, song.bitrate));
         self.now = Some(song);
         if let Some(data) = self.audio_cache.remove(&token) {
+            self.audio_order.retain(|t| *t != token);
             self.play_now(Some(data));
         } else if self.demo || !self.audio.has_device() {
             self.play_now(None);
@@ -2919,6 +2952,19 @@ impl App {
         if let Some(id) = self.current_station.clone() {
             self.playlist_pending = true;
             self.backend.send(Request::Playlist { station_id: id });
+        }
+    }
+
+    /// Keeps a downloaded song for its turn, dropping the oldest once there are
+    /// more than [`AUDIO_CACHE_KEPT`]. Each is a whole MP3, so the map is not
+    /// allowed to grow with the session.
+    fn keep_audio(&mut self, token: String, data: Vec<u8>) {
+        self.audio_cache.insert(token.clone(), data);
+        self.audio_order.retain(|t| *t != token);
+        self.audio_order.push_back(token);
+        while self.audio_order.len() > AUDIO_CACHE_KEPT {
+            let Some(oldest) = self.audio_order.pop_front() else { break };
+            self.audio_cache.remove(&oldest);
         }
     }
 
@@ -3667,6 +3713,7 @@ impl App {
             self.now = None;
             self.queue.clear();
             self.audio_cache.clear();
+            self.audio_order.clear();
             self.buffering = None;
             self.playlist_pending = false;
             self.current_station = None;

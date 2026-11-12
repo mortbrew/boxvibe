@@ -517,17 +517,17 @@ impl App {
 
     /// A failed call the editor was waiting for. `true`: the message needs
     /// no status line (the editor shows it).
-    pub(super) fn editor_failed(&mut self, what: &str, message: &str) -> bool {
+    pub(super) fn editor_failed(&mut self, what: Failed, message: &str) -> bool {
         let Some(ed) = self.editor.as_mut() else { return false };
         // A genre station: Pandora may not share or change its thumbs. Say so kindly.
         let friendly;
-        let message = if ed.thumbs_only && matches!(what, "thumbs history" | "delete thumb") {
+        let message = if ed.thumbs_only && matches!(what, Failed::ThumbsHistory | Failed::DeleteThumb) {
             friendly = format!(
                 "Pandora didn't {} the thumbs of genre station “{}” ({message})",
-                if what == "delete thumb" { "let boxvibe take back" } else { "share" },
+                if what == Failed::DeleteThumb { "let boxvibe take back" } else { "share" },
                 ed.station.name
             );
-            if what == "delete thumb" {
+            if what == Failed::DeleteThumb {
                 self.status = friendly;
                 return true;
             }
@@ -536,22 +536,22 @@ impl App {
             message
         };
         match what {
-            "seeds" => ed.seeds = Loaded::Failed(message.to_owned()),
-            "thumbs history" => {
+            Failed::Seeds => ed.seeds = Loaded::Failed(message.to_owned()),
+            Failed::ThumbsHistory => {
                 for list in [&mut ed.up, &mut ed.down] {
                     if list.state == FeedState::Loading {
                         list.state = FeedState::Failed(message.to_owned());
                     }
                 }
             }
-            "search" => {
+            Failed::Search => {
                 let Some(add) = ed.add.as_mut() else { return false };
                 add.search.waiting = false;
                 add.search.error = Some(message.to_owned());
                 return true;
             }
             // No suggestions is not worth a word: the box just stays a search box.
-            "suggestions" => {
+            Failed::Suggestions => {
                 if let Some(add) = ed.add.as_mut() {
                     add.suggesting = false;
                 }

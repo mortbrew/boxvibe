@@ -42,17 +42,19 @@ fn path() -> Option<&'static PathBuf> {
 /// Errors writing it are ignored: a log is not worth a crash or a message.
 pub fn note(args: std::fmt::Arguments<'_>) {
     let Some(path) = path() else { return };
-    write(path, &format!("{} {args}", crate::ads::iso_utc(std::time::SystemTime::now())));
+    append(path, CAP, &format!("{} {args}", crate::time::iso_utc(std::time::SystemTime::now())));
 }
 
-fn write(path: &Path, line: &str) {
-    if std::fs::metadata(path).is_ok_and(|m| m.len() > CAP) {
+/// Adds one line to the log at `path`, moving it to `.old` first when it has
+/// grown past `cap`. Control characters become spaces, so a newline in a title
+/// cannot split the line. Errors are ignored: a log is not worth a crash.
+pub fn append(path: &Path, cap: u64, line: &str) {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > cap) {
         let _ = std::fs::rename(path, path.with_extension("log.old"));
     }
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    // One line, whatever was handed in: a newline in a title would split it.
     let line: String = line.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{line}");

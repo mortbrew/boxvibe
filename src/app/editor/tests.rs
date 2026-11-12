@@ -290,22 +290,22 @@ fn x_on_a_thumb_asks_then_deletes_and_refreshes_the_list_and_the_counts() {
 #[test]
 fn failures_go_to_the_status_line_and_the_list_says_so() {
     let mut app = editing();
-    app.on_reply(Reply::Failed { what: "thumbs history", message: "HTTP 500".into() });
+    app.on_reply(Reply::Failed { what: Failed::ThumbsHistory, message: "HTTP 500".into() });
     assert!(app.status.contains("thumbs history") && app.status.contains("HTTP 500"), "{}", app.status);
-    app.on_reply(Reply::Failed { what: "seeds", message: "offline".into() });
+    app.on_reply(Reply::Failed { what: Failed::Seeds, message: "offline".into() });
     assert!(matches!(app.editor.as_ref().unwrap().seeds, Loaded::Failed(_)));
     assert!(app.status.contains("seeds"), "{}", app.status);
     // A failed thumbs page marks only the list that was loading.
     press(&mut app, KeyCode::Tab);
     app.editor.as_mut().unwrap().up.state = FeedState::Loading;
-    app.on_reply(Reply::Failed { what: "thumbs history", message: "HTTP 500".into() });
+    app.on_reply(Reply::Failed { what: Failed::ThumbsHistory, message: "HTTP 500".into() });
     assert!(matches!(app.editor.as_ref().unwrap().up.state, FeedState::Failed(_)));
     // No suggestions is not an error worth the status line.
     chr(&mut app, 'a');
     press(&mut app, KeyCode::BackTab);
     chr(&mut app, 'a');
     app.status.clear();
-    app.on_reply(Reply::Failed { what: "suggestions", message: "Service method not found (HTTP 404)".into() });
+    app.on_reply(Reply::Failed { what: Failed::Suggestions, message: "Service method not found (HTTP 404)".into() });
     assert!(app.status.is_empty(), "{}", app.status);
 }
 
@@ -315,7 +315,7 @@ fn failed_suggestions_leave_the_add_box_quiet_and_a_plain_search_box() {
     chr(&mut app, 'a');
     app.editor.as_mut().unwrap().add.as_mut().unwrap().suggesting = true;
     app.status.clear();
-    app.on_reply(Reply::Failed { what: "suggestions", message: "Service method not found (HTTP 404)".into() });
+    app.on_reply(Reply::Failed { what: Failed::Suggestions, message: "Service method not found (HTTP 404)".into() });
     assert!(app.status.is_empty(), "{}", app.status);
     let add = app.editor.as_ref().unwrap().add.as_ref().unwrap();
     assert!(add.search.error.is_none() && !add.suggesting);

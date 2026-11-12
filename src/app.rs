@@ -2680,7 +2680,10 @@ impl App {
         }
         self.session = Session::SigningIn;
         if !self.demo {
-            self.status = format!("Signing in as {username}…");
+            // No account name here: `status` is kept for the Notifications page
+            // and is the one string that could reach a log, so it stays free of
+            // anything personal. Settings shows which account is signing in.
+            self.status = "Signing in…".into();
         }
         self.backend.send(Request::Login { username, password });
     }
@@ -2691,7 +2694,8 @@ impl App {
         self.focus = Focus::Content;
         self.open_prompt(Prompt::Password);
         self.settings_cursor = Setting::at(Setting::LogIn);
-        self.status = format!("Type the password for {}", self.config.pandora.username.trim());
+        // The account is on the Settings row above, so it is not repeated here.
+        self.status = "Type your password".into();
     }
 
     /// The password popup with `typed` already in it (the snapshot screens).

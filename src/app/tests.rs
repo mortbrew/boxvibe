@@ -1972,6 +1972,35 @@ fn logging_out_removes_the_password_from_the_keychain() {
 }
 
 #[test]
+fn the_status_line_never_names_the_account() {
+    // `status` is kept for the Notifications page and is the one string that
+    // could reach a log, so it stays free of anything personal. The account is
+    // on the Settings row and in the status bar's "Logged In As", which is
+    // where it belongs; repeating it here is what put it in a taint chain.
+    let k = MemoryKeychain::new();
+    k.set(MAIL, "hunter2").unwrap();
+    let mut app = account_app("status-private", "[account]\nemail_or_username = \"me@example.com\"\n", &k);
+    assert_eq!(app.session, Session::LoggedIn);
+    app.log_out();
+    app.settle(WAIT);
+    assert!(!app.status.contains(MAIL), "logged out: {}", app.status);
+
+    // Asking for the password names no one.
+    app.log_in();
+    assert_eq!(app.prompt, Some(Prompt::Password));
+    assert!(!app.status.contains(MAIL), "asking for the password: {}", app.status);
+
+    // Signing in names no one either.
+    enter_text(&mut app, "hunter2");
+    assert!(!app.status.contains(MAIL), "signing in: {}", app.status);
+
+    // Nor does anything the Notifications page kept.
+    for (_, note) in &app.notes {
+        assert!(!note.contains(MAIL), "a note names the account: {note}");
+    }
+}
+
+#[test]
 fn another_email_does_not_borrow_the_old_password() {
     let k = MemoryKeychain::new();
     k.set(MAIL, "hunter2").unwrap();

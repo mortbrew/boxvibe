@@ -243,3 +243,17 @@ fn a_silent_clock_never_stalls() {
     a.start(None, 0.0, false).unwrap();
     assert!(!a.stalled(), "nothing to stall without a stream");
 }
+
+#[test]
+fn pausing_and_resuming_does_not_look_like_a_stall() {
+    // The position stands still while paused, so the stall clock has to start
+    // again on resume: otherwise unpausing after a few seconds skipped the song.
+    let mut stall = Stall::default();
+    let t0 = Instant::now();
+    let pos = Duration::from_secs(30);
+    assert!(!stall.stuck(pos, t0));
+    // Paused for a minute: `stalled` is not asked while paused, and resuming
+    // resets the clock.
+    stall.reset();
+    assert!(!stall.stuck(pos, t0 + Duration::from_secs(60)), "resumed, so the grace starts over");
+}

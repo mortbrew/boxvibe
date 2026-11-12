@@ -230,6 +230,10 @@ impl Audio {
             }
         } else {
             self.clock.resume();
+            // The position did not move while paused, so the stall clock must
+            // start again: otherwise resuming after a few seconds looks like a
+            // stream that died and the song is skipped on the spot.
+            self.stall.reset();
             if let Some(p) = &self.player {
                 p.play();
             }

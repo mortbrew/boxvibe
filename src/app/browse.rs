@@ -151,20 +151,10 @@ impl App {
     }
 
     /// Remembers a View-all page, dropping the oldest once there are more than
-    /// [`VIEW_ALL_KEPT`]. A page on screen is never the one dropped.
+    /// [`view_all::KEPT`]. A page on screen is never the one dropped.
     fn keep_view_all(&mut self, path: String, sections: Vec<BrowseSection>) {
-        if self.view_all.insert(path.clone(), sections).is_none() {
-            self.view_all_order.push_back(path);
-        }
-        while self.view_all_order.len() > VIEW_ALL_KEPT {
-            // The oldest page that is not the one on screen.
-            let Some(at) = self.view_all_order.iter().position(|p| self.browse_path.as_deref() != Some(p.as_str()))
-            else {
-                break;
-            };
-            let gone = self.view_all_order.remove(at).expect("just found");
-            self.view_all.remove(&gone);
-        }
+        let on_screen = self.browse_path.clone();
+        self.view_all.keep(path, sections, on_screen.as_deref());
     }
 
     pub(super) fn note_browse_failure(&mut self, path: Option<String>, message: String) {
@@ -200,8 +190,7 @@ impl App {
 
     fn retry_browse(&mut self) {
         if let Some(path) = self.browse_path.clone() {
-            self.view_all.remove(&path);
-            self.view_all_order.retain(|p| *p != path);
+            self.view_all.forget(&path);
             self.browse = BrowseState::Idle;
             self.fetch_view_all(path);
             return;

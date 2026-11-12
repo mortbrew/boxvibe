@@ -243,14 +243,13 @@ fn a_recent_entry_is_titled_by_its_station_then_its_own_fields() {
 fn a_graphql_station_id_joins_and_plays_the_rest_station_without_moving_the_menu() {
     let mut app = demo();
     app.recent.clear();
-    app.recent_loading = true;
-    app.recent_generation = 7;
+    let generation = app.recent_state.begin().expect("a request goes out");
     let at = app.menu_items().iter().position(|m| *m == MenuItem::Settings).unwrap();
     app.focus = Focus::Menu;
     app.menu_cursor = at;
     let station = app.stations[2].clone();
     app.on_reply(Reply::Recent {
-        generation: 7,
+        generation,
         sources: vec![RecentSource { id: format!("ST:0:{}", station.id), kind: "ST".into(), ..Default::default() }],
     });
     assert!(app.recent_row());
@@ -268,19 +267,18 @@ fn a_graphql_station_id_joins_and_plays_the_rest_station_without_moving_the_menu
 fn a_stale_recently_played_answer_is_ignored_and_logout_asks_again() {
     let mut app = demo();
     let before = app.recent.clone();
-    app.recent_generation = 4;
-    app.recent_loading = true;
-    app.on_reply(Reply::Recent { generation: 3, sources: vec![] });
+    let generation = app.recent_state.begin().expect("a request goes out");
+    let stale = generation.wrapping_sub(1);
+    app.on_reply(Reply::Recent { generation: stale, sources: vec![] });
     assert_eq!(app.recent, before);
-    assert!(app.recent_loading, "an older success must not clear the newer request");
-    app.on_reply(Reply::RecentFailed { generation: 3, message: "old".into() });
-    assert!(app.recent_loading, "an older failure must not clear the newer request");
+    assert!(app.recent_state.loading(), "an older success must not clear the newer request");
+    app.on_reply(Reply::RecentFailed { generation: stale, message: "old".into() });
+    assert!(app.recent_state.loading(), "an older failure must not clear the newer request");
     assert!(!app.status.contains("old"));
-    let generation = app.recent_generation;
     app.log_out();
     assert!(app.recent.is_empty());
-    assert!(!app.recent_asked && !app.recent_loading);
-    assert_ne!(app.recent_generation, generation);
+    assert!(!app.recent_state.loading() && app.recent_state.needs_first_ask());
+    assert!(!app.recent_state.accepts(generation), "logout invalidates it");
     app.on_reply(Reply::Recent {
         generation,
         sources: vec![RecentSource { id: "ST:0:1".into(), kind: "ST".into(), ..Default::default() }],
@@ -288,7 +286,7 @@ fn a_stale_recently_played_answer_is_ignored_and_logout_asks_again() {
     assert!(app.recent.is_empty(), "a late answer from the old login is dropped");
     app.session = Session::LoggedIn;
     app.on_reply(Reply::Stations(vec![Station { id: "3815".into(), name: "Tee".into(), ..Default::default() }]));
-    assert!(app.recent_loading && app.recent_asked, "the next login asks once");
+    assert!(app.recent_state.loading() && !app.recent_state.needs_first_ask(), "the next login asks once");
 }
 
 #[test]
@@ -338,12 +336,12 @@ fn an_empty_or_logged_out_list_never_prunes_favorites() {
 #[test]
 fn a_failed_recently_played_call_stops_the_spinner_and_says_why() {
     let mut app = demo();
-    app.recent_loading = true;
+    app.recent_state.begin().expect("a request goes out");
     app.on_reply(Reply::Failed {
         what: Failed::RecentlyPlayed,
         message: "Variable \"$types\" got invalid value \"ALBUM\" (HTTP 400)".into(),
     });
-    assert!(!app.recent_loading, "the pending flag clears");
+    assert!(!app.recent_state.loading(), "the pending flag clears");
     assert!(app.status.contains("Recently Played") && app.status.contains("invalid value"));
 }
 
@@ -351,22 +349,22 @@ fn a_failed_recently_played_call_stops_the_spinner_and_says_why() {
 fn playing_or_opening_recently_played_refreshes_once_and_keeps_the_selection() {
     let mut app = demo();
     let before = app.recent.clone();
-    let generation = app.recent_generation;
+    let generation = app.recent_state.generation();
     app.tune(2);
-    assert!(app.recent_loading);
-    assert_eq!(app.recent_generation, generation.wrapping_add(1));
+    assert!(app.recent_state.loading());
+    assert_eq!(app.recent_state.generation(), generation.wrapping_add(1));
     assert_eq!(app.recent, before, "playback does not invent a row before Pandora answers");
+    let in_flight = app.recent_state.generation();
     app.tune(1);
-    assert_eq!(app.recent_generation, generation.wrapping_add(1), "a second start waits for the one in flight");
-    assert!(app.recent_dirty);
+    assert_eq!(app.recent_state.generation(), in_flight, "a second start waits for the one in flight");
     app.settle(Duration::from_millis(500));
-    assert!(!app.recent_loading && !app.recent_dirty);
-    assert!(app.recent_generation > generation.wrapping_add(1), "the waiting start sends once");
+    assert!(!app.recent_state.loading());
+    assert!(app.recent_state.generation() > in_flight, "the waiting start sends once");
     app.recent_cursor = app.recent.len() - 1;
     let id = app.recent[app.recent_cursor].id.clone();
     app.show_recently_played();
     assert_eq!(app.view, View::Recent);
-    assert!(app.recent_loading);
+    assert!(app.recent_state.loading());
     app.settle(Duration::from_millis(400));
     assert_eq!(app.recent[app.recent_cursor].id, id, "the open page keeps the selected source");
 }
@@ -374,14 +372,13 @@ fn playing_or_opening_recently_played_refreshes_once_and_keeps_the_selection() {
 #[test]
 fn a_failed_recently_played_fetch_can_be_asked_again_by_opening_the_page() {
     let mut app = demo();
-    app.recent_loading = true;
-    app.recent_generation = 9;
-    app.on_reply(Reply::RecentFailed { generation: 9, message: "down".into() });
-    assert!(!app.recent_loading);
+    let generation = app.recent_state.begin().expect("a request goes out");
+    app.on_reply(Reply::RecentFailed { generation, message: "down".into() });
+    assert!(!app.recent_state.loading());
     assert!(app.status.contains("down"));
-    let generation = app.recent_generation;
+    let failed_at = app.recent_state.generation();
     app.show_recently_played();
-    assert!(app.recent_loading && app.recent_generation == generation.wrapping_add(1));
+    assert!(app.recent_state.loading() && app.recent_state.generation() == failed_at.wrapping_add(1));
 }
 
 #[test]
@@ -407,10 +404,9 @@ fn a_recent_row_appearing_above_pinned_keeps_the_pinned_cursor() {
     let pinned = app.menu_items().iter().position(|m| *m == MenuItem::Pinned).unwrap();
     app.focus = Focus::Menu;
     app.menu_cursor = pinned;
-    app.recent_loading = true;
-    app.recent_generation = 2;
+    let generation = app.recent_state.begin().expect("a request goes out");
     app.on_reply(Reply::Recent {
-        generation: 2,
+        generation,
         sources: vec![RecentSource { id: "ST:0:1".into(), kind: "ST".into(), ..Default::default() }],
     });
     assert_eq!(app.menu_selected(), MenuItem::Pinned);
@@ -1913,11 +1909,11 @@ fn a_password_pandora_never_accepted_is_never_saved() {
     app.on_key(key(KeyCode::Char('x')));
     app.on_key(key(KeyCode::Enter));
     // Typed, but the answer is a no before the demo worker's yes arrives.
-    assert!(app.password_unsaved);
+    assert!(app.pending_password.needs_saving());
     app.on_reply(Reply::LoginFailed { message: "no".into(), wrong_password: true });
     app.settle(WAIT);
     assert_eq!(k.saved(MAIL), None);
-    assert!(!app.password_unsaved && app.config.pandora.password.is_empty());
+    assert!(!app.pending_password.needs_saving() && app.config.pandora.password.is_empty());
 }
 
 #[test]
@@ -3059,37 +3055,50 @@ fn a_failed_view_all_falls_back_to_the_teaser_and_a_late_page_is_not_shown() {
 fn view_all_pages_are_capped_and_the_page_on_screen_is_never_dropped() {
     let mut app = demo();
     // Fill past the cap with pages that are not on screen.
-    for i in 0..VIEW_ALL_KEPT + 5 {
+    for i in 0..view_all::KEPT + 5 {
         app.on_reply(Reply::Browse { path: Some(format!("/browse/page-{i}")), sections: Vec::new() });
     }
-    assert_eq!(app.view_all.len(), VIEW_ALL_KEPT, "the map stops growing");
-    assert_eq!(app.view_all_order.len(), VIEW_ALL_KEPT, "the order stays in step");
-    assert!(!app.view_all.contains_key("/browse/page-0"), "the oldest page went");
-    assert!(app.view_all.contains_key(&format!("/browse/page-{}", VIEW_ALL_KEPT + 4)), "the newest stayed");
+    assert_eq!(app.view_all.len(), view_all::KEPT, "the map stops growing");
+    assert!(!app.view_all.contains("/browse/page-0"), "the oldest page went");
+    assert!(app.view_all.contains(&format!("/browse/page-{}", view_all::KEPT + 4)), "the newest stayed");
 
     // A page on screen is kept even when it is the oldest.
     app.browse_path = Some("/browse/page-5".into());
-    for i in 0..VIEW_ALL_KEPT {
+    for i in 0..view_all::KEPT {
         app.on_reply(Reply::Browse { path: Some(format!("/browse/fresh-{i}")), sections: Vec::new() });
     }
-    assert!(app.view_all.contains_key("/browse/page-5"), "the page on screen is never dropped");
+    assert!(app.view_all.contains("/browse/page-5"), "the page on screen is never dropped");
 }
 
 #[test]
 fn downloaded_songs_are_capped_so_a_long_session_does_not_grow_without_end() {
     let mut app = demo();
-    for i in 0..AUDIO_CACHE_KEPT + 4 {
+    for i in 0..audio_cache::KEPT + 4 {
         app.keep_audio(format!("token-{i}"), vec![0u8; 8]);
     }
-    assert_eq!(app.audio_cache.len(), AUDIO_CACHE_KEPT, "the cache stops growing");
-    assert_eq!(app.audio_order.len(), AUDIO_CACHE_KEPT, "the order stays in step");
-    assert!(!app.audio_cache.contains_key("token-0"), "the oldest song went");
-    assert!(app.audio_cache.contains_key(&format!("token-{}", AUDIO_CACHE_KEPT + 3)), "the newest stayed");
+    assert_eq!(app.audio_cache.len(), audio_cache::KEPT, "the cache stops growing");
+    assert!(!app.audio_cache.contains("token-0"), "the oldest song went");
+    assert!(app.audio_cache.contains(&format!("token-{}", audio_cache::KEPT + 3)), "the newest stayed");
 
     // Asking for a song already held moves it to the young end, not a second copy.
-    app.keep_audio(format!("token-{}", AUDIO_CACHE_KEPT + 3), vec![1u8; 8]);
-    assert_eq!(app.audio_order.len(), AUDIO_CACHE_KEPT, "no duplicate entry");
-    assert_eq!(app.audio_cache[&format!("token-{}", AUDIO_CACHE_KEPT + 3)], vec![1u8; 8], "the new bytes win");
+    app.keep_audio(format!("token-{}", audio_cache::KEPT + 3), vec![1u8; 8]);
+    assert_eq!(app.audio_cache.len(), audio_cache::KEPT, "no duplicate entry");
+}
+
+#[test]
+fn a_song_dropped_from_the_queue_leaves_nothing_behind_in_the_cache() {
+    // The cache's map and its order used to be two fields kept in step by hand,
+    // and one call site removed from the map without the order. A token left in
+    // the order then evicted a song that was still cached.
+    let mut app = demo();
+    for i in 0..audio_cache::KEPT {
+        app.keep_audio(format!("token-{i}"), vec![0u8; 8]);
+    }
+    app.audio_cache.forget("token-0");
+    // Room for one more without losing a song that is still here.
+    app.keep_audio("fresh".into(), vec![0u8; 8]);
+    assert_eq!(app.audio_cache.len(), audio_cache::KEPT);
+    assert!(app.audio_cache.contains("token-1"), "a cached song was not evicted by a stale token");
 }
 
 #[test]

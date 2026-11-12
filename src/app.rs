@@ -7,7 +7,7 @@
 //! separate login screen: the account lives in Settings, and the first run
 //! opens Settings on it.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -28,13 +28,17 @@ use crate::theme::{self, Palette};
 use crate::update::{Progress, Replace, Update};
 
 mod ad;
+mod audio_cache;
 mod browse;
 mod dialogs;
 mod editor;
 mod panel;
+mod pending_password;
 mod playback;
 mod recent;
+mod recent_state;
 mod themes;
+mod view_all;
 pub use ad::{AdPhase, AdView, End};
 pub use editor::{Editor, EditorConfirm, EditorTab, FeedState, Loaded};
 pub use panel::{Panel, PanelKind};
@@ -936,14 +940,9 @@ pub struct App {
     /// The account's recently played sources, newest first.
     pub recent: Vec<RecentSource>,
     pub recent_cursor: usize,
-    /// A recently played call is on its way.
-    pub recent_loading: bool,
-    /// The login's first fetch has been sent. Logout clears it.
-    recent_asked: bool,
-    /// A tune or a page open happened while a fetch was already in flight.
-    recent_dirty: bool,
-    /// Bumped on each ask and on logout. A reply from an older one is dropped.
-    recent_generation: u64,
+    /// The request in flight: its generation, and whether another is waiting
+    /// (see [`recent_state`]).
+    pub recent_state: recent_state::RecentState,
     /// Rows removed on this device only. Pandora's list is unchanged; refresh
     /// may bring them back unless Pandora adds a remove API.
     recent_hidden: std::collections::HashSet<String>,
@@ -974,11 +973,8 @@ pub struct App {
     pub browse_filter: Option<String>,
     /// Main `/browse` teaser. View-all paths are read from here.
     browse_directory: BrowseState,
-    /// View-all pages already fetched, keyed by `viewAll.webUrl`. At most
-    /// [`VIEW_ALL_KEPT`], oldest first.
-    view_all: HashMap<String, Vec<BrowseSection>>,
-    /// The order `view_all` was filled in, so the oldest page can go.
-    view_all_order: VecDeque<String>,
+    /// View-all pages already fetched (see [`view_all`]).
+    view_all: view_all::ViewAllCache,
     /// View-all path on screen or in flight. `None`: the page is the teaser.
     browse_path: Option<String>,
     /// Page to restore when Esc leaves a category shelf.
@@ -996,9 +992,8 @@ pub struct App {
     /// The song whose audio is downloading, and since when (a download that
     /// never answers must not hold the player forever).
     pub buffering: Option<(String, Instant)>,
-    audio_cache: HashMap<String, Vec<u8>>,
-    /// The order `audio_cache` was filled in, so the oldest song can go.
-    audio_order: VecDeque<String>,
+    /// Downloaded songs kept for their turn (see [`audio_cache`]).
+    audio_cache: audio_cache::AudioCache,
     /// The covers.
     pub art: crate::art::Art,
     requested: HashSet<String>,
@@ -1009,11 +1004,9 @@ pub struct App {
     keychain: Arc<dyn Keychain>,
     /// What is known about the saved password.
     pub keychain_state: KeychainState,
-    /// The typed password is not in the keychain yet: it is saved once Pandora accepts it.
-    password_unsaved: bool,
-    /// The password came from config.toml (an older boxvibe wrote it there):
-    /// the keychain gets it, and the file loses it once that worked.
-    password_from_file: bool,
+    /// The password in memory that the keychain does not have yet, and where
+    /// it came from (see [`pending_password`]).
+    pending_password: pending_password::PendingPassword,
     /// A newer release (About shows it).
     pub update: Option<Update>,
     /// GitHub confirmed this is the latest release.
@@ -1037,11 +1030,9 @@ const HISTORY_LEN: usize = 10;
 /// How many View-all pages are kept. Each is a whole Browse page, and there
 /// are only ever a handful of pinned sections, so this is generous; it exists
 /// so a long session cannot grow the map without end.
-const VIEW_ALL_KEPT: usize = 24;
 /// How many downloaded songs are kept for the next one. Each is a whole MP3
 /// (up to 64 MB by `fetch_audio`'s limit), so this stays small: the queue is
 /// prefetched one song ahead, and a song that is skipped is not needed again.
-const AUDIO_CACHE_KEPT: usize = 3;
 /// The longest station name the rename box takes.
 const MAX_STATION_NAME: usize = 80;
 /// The longest email or password the prompts take.
@@ -1105,10 +1096,7 @@ impl App {
             pinned_cursor: 0,
             recent: Vec::new(),
             recent_cursor: 0,
-            recent_loading: false,
-            recent_asked: false,
-            recent_dirty: false,
-            recent_generation: 0,
+            recent_state: recent_state::RecentState::default(),
             recent_hidden: Default::default(),
             held_dislikes: Default::default(),
             song_menu: None,
@@ -1124,8 +1112,7 @@ impl App {
             browse_cursor: 0,
             browse_filter: None,
             browse_directory: BrowseState::Idle,
-            view_all: HashMap::new(),
-            view_all_order: VecDeque::new(),
+            view_all: view_all::ViewAllCache::default(),
             browse_path: None,
             browse_parent: None,
             creating: false,
@@ -1134,16 +1121,14 @@ impl App {
             ad_serial: 0,
             ad_tracker: ads::Tracker::new(!demo, true, &user_agent),
             buffering: None,
-            audio_cache: HashMap::new(),
-            audio_order: VecDeque::new(),
+            audio_cache: audio_cache::AudioCache::default(),
             requested: HashSet::new(),
             playlist_pending: false,
             audio,
             backend,
             keychain,
             keychain_state: KeychainState::Unknown,
-            password_unsaved: false,
-            password_from_file: false,
+            pending_password: pending_password::PendingPassword::default(),
             update: None,
             up_to_date: false,
             self_update: Progress::Idle,
@@ -1186,8 +1171,7 @@ impl App {
         if self.config.has_login() {
             // A password an older boxvibe left in config.toml moves to the keychain
             // (once Pandora accepts it; see `Reply::LoggedIn`).
-            self.password_from_file = true;
-            self.password_unsaved = true;
+            self.pending_password.read_from_file();
             self.log_in();
         } else if !self.config.pandora.username.trim().is_empty() {
             // The usual start: the password is in the keychain.
@@ -1637,8 +1621,7 @@ impl App {
                     self.queue.remove(at);
                     self.held_dislikes.remove(&song.track_token);
                     self.requested.remove(&song.track_token);
-                    self.audio_cache.remove(&song.track_token);
-                    self.audio_order.retain(|t| *t != song.track_token);
+                    self.audio_cache.forget(&song.track_token);
                 }
                 self.status = format!("Tired of “{}”: Pandora rests it for a month", song.title);
             }
@@ -1962,8 +1945,8 @@ impl App {
                     let email = self.config.pandora.username.clone();
                     self.save(&[("account", "email_or_username", email.as_str().into())]);
                     // The password goes to the keychain, now that Pandora has taken it.
-                    if self.password_unsaved {
-                        self.password_unsaved = false;
+                    if self.pending_password.needs_saving() {
+                        self.pending_password.sent();
                         let password = self.config.pandora.password.expose().to_owned();
                         self.backend.keychain(&self.keychain, &email, KeychainJob::Save(password));
                     }
@@ -1985,7 +1968,7 @@ impl App {
                 if wrong_password {
                     // A wrong password is not kept: not in memory, not in the keychain.
                     self.config.pandora.password.clear();
-                    self.password_unsaved = false;
+                    self.pending_password.done();
                     self.forget_saved_password(false);
                 }
                 self.session = Session::Failed(message.clone());
@@ -2203,7 +2186,7 @@ impl App {
                 }
                 match what {
                     Failed::RecentlyPlayed => {
-                        if self.recent_loading {
+                        if self.recent_state.loading() {
                             self.status = format!("⚠ Recently Played: {message}");
                             self.finish_recent_request();
                         }
@@ -2352,7 +2335,7 @@ impl App {
             }
             KeychainReply::Saved(Ok(())) => {
                 self.keychain_state = KeychainState::Saved;
-                if std::mem::take(&mut self.password_from_file) {
+                if std::mem::take(&mut self.pending_password).in_file() {
                     // Only now, with the keychain holding it, does the file let go of it.
                     self.status =
                         match self.config_path.as_deref().filter(|_| !self.demo).map(config::forget_plaintext_password)
@@ -2367,7 +2350,7 @@ impl App {
                 // The password stays in memory for this session, and nowhere on disk.
                 // (One an older boxvibe left in config.toml is left there: it isn't lost.)
                 self.keychain_state = KeychainState::Unavailable;
-                self.password_from_file = false;
+                self.pending_password.done();
                 self.status = NO_KEYCHAIN.into();
             }
             KeychainReply::Forgotten { result: Ok(()), .. } => {
@@ -2398,7 +2381,7 @@ impl App {
             self.backend.keychain(&self.keychain, &user, KeychainJob::Forget { loud });
         }
         let from_file = self.config_path.as_deref().map(config::forget_plaintext_password);
-        self.password_from_file = false;
+        self.pending_password.done();
         if let Some(Err(e)) = from_file {
             self.status = format!("⚠ {e}");
         } else if loud {
@@ -2429,7 +2412,7 @@ impl App {
         self.session = Session::LoggedOut;
         self.forget_saved_password(false);
         self.config.pandora.password.clear();
-        self.password_unsaved = false;
+        self.pending_password.done();
         self.status = if self.demo || self.keychain_state == KeychainState::Unavailable {
             "Logged out".into()
         } else {
@@ -2509,7 +2492,7 @@ impl App {
             Setting::Password => match self.keychain_state {
                 KeychainState::Saved => "•••••••• in your keychain".into(),
                 KeychainState::Unavailable => "no keychain: asked each start".into(),
-                _ if self.password_unsaved => "saving to your keychain…".into(),
+                _ if self.pending_password.needs_saving() => "saving to your keychain…".into(),
                 _ => "not saved".into(),
             },
             Setting::LogIn => match &self.session {
@@ -2725,8 +2708,7 @@ impl App {
                 let login_changed =
                     account_changed || (typed_in_file && config.pandora.password != self.config.pandora.password);
                 if typed_in_file && login_changed {
-                    self.password_from_file = true;
-                    self.password_unsaved = true;
+                    self.pending_password.read_from_file();
                 }
                 if account_changed {
                     self.keychain_state = KeychainState::Unknown;
@@ -2780,7 +2762,7 @@ impl App {
                     Prompt::Password => {
                         // Kept in the keychain once Pandora takes it (see LoggedIn).
                         self.config.pandora.password = Secret::new(text);
-                        self.password_unsaved = true;
+                        self.pending_password.typed();
                         self.settings_cursor = Setting::at(Setting::LogIn);
                         self.log_in();
                     }
@@ -3093,7 +3075,6 @@ impl App {
             self.now = None;
             self.queue.clear();
             self.audio_cache.clear();
-            self.audio_order.clear();
             self.buffering = None;
             self.playlist_pending = false;
             self.current_station = None;

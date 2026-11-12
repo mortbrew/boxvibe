@@ -2207,7 +2207,7 @@ fn the_recently_played_page_says_loading_and_nothing_played() {
     blank.focus = crate::app::Focus::Content;
     let text = all_text(&screen(&mut blank, 120, 40).0);
     assert!(text.contains("Nothing played"), "{text}");
-    blank.recent_loading = true;
+    blank.recent_state.begin().expect("a request goes out");
     let text = all_text(&screen(&mut blank, 120, 40).0);
     assert!(text.contains("Loading"), "{text}");
     // One row: no "move" hint, and no Enter: there is nothing else to play.

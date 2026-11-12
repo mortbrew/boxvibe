@@ -12,10 +12,9 @@ impl App {
 
     /// Asks Pandora for the recently played list, once after login.
     pub(super) fn ask_recently_played(&mut self) {
-        if self.recent_asked {
-            return;
+        if self.recent_state.needs_first_ask() {
+            self.refresh_recently_played();
         }
-        self.refresh_recently_played();
     }
 
     /// One fetch for a login, a station start, or opening the page. A second
@@ -25,37 +24,26 @@ impl App {
         if self.session != Session::LoggedIn {
             return;
         }
-        if self.recent_loading {
-            self.recent_dirty = true;
-            return;
-        }
-        self.recent_dirty = false;
-        self.recent_asked = true;
-        self.recent_loading = true;
-        self.recent_generation = self.recent_generation.wrapping_add(1);
-        self.backend.send(Request::RecentlyPlayed { generation: self.recent_generation });
+        let Some(generation) = self.recent_state.begin() else { return };
+        self.backend.send(Request::RecentlyPlayed { generation });
     }
 
     pub(super) fn finish_recent_request(&mut self) {
-        self.recent_loading = false;
-        if self.recent_dirty {
+        if self.recent_state.finish() {
             self.refresh_recently_played();
         }
     }
 
     /// The reply belongs to the login that asked for it.
     pub(super) fn accept_recent(&self, generation: u64) -> bool {
-        generation == self.recent_generation && self.session == Session::LoggedIn
+        self.recent_state.accepts(generation) && self.session == Session::LoggedIn
     }
 
     /// Drops the list and invalidates an answer still in flight.
     pub(super) fn forget_recent(&mut self) {
-        self.recent_generation = self.recent_generation.wrapping_add(1);
+        self.recent_state.reset();
         self.recent.clear();
         self.recent_cursor = 0;
-        self.recent_loading = false;
-        self.recent_asked = false;
-        self.recent_dirty = false;
         self.recent_hidden.clear();
     }
 

@@ -993,7 +993,7 @@ fn draw_recent(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if app.recent.is_empty() {
-        let text = if app.recent_loading {
+        let text = if app.recent_state.loading() {
             format!(" {} Loading…", ic.loading)
         } else {
             " Nothing played recently yet".to_owned()

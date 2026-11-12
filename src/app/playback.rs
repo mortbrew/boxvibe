@@ -13,7 +13,6 @@ impl App {
         self.ad = AdPhase::Off;
         self.queue.clear();
         self.audio_cache.clear();
-        self.audio_order.clear();
         self.requested.clear();
         // Held dislikes are for songs of the station being left.
         self.held_dislikes.clear();
@@ -69,8 +68,7 @@ impl App {
             self.held_dislikes.remove(&song.track_token);
             self.backend.send(Request::Rate { track_token: song.track_token.clone(), positive: false });
             self.status = format!("Disliked and skipped: {}", song.title);
-            self.audio_cache.remove(&song.track_token);
-            self.audio_order.retain(|t| *t != song.track_token);
+            self.audio_cache.forget(&song.track_token);
             self.push_history(song);
         }
         loop {
@@ -85,8 +83,7 @@ impl App {
             // asked for: a free plan gets 64 kbps HE-AAC whatever `high` says.
             self.stream = Some((song.audio_format, song.bitrate));
             self.now = Some(song);
-            let data = if let Some(data) = self.audio_cache.remove(&token) {
-                self.audio_order.retain(|t| *t != token);
+            let data = if let Some(data) = self.audio_cache.take(&token) {
                 Some(data)
             } else if self.demo || !self.audio.has_device() {
                 None
@@ -128,13 +125,7 @@ impl App {
     /// more than [`AUDIO_CACHE_KEPT`]. Each is a whole MP3, so the map is not
     /// allowed to grow with the session.
     pub(super) fn keep_audio(&mut self, token: String, data: Vec<u8>) {
-        self.audio_cache.insert(token.clone(), data);
-        self.audio_order.retain(|t| *t != token);
-        self.audio_order.push_back(token);
-        while self.audio_order.len() > AUDIO_CACHE_KEPT {
-            let Some(oldest) = self.audio_order.pop_front() else { break };
-            self.audio_cache.remove(&oldest);
-        }
+        self.audio_cache.keep(token, data);
     }
 
     pub(super) fn prefetch(&mut self) {

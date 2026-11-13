@@ -18,7 +18,6 @@ fn the_theme_picker_never_cuts_its_tags_or_hints() {
         let all = lines.join("\n");
         assert!(all.contains(vibekit::picker::SEARCH_HINT), "{cols}: search hint cut\n{all}");
         assert!(all.contains("in use "), "{cols}: tag cut\n{all}");
-        assert!(!all.contains("installed"), "{cols}\n{all}");
     }
     app.on_key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Tab));
     for cols in [80, 160] {

@@ -1,5 +1,5 @@
 use super::*;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 #[test]
 fn dates_are_written_in_utc() {

@@ -65,29 +65,10 @@ pub fn load(path: &Path) -> Vec<Pin> {
 }
 
 pub fn save(path: &Path, pins: &[Pin]) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
     let mut text =
         String::from("# boxvibe's pinned songs (Shift+I pins, x on the Pinned page unpins). No audio is kept.\n\n");
     text.push_str(&toml::to_string(&File { pin: pins.to_vec() }).map_err(std::io::Error::other)?);
-    // Written next to it and renamed, like config.toml: a crash never leaves
-    // half a file, and the pid in the name keeps two boxvibes apart.
-    let tmp = path.with_extension(format!("toml.{}.tmp", std::process::id()));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options.open(&tmp)?;
-    use std::io::Write;
-    file.write_all(text.as_bytes())?;
-    // On disk before the rename, so a power cut cannot leave the new name
-    // pointing at an empty file.
-    file.sync_all()?;
-    drop(file);
-    #[cfg(unix)]
-    std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
-    std::fs::rename(tmp, path)
+    vibekit::fs::write_private(path, &text)
 }
 
 /// Today, `2026-10-29` (UTC).

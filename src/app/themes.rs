@@ -6,7 +6,7 @@
 //! deletes one (after asking). The popup stays open until Esc.
 
 use super::*;
-use crate::theme_store::{Msg, Source};
+use crate::theme_store::Msg;
 
 use vibekit::picker::Action;
 pub use vibekit::picker::ThemePicker;
@@ -15,7 +15,8 @@ impl App {
     /// Settings → Theme Select: opens the picker on Search and asks GitHub
     /// for the list (in the background).
     pub(super) fn open_themes(&mut self) {
-        self.theme_job = Some(crate::theme_store::fetch_catalog(self.demo));
+        // iTerm2 only: Omarchy's themes come with Auto Mode, not the catalog.
+        self.theme_job = Some(crate::theme_store::fetch_catalog(self.demo, crate::theme_store::CatalogSources::ITERM));
         let mut picker = ThemePicker::new();
         picker.refilter(&self.user_themes);
         self.theme_picker = Some(picker);
@@ -38,12 +39,7 @@ impl App {
                 self.status = format!("Downloading {}…", entry.name);
                 self.theme_job = Some(crate::theme_store::fetch_theme(entry, self.demo));
             }
-            // Answers come from DialogStack Confirm (ask_delete_theme), not here.
-            Action::Delete(_) => {}
-        }
-        // vibekit still stages the name on x; move it onto our Confirm stack.
-        if let Some(name) = self.theme_picker.as_mut().and_then(|p| p.confirm_delete.take()) {
-            self.ask_delete_theme(name);
+            Action::AskDelete(name) => self.ask_delete_theme(name),
         }
     }
 
@@ -79,8 +75,7 @@ impl App {
                 picker.loading = false;
                 match result {
                     Ok(entries) => {
-                        // iTerm2-Color-Schemes only: Omarchy's themes come with Auto Mode.
-                        picker.catalog.extend(entries.into_iter().filter(|e| e.source != Source::Omarchy));
+                        picker.catalog.extend(entries);
                         picker.refilter(&self.user_themes);
                     }
                     Err(e) => picker.error = Some(e),

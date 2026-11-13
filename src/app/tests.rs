@@ -2463,7 +2463,6 @@ fn theme_select_searches_like_fzf_downloads_installs_and_deletes_without_closing
     app.on_key(key(KeyCode::Enter));
     app.on_key(key(KeyCode::Char('x')));
     assert_eq!(app.theme_delete_asked(), Some("dracula"));
-    assert!(app.theme_picker.as_ref().unwrap().confirm_delete.is_none());
     app.on_key(key(KeyCode::Char('n')));
     assert!(dir.join("dracula.toml").is_file());
     assert!(app.theme_delete_asked().is_none());

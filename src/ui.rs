@@ -7,7 +7,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
-use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -106,7 +106,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_status(frame, app, status);
     draw_keys(frame, &p, &key_caps(app), keys);
     if app.overlay_open() {
-        dim(frame.buffer_mut(), p.background);
+        // Match vibekit dialog fade: desaturate then blend toward the theme background.
+        let area = frame.area();
+        vibekit::dialog::dim(frame.buffer_mut(), area, 0.6, p.background);
     }
     if let Some(menu) = &app.song_menu {
         draw_song_menu(frame, &p, body, menu);
@@ -136,45 +138,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if let Some(mode) = app.confirm_good_vibes {
         draw_good_vibes_off(frame, &p, area, mode);
-    }
-}
-
-/// How bright the screen behind a popup stays, and how much colour it keeps.
-const DIM_BRIGHTNESS: f32 = 0.4;
-const DIM_SATURATION: f32 = 0.5;
-
-use ratatui::style::Color;
-
-/// Behind a popup: every cell (the half-block cover too) faded toward the
-/// theme background, to about 40% and greyer, so the popup stands out.
-fn dim(buf: &mut ratatui::buffer::Buffer, background: Color) {
-    for cell in buf.content.iter_mut() {
-        cell.fg = dim_color(cell.fg, background);
-        cell.bg = dim_color(cell.bg, background);
-    }
-}
-
-/// One colour, dimmed. RGB is desaturated then blended toward the
-/// background; named and indexed colours (no RGB to blend) become a dim gray.
-fn dim_color(color: Color, background: Color) -> Color {
-    let (br, bg, bb) = match background {
-        Color::Rgb(r, g, b) => (f32::from(r), f32::from(g), f32::from(b)),
-        _ => (0.0, 0.0, 0.0),
-    };
-    match color {
-        Color::Reset => Color::Reset,
-        c if c == background => c,
-        Color::Rgb(r, g, b) => {
-            let (r, g, b) = (f32::from(r), f32::from(g), f32::from(b));
-            let grey = 0.299 * r + 0.587 * g + 0.114 * b;
-            let fade = |c: f32, base: f32| {
-                let c = grey + (c - grey) * DIM_SATURATION;
-                (base + (c - base) * DIM_BRIGHTNESS).round().clamp(0.0, 255.0) as u8
-            };
-            Color::Rgb(fade(r, br), fade(g, bg), fade(b, bb))
-        }
-        Color::Black => Color::Black,
-        _ => Color::DarkGray,
     }
 }
 

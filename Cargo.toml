@@ -13,7 +13,7 @@ categories = ["command-line-utilities", "multimedia::audio"]
 exclude = ["/docs/screenshots"]
 
 [dependencies]
-vibekit = { git = "https://github.com/mortbrew/vibekit", tag = "v0.2.0" }
+vibekit = { git = "https://github.com/mortbrew/vibekit", tag = "v0.3.0" }
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 crossterm = "0.29"

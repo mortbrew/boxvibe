@@ -2,6 +2,11 @@
 
 Short and scannable; the git history has the details.
 
+## Unreleased
+
+### Internal
+- **Adopt vibekit 0.3:** `TextInput`, `Ask<T>`, `write_private`, desktop entry helper, `proc::detached`, `time::iso_utc`, Theme Select `AskDelete` + `CatalogSources::ITERM`, and shared overlay dim. Boxvibe keeps thin wrappers; Pandora domain stays local. Pinned to tag `v0.3.0`.
+
 ## 0.6.2 (2026-11-12)
 
 ### Fixed

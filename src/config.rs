@@ -21,10 +21,10 @@
 //! `password`) is still read, once, so it can be moved to the keychain;
 //! [`forget_plaintext_password`] then deletes it.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use vibekit::fs::write_private;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -1068,31 +1068,6 @@ impl Config {
     pub fn has_login(&self) -> bool {
         !self.pandora.username.trim().is_empty() && !self.pandora.password.is_empty()
     }
-}
-
-/// Writes `text` to `path` with mode 600 (owner only), creating the folder at
-/// mode 700 so others cannot list it for the config file name.
-fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-        #[cfg(unix)]
-        std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
-    }
-    // Write next to it and rename, so a crash never leaves half a config. The
-    // temporary name carries the pid, so two boxvibes writing at once cannot
-    // clobber each other's half-written file.
-    let tmp = path.with_extension(format!("toml.{}.tmp", std::process::id()));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options.open(&tmp)?;
-    file.write_all(text.as_bytes())?;
-    file.sync_all()?;
-    drop(file);
-    #[cfg(unix)]
-    std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
-    std::fs::rename(&tmp, path)
 }
 
 /// Moves every setting still in the 0.1–0.3 tables (`[pandora]`, `[player]`,

@@ -10,13 +10,7 @@
 use super::*;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use vibekit::dialog::{Confirm, Dialog, Help, Response};
-
-/// A `Confirm` that carries what it is about.
-pub struct Ask<T> {
-    pub confirm: Confirm,
-    pub about: T,
-}
+use vibekit::dialog::{Ask, Confirm, Dialog, Help, Response};
 
 /// The quit question.
 pub struct Quit;
@@ -29,15 +23,6 @@ pub struct ForgetRecent(pub usize);
 
 /// Theme Select: which saved theme to delete.
 pub struct ThemeDelete(pub String);
-
-impl<T: 'static> Dialog for Ask<T> {
-    fn key(&mut self, key: KeyEvent) -> Response {
-        self.confirm.key(key)
-    }
-    fn draw(&self, frame: &mut Frame, screen: Rect, palette: &Palette) {
-        self.confirm.draw(frame, screen, palette);
-    }
-}
 
 /// `v`: a song's or station's details (filled in as Pandora answers).
 pub struct DetailsBox(pub Details);

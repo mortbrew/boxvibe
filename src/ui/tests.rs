@@ -962,14 +962,22 @@ fn settings_has_no_column_headers_and_starts_with_its_first_section() {
 
 #[test]
 fn colours_behind_a_popup_fade_toward_the_background() {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
     let bg = Color::Rgb(20, 20, 30);
-    let Color::Rgb(r, g, b) = dim_color(Color::Rgb(250, 200, 0), bg) else { panic!() };
+    let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
+    buf[(0, 0)].set_fg(Color::Rgb(250, 200, 0)).set_bg(Color::Reset);
+    buf[(1, 0)].set_fg(bg);
+    buf[(2, 0)].set_fg(Color::Yellow);
+    let area = buf.area;
+    vibekit::dialog::dim(&mut buf, area, 0.6, bg);
+    let Color::Rgb(r, g, b) = buf[(0, 0)].fg else { panic!() };
     assert!(r < 130 && g < 110 && b > 20, "darker, toward the background: {r} {g} {b}");
     assert!(r.abs_diff(b) < 70, "less saturated: {r} vs {b}");
-    assert_eq!(dim_color(bg, bg), bg, "the background stays");
-    assert_eq!(dim_color(Color::Yellow, bg), Color::DarkGray);
-    assert_eq!(dim_color(Color::Indexed(208), bg), Color::DarkGray);
-    assert_eq!(dim_color(Color::Reset, bg), Color::Reset);
+    assert_eq!(buf[(0, 0)].bg, Color::Reset);
+    assert_eq!(buf[(1, 0)].fg, bg, "the background stays");
+    assert!(buf[(2, 0)].modifier.contains(Modifier::DIM));
 }
 
 #[test]

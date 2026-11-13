@@ -28,7 +28,7 @@ Rules that follow from this:
 - `dev` is the repository's default branch, so clones, PRs and the web UI all
   land there by default.
 - `main` is protected by the "Protect main" ruleset (§4): no force-push, no
-  deletion, no direct push, and `fmt`, `ci` and `msrv` must be green.
+  deletion, no direct push, and `fmt`, `ci`, `msrv` and `CodeQL` must be green.
 - Feature branches are short-lived and deleted after merge. If a branch's work
   is merged, the branch goes.
 - Never leave a stale branch on origin. A branch that is not `dev` or `main`
@@ -385,7 +385,8 @@ gh api -X POST repos/mortbrew/<repo>/rulesets --input - <<'JSON'
         "required_status_checks": [
           { "context": "fmt" },
           { "context": "ci" },
-          { "context": "msrv" }
+          { "context": "msrv" },
+          { "context": "CodeQL" }
         ]
       }
     }
@@ -402,12 +403,22 @@ What each rule buys:
 - `non_fast_forward` — no force-push over published history.
 - `deletion` — `main` cannot be deleted.
 - `pull_request` — no direct push to `main`; it only moves by PR.
-- `required_status_checks` — `fmt`, `ci` and `msrv` must pass first.
+- `required_status_checks` — `fmt`, `ci`, `msrv` and `CodeQL` must pass first.
 
-**The required list is deliberately short.** `audit` and `codeql` are not
-required, because they are slow and occasionally flaky, and a required check
-that flakes blocks releases. That is exactly why §7 exists: the required three
-are the *minimum*, not the whole story.
+**`CodeQL` is required; `audit` is not.** CodeQL is the one check that reads
+the code for security problems, so a pull request that introduces an alert
+should not be mergeable. It is slow (about five minutes) but it does not flake:
+it either finds something or it does not.
+
+The context is `CodeQL`, not `analyze`. `analyze` is the workflow's job name and
+only says the scan ran; `CodeQL` is the check GitHub's code scanning reports,
+and it is the one that fails when there are new alerts. Requiring the wrong one
+would gate merges on a job that passes even with alerts open.
+
+`audit` stays out: it fails on a RustSec advisory in a dependency, which is
+usually fixed by a version bump rather than by the pull request at hand, and a
+required check that blocks on someone else's CVE stops releases for reasons the
+author cannot fix. §7 still says to read it.
 
 ## 5. Security settings
 
@@ -453,9 +464,10 @@ for b in <deleted branches>; do git config --remove-section "branch.$b"; done
 
 ## 7. Before merging or releasing, read every check
 
-The ruleset only *requires* `fmt`, `ci` and `msrv`. A pull request can therefore
-merge with `audit` or `codeql` red. That has happened: a release PR merged while
-CodeQL was failing, because only the required three were looked at.
+The ruleset requires `fmt`, `ci`, `msrv` and `CodeQL`. A pull request can still
+merge with `audit` red, and it can merge with any check that is not in that list.
+That has happened: a release PR merged while CodeQL was failing, before it was
+required, because only the required three were looked at.
 
 - Run `gh pr checks <n>` and read **all** of it, not just the required contexts.
   Anything not `pass` is a blocker until it is understood.
@@ -546,14 +558,14 @@ Run all of this. Every line must pass before the repo counts as set up.
 gh api repos/mortbrew/<repo>/branches --paginate -q '.[].name'   # dev, main
 gh api repos/mortbrew/<repo> -q '.default_branch'                # dev
 
-# 2. The ruleset protects main, and requires the three checks.
+# 2. The ruleset protects main, and requires the four checks.
 gh api repos/mortbrew/<repo>/rulesets -q '.[].id' | while read id; do
   gh api repos/mortbrew/<repo>/rulesets/$id \
     -q '{name:.name, include:.conditions.ref_name.include, rules:[.rules[].type],
          required:[.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context]}'
 done
 # expect: include ["refs/heads/main"], rules include pull_request and
-#         required_status_checks, required ["fmt","ci","msrv"]
+#         required_status_checks, required ["fmt","ci","msrv","CodeQL"]
 
 # 3. Security settings are on.
 gh api repos/mortbrew/<repo> -q '.security_and_analysis'

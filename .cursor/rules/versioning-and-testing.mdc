@@ -53,9 +53,10 @@ run its Verification section.
 
 ## Before merging or releasing, read every check
 
-The "Protect main" ruleset only *requires* `fmt`, `ci` and `msrv`, so a pull request can merge
-with other checks red. That happened once: `CodeQL` was failing on the release PR and the merge
-went ahead because only the required three were looked at.
+The "Protect main" ruleset requires `fmt`, `ci`, `msrv` and `CodeQL`, so a pull request cannot
+merge with any of those red. It can still merge with `audit` red, or with any check not in that
+list. That happened once: `CodeQL` was failing on the release PR and the merge went ahead because
+only the required three were looked at — which is why it is required now.
 
 - Run `gh pr checks <n>` and read **all** of it, not just the required contexts. Anything not
   `pass` is a blocker until it is understood.

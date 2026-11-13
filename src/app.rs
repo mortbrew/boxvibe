@@ -10,7 +10,7 @@
 //! Domain helpers live beside this file (`account`, `stations`, `playback`,
 //! `reply`, …) as more `impl App` blocks — one `App`, split for reading.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -33,11 +33,13 @@ use crate::update::{Progress, Replace, Update};
 mod account;
 mod ad;
 mod audio_cache;
+mod audio_fetch;
 mod browse;
 mod browse_pages;
 mod dialogs;
 mod editor;
 mod in_flight;
+mod menu;
 mod panel;
 mod pending_password;
 mod playback;
@@ -994,16 +996,11 @@ pub struct App {
     pub ad: AdPhase,
     ad_serial: u32,
     ad_tracker: ads::Tracker,
-    /// The song whose audio is downloading, and since when (a download that
-    /// never answers must not hold the player forever).
-    pub buffering: Option<(String, Instant)>,
-    /// Downloaded songs kept for their turn (see [`audio_cache`]).
-    audio_cache: audio_cache::AudioCache,
+    /// Download pipeline: generation, buffering, cache, requested set
+    /// (see [`audio_fetch`]).
+    pub(crate) audio_fetch: audio_fetch::AudioFetch,
     /// The covers.
     pub art: crate::art::Art,
-    requested: HashSet<String>,
-    /// Invalidates queued / late audio downloads (see [`App::bump_audio_generation`]).
-    audio_generation: u64,
     pub audio: Audio,
     backend: Backend,
     /// Where the Pandora password is kept (see [`crate::keychain`]).
@@ -1035,11 +1032,8 @@ pub struct App {
     needs_draw: bool,
     /// Last whole-second fingerprint drawn for time-based UI (progress, sleep, ago).
     drawn_clock: Option<u64>,
-    /// Cached [`menu_items`] / [`browse_menu_pins`]; rebuilt by [`App::refresh_menu_cache`].
-    menu_items_cache: Vec<MenuItem>,
-    browse_pins_cache: Vec<(String, String)>,
-    /// Matches [`App::menu_epoch`] when the caches are current.
-    menu_cache_epoch: u64,
+    /// Cached main-menu rows and Browse pins (see [`menu::MenuModel`]).
+    menu: menu::MenuModel,
 }
 
 const HISTORY_LEN: usize = 10;
@@ -1134,10 +1128,7 @@ impl App {
             ad: AdPhase::Off,
             ad_serial: 0,
             ad_tracker: ads::Tracker::new(!demo, true, &user_agent),
-            buffering: None,
-            audio_cache: audio_cache::AudioCache::default(),
-            requested: HashSet::new(),
-            audio_generation: 0,
+            audio_fetch: audio_fetch::AudioFetch::default(),
             audio,
             backend,
             keychain,
@@ -1154,9 +1145,7 @@ impl App {
             quit: false,
             needs_draw: true,
             drawn_clock: None,
-            menu_items_cache: Vec::new(),
-            browse_pins_cache: Vec::new(),
-            menu_cache_epoch: u64::MAX,
+            menu: menu::MenuModel::default(),
             config,
             config_path,
             user_themes: if demo {
@@ -1374,30 +1363,30 @@ impl App {
 
     /// Rebuilds the cached menu rows and Browse pin labels.
     pub(crate) fn refresh_menu_cache(&mut self) {
-        self.browse_pins_cache = Self::build_browse_pins(&self.config);
-        self.menu_items_cache = Self::build_menu_items(
-            self.browse_pins_cache.len(),
-            self.has_now_playing(),
-            self.recent_row(),
-            self.config.ui.pinned_in_menu,
-            if self.favorites_in_menu() { self.config.ui.favorites.len() } else { 0 },
-        );
-        self.menu_cache_epoch = self.menu_epoch();
-    }
-
-    pub fn menu_items(&self) -> Vec<MenuItem> {
-        if self.menu_cache_epoch == self.menu_epoch() {
-            return self.menu_items_cache.clone();
-        }
-        // Stale (e.g. a test mutated config/recent without refresh): compute fresh.
         let pins = Self::build_browse_pins(&self.config);
-        Self::build_menu_items(
+        let items = Self::build_menu_items(
             pins.len(),
             self.has_now_playing(),
             self.recent_row(),
             self.config.ui.pinned_in_menu,
             if self.favorites_in_menu() { self.config.ui.favorites.len() } else { 0 },
-        )
+        );
+        self.menu.refresh(self.menu_epoch(), pins, items);
+    }
+
+    pub fn menu_items(&self) -> std::borrow::Cow<'_, [MenuItem]> {
+        if self.menu.is_current(self.menu_epoch()) {
+            return std::borrow::Cow::Borrowed(self.menu.items());
+        }
+        // Stale (tests that mutate config/recent without refresh): compute fresh.
+        let pins = Self::build_browse_pins(&self.config);
+        std::borrow::Cow::Owned(Self::build_menu_items(
+            pins.len(),
+            self.has_now_playing(),
+            self.recent_row(),
+            self.config.ui.pinned_in_menu,
+            if self.favorites_in_menu() { self.config.ui.favorites.len() } else { 0 },
+        ))
     }
 
     pub fn menu_selected(&self) -> MenuItem {
@@ -1604,8 +1593,8 @@ impl App {
                 if let Some(at) = self.queue.iter().position(|s| s.track_token == song.track_token) {
                     self.queue.remove(at);
                     self.held_dislikes.remove(&song.track_token);
-                    self.requested.remove(&song.track_token);
-                    self.audio_cache.forget(&song.track_token);
+                    self.audio_fetch.requested.remove(&song.track_token);
+                    self.audio_fetch.cache.forget(&song.track_token);
                 }
                 self.status = format!("Tired of “{}”: Pandora rests it for a month", song.title);
             }
@@ -1811,11 +1800,13 @@ impl App {
     // --- Every frame ---
 
     pub fn tick(&mut self) {
+        // One owned token for the dirty check; compared by &str after the
+        // mutating work so we don't hold a borrow across the tick body.
+        let before_token = self.now.as_ref().map(|s| s.track_token.clone());
         let before = (
             self.splash.is_some(),
-            self.buffering.is_some(),
+            self.audio_fetch.buffering.is_some(),
             self.audio.is_paused(),
-            self.now.as_ref().map(|s| s.track_token.clone()),
             std::mem::discriminant(&self.ad),
         );
         if self.splash.is_some_and(|t| t.elapsed() >= SPLASH) {
@@ -1870,12 +1861,12 @@ impl App {
         }
         let after = (
             self.splash.is_some(),
-            self.buffering.is_some(),
+            self.audio_fetch.buffering.is_some(),
             self.audio.is_paused(),
-            self.now.as_ref().map(|s| s.track_token.clone()),
             std::mem::discriminant(&self.ad),
         );
-        if before != after {
+        let token_changed = before_token.as_deref() != self.now.as_ref().map(|s| s.track_token.as_str());
+        if before != after || token_changed {
             self.mark_draw();
         }
     }
@@ -1895,6 +1886,15 @@ impl App {
                 _ => {}
             }
         }
+        let pos = self.audio.position().as_secs_f64();
+        let track = self.now.as_ref().map(|s| s.track_token.as_str()).unwrap_or("");
+        let playing = self.now.as_ref().map(|_| !self.audio.is_paused());
+        let Some(m) = self.mpris.as_mut() else { return };
+        // Skip rebuilding the owned Snapshot when only the position moved.
+        if m.same_identity(track, playing) {
+            m.touch_position(pos);
+            return;
+        }
         let snap = match &self.now {
             Some(s) => crate::mpris::Snapshot {
                 title: s.title.clone(),
@@ -1908,10 +1908,7 @@ impl App {
             },
             None => crate::mpris::Snapshot::default(),
         };
-        let pos = self.audio.position().as_secs_f64();
-        if let Some(m) = self.mpris.as_mut() {
-            m.show(snap, pos);
-        }
+        m.show(snap, pos);
     }
 
     /// Asks for the covers of this song and the next one.
@@ -1919,10 +1916,10 @@ impl App {
         if self.config.ui.album_art == AlbumArt::Off {
             return;
         }
-        let urls = [self.now.as_ref(), self.queue.front()].map(|s| s.map(|s| s.cover_art_url.clone()));
-        for url in urls.into_iter().flatten() {
-            if self.art.want(&url) {
-                self.backend.send(Request::Art { url });
+        for song in [self.now.as_ref(), self.queue.front()].into_iter().flatten() {
+            let url = song.cover_art_url.as_str();
+            if self.art.want(url) {
+                self.backend.send(Request::Art { url: url.to_owned() });
             }
         }
     }

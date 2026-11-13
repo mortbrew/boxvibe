@@ -1813,7 +1813,7 @@ fn draw_now_playing(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
         Rect { x: info_x, width: inner.right() - info_x, ..inner }
     };
     let label = |text: &str| Span::styled(format!("{text:<9}"), Style::new().fg(p.muted));
-    let state = if app.buffering.is_some() {
+    let state = if app.audio_fetch.buffering.is_some() {
         Span::styled(format!("{} buffering…", ic.loading), Style::new().fg(p.yellow))
     } else if app.audio.is_paused() {
         Span::styled(format!("{} paused", ic.pause), Style::new().fg(p.yellow).bold())

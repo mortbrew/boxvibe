@@ -7,13 +7,13 @@ use super::*;
 impl App {
     /// Browse sections pinned on the main menu: `(key, title)`, known first then extras.
     ///
-    /// Uses [`App::browse_pins_cache`] when current; otherwise builds from config
-    /// (tests may mutate pins without calling [`App::refresh_menu_cache`]).
-    pub fn browse_menu_pins(&self) -> Vec<(String, String)> {
-        if self.menu_cache_epoch == self.menu_epoch() {
-            self.browse_pins_cache.clone()
+    /// Borrowed from [`menu::MenuModel`] when current; owned when stale (tests that
+    /// mutate pins without [`App::refresh_menu_cache`]).
+    pub fn browse_menu_pins(&self) -> std::borrow::Cow<'_, [(String, String)]> {
+        if self.menu.is_current(self.menu_epoch()) {
+            std::borrow::Cow::Borrowed(self.menu.browse_pins())
         } else {
-            Self::build_browse_pins(&self.config)
+            std::borrow::Cow::Owned(Self::build_browse_pins(&self.config))
         }
     }
 
@@ -56,9 +56,12 @@ impl App {
 
     /// Main-menu pin (or `G` for Browse Genres): one section's list.
     pub(super) fn show_browse_pin(&mut self, at: usize) {
-        let Some((_, title)) = self.browse_menu_pins().get(at).cloned() else {
+        let pins = self.browse_menu_pins();
+        let Some((_, title)) = pins.get(at) else {
             return;
         };
+        let title = title.clone();
+        drop(pins);
         self.show_browse_section(&title);
     }
 

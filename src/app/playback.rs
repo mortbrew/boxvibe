@@ -6,14 +6,13 @@ use super::*;
 impl App {
     /// Invalidate queued / late audio downloads (station change, timeout, …).
     pub(super) fn bump_audio_generation(&mut self) {
-        self.audio_generation = self.audio_generation.wrapping_add(1);
-        self.backend.set_audio_epoch(self.audio_generation);
-        self.requested.clear();
+        let generation = self.audio_fetch.bump();
+        self.backend.set_audio_epoch(generation);
     }
 
     /// Ask the audio worker for `url`, stamped with the current generation.
     pub(super) fn send_audio(&mut self, track_token: String, url: String) {
-        let generation = self.audio_generation;
+        let generation = self.audio_fetch.generation;
         self.backend.send(Request::Audio { track_token, url, generation });
     }
 
@@ -25,11 +24,11 @@ impl App {
         self.audio.stop();
         self.ad = AdPhase::Off;
         self.queue.clear();
-        self.audio_cache.clear();
+        self.audio_fetch.cache.clear();
         self.bump_audio_generation();
         // Held dislikes are for songs of the station being left.
         self.held_dislikes.clear();
-        self.buffering = None;
+        self.audio_fetch.buffering = None;
         self.next_cursor = 0;
         // The NOW PLAYING entry appears on top: the cursor stays on its entry.
         let first = !self.has_now_playing();
@@ -63,14 +62,14 @@ impl App {
         // Abandoning a download in flight: invalidate its generation so a
         // queued fetch for this song does not block the next one. A normal
         // skip while already playing leaves the prefetch generation alone.
-        if self.buffering.is_some() {
+        if self.audio_fetch.buffering.is_some() {
             self.bump_audio_generation();
         }
         if let Some(song) = self.now.take() {
             self.push_history(song);
         }
         self.audio.stop();
-        self.buffering = None;
+        self.audio_fetch.buffering = None;
         self.next_song();
     }
 
@@ -88,7 +87,7 @@ impl App {
             self.held_dislikes.remove(&song.track_token);
             self.backend.send(Request::Rate { track_token: song.track_token.clone(), positive: false });
             self.status = format!("Disliked and skipped: {}", song.title);
-            self.audio_cache.forget(&song.track_token);
+            self.audio_fetch.cache.forget(&song.track_token);
             self.push_history(song);
         }
         loop {
@@ -103,14 +102,14 @@ impl App {
             // asked for: a free plan gets 64 kbps HE-AAC whatever `high` says.
             self.stream = Some((song.audio_format, song.bitrate));
             self.now = Some(song);
-            let data = if let Some(data) = self.audio_cache.take(&token) {
+            let data = if let Some(data) = self.audio_fetch.cache.take(&token) {
                 Some(data)
             } else if self.demo || !self.audio.has_device() {
                 None
             } else {
                 // The download answers later and calls `play_now` itself.
-                self.buffering = Some((token.clone(), Instant::now()));
-                if self.requested.insert(token.clone()) {
+                self.audio_fetch.buffering = Some((token.clone(), Instant::now()));
+                if self.audio_fetch.requested.insert(token.clone()) {
                     self.send_audio(token, url);
                 }
                 break;
@@ -122,7 +121,7 @@ impl App {
             if let Some(song) = self.now.take() {
                 self.push_history(song);
             }
-            self.buffering = None;
+            self.audio_fetch.buffering = None;
             self.audio.stop();
         }
         if self.queue.len() < 2 {
@@ -143,7 +142,7 @@ impl App {
     /// more than [`AUDIO_CACHE_KEPT`]. Each is a whole MP3, so the map is not
     /// allowed to grow with the session.
     pub(super) fn keep_audio(&mut self, token: String, data: Vec<u8>) {
-        self.audio_cache.keep(token, data);
+        self.audio_fetch.cache.keep(token, data);
     }
 
     pub(super) fn prefetch(&mut self) {
@@ -151,7 +150,7 @@ impl App {
             return;
         }
         if let Some(next) = self.queue.front()
-            && self.requested.insert(next.track_token.clone())
+            && self.audio_fetch.requested.insert(next.track_token.clone())
         {
             self.send_audio(next.track_token.clone(), next.audio_url.clone());
         }
@@ -160,7 +159,7 @@ impl App {
     /// Every frame: a download that never answers is given up on, so the
     /// player cannot sit on "buffering…" forever.
     pub(super) fn buffer_tick(&mut self) {
-        let Some((token, since)) = &self.buffering else { return };
+        let Some((token, since)) = &self.audio_fetch.buffering else { return };
         if since.elapsed() <= BUFFER_TIMEOUT {
             return;
         }
@@ -314,15 +313,15 @@ impl App {
     }
 
     pub(super) fn reply_audio(&mut self, track_token: String, data: Vec<u8>, generation: u64) {
-        if generation != self.audio_generation {
+        if generation != self.audio_fetch.generation {
             return;
         }
         let Some(data) = self.ad_audio_arrived(&track_token, data) else { return };
         // Success (or a late drop) must free the token so a later prefetch /
         // cache miss can ask again — failures already remove in AudioFailed.
-        self.requested.remove(&track_token);
-        if self.buffering.as_ref().is_some_and(|(t, _)| *t == track_token) {
-            self.buffering = None;
+        self.audio_fetch.requested.remove(&track_token);
+        if self.audio_fetch.buffering.as_ref().is_some_and(|(t, _)| *t == track_token) {
+            self.audio_fetch.buffering = None;
             if !self.play_now(Some(data)) {
                 // The audio would not start: skip on, as `next_song` does.
                 self.advance();
@@ -333,16 +332,16 @@ impl App {
     }
 
     pub(super) fn reply_audio_failed(&mut self, track_token: String, message: String, generation: u64) {
-        if generation != self.audio_generation {
+        if generation != self.audio_fetch.generation {
             return;
         }
         if self.ad_audio_failed(&track_token, &message) {
             return;
         }
-        self.requested.remove(&track_token);
-        if self.buffering.as_ref().is_some_and(|(t, _)| *t == track_token) {
+        self.audio_fetch.requested.remove(&track_token);
+        if self.audio_fetch.buffering.as_ref().is_some_and(|(t, _)| *t == track_token) {
             crate::log::log!("download: failed for {track_token}: {message}");
-            self.buffering = None;
+            self.audio_fetch.buffering = None;
             self.status = format!("⚠ {message}: skipping");
             self.advance();
         }

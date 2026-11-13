@@ -1061,17 +1061,17 @@ fn a_download_that_never_answers_is_given_up_on() {
     // player would sit on "buffering…" for the rest of the session.
     let mut app = demo();
     let playing = app.now.as_ref().unwrap().track_token.clone();
-    let before = app.audio_generation;
-    app.buffering = Some((playing.clone(), Instant::now()));
+    let before = app.audio_fetch.generation;
+    app.audio_fetch.buffering = Some((playing.clone(), Instant::now()));
     app.buffer_tick();
-    assert!(app.buffering.is_some(), "a download still in time is left alone");
+    assert!(app.audio_fetch.buffering.is_some(), "a download still in time is left alone");
 
-    app.buffering = Some((playing.clone(), Instant::now() - BUFFER_TIMEOUT - Duration::from_secs(1)));
+    app.audio_fetch.buffering = Some((playing.clone(), Instant::now() - BUFFER_TIMEOUT - Duration::from_secs(1)));
     app.buffer_tick();
-    assert!(app.buffering.is_none(), "the wait is over");
+    assert!(app.audio_fetch.buffering.is_none(), "the wait is over");
     assert!(app.status.contains("took too long"), "{}", app.status);
     assert_ne!(app.now.as_ref().unwrap().track_token, playing, "the next song starts");
-    assert_ne!(app.audio_generation, before, "the timed-out download's generation is invalidated");
+    assert_ne!(app.audio_fetch.generation, before, "the timed-out download's generation is invalidated");
 }
 
 #[test]
@@ -1092,43 +1092,47 @@ fn a_successful_download_leaves_requested_so_it_can_be_asked_again() {
     // a good Reply::Audio, so a later cache miss could never re-fetch.
     let mut app = demo();
     let token = app.queue.front().unwrap().track_token.clone();
-    app.requested.insert(token.clone());
-    app.on_reply(Reply::Audio { track_token: token.clone(), data: vec![1, 2, 3], generation: app.audio_generation });
-    assert!(!app.requested.contains(&token));
-    assert!(app.audio_cache.contains(&token), "bytes for an Up Next song are kept");
+    app.audio_fetch.requested.insert(token.clone());
+    app.on_reply(Reply::Audio {
+        track_token: token.clone(),
+        data: vec![1, 2, 3],
+        generation: app.audio_fetch.generation,
+    });
+    assert!(!app.audio_fetch.requested.contains(&token));
+    assert!(app.audio_fetch.cache.contains(&token), "bytes for an Up Next song are kept");
 }
 
 #[test]
 fn a_stale_audio_reply_is_ignored_after_the_generation_bumps() {
     let mut app = demo();
     let token = app.queue.front().unwrap().track_token.clone();
-    let stale = app.audio_generation;
-    app.requested.insert(token.clone());
+    let stale = app.audio_fetch.generation;
+    app.audio_fetch.requested.insert(token.clone());
     app.bump_audio_generation();
     app.on_reply(Reply::Audio { track_token: token.clone(), data: vec![9, 9, 9], generation: stale });
-    assert!(!app.audio_cache.contains(&token), "bytes from an old generation are dropped");
-    assert!(!app.requested.contains(&token), "bump cleared requested; stale reply must not touch it");
+    assert!(!app.audio_fetch.cache.contains(&token), "bytes from an old generation are dropped");
+    assert!(!app.audio_fetch.requested.contains(&token), "bump cleared requested; stale reply must not touch it");
 }
 
 #[test]
 fn tune_bumps_audio_generation_and_skip_while_playing_does_not() {
     let mut app = demo();
-    let before = app.audio_generation;
-    assert!(app.buffering.is_none() && app.now.is_some());
+    let before = app.audio_fetch.generation;
+    assert!(app.audio_fetch.buffering.is_none() && app.now.is_some());
     app.advance();
-    assert_eq!(app.audio_generation, before, "a normal advance keeps the prefetch generation");
+    assert_eq!(app.audio_fetch.generation, before, "a normal advance keeps the prefetch generation");
     app.tune(1);
-    assert_ne!(app.audio_generation, before, "tuning abandons queued downloads");
+    assert_ne!(app.audio_fetch.generation, before, "tuning abandons queued downloads");
 }
 
 #[test]
 fn advancing_while_buffering_bumps_audio_generation() {
     let mut app = demo();
-    let before = app.audio_generation;
+    let before = app.audio_fetch.generation;
     let playing = app.now.as_ref().unwrap().track_token.clone();
-    app.buffering = Some((playing, Instant::now()));
+    app.audio_fetch.buffering = Some((playing, Instant::now()));
     app.advance();
-    assert_ne!(app.audio_generation, before);
+    assert_ne!(app.audio_fetch.generation, before);
 }
 
 #[test]
@@ -1600,7 +1604,7 @@ fn an_ad_question_that_fails_or_never_answers_goes_on_to_the_next_song() {
     app.on_reply(Reply::AudioFailed {
         track_token: format!("ad:{}:0", app.ad_serial),
         message: "gone".into(),
-        generation: app.audio_generation,
+        generation: app.audio_fetch.generation,
     });
     assert!(!app.ad_break() && app.status.contains("playing on"), "{}", app.status);
 }
@@ -3137,13 +3141,13 @@ fn downloaded_songs_are_capped_so_a_long_session_does_not_grow_without_end() {
     for i in 0..audio_cache::KEPT + 4 {
         app.keep_audio(format!("token-{i}"), vec![0u8; 8]);
     }
-    assert_eq!(app.audio_cache.len(), audio_cache::KEPT, "the cache stops growing");
-    assert!(!app.audio_cache.contains("token-0"), "the oldest song went");
-    assert!(app.audio_cache.contains(&format!("token-{}", audio_cache::KEPT + 3)), "the newest stayed");
+    assert_eq!(app.audio_fetch.cache.len(), audio_cache::KEPT, "the cache stops growing");
+    assert!(!app.audio_fetch.cache.contains("token-0"), "the oldest song went");
+    assert!(app.audio_fetch.cache.contains(&format!("token-{}", audio_cache::KEPT + 3)), "the newest stayed");
 
     // Asking for a song already held moves it to the young end, not a second copy.
     app.keep_audio(format!("token-{}", audio_cache::KEPT + 3), vec![1u8; 8]);
-    assert_eq!(app.audio_cache.len(), audio_cache::KEPT, "no duplicate entry");
+    assert_eq!(app.audio_fetch.cache.len(), audio_cache::KEPT, "no duplicate entry");
 }
 
 #[test]
@@ -3155,11 +3159,11 @@ fn a_song_dropped_from_the_queue_leaves_nothing_behind_in_the_cache() {
     for i in 0..audio_cache::KEPT {
         app.keep_audio(format!("token-{i}"), vec![0u8; 8]);
     }
-    app.audio_cache.forget("token-0");
+    app.audio_fetch.cache.forget("token-0");
     // Room for one more without losing a song that is still here.
     app.keep_audio("fresh".into(), vec![0u8; 8]);
-    assert_eq!(app.audio_cache.len(), audio_cache::KEPT);
-    assert!(app.audio_cache.contains("token-1"), "a cached song was not evicted by a stale token");
+    assert_eq!(app.audio_fetch.cache.len(), audio_cache::KEPT);
+    assert!(app.audio_fetch.cache.contains("token-1"), "a cached song was not evicted by a stale token");
 }
 
 #[test]

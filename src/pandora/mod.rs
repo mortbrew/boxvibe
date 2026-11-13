@@ -1339,16 +1339,33 @@ impl Client {
     }
 
     /// Downloads a song's audio (a few MB) to decode it.
-    pub fn fetch_audio(&self, url: &str) -> Result<Vec<u8>, Error> {
-        self.fetch(url, "audio", 64 * 1024 * 1024)
+    ///
+    /// `cancel` is checked between 64 KiB chunks; when it returns true the
+    /// rest of the body is abandoned and `Ok(None)` is returned so a skip or
+    /// station change does not wait for EOF.
+    pub fn fetch_audio(&self, url: &str, mut cancel: impl FnMut() -> bool) -> Result<Option<Vec<u8>>, Error> {
+        self.fetch_cancellable(url, "audio", 64 * 1024 * 1024, &mut cancel)
     }
 
     /// An album cover (Pandora's art CDN), at most 8 MB.
     pub fn fetch_art(&self, url: &str) -> Result<Vec<u8>, Error> {
-        self.fetch(url, "art", 8 * 1024 * 1024)
+        match self.fetch_cancellable(url, "art", 8 * 1024 * 1024, &mut || false)? {
+            Some(bytes) => Ok(bytes),
+            None => Err(Error::Http("art: cancelled".into())),
+        }
     }
 
-    fn fetch(&self, url: &str, what: &str, limit: u64) -> Result<Vec<u8>, Error> {
+    fn fetch_cancellable(
+        &self,
+        url: &str,
+        what: &str,
+        limit: u64,
+        cancel: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        use std::io::Read;
+        if cancel() {
+            return Ok(None);
+        }
         let mut response = self
             .agent
             .get(url)
@@ -1359,7 +1376,29 @@ impl Client {
         if !response.status().is_success() {
             return Err(Error::Http(format!("{what}: HTTP {}", response.status())));
         }
-        response.body_mut().with_config().limit(limit).read_to_vec().map_err(|e| Error::Http(e.to_string()))
+        let mut reader = response.body_mut().with_config().limit(limit).reader();
+        let mut out = Vec::new();
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            if cancel() {
+                return Ok(None);
+            }
+            let n = reader.read(&mut buf).map_err(|e| Error::Http(e.to_string()))?;
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n]);
+        }
+        Ok(Some(out))
+    }
+
+    /// Drops auth tokens and account facts so a logged-out worker cannot re-auth.
+    pub fn clear_session(&mut self) {
+        self.csrf = None;
+        self.auth = None;
+        self.account = Account::default();
+        self.started.clear();
+        self.aac_only = false;
     }
 }
 
@@ -1369,7 +1408,7 @@ impl Client {
 /// once more. `took_over` says the second happened.
 pub fn with_retries<T>(
     client: &mut Client,
-    login: Option<&(String, String)>,
+    login: Option<&(String, crate::config::Secret)>,
     took_over: &mut bool,
     mut call: impl FnMut(&mut Client) -> Result<T, Error>,
 ) -> Result<T, Error> {
@@ -1380,7 +1419,7 @@ pub fn with_retries<T>(
             Err(e) if e.is_auth_expired() && !relogged => {
                 let Some((user, pass)) = login else { return Err(e) };
                 relogged = true;
-                client.login(user, pass)?;
+                client.login(user, pass.expose())?;
             }
             Err(Error::StreamViolation) if !retook => {
                 retook = true;

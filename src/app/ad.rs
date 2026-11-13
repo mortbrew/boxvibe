@@ -89,7 +89,7 @@ impl App {
             self.push_history(song);
         }
         self.audio.stop();
-        self.buffering = None;
+        self.audio_fetch.buffering = None;
         self.ad = AdPhase::Asking(Instant::now());
         self.backend.send(Request::AdList { ask });
     }

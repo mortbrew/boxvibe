@@ -124,8 +124,8 @@ impl App {
             self.audio.stop();
             self.now = None;
             self.queue.clear();
-            self.audio_cache.clear();
-            self.buffering = None;
+            self.audio_fetch.cache.clear();
+            self.audio_fetch.buffering = None;
             self.bump_audio_generation();
             self.in_flight.end_playlist();
             self.current_station = None;

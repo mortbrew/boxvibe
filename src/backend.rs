@@ -9,6 +9,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use crate::ads::{self, Ad};
+use crate::config::Secret;
 use crate::demo;
 use crate::keychain::Keychain;
 use crate::pandora::{
@@ -103,8 +104,10 @@ impl Failed {
 pub enum Request {
     Login {
         username: String,
-        password: String,
+        password: Secret,
     },
+    /// Clears the API worker's saved credentials and Pandora session.
+    Logout,
     Stations,
     /// Rename a station on the Pandora account.
     RenameStation {
@@ -382,7 +385,7 @@ pub enum KeychainReply {
 /// user to unlock it, which must never freeze the interface).
 pub enum KeychainJob {
     Load,
-    Save(String),
+    Save(Secret),
     Forget { loud: bool },
 }
 
@@ -455,7 +458,7 @@ impl Backend {
             let reply = match job {
                 KeychainJob::Load => KeychainReply::Loaded(keychain.get(&account).map_err(|e| e.to_string())),
                 KeychainJob::Save(password) => {
-                    KeychainReply::Saved(keychain.set(&account, &password).map_err(|e| e.to_string()))
+                    KeychainReply::Saved(keychain.set(&account, password.expose()).map_err(|e| e.to_string()))
                 }
                 KeychainJob::Forget { loud } => {
                     KeychainReply::Forgotten { result: keychain.forget(&account).map_err(|e| e.to_string()), loud }
@@ -615,7 +618,8 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
             | Request::Art { .. }
             | Request::Quality(_)
             | Request::Started { .. }
-            | Request::AdImpression { .. } => continue,
+            | Request::AdImpression { .. }
+            | Request::Logout => continue,
         };
         if replies.send(reply).is_err() {
             break;
@@ -626,17 +630,24 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
 fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Quality, user_agent: &str) {
     let mut client = Client::new(user_agent);
     client.set_quality(quality);
-    let mut login: Option<(String, String)> = None;
+    let mut login: Option<(String, Secret)> = None;
     for request in requests {
         let mut took_over = false;
         let reply = match request {
-            Request::Login { username, password } => match client.login(&username, &password) {
+            Request::Login { username, password } => match client.login(&username, password.expose()) {
                 Ok(()) => {
                     login = Some((username, password));
                     Reply::LoggedIn { hifi: client.account.hifi() }
                 }
                 Err(e) => Reply::LoginFailed { wrong_password: e == Error::WrongLogin, message: e.to_string() },
             },
+            Request::Logout => {
+                if let Some((_, pass)) = login.take() {
+                    drop(pass); // ZeroizeOnDrop
+                }
+                client.clear_session();
+                continue;
+            }
             Request::Stations => {
                 run(&mut client, &login, &mut took_over, Failed::Stations, |c| c.stations().map(Reply::Stations))
             }
@@ -802,7 +813,7 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
 /// One API call with the retries; its failure as a [`Reply::Failed`].
 fn run(
     client: &mut Client,
-    login: &Option<(String, String)>,
+    login: &Option<(String, Secret)>,
     took_over: &mut bool,
     what: Failed,
     call: impl FnMut(&mut Client) -> Result<Reply, Error>,
@@ -830,18 +841,27 @@ fn audio_worker(
         }
         // A panic here must not take the worker with it: every later song would
         // then wait for an answer that never comes.
+        let epoch_for_fetch = std::sync::Arc::clone(&epoch);
         let fetched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if url.is_empty() {
                 return Err("Pandora gave no audio URL for this song".to_owned());
             }
-            client.fetch_audio(&url).map_err(|e| e.to_string())
+            // Abort between chunks when the app bumps the generation (skip /
+            // station change / logout) so we do not wait for a full body.
+            let cancel = || generation != epoch_for_fetch.load(Ordering::Acquire);
+            match client.fetch_audio(&url, cancel) {
+                Ok(Some(data)) => Ok(Some(data)),
+                Ok(None) => Ok(None),
+                Err(e) => Err(e.to_string()),
+            }
         }));
         // Epoch moved during the fetch: drop the bytes (and skip the reply).
         if generation != epoch.load(Ordering::Acquire) {
             continue;
         }
         let reply = match fetched {
-            Ok(Ok(data)) => Reply::Audio { track_token, data, generation },
+            Ok(Ok(Some(data))) => Reply::Audio { track_token, data, generation },
+            Ok(Ok(None)) => continue, // cancelled mid-body; no reply
             Ok(Err(message)) => Reply::AudioFailed { track_token, message, generation },
             Err(payload) => {
                 let why = payload

@@ -29,11 +29,9 @@ impl App {
     }
 
     pub(super) fn log_in(&mut self) {
-        let (username, password) = if self.demo {
-            ("demo".to_owned(), String::new())
-        } else {
-            (self.config.pandora.username.trim().to_owned(), self.config.pandora.password.expose().to_owned())
-        };
+        let username = if self.demo { "demo".to_owned() } else { self.config.pandora.username.trim().to_owned() };
+        let password =
+            if self.demo { Secret::new(String::new()) } else { Secret::new(self.config.pandora.password.expose()) };
         if !self.demo && username.is_empty() {
             self.status = "⚠ Type your Pandora email first".into();
             self.settings_cursor = Setting::at(Setting::Email);
@@ -175,8 +173,8 @@ impl App {
         // A dislike held on an Up Next row belongs to the account that held it.
         self.held_dislikes.clear();
         self.bump_audio_generation();
-        self.buffering = None;
-        self.audio_cache.clear();
+        self.audio_fetch.buffering = None;
+        self.audio_fetch.cache.clear();
         self.forget_recent();
         self.current_station = None;
         self.menu_cursor = 0;
@@ -186,6 +184,8 @@ impl App {
         self.forget_saved_password(false);
         self.config.pandora.password.clear();
         self.pending_password.done();
+        // Wipe the API worker's copy of the password and its Pandora session.
+        self.backend.send(Request::Logout);
         self.status = if self.demo || self.keychain_state == KeychainState::Unavailable {
             "Logged out".into()
         } else {
@@ -206,7 +206,7 @@ impl App {
             // The password goes to the keychain, now that Pandora has taken it.
             if self.pending_password.needs_saving() {
                 self.pending_password.sent();
-                let password = self.config.pandora.password.expose().to_owned();
+                let password = Secret::new(self.config.pandora.password.expose());
                 self.backend.keychain(&self.keychain, &email, KeychainJob::Save(password));
             }
             // The status bar's right side says who is logged in.

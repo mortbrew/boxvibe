@@ -14,8 +14,9 @@
 //! inside ±1.0, then scaled by [`level`]: the volume curve times Pandora's
 //! per-song `fileGain`, never above 1.0.
 
+use std::collections::HashMap;
 use std::io::Cursor;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::log::log;
@@ -424,12 +425,11 @@ fn aac_oneshot(data: &[u8]) -> Result<Box<dyn rodio::Source + Send>, syom::AacEr
     Ok(Box::new(rodio::buffer::SamplesBuffer::new(channels, rate, samples)))
 }
 
-/// Lazy HE-AAC/AAC source: compressed bytes stay put; PCM is one feed's
-/// frames at a time via [`syom::Decoder::feed`].
-struct AacStream {
-    data: Vec<u8>,
-    fed: usize,
+/// Decoder state, kept separate from [`AacStream::data`] so `feed` can borrow
+/// compressed bytes in place without an overlapping borrow on `Self`.
+struct AacDecode {
     dec: syom::Decoder,
+    /// Reused across pulls; capacity grows once then stays.
     pending: Vec<f32>,
     at: usize,
     rate: u32,
@@ -437,23 +437,33 @@ struct AacStream {
     finished: bool,
 }
 
+/// Lazy HE-AAC/AAC source: compressed bytes stay put; PCM is one feed's
+/// frames at a time via [`syom::Decoder::feed`].
+struct AacStream {
+    data: Vec<u8>,
+    fed: usize,
+    decode: AacDecode,
+}
+
 impl AacStream {
     fn open(data: Vec<u8>) -> Result<Self, (syom::AacError, Vec<u8>)> {
         let mut stream = Self {
             data,
             fed: 0,
-            dec: syom::Decoder::new(syom::DecodeOptions::audio()),
-            pending: Vec::new(),
-            at: 0,
-            rate: 0,
-            channels: 0,
-            finished: false,
+            decode: AacDecode {
+                dec: syom::Decoder::new(syom::DecodeOptions::audio()),
+                pending: Vec::new(),
+                at: 0,
+                rate: 0,
+                channels: 0,
+                finished: false,
+            },
         };
         // First frame sets rate/channels before rodio asks for them.
         if let Err(e) = stream.pull() {
             return Err((e, stream.data));
         }
-        if stream.rate == 0 || stream.channels == 0 {
+        if stream.decode.rate == 0 || stream.decode.channels == 0 {
             return Err((syom::AacError::NotAac, stream.data));
         }
         Ok(stream)
@@ -461,33 +471,20 @@ impl AacStream {
 
     /// Decode until `pending` has samples, or the stream is finished.
     fn pull(&mut self) -> Result<(), syom::AacError> {
-        self.pending.clear();
-        self.at = 0;
-        while self.pending.is_empty() && !self.finished {
+        self.decode.pending.clear();
+        self.decode.at = 0;
+        while self.decode.pending.is_empty() && !self.decode.finished {
             if self.fed < self.data.len() {
                 let end = (self.fed + AAC_FEED).min(self.data.len());
-                // Owned chunk so `feed` can borrow the decoder without `data`.
-                let chunk = self.data[self.fed..end].to_vec();
+                let start = self.fed;
                 self.fed = end;
-                let mut rate = self.rate;
-                let mut channels = self.channels;
-                let mut pcm = Vec::new();
-                self.dec.feed(&chunk, |frame| {
-                    if rate == 0 {
-                        rate = frame.sample_rate;
-                        channels = frame.planar.len() as u16;
-                    }
-                    interleave_frame(frame, &mut pcm);
-                    Ok(())
-                })?;
-                self.rate = rate;
-                self.channels = channels;
-                self.pending = pcm;
-            } else {
-                let mut rate = self.rate;
-                let mut channels = self.channels;
-                let mut pcm = Vec::new();
-                let result = self.dec.finish(|frame| {
+                // Reuse `pending`'s capacity; take it so `feed` can borrow it
+                // while holding `dec`. `data` and `decode.dec` are disjoint fields.
+                let mut pcm = std::mem::take(&mut self.decode.pending);
+                pcm.clear();
+                let mut rate = self.decode.rate;
+                let mut channels = self.decode.channels;
+                let result = self.decode.dec.feed(&self.data[start..end], |frame| {
                     if rate == 0 {
                         rate = frame.sample_rate;
                         channels = frame.planar.len() as u16;
@@ -495,10 +492,27 @@ impl AacStream {
                     interleave_frame(frame, &mut pcm);
                     Ok(())
                 });
-                self.finished = true;
-                self.rate = rate;
-                self.channels = channels;
-                self.pending = pcm;
+                self.decode.rate = rate;
+                self.decode.channels = channels;
+                self.decode.pending = pcm;
+                result?;
+            } else {
+                let mut pcm = std::mem::take(&mut self.decode.pending);
+                pcm.clear();
+                let mut rate = self.decode.rate;
+                let mut channels = self.decode.channels;
+                let result = self.decode.dec.finish(|frame| {
+                    if rate == 0 {
+                        rate = frame.sample_rate;
+                        channels = frame.planar.len() as u16;
+                    }
+                    interleave_frame(frame, &mut pcm);
+                    Ok(())
+                });
+                self.decode.finished = true;
+                self.decode.rate = rate;
+                self.decode.channels = channels;
+                self.decode.pending = pcm;
                 result?;
             }
         }
@@ -520,16 +534,16 @@ impl Iterator for AacStream {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if self.at < self.pending.len() {
-                let sample = self.pending[self.at];
-                self.at += 1;
+            if self.decode.at < self.decode.pending.len() {
+                let sample = self.decode.pending[self.decode.at];
+                self.decode.at += 1;
                 return Some(sample);
             }
-            if self.finished {
+            if self.decode.finished {
                 return None;
             }
             if self.pull().is_err() {
-                self.finished = true;
+                self.decode.finished = true;
                 return None;
             }
         }
@@ -542,11 +556,11 @@ impl rodio::Source for AacStream {
     }
 
     fn channels(&self) -> rodio::ChannelCount {
-        rodio::ChannelCount::new(self.channels).unwrap_or(rodio::nz!(2))
+        rodio::ChannelCount::new(self.decode.channels).unwrap_or(rodio::nz!(2))
     }
 
     fn sample_rate(&self) -> rodio::SampleRate {
-        rodio::SampleRate::new(self.rate).unwrap_or(rodio::nz!(44100))
+        rodio::SampleRate::new(self.decode.rate).unwrap_or(rodio::nz!(44100))
     }
 
     fn total_duration(&self) -> Option<Duration> {
@@ -637,6 +651,51 @@ const TAPS: usize = 16;
 /// Filter phases between two input samples (the nearest one is used).
 const PHASES: usize = 512;
 
+/// Builds the sinc weight table for resampling `from` → `to`. Depends only on
+/// the two rates (and the fixed tap/phase counts), so [`sinc_table`] caches it.
+fn build_sinc_table(from: u32, to: u32) -> Vec<f32> {
+    let cutoff = 0.92 * (f64::from(to) / f64::from(from)).min(1.0) * 0.5;
+    let n = 2 * TAPS;
+    let mut table = Vec::with_capacity((PHASES + 1) * n);
+    for phase in 0..=PHASES {
+        let frac = phase as f64 / PHASES as f64;
+        let row: Vec<f64> = (0..n)
+            .map(|k| {
+                // Distance from the output point to input sample k.
+                let x = k as f64 - (TAPS as f64 - 1.0) - frac;
+                let sinc = if x.abs() < 1e-9 {
+                    2.0 * cutoff
+                } else {
+                    (2.0 * std::f64::consts::PI * cutoff * x).sin() / (std::f64::consts::PI * x)
+                };
+                let w = (x + TAPS as f64) / (2.0 * TAPS as f64);
+                let blackman =
+                    0.42 - 0.5 * (2.0 * std::f64::consts::PI * w).cos() + 0.08 * (4.0 * std::f64::consts::PI * w).cos();
+                sinc * blackman.max(0.0)
+            })
+            .collect();
+        // Each row adds up to 1, so a steady level stays that level.
+        let sum: f64 = row.iter().sum();
+        table.extend(row.iter().map(|w| (w / sum) as f32));
+    }
+    table
+}
+
+type SincTableCache = Mutex<HashMap<(u32, u32), Arc<[f32]>>>;
+
+/// Shared sinc tables keyed by `(from, to)`. Built once per rate pair.
+fn sinc_table(from: u32, to: u32) -> Arc<[f32]> {
+    static CACHE: OnceLock<SincTableCache> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(table) = guard.get(&(from, to)) {
+        return Arc::clone(table);
+    }
+    let table: Arc<[f32]> = Arc::from(build_sinc_table(from, to));
+    guard.insert((from, to), Arc::clone(&table));
+    table
+}
+
 /// A source resampled to `rate` with a Blackman-windowed sinc filter, cut
 /// off a little below the lower of the two Nyquist frequencies, and clamped
 /// to ±1.0 (the filter can overshoot a little on a song mastered to the top).
@@ -645,8 +704,9 @@ pub struct Resampled<S> {
     channels: usize,
     from: u32,
     to: u32,
-    /// `PHASES + 1` rows of `2 * TAPS` weights.
-    table: Vec<f32>,
+    /// `PHASES + 1` rows of `2 * TAPS` weights (shared across songs with the
+    /// same rate pair).
+    table: Arc<[f32]>,
     /// Input frames from `base` on, interleaved.
     frames: std::collections::VecDeque<f32>,
     /// Input frame index of `frames`' first frame.
@@ -665,36 +725,12 @@ impl<S: rodio::Source> Resampled<S> {
     pub fn new(input: S, to: u32) -> Self {
         let channels = usize::from(input.channels().get());
         let from = input.sample_rate().get();
-        let cutoff = 0.92 * (f64::from(to) / f64::from(from)).min(1.0) * 0.5;
-        let n = 2 * TAPS;
-        let mut table = Vec::with_capacity((PHASES + 1) * n);
-        for phase in 0..=PHASES {
-            let frac = phase as f64 / PHASES as f64;
-            let row: Vec<f64> = (0..n)
-                .map(|k| {
-                    // Distance from the output point to input sample k.
-                    let x = k as f64 - (TAPS as f64 - 1.0) - frac;
-                    let sinc = if x.abs() < 1e-9 {
-                        2.0 * cutoff
-                    } else {
-                        (2.0 * std::f64::consts::PI * cutoff * x).sin() / (std::f64::consts::PI * x)
-                    };
-                    let w = (x + TAPS as f64) / (2.0 * TAPS as f64);
-                    let blackman = 0.42 - 0.5 * (2.0 * std::f64::consts::PI * w).cos()
-                        + 0.08 * (4.0 * std::f64::consts::PI * w).cos();
-                    sinc * blackman.max(0.0)
-                })
-                .collect();
-            // Each row adds up to 1, so a steady level stays that level.
-            let sum: f64 = row.iter().sum();
-            table.extend(row.iter().map(|w| (w / sum) as f32));
-        }
         Self {
             input,
             channels,
             from,
             to,
-            table,
+            table: sinc_table(from, to),
             frames: std::collections::VecDeque::new(),
             base: 0,
             read: 0,

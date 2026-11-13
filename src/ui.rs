@@ -706,8 +706,7 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let now_h = if app.has_now_playing() { 2 } else { 0 };
-    // Built once: it allocates a Vec and owned titles, and the menu asks for
-    // it three times a frame.
+    // Cached on App (refresh_menu_cache); titles are borrowed for the frame.
     let pins = app.browse_menu_pins();
     let section_pins = pins.len() as u16;
     let pinned = app.config.ui.pinned_in_menu;
@@ -2843,7 +2842,7 @@ mod screenshots {
         app.apply_theme();
         app.demo_warm_up(3, std::time::Duration::ZERO);
         app.settle(std::time::Duration::from_millis(400));
-        let station = app.playing_station_in_reach().map(|s| s.name).unwrap_or_default();
+        let station = app.playing_station_in_reach().map(|s| s.name.clone()).unwrap_or_default();
         app.status = format!("Playing {station}");
         cover(&mut app);
         app

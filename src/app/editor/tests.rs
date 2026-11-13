@@ -57,7 +57,7 @@ fn e_opens_the_editor_only_on_stations_that_allow_it() {
             app.on_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
         }
         assert!(wanted(&app), "a station without seeds to edit exists");
-        let name = app.station_in_reach().unwrap().0.name;
+        let name = app.station_in_reach().unwrap().0.name.clone();
         chr(&mut app, 'e');
         if locked {
             assert!(app.editor.is_none(), "{name}");

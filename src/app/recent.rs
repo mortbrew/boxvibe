@@ -41,10 +41,14 @@ impl App {
 
     /// Drops the list and invalidates an answer still in flight.
     pub(super) fn forget_recent(&mut self) {
+        let had = self.recent_row();
         self.recent_state.reset();
         self.recent.clear();
         self.recent_cursor = 0;
         self.recent_hidden.clear();
+        if had {
+            self.refresh_menu_cache();
+        }
     }
 
     pub(super) fn filter_recent(&self, sources: Vec<RecentSource>) -> Vec<RecentSource> {
@@ -56,6 +60,9 @@ impl App {
         self.recent_hidden.insert(source.id.clone());
         self.recent.retain(|s| s.id != source.id);
         self.recent_cursor = self.recent_cursor.min(self.recent.len().saturating_sub(1));
+        if self.recent.is_empty() {
+            self.refresh_menu_cache();
+        }
         self.status = format!(
             "Removed “{}” from Recently Played here (this device only; Pandora's history is unchanged)",
             self.recent_title(&source)

@@ -22,6 +22,7 @@ impl App {
         let first = !self.has_now_playing();
         self.current_station = Some(station.id.clone());
         if first {
+            self.refresh_menu_cache();
             self.menu_cursor += 1;
         }
         self.in_flight.begin_playlist();

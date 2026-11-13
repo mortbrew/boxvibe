@@ -1073,6 +1073,18 @@ fn a_download_that_never_answers_is_given_up_on() {
 }
 
 #[test]
+fn take_needs_draw_skips_idle_frames_and_repaints_on_mark() {
+    let mut app = demo();
+    app.splash = None;
+    app.audio.stop();
+    assert!(app.take_needs_draw(), "fresh app wants a first paint");
+    assert!(!app.take_needs_draw(), "idle with no clock change skips paint");
+    app.mark_draw();
+    assert!(app.take_needs_draw());
+    assert!(!app.take_needs_draw());
+}
+
+#[test]
 fn a_successful_download_leaves_requested_so_it_can_be_asked_again() {
     // Prefetch inserts into `requested` and used to leave the token there after
     // a good Reply::Audio, so a later cache miss could never re-fetch.

@@ -178,6 +178,7 @@ impl App {
         };
         // A genre station's seeds are Pandora's, but its thumbs are yours:
         // the editor opens on Thumbs Up only. Shuffle has neither.
+        let station = station.clone();
         let thumbs_only = !station.allow_edit_seeds && station.is_locked() && !station.is_shuffle;
         if !station.allow_edit_seeds && !thumbs_only {
             let message = format!("Pandora doesn't let you edit the seeds of “{}”", station.name);

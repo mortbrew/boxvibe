@@ -6,16 +6,28 @@ use super::*;
 
 impl App {
     /// Browse sections pinned on the main menu: `(key, title)`, known first then extras.
+    ///
+    /// Uses [`App::browse_pins_cache`] when current; otherwise builds from config
+    /// (tests may mutate pins without calling [`App::refresh_menu_cache`]).
     pub fn browse_menu_pins(&self) -> Vec<(String, String)> {
+        if self.menu_cache_epoch == self.menu_epoch() {
+            self.browse_pins_cache.clone()
+        } else {
+            Self::build_browse_pins(&self.config)
+        }
+    }
+
+    /// Builds the pin list from config (used by [`App::refresh_menu_cache`]).
+    pub(super) fn build_browse_pins(config: &Config) -> Vec<(String, String)> {
         let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for &(key, title) in config::BROWSE_SECTIONS {
-            if self.config.browse.pinned_key(key) {
+            if config.browse.pinned_key(key) {
                 out.push((key.to_owned(), title.to_owned()));
                 seen.insert(key);
             }
         }
-        for (key, on) in &self.config.browse.sections {
+        for (key, on) in &config.browse.sections {
             if *on && !seen.contains(key.as_str()) {
                 let title = key
                     .split('_')

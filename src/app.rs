@@ -1022,6 +1022,16 @@ pub struct App {
     pub restart: bool,
     /// Shift+Q asked "Quit boxvibe?": y quits, any other key doesn't (like tubevibe).
     pub quit: bool,
+    /// The main loop paints only when this is set, or when a whole-second
+    /// progress / sleep / notifications clock advances (see [`App::take_needs_draw`]).
+    needs_draw: bool,
+    /// Last whole-second fingerprint drawn for time-based UI (progress, sleep, ago).
+    drawn_clock: Option<u64>,
+    /// Cached [`menu_items`] / [`browse_menu_pins`]; rebuilt by [`App::refresh_menu_cache`].
+    menu_items_cache: Vec<MenuItem>,
+    browse_pins_cache: Vec<(String, String)>,
+    /// Matches [`App::menu_epoch`] when the caches are current.
+    menu_cache_epoch: u64,
 }
 
 const HISTORY_LEN: usize = 10;
@@ -1133,6 +1143,11 @@ impl App {
             restart: false,
             art: crate::art::Art::default(),
             quit: false,
+            needs_draw: true,
+            drawn_clock: None,
+            menu_items_cache: Vec::new(),
+            browse_pins_cache: Vec::new(),
+            menu_cache_epoch: u64::MAX,
             config,
             config_path,
             user_themes: if demo {
@@ -1147,6 +1162,7 @@ impl App {
             demo,
         };
         app.apply_theme();
+        app.refresh_menu_cache();
         app.status = ConfigWarning::summary(warnings)
             .or_else(|| app.audio.problem.clone())
             .unwrap_or_else(|| if demo { "Demo mode: made-up stations, no sound".into() } else { String::new() });
@@ -1159,6 +1175,55 @@ impl App {
             app.start_account();
         }
         app
+    }
+
+    /// Ask the main loop to paint on the next pass.
+    pub fn mark_draw(&mut self) {
+        self.needs_draw = true;
+    }
+
+    /// Whether the main loop should call `terminal.draw` this frame.
+    ///
+    /// Splash always paints (animation). Otherwise: an explicit [`mark_draw`],
+    /// or a change in the whole-second clocks shown on screen (progress bar,
+    /// sleep countdown, Notifications "ago").
+    pub fn take_needs_draw(&mut self) -> bool {
+        if self.splash.is_some() {
+            self.needs_draw = false;
+            return true;
+        }
+        if std::mem::take(&mut self.needs_draw) {
+            self.drawn_clock = None;
+            return true;
+        }
+        let clock = self.ui_clock();
+        if clock != self.drawn_clock {
+            self.drawn_clock = clock;
+            return true;
+        }
+        false
+    }
+
+    /// Whole-second fingerprint of time-based chrome (progress / sleep / ago).
+    fn ui_clock(&self) -> Option<u64> {
+        let mut parts = [0u64; 3];
+        let mut any = false;
+        if self.audio.is_active() {
+            parts[0] = self.audio.position().as_secs();
+            any = true;
+        }
+        if matches!(self.sleep, Some(Sleep::Minutes(..)))
+            && let Some(left) = self.sleep_left()
+        {
+            parts[1] = left.as_secs();
+            any = true;
+        }
+        if self.view == View::Notifications && !self.notes.is_empty() {
+            // `ago` changes at the minute; track minutes so we do not paint at 1 Hz.
+            parts[2] = self.notes.iter().map(|(at, _)| at.elapsed().as_secs() / 60).sum();
+            any = true;
+        }
+        any.then_some(parts[0] ^ parts[1].wrapping_mul(0x9E37) ^ parts[2].wrapping_mul(0xC2B2))
     }
 
     /// First thing after a start: log in with what is saved, or ask.
@@ -1287,26 +1352,72 @@ impl App {
         self.favorites_in_menu() && self.stations.is_empty()
     }
 
-    pub fn menu_items(&self) -> Vec<MenuItem> {
-        let top = self.has_now_playing().then_some(MenuItem::NowPlaying);
-        let pins = (0..self.browse_menu_pins().len()).map(MenuItem::BrowsePin);
+    /// Inputs that shape the main menu (and Browse pin list).
+    fn menu_epoch(&self) -> u64 {
+        let mut h = 0u64;
+        h ^= u64::from(self.has_now_playing());
+        h ^= u64::from(self.recent_row()) << 1;
+        h ^= u64::from(self.config.ui.pinned_in_menu) << 2;
+        h ^= u64::from(self.favorites_in_menu()) << 3;
+        h = h.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(self.config.ui.favorites.len() as u64);
+        for &(key, _) in config::BROWSE_SECTIONS {
+            if self.config.browse.pinned_key(key) {
+                h = h.wrapping_mul(31).wrapping_add(key.len() as u64 + 1);
+            }
+        }
+        for (key, on) in &self.config.browse.sections {
+            if *on {
+                h = h.wrapping_mul(31).wrapping_add(key.len() as u64 + 17);
+            }
+        }
+        h
+    }
+
+    fn build_menu_items(pin_count: usize, now: bool, recent: bool, pinned: bool, favs: usize) -> Vec<MenuItem> {
+        let top = now.then_some(MenuItem::NowPlaying);
         top.into_iter()
             .chain([MenuItem::Stations])
             // Recently Played sits where Pinned used to, above Pinned. An empty
             // list keeps the row absent. Pinned stays above the Browse sections.
-            .chain(self.recent_row().then_some(MenuItem::RecentlyPlayed))
-            .chain(self.config.ui.pinned_in_menu.then_some(MenuItem::Pinned))
-            .chain(pins)
-            .chain(
-                (0..if self.favorites_in_menu() { self.config.ui.favorites.len() } else { 0 }).map(MenuItem::Favorite),
-            )
+            .chain(recent.then_some(MenuItem::RecentlyPlayed))
+            .chain(pinned.then_some(MenuItem::Pinned))
+            .chain((0..pin_count).map(MenuItem::BrowsePin))
+            .chain((0..favs).map(MenuItem::Favorite))
             .chain([MenuItem::Settings, MenuItem::Notifications, MenuItem::About, MenuItem::Quit])
             .collect()
     }
 
+    /// Rebuilds the cached menu rows and Browse pin labels.
+    pub(crate) fn refresh_menu_cache(&mut self) {
+        self.browse_pins_cache = Self::build_browse_pins(&self.config);
+        self.menu_items_cache = Self::build_menu_items(
+            self.browse_pins_cache.len(),
+            self.has_now_playing(),
+            self.recent_row(),
+            self.config.ui.pinned_in_menu,
+            if self.favorites_in_menu() { self.config.ui.favorites.len() } else { 0 },
+        );
+        self.menu_cache_epoch = self.menu_epoch();
+    }
+
+    pub fn menu_items(&self) -> Vec<MenuItem> {
+        if self.menu_cache_epoch == self.menu_epoch() {
+            return self.menu_items_cache.clone();
+        }
+        // Stale (e.g. a test mutated config/recent without refresh): compute fresh.
+        let pins = Self::build_browse_pins(&self.config);
+        Self::build_menu_items(
+            pins.len(),
+            self.has_now_playing(),
+            self.recent_row(),
+            self.config.ui.pinned_in_menu,
+            if self.favorites_in_menu() { self.config.ui.favorites.len() } else { 0 },
+        )
+    }
+
     pub fn menu_selected(&self) -> MenuItem {
         let items = self.menu_items();
-        items[self.menu_cursor.min(items.len() - 1)]
+        items[self.menu_cursor.min(items.len().saturating_sub(1))]
     }
 
     fn open_menu_item(&mut self) {
@@ -1548,6 +1659,7 @@ impl App {
             self.config.ui.favorites.push(config::Favorite { id, name: name.clone() });
             self.status = format!("{name} added to Favorites");
         }
+        self.refresh_menu_cache();
         // The menu cursor stays on its entry (or the one that took its place).
         if let Some(i) = self.menu_items().iter().position(|m| *m == selected) {
             self.menu_cursor = i;
@@ -1578,7 +1690,7 @@ impl App {
             self.status = "Ads have no song menu".into();
             return;
         }
-        self.song_menu = Some(SongMenu { song, cursor: 0 });
+        self.song_menu = Some(SongMenu { song: song.clone(), cursor: 0 });
     }
 
     fn song_menu_key(&mut self, key: KeyEvent) {
@@ -1706,19 +1818,17 @@ impl App {
 
     /// The song a song key is for: the Up Next or History row when that
     /// pane has the keys, else the playing song.
-    fn selected_song(&self) -> Option<Song> {
+    fn selected_song(&self) -> Option<&Song> {
         match (self.in_songs(), self.pane) {
             (true, Pane::UpNext) => self.queue.get(self.next_index()),
             (true, Pane::History) => self.history.get(self.history_index()),
             _ => None,
         }
         .or(self.now.as_ref())
-        .cloned()
     }
 
     fn pin(&mut self) {
-        let song = self.selected_song();
-        let Some(song) = song else {
+        let Some(song) = self.selected_song() else {
             self.status = "No song to pin: pick a station first".into();
             return;
         };
@@ -1726,15 +1836,18 @@ impl App {
             self.status = "Ads can't be pinned".into();
             return;
         }
-        if self.pins.iter().any(|p| p.same(&song)) {
+        if self.pins.iter().any(|p| p.same(song)) {
             self.status = format!("“{}” is already pinned", song.title);
             return;
         }
-        self.pins.insert(0, crate::pinned::Pin::of(&song, &crate::pinned::today()));
+        let pin = crate::pinned::Pin::of(song, &crate::pinned::today());
+        let title = pin.title.clone();
+        let artist = pin.artist.clone();
+        self.pins.insert(0, pin);
         self.pinned_cursor = 0;
         self.save_pins();
         let where_ = if self.config.ui.pinned_in_menu { "the menu's Pinned" } else { "pinned.toml" };
-        self.status = format!("Pinned “{}” by {} (see {where_})", song.title, song.artist);
+        self.status = format!("Pinned “{title}” by {artist} (see {where_})");
     }
 
     fn save_pins(&mut self) {
@@ -1780,6 +1893,7 @@ impl App {
         if self.status == self.last_status {
             return;
         }
+        self.mark_draw();
         self.last_status.clone_from(&self.status);
         if self.status.trim().is_empty() || self.notes.front().is_some_and(|(_, s)| *s == self.status) {
             return;
@@ -1819,6 +1933,13 @@ impl App {
     // --- Every frame ---
 
     pub fn tick(&mut self) {
+        let before = (
+            self.splash.is_some(),
+            self.buffering.is_some(),
+            self.audio.is_paused(),
+            self.now.as_ref().map(|s| s.track_token.clone()),
+            std::mem::discriminant(&self.ad),
+        );
         if self.splash.is_some_and(|t| t.elapsed() >= SPLASH) {
             self.splash = None;
         }
@@ -1866,7 +1987,18 @@ impl App {
             if let Some(p) = self.omarchy.poll() {
                 self.palette = p;
                 self.omarchy_theme = self.omarchy.name.clone();
+                self.mark_draw();
             }
+        }
+        let after = (
+            self.splash.is_some(),
+            self.buffering.is_some(),
+            self.audio.is_paused(),
+            self.now.as_ref().map(|s| s.track_token.clone()),
+            std::mem::discriminant(&self.ad),
+        );
+        if before != after {
+            self.mark_draw();
         }
     }
 
@@ -1928,6 +2060,7 @@ impl App {
     }
 
     pub(crate) fn on_reply(&mut self, reply: Reply) {
+        self.mark_draw();
         if self.editor_reply(&reply) {
             return;
         }
@@ -1936,6 +2069,9 @@ impl App {
                 self.hifi = Some(hifi);
                 let first = self.session != Session::LoggedIn;
                 self.session = Session::LoggedIn;
+                if first {
+                    self.refresh_menu_cache();
+                }
                 if !self.demo {
                     let email = self.config.pandora.username.clone();
                     self.save(&[("account", "email_or_username", email.as_str().into())]);
@@ -2164,6 +2300,7 @@ impl App {
                     self.recent_cursor = self.recent_cursor.min(self.recent.len().saturating_sub(1));
                 }
                 if !had && self.recent_row() {
+                    self.refresh_menu_cache();
                     let items = self.menu_items();
                     if let Some(i) = items.iter().position(|m| *m == selected) {
                         self.menu_cursor = i;
@@ -2275,6 +2412,7 @@ impl App {
             return;
         }
         self.session = Session::SigningIn;
+        self.refresh_menu_cache();
         if !self.demo {
             // No account name here: `status` is kept for the Notifications page
             // and is the one string that could reach a log, so it stays free of
@@ -2408,6 +2546,7 @@ impl App {
         self.menu_cursor = 0;
         self.view = View::Settings;
         self.session = Session::LoggedOut;
+        self.refresh_menu_cache();
         self.forget_saved_password(false);
         self.config.pandora.password.clear();
         self.pending_password.done();
@@ -2625,12 +2764,14 @@ impl App {
                 let on = !self.config.ui.favorites_in_menu;
                 self.config.ui.favorites_in_menu = on;
                 self.save(&[("look", "favorites_in_menu", on.into())]);
+                self.refresh_menu_cache();
                 self.status = format!("Favorites in menu: {}", if on { "on" } else { "off (kept; f still stars)" });
             }
             Setting::PinnedInMenu => {
                 let on = !self.config.ui.pinned_in_menu;
                 self.config.ui.pinned_in_menu = on;
                 self.save(&[("look", "pinned_in_menu", on.into())]);
+                self.refresh_menu_cache();
                 self.status = format!("Pinned in menu: {}", if on { "on" } else { "off (kept; Shift+I still pins)" });
             }
             Setting::Animations => {
@@ -2650,6 +2791,7 @@ impl App {
                 let on = !self.config.browse.pinned_on_menu(title);
                 self.config.browse.set_pinned(title, on);
                 self.save(&[("browse", key, on.into())]);
+                self.refresh_menu_cache();
                 self.status = format!("{title} on main menu: {}", if on { "on" } else { "off" });
             }
             Setting::EditFile => {
@@ -2714,6 +2856,7 @@ impl App {
                 self.config = config;
                 self.art.forget_shown();
                 self.apply_theme();
+                self.refresh_menu_cache();
                 self.audio.set_volume(self.config.player.volume);
                 self.backend.send(Request::Quality(Quality::parse(&self.config.pandora.audio_quality)));
                 self.status = ConfigWarning::summary(&warnings).unwrap_or_else(|| "config.toml read again".into());
@@ -2775,6 +2918,7 @@ impl App {
     // --- Keys ---
 
     pub fn on_key(&mut self, key: KeyEvent) {
+        self.mark_draw();
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.quit = true;
             return;
@@ -2867,8 +3011,11 @@ impl App {
             Cmd::Pin => self.pin(),
             Cmd::SongMenu => self.open_song_menu(),
             Cmd::Mode => {
-                let station =
-                    self.station_to_change().map(|(s, fav)| StationRef { id: s.id, name: s.name, favorite: fav });
+                let station = self.station_to_change().map(|(s, fav)| StationRef {
+                    id: s.id.clone(),
+                    name: s.name.clone(),
+                    favorite: fav,
+                });
                 self.open_modes(station)
             }
             Cmd::Shuffle => self.play_shuffle(),
@@ -2891,16 +3038,13 @@ impl App {
 
     /// The station `r`, `x` and `v` mean: the highlighted one in Stations,
     /// or the station of the favorite the menu is on. `None` anywhere else.
-    pub fn station_in_reach(&self) -> Option<(Station, bool)> {
+    pub fn station_in_reach(&self) -> Option<(&Station, bool)> {
         match (self.focus, self.view, self.menu_selected()) {
             (Focus::Content, View::Stations, _) if self.on_add_row => None,
-            (Focus::Content, View::Stations, _) => {
-                self.stations.get(self.stations_index()).cloned().map(|s| (s, false))
-            }
+            (Focus::Content, View::Stations, _) => self.stations.get(self.stations_index()).map(|s| (s, false)),
             (Focus::Menu, _, MenuItem::Favorite(i)) => {
                 let fav = self.config.ui.favorites.get(i)?;
-                let station = self.stations.iter().find(|s| s.id == fav.id).cloned();
-                station.map(|s| (s, true))
+                self.stations.iter().find(|s| s.id == fav.id).map(|s| (s, true))
             }
             _ => None,
         }
@@ -2908,17 +3052,17 @@ impl App {
 
     /// The playing station, where Now Playing has the keys or the menu is on
     /// its NOW PLAYING entry: what `r` and `e` act on there (not `x`).
-    pub fn playing_station_in_reach(&self) -> Option<Station> {
+    pub fn playing_station_in_reach(&self) -> Option<&Station> {
         let here = match self.focus {
             Focus::Content => self.view == View::Player && self.pane == Pane::NowPlaying,
             Focus::Menu => self.menu_selected() == MenuItem::NowPlaying,
         };
         let id = self.current_station.as_deref().filter(|_| here)?;
-        self.stations.iter().find(|s| s.id == id).cloned()
+        self.stations.iter().find(|s| s.id == id)
     }
 
     /// The station `r` and `e` change: the one in reach, or else the playing one.
-    pub fn station_to_change(&self) -> Option<(Station, bool)> {
+    pub fn station_to_change(&self) -> Option<(&Station, bool)> {
         self.station_in_reach().or_else(|| self.playing_station_in_reach().map(|s| (s, false)))
     }
 
@@ -2938,6 +3082,7 @@ impl App {
         let Some((station, favorite)) = self.station_to_change() else {
             return self.no_station_here("r renames");
         };
+        let station = station.clone();
         if !station.allow_rename {
             self.blocked(&station, "renamed", format!("Pandora doesn't let you rename “{}”", station.name));
             return;
@@ -3051,6 +3196,7 @@ impl App {
         let Some((station, favorite)) = self.station_in_reach() else {
             return self.no_station_here("x deletes");
         };
+        let station = station.clone();
         if !station.allow_delete {
             self.blocked(&station, "deleted", format!("Pandora doesn't let you delete “{}”", station.name));
             return;
@@ -3080,6 +3226,7 @@ impl App {
                 self.view = View::Stations;
             }
         }
+        self.refresh_menu_cache();
         self.stations_cursor = self.stations_cursor.min(self.stations.len().saturating_sub(1));
         let items = self.menu_items();
         self.menu_cursor = items.iter().position(|m| *m == selected).unwrap_or(self.menu_cursor).min(items.len() - 1);
@@ -3094,7 +3241,7 @@ impl App {
             Details {
                 station_id: station.id.clone(),
                 station_name: station.name.clone(),
-                of: DetailsOf::Station(Box::new(station)),
+                of: DetailsOf::Station(Box::new(station.clone())),
                 from_pandora: None,
                 why: false,
             }

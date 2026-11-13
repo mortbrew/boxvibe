@@ -8,9 +8,10 @@
 //!
 //! What this never does: click through, open a browser, show or fetch the ad's
 //! picture, or call any host Pandora's answer did not name. Tracking runs on
-//! its own short-lived threads with short timeouts, https only.
+//! one background worker with a bounded queue and short timeouts, https only.
 
-use std::thread::{self, JoinHandle};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::thread;
 use std::time::{Duration, SystemTime};
 
 use serde_json::Value;
@@ -21,6 +22,9 @@ const MAX_ADS: usize = 4;
 const MAX_AD_SECONDS: f64 = 180.0;
 /// One tracking request gives up after this long.
 const TRACKING_TIMEOUT: Duration = Duration::from_secs(5);
+/// Batches waiting on the tracking worker. A full queue drops the newest
+/// batch (reports are best-effort) instead of spawning more threads.
+pub(crate) const TRACKING_QUEUE: usize = 8;
 
 /// The progress marks, in order: Pandora's event name and the fraction of the ad.
 const MARKS: [(&str, f64); 4] =
@@ -283,47 +287,93 @@ fn percent_encode(text: &str) -> String {
     out
 }
 
-/// Fetches tracking URLs, each batch on its own thread.
+/// One batch of tracking GETs for the background worker.
+struct Batch {
+    urls: Vec<String>,
+    /// Signaled when the batch has been attempted (tests wait on this).
+    done: Option<mpsc::Sender<()>>,
+}
+
+/// Fetches tracking URLs on a single background worker (bounded queue).
 #[derive(Clone)]
 pub struct Tracker {
-    agent: Option<ureq::Agent>,
+    tx: Option<SyncSender<Batch>>,
     https_only: bool,
-    user_agent: String,
+}
+
+/// Wait handle for a tracking batch (tests join it; production drops it).
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct FireHandle {
+    done: Receiver<()>,
+}
+
+impl FireHandle {
+    /// Blocks until the worker has finished attempting this batch.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn join(self) -> thread::Result<()> {
+        let _ = self.done.recv();
+        Ok(())
+    }
 }
 
 impl Tracker {
     /// `https_only` is always true outside tests. `enabled` false (demo) sends nothing.
     pub fn new(enabled: bool, https_only: bool, user_agent: &str) -> Self {
-        let agent = enabled.then(|| {
-            ureq::Agent::config_builder()
-                .timeout_global(Some(TRACKING_TIMEOUT))
-                .https_only(https_only)
-                .max_redirects(3)
-                .http_status_as_error(false)
-                .build()
-                .into()
-        });
-        Self { agent, https_only, user_agent: user_agent.to_owned() }
+        if !enabled {
+            return Self { tx: None, https_only };
+        }
+        let (tx, rx) = mpsc::sync_channel::<Batch>(TRACKING_QUEUE);
+        Self::spawn_worker(rx, https_only, user_agent);
+        Self { tx: Some(tx), https_only }
     }
 
-    /// GETs `urls` one after the other in the background. The thread's handle
-    /// is only for tests to wait on; failures are ignored (it is a report).
-    pub fn fire(&self, urls: Vec<String>) -> Option<JoinHandle<()>> {
-        let agent = self.agent.clone()?;
+    fn spawn_worker(rx: Receiver<Batch>, https_only: bool, user_agent: &str) {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(TRACKING_TIMEOUT))
+            .https_only(https_only)
+            .max_redirects(3)
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let user_agent = user_agent.to_owned();
+        thread::spawn(move || {
+            while let Ok(batch) = rx.recv() {
+                for url in batch.urls {
+                    let _ = agent
+                        .get(&url)
+                        .header("User-Agent", &user_agent)
+                        .header("Referer", "https://www.pandora.com/")
+                        .call();
+                }
+                if let Some(done) = batch.done {
+                    let _ = done.send(());
+                }
+            }
+        });
+    }
+
+    /// A tracker whose queue never drains (tests the full-queue drop).
+    /// The returned receiver must be kept alive so `try_send` sees a full buffer
+    /// instead of a disconnected channel.
+    #[cfg(test)]
+    fn with_undrained_queue(https_only: bool) -> (Self, Receiver<Batch>) {
+        let (tx, rx) = mpsc::sync_channel::<Batch>(TRACKING_QUEUE);
+        (Self { tx: Some(tx), https_only }, rx)
+    }
+
+    /// Queues `urls` for the tracking worker. Returns a handle tests can join;
+    /// failures and a full queue are ignored (it is a report).
+    pub fn fire(&self, urls: Vec<String>) -> Option<FireHandle> {
+        let tx = self.tx.as_ref()?;
         let urls: Vec<String> = urls.into_iter().filter(|u| allowed(u, self.https_only)).collect();
         if urls.is_empty() {
             return None;
         }
-        let user_agent = self.user_agent.clone();
-        Some(thread::spawn(move || {
-            for url in urls {
-                let _ = agent
-                    .get(&url)
-                    .header("User-Agent", &user_agent)
-                    .header("Referer", "https://www.pandora.com/")
-                    .call();
-            }
-        }))
+        let (done_tx, done_rx) = mpsc::channel();
+        match tx.try_send(Batch { urls, done: Some(done_tx) }) {
+            Ok(()) => Some(FireHandle { done: done_rx }),
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => None,
+        }
     }
 }
 

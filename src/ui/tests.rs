@@ -671,7 +671,7 @@ fn the_settings_page_lists_the_genre_popup_row() {
     let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("Genre station edit popup"), "{text}");
     let line = text.lines().find(|l| l.contains("Genre station edit popup")).unwrap();
-    assert!(line.contains(" on"), "{line}");
+    assert!(line.contains(" On"), "{line}");
 }
 
 #[test]
@@ -1384,8 +1384,8 @@ fn the_quit_question_is_vibekits_confirm_with_a_blank_line_above_the_question() 
 
 #[test]
 fn a_long_question_wraps_and_cuts_to_fit() {
-    assert_eq!(wrap_question("Quit boxvibe?", 36, 3), ["Quit boxvibe?"]);
-    let w = wrap_question("one two three four five six seven", 9, 2);
+    assert_eq!(wrap("Quit boxvibe?", 36, 3), ["Quit boxvibe?"]);
+    let w = wrap("one two three four five six seven", 9, 2);
     assert_eq!(w.len(), 2, "{w:?}");
     assert!(w[1].ends_with('…') && w.iter().all(|l| l.width() <= 9), "{w:?}");
 }
@@ -1766,25 +1766,30 @@ fn a_free_plans_quality_row_is_greyed_out_like_a_greyed_theme_select() {
     let row = |app: &mut App| {
         let (lines, buffer) = screen(app, 120, 40);
         let y = lines.iter().position(|l| l.contains("Audio quality")).expect("the row") as u16;
-        // Find the label's column by its cells: the icon before it is
-        // double-width, so a char index would land in the wrong place.
+        // Label starts after the leading space of a vibekit settings row.
         let x = (0..120u16)
             .find(|&x| (0..13).map(|i| buffer[(x + i, y)].symbol()).collect::<String>() == "Audio quality")
             .expect("the label");
-        (lines[y as usize].clone(), buffer[(x, y)].fg)
+        let starts_with = |needle: &str| {
+            let n = needle.len() as u16;
+            (0..120u16.saturating_sub(n))
+                .find(|&x| (0..n).map(|i| buffer[(x + i, y)].symbol()).collect::<String>() == needle)
+        };
+        let value_x = starts_with("your plan").or_else(|| starts_with("high")).or_else(|| starts_with("standard"));
+        (lines[y as usize].clone(), buffer[(x, y)].fg, value_x.map(|vx| buffer[(vx, y)].fg))
     };
     // Plus / Premium: the label is the normal text colour.
     app.hifi = Some(true);
-    let (line, fg) = row(&mut app);
+    let (line, fg, _) = row(&mut app);
     assert_eq!(fg, app.palette.fg, "{line}");
-    // A free plan: greyed, like Theme Select under Auto Mode.
+    // A free plan: value greyed, like Theme Select under Auto Mode.
     app.hifi = Some(false);
-    let (line, fg) = row(&mut app);
-    assert_eq!(fg, app.palette.muted, "{line}");
+    let (line, _, value_fg) = row(&mut app);
+    assert_eq!(value_fg, Some(app.palette.muted), "{line}");
     assert!(line.contains("your plan: 64 kbps HE-AAC"), "{line}");
-    // Not logged in: the plan is unknown, so it stays usable.
+    // Not logged in: the plan is unknown, so it stays usable (accent › picker).
     app.hifi = None;
-    assert_eq!(row(&mut app).1, app.palette.fg);
+    assert_eq!(row(&mut app).2, Some(app.palette.accent));
 }
 
 #[test]

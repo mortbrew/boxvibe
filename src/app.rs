@@ -2336,9 +2336,62 @@ impl App {
         if self.song_menu.is_some() {
             return self.song_menu_key(key);
         }
+        // Settings rows follow vibekit STYLE: Space/←→/h/l flip toggles; Enter/→/l open pickers.
+        if self.focus == Focus::Content && self.view == View::Settings && self.settings_row_key(key) {
+            return;
+        }
         if let Some(cmd) = command_for(key) {
             self.run(cmd);
         }
+    }
+
+    /// Handles a Settings-list key that vibekit::settings owns (toggle / open).
+    /// Returns true when the key was consumed so the global binding (Pause, Like…) stays off.
+    fn settings_row_key(&mut self, key: KeyEvent) -> bool {
+        use vibekit::settings::{opens, toggles};
+        let setting = self.setting();
+        let is_toggle = matches!(
+            setting,
+            Setting::Autoplay
+                | Setting::Notify
+                | Setting::Animations
+                | Setting::FavoritesInMenu
+                | Setting::PinnedInMenu
+                | Setting::CheckUpdates
+                | Setting::GenrePopup
+                | Setting::Splash
+                | Setting::BrowseSection(_)
+        );
+        if is_toggle && toggles(key) {
+            self.change_setting();
+            return true;
+        }
+        // Pickers and cycles: Enter / → / l. Theme Select uses the same open keys.
+        let is_picker = matches!(
+            setting,
+            Setting::ThemeSelect
+                | Setting::ThemeAutoMode
+                | Setting::Icons
+                | Setting::BorderStyle
+                | Setting::MenuWidth
+                | Setting::AlbumArt
+                | Setting::RetroMode
+                | Setting::ArtTint
+                | Setting::Quality
+                | Setting::Volume
+                | Setting::GoodVibesOnly
+                | Setting::Email
+                | Setting::Password
+                | Setting::LogIn
+                | Setting::LogOut
+                | Setting::EditFile
+                | Setting::MenuEntry
+        );
+        if is_picker && opens(key) {
+            self.change_setting();
+            return true;
+        }
+        false
     }
 
     fn run(&mut self, cmd: Cmd) {

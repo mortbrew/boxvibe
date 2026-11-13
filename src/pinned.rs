@@ -71,44 +71,29 @@ pub fn save(path: &Path, pins: &[Pin]) -> std::io::Result<()> {
     let mut text =
         String::from("# boxvibe's pinned songs (Shift+I pins, x on the Pinned page unpins). No audio is kept.\n\n");
     text.push_str(&toml::to_string(&File { pin: pins.to_vec() }).map_err(std::io::Error::other)?);
-    let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, text)?;
+    // Written next to it and renamed, like config.toml: a crash never leaves
+    // half a file, and the pid in the name keeps two boxvibes apart.
+    let tmp = path.with_extension(format!("toml.{}.tmp", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&tmp)?;
+    use std::io::Write;
+    file.write_all(text.as_bytes())?;
+    // On disk before the rename, so a power cut cannot leave the new name
+    // pointing at an empty file.
+    file.sync_all()?;
+    drop(file);
+    #[cfg(unix)]
+    std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
     std::fs::rename(tmp, path)
 }
 
 /// Today, `2026-10-29` (UTC).
 pub fn today() -> String {
-    crate::ads::iso_utc(std::time::SystemTime::now())[..10].to_owned()
+    crate::time::today()
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pins_round_trip_and_a_broken_file_is_an_empty_list() {
-        let dir = crate::config::temp_dir("pinned");
-        let path = dir.join("pinned.toml");
-        assert!(load(&path).is_empty(), "no file yet");
-        let song = Song {
-            title: "Song".into(),
-            artist: "Band".into(),
-            album: "Record".into(),
-            cover_art_url: "https://example.com/c.jpg".into(),
-            detail_url: "https://www.pandora.com/artist/band/record/song".into(),
-            audio_url: "https://example.com/audio.mp3".into(),
-            ..Song::default()
-        };
-        let pins = vec![Pin::of(&song, "2026-10-29")];
-        save(&path, &pins).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("[[pin]]") && text.contains("pinned = \"2026-10-29\""), "{text}");
-        assert!(!text.contains("audio.mp3"), "no audio link is kept: {text}");
-        assert_eq!(load(&path), pins);
-        assert!(pins[0].same(&song));
-        std::fs::write(&path, "not [toml").unwrap();
-        assert!(load(&path).is_empty());
-        assert!(path.with_extension("toml.bad").exists());
-        assert_eq!(today().len(), 10);
-    }
-}
+mod tests;

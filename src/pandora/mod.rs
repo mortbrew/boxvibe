@@ -67,8 +67,6 @@ pub struct Station {
     pub is_shuffle: bool,
     /// Someone else's station shared with me.
     pub is_shared: bool,
-    /// The largest station art there is (not drawn yet).
-    pub art_url: String,
     /// Pandora lets this station be renamed (`allowRename`; not Shuffle).
     pub allow_rename: bool,
     /// Pandora lets this station be removed (`allowDelete`; not Shuffle).
@@ -127,6 +125,10 @@ pub const FEEDBACK_PAGE: usize = 30;
 /// How many recently played entries one call asks for.
 pub const RECENT_PAGE: usize = 20;
 
+/// The most a JSON answer may be. Pandora's own are a few KB; a broken or
+/// hostile one must not fill memory.
+const MAX_JSON: u64 = 8 * 1024 * 1024;
+
 /// `RecentlyPlayedSourceType` values this client sends. The public bundle
 /// (`web-app.c532b8d045d20ffdc585.js`) still lists the long names
 /// `ALBUM, SONG, PLAYLIST, STATION, ARTIST_TOP_SONGS, PODCAST`, and that list
@@ -176,24 +178,6 @@ pub struct SearchHit {
     pub name: String,
     /// A song's artist (empty for artists).
     pub by: String,
-}
-
-/// A genre station Pandora offers (`v1/music/genres`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // listed via Browse getDirectory now; still parsed for Client::genres tests.
-pub struct Genre {
-    /// `pandoraId` (`GE:…`): what `createStation` takes.
-    pub id: String,
-    pub name: String,
-    pub description: String,
-}
-
-/// A genre category and its stations.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-pub struct GenreCategory {
-    pub name: String,
-    pub genres: Vec<Genre>,
 }
 
 /// What `v1/station/getStationDetails` tells about a station. Everything
@@ -383,19 +367,6 @@ fn str_of(v: &Value, key: &str) -> String {
     }
 }
 
-/// The URL of the biggest image in an `art` / `albumArt` list.
-pub fn largest_art(list: Option<&Value>) -> String {
-    list.and_then(Value::as_array)
-        .and_then(|items| {
-            items
-                .iter()
-                .filter(|a| a.get("url").and_then(Value::as_str).is_some_and(|u| !u.is_empty()))
-                .max_by_key(|a| a.get("size").and_then(Value::as_u64).unwrap_or(0))
-        })
-        .map(|a| str_of(a, "url"))
-        .unwrap_or_default()
-}
-
 /// The cover for Now Playing's art box: the smallest one at least `ART_SIZE`
 /// pixels across (sharp enough for sixel, a small download), else the largest.
 pub fn art_for_box(list: Option<&Value>) -> String {
@@ -428,7 +399,6 @@ pub fn parse_station(v: &Value) -> Option<Station> {
         name: str_of(v, "name"),
         is_shuffle,
         is_shared: v.get("isShared").and_then(Value::as_bool).unwrap_or(false),
-        art_url: largest_art(v.get("art")),
         // The site says what it allows; Shuffle never allows either.
         allow_rename: flag(v, "allowRename").unwrap_or(!is_shuffle),
         allow_delete: flag(v, "allowDelete").unwrap_or(!is_shuffle),
@@ -745,40 +715,6 @@ pub fn parse_search(v: &Value) -> Vec<SearchHit> {
         .collect()
 }
 
-/// `v1/music/genrecategories`: `(name, categoryToken)` pairs.
-#[allow(dead_code)]
-fn parse_genre_categories(v: &Value) -> Vec<(String, String)> {
-    v.get("categories")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|c| {
-            let token = str_of(c, "token");
-            let name = str_of(c, "name").trim().to_owned();
-            (!token.is_empty() && !name.is_empty()).then_some((name, token))
-        })
-        .collect()
-}
-
-/// `v1/music/genres`: the genre stations of one category.
-#[allow(dead_code)]
-pub fn parse_genres(v: &Value) -> Vec<Genre> {
-    v.get("genres")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|g| {
-            let id = str_of(g, "pandoraId");
-            let name = str_of(g, "name").trim().to_owned();
-            (!id.is_empty() && !name.is_empty()).then(|| Genre {
-                id,
-                name,
-                description: str_of(g, "description").trim().to_owned(),
-            })
-        })
-        .collect()
-}
-
 /// One fragment track; `None` for ads, artist and curator messages and
 /// anything else that isn't a song with audio.
 pub fn parse_track(v: &Value, station_id: &str) -> Option<Song> {
@@ -953,7 +889,13 @@ impl Client {
         }
         let mut response = request.send(body.to_string()).map_err(|e| Error::Http(e.to_string()))?;
         let status = response.status().as_u16();
-        let text = response.body_mut().read_to_string().map_err(|e| Error::Http(e.to_string()))?;
+        // Capped like `fetch`: a broken or hostile answer must not fill memory.
+        let text = response
+            .body_mut()
+            .with_config()
+            .limit(MAX_JSON)
+            .read_to_string()
+            .map_err(|e| Error::Http(e.to_string()))?;
         if status != 200 {
             return Err(classify(status, &text));
         }
@@ -1276,34 +1218,6 @@ impl Client {
     pub fn create_station(&mut self, pandora_id: &str) -> Result<Station, Error> {
         let v = self.post("/api/v1/station/createStation", &json!({ "pandoraId": pandora_id, "stationName": "" }))?;
         parse_station(&v).ok_or(Error::InvalidResponse)
-    }
-
-    /// `v1/music/genrecategories`, then `v1/music/genres` for each category.
-    /// A category whose list fails is left out; the first error is returned
-    /// only when nothing could be listed.
-    #[allow(dead_code)]
-    pub fn genres(&mut self) -> Result<Vec<GenreCategory>, Error> {
-        let v = self.post("/api/v1/music/genrecategories", &json!({}))?;
-        let mut out = Vec::new();
-        let mut first_error = None;
-        for (name, token) in parse_genre_categories(&v) {
-            match self.post("/api/v1/music/genres", &json!({ "categoryToken": token })) {
-                Ok(v) => {
-                    let genres = parse_genres(&v);
-                    if !genres.is_empty() {
-                        out.push(GenreCategory { name, genres });
-                    }
-                }
-                Err(e) if e.is_auth_expired() => return Err(e),
-                Err(e) => {
-                    first_error.get_or_insert(e);
-                }
-            }
-        }
-        match (out.is_empty(), first_error) {
-            (true, Some(e)) => Err(e),
-            _ => Ok(out),
-        }
     }
 
     /// `v1/playlist/getFragment`: the next few songs of `station_id`.

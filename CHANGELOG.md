@@ -2,6 +2,38 @@
 
 Short and scannable; the git history has the details.
 
+## 0.6.2 (2026-11-12)
+
+### Fixed
+- **A sound device that goes away no longer freezes the player.** A dead stream reports nothing: its queue still holds the song, so it never looks empty, and its position stops advancing because nothing is pulling samples. The progress bar sat frozen for the rest of the session. A position that has not moved for three seconds is now treated as a lost device: the song is skipped and the status line says so.
+- **Pausing for more than three seconds no longer skips the song.** The stall check above returns early while paused, so resuming looked like a stream that had died — the position was unchanged and its timestamp was old. Resuming starts the clock again.
+- **A stream error no longer prints over the interface.** rodio's default error callback writes to stderr, which the TUI owns: the message landed in the middle of the screen and was wiped by the next frame. The callback is boxvibe's now, and the message goes to the playback log and the status line.
+- **A cover that arrives twice no longer evicts one that is still cached.** The in-memory cover cache kept a map and an arrival order as separate fields, so a repeated url took two places in the order and pushed out a cover that was still in use.
+- **A held dislike no longer survives into another station.** Tuning away or logging out cleared the queue but not the held dislikes, so a dislike held on one station could auto-skip the same track on the next.
+- **"Buffering…" can no longer hang for the rest of the session.** A lost audio answer left it on screen with no song and no error; it now gives up after 30 seconds with a status line and a skip. A panic in the audio worker answers with an error instead of killing the thread and leaving every later song waiting.
+- **No more zombie processes.** `notify-send` and `xdg-open` were spawned and never waited on, leaving one zombie per song change and per opened page for as long as boxvibe ran.
+- **Favorites wait for the station list.** Logged out, or before the list arrived, every favorite row had a blank where the Pandora / your-own mark goes. The section now needs a signed-in account and shows one loading row until the stations are in. A favorite whose station Pandora no longer has is pruned, but never on an empty list — that is a logged-out or brand-new account, and pruning on it would throw away every star.
+- **The account name is kept out of the status line.** Two messages put it there ("Signing in as …", "Type the password for …"). Nothing leaked — no log call takes `status` — but `status` is kept for the Notifications page, so the next log call that did would have written it to disk.
+- **The menu and the page are separated by a blank column.** Their borders sat in adjacent cells and read as one line.
+
+### Changed
+- **Downloaded songs and View-all pages are capped.** Both were kept in maps that grew for the whole session; each song is a whole MP3 (up to 64 MB) and each View-all page is a whole Browse page. The oldest go first, and the View-all page on screen is never dropped.
+- **`pinned::save` writes like `config::write_private`:** mode 600, fsync before the rename, and a pid in the temporary name so two boxvibes writing at once cannot clobber each other's half-written file.
+- **Request bodies are capped at 8 MB**, as audio and art already were: a broken or hostile JSON answer was read whole into memory.
+- **The key bar is centred** at the bottom of the screen.
+
+### Internal
+- **The README screenshots are drawn in Rust.** The screenshot test wrote a JSON cell grid that a Python script rasterized with Pillow; `src/screenshots.rs` now draws the frame itself with `ab_glyph`, so it needs no browser and no Python. The PNGs are written with best compression: 2.65 MB becomes 1.59 MB, pixel for pixel the same.
+- **Every test module lives in its own `tests.rs`.** CodeQL kept opening test-only alerts (`cleartext-logging` on an assertion message, `hard-coded-cryptographic-value` on the fake server's fixtures) that had to be dismissed one at a time, because dismissing does not survive a line number moving. Rust has no inline suppression, so a whole-file ignore is the only way to say it once. `app.rs` goes from 7,332 lines to 4,135 and `ui.rs` from 5,279 to 2,920.
+- **`Reply::Failed` carries an enum of its 21 call domains** rather than a string, so a new domain cannot be silently swallowed by the catch-all status line.
+- **The private state with invariants is now types rather than loose fields:** `AudioCache`, `ViewAllCache`, `RecentState`, `PendingPassword`, `ImageCache`, `BrowsePages` and `InFlight`. Each keeps state that has to agree with itself in one file, so it cannot drift from another. Writing them caught two real bugs: an eviction that left a token behind, and a password cleared from `config.toml` before the keychain had confirmed it.
+- **`app.rs` is split** into `app/browse.rs`, `app/recent.rs` and `app/playback.rs`, following the submodule pattern already used by `ad.rs`, `editor.rs`, `panel.rs` and `themes.rs`.
+- **The skip loop is iterative.** A run of unplayable songs recursed through `play_now` → `advance` → `next_song` → `play_now`.
+- **The palette snap is integer arithmetic:** it ran about 5M `powi` calls per cover on the UI thread.
+- **Now Playing draws from a borrow**, not a copy of the song: 15 fields and about eight heap allocations per frame are gone.
+- Removed dead code: `Station::art_url`, `largest_art`, the genre API (`Genre`, `GenreCategory`, `parse_genres`, `parse_genre_categories`, `Client::genres`, `demo::genres`) and a duplicate of `deps::in_path`.
+- Both logs rotate through one `log::append(path, cap, line)` instead of two copies of the same rename-and-append.
+
 ## 0.6.1 (2026-11-09)
 
 ### Internal

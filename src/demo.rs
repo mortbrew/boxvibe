@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 
 use crate::pandora::{
-    ArtistInfo, AudioFormat, BrowseItem, BrowseSection, FEEDBACK_PAGE, Feedback, FeedbackPage, Genre, GenreCategory,
-    HitKind, Rating, SearchHit, Seed, Song, Station, StationDetails, StationMode, StationModes,
+    ArtistInfo, AudioFormat, BrowseItem, BrowseSection, FEEDBACK_PAGE, Feedback, FeedbackPage, HitKind, Rating,
+    SearchHit, Seed, Song, Station, StationDetails, StationMode, StationModes,
 };
 
 pub fn stations() -> Vec<Station> {
@@ -28,7 +28,6 @@ pub fn stations() -> Vec<Station> {
             name: (*name).into(),
             is_shuffle: *shuffle,
             is_shared: *shared,
-            art_url: format!("https://example.invalid/station/{i}.jpg"),
             // Shuffle can't be renamed or deleted; "Today's Hits" is a genre
             // station like Pandora's: it can be deleted but not renamed.
             allow_rename: !*shuffle && *name != "Today's Hits",
@@ -289,24 +288,6 @@ const GENRES: [(&str, &[DemoGenre]); 3] = [
     ),
 ];
 
-#[allow(dead_code)] // Browse uses getDirectory; kept for Client::genres / tests.
-pub fn genres() -> Vec<GenreCategory> {
-    GENRES
-        .iter()
-        .map(|(name, genres)| GenreCategory {
-            name: (*name).into(),
-            genres: genres
-                .iter()
-                .map(|(id, name, description)| Genre {
-                    id: (*id).into(),
-                    name: (*name).into(),
-                    description: (*description).into(),
-                })
-                .collect(),
-        })
-        .collect()
-}
-
 fn browse_item(name: &str, detail: &str, pandora_id: &str, station_factory: &str) -> BrowseItem {
     BrowseItem {
         name: name.into(),
@@ -561,7 +542,6 @@ pub fn new_station(pandora_id: &str, existing: usize) -> Option<Station> {
         name,
         is_shuffle: false,
         is_shared: false,
-        art_url: String::new(),
         allow_rename: !name_is_genre,
         allow_delete: true,
         allow_edit_seeds: !name_is_genre,

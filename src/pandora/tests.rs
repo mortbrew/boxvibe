@@ -23,7 +23,7 @@ fn quality_remaps_old_values() {
 }
 
 #[test]
-fn stations_parse_with_the_biggest_art() {
+fn stations_parse_with_their_flags() {
     let v = json!({
         "stationId": "12345", "name": "Chill Out Radio", "isShuffle": false, "isShared": true,
         "art": [ { "url": "https://a/90.jpg", "size": 90 }, { "url": "https://a/1080.jpg", "size": 1080 },
@@ -31,10 +31,9 @@ fn stations_parse_with_the_biggest_art() {
     });
     let s = parse_station(&v).unwrap();
     assert_eq!((s.id.as_str(), s.name.as_str(), s.is_shared), ("12345", "Chill Out Radio", true));
-    assert_eq!(s.art_url, "https://a/1080.jpg");
     assert_eq!(parse_station(&json!({ "name": "no id" })), None);
     let n = parse_station(&json!({ "stationId": 42, "name": "Shuffle", "isShuffle": true })).unwrap();
-    assert_eq!((n.id.as_str(), n.is_shuffle, n.art_url.as_str()), ("42", true, ""));
+    assert_eq!((n.id.as_str(), n.is_shuffle), ("42", true));
 }
 
 fn track(title: &str, kind: &str) -> Value {
@@ -221,6 +220,17 @@ fn login_sends_the_site_headers_and_reads_the_flags() {
         login.body,
         json!({ "username": "me@example.com", "password": "pw", "keepLoggedIn": true, "existingAuthToken": null })
     );
+}
+
+#[test]
+fn an_answer_past_the_cap_is_refused_instead_of_read_into_memory() {
+    // Pandora's own answers are a few KB. A broken or hostile one must not be
+    // read whole: `post` caps the body like `fetch` does.
+    let huge = format!(r#"{{"authToken":"tok","pad":"{}"}}"#, "x".repeat(MAX_JSON as usize + 1024));
+    let (base, _seen) = fake_pandora(Box::new(move |_| (200, huge.clone())));
+    let mut c = Client::with_base(&base, "");
+    let error = c.login("me@example.com", "pw").unwrap_err();
+    assert!(matches!(error, Error::Http(_)), "{error:?}");
 }
 
 #[test]
@@ -459,23 +469,7 @@ fn search_keeps_artists_and_songs_in_order_and_ignores_the_rest() {
 }
 
 #[test]
-fn genres_parse_tolerantly() {
-    let cats = parse_genre_categories(&json!({ "categories": [
-        { "name": " Rock ", "token": "rock", "art": [] }, { "name": "No token" }, { "token": "x" } ] }));
-    assert_eq!(cats, vec![("Rock".to_owned(), "rock".to_owned())]);
-    let genres = parse_genres(&json!({ "genres": [
-        { "name": "Classic Rock ", "token": "classic-rock", "musicId": "G1", "pandoraId": "GE:1",
-          "description": " Big guitars. ", "listenerCount": 5, "unknown": [1] },
-        { "name": "No id" }, { "pandoraId": "GE:9" } ] }));
-    assert_eq!(
-        genres,
-        vec![Genre { id: "GE:1".into(), name: "Classic Rock".into(), description: "Big guitars.".into() }]
-    );
-    assert!(parse_genres(&json!({ "genres": 3 })).is_empty());
-}
-
-#[test]
-fn searching_creating_and_genres_send_what_the_site_expects() {
+fn searching_and_creating_send_what_the_site_expects() {
     let (base, seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
         "/api/v1/auth/login" => login_ok("tok"),
         "/api/v3/sod/search" => (200, search_answer().to_string()),
@@ -485,17 +479,6 @@ fn searching_creating_and_genres_send_what_the_site_expects() {
                     "allowRename": true, "allowDelete": true, "isShuffle": false })
             .to_string(),
         ),
-        "/api/v1/music/genrecategories" => (
-            200,
-            json!({ "categories": [ { "name": "Rock", "token": "rock" }, { "name": "Empty", "token": "none" },
-                                    { "name": "Broken", "token": "bad" } ] })
-            .to_string(),
-        ),
-        "/api/v1/music/genres" => match r.body["categoryToken"].as_str() {
-            Some("rock") => (200, json!({ "genres": [ { "name": "Classic Rock", "pandoraId": "GE:1" } ] }).to_string()),
-            Some("bad") => (500, json!({ "errorCode": 0, "errorString": "INTERNAL" }).to_string()),
-            _ => (200, json!({ "genres": [] }).to_string()),
-        },
         _ => (200, "{}".into()),
     }));
     let mut c = Client::with_base(&base, "");
@@ -503,9 +486,6 @@ fn searching_creating_and_genres_send_what_the_site_expects() {
     assert_eq!(c.search("tee").unwrap().len(), 3);
     let made = c.create_station("AR:1").unwrap();
     assert_eq!((made.id.as_str(), made.name.as_str()), ("3815", "Tee Grizzley Radio"));
-    let cats = c.genres().unwrap();
-    assert_eq!(cats.len(), 1, "empty and failing categories are left out");
-    assert_eq!((cats[0].name.as_str(), cats[0].genres[0].id.as_str()), ("Rock", "GE:1"));
     let seen = seen.lock().unwrap();
     let body = |end: &str| seen.iter().find(|s| s.path.ends_with(end)).unwrap().body.clone();
     assert_eq!(
@@ -513,23 +493,17 @@ fn searching_creating_and_genres_send_what_the_site_expects() {
         json!({ "query": "tee", "start": 0, "count": 20, "annotate": true, "types": ["AR", "CO", "TR"] })
     );
     assert_eq!(body("createStation"), json!({ "pandoraId": "AR:1", "stationName": "" }));
-    assert_eq!(body("genrecategories"), json!({}));
 }
 
 #[test]
-fn creating_a_station_needs_an_answer_that_names_it_and_all_genres_failing_is_an_error() {
+fn creating_a_station_needs_an_answer_that_names_it() {
     let (base, _) = fake_pandora(Box::new(|r| match r.path.as_str() {
         "/api/v1/auth/login" => login_ok("tok"),
-        "/api/v1/music/genrecategories" => {
-            (200, json!({ "categories": [ { "name": "A", "token": "a" } ] }).to_string())
-        }
-        "/api/v1/music/genres" => (500, json!({ "errorCode": 0, "errorString": "INTERNAL" }).to_string()),
         _ => (200, "{}".into()),
     }));
     let mut c = Client::with_base(&base, "");
     c.login("me", "pw").unwrap();
     assert_eq!(c.create_station("AR:1"), Err(Error::InvalidResponse));
-    assert!(c.genres().is_err());
 }
 
 /// `cargo test live_site -- --ignored`: the real www.pandora.com hands out a

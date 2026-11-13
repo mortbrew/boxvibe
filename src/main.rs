@@ -16,10 +16,14 @@ mod log;
 mod mpris;
 mod pandora;
 mod pinned;
+mod proc;
+#[cfg(test)]
+mod screenshots;
 mod snapshot;
 mod splash;
 mod theme;
 mod theme_store;
+mod time;
 mod ui;
 mod update;
 
@@ -125,7 +129,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow::Result
             edit_config(terminal, app)?;
         }
         app.art.set_overlay(app.overlay_open());
-        if app.art.needs_clear.take() {
+        if std::mem::take(&mut app.art.needs_clear) {
             terminal.clear()?;
         }
         terminal.draw(|frame| ui::draw(frame, app))?;
@@ -163,7 +167,7 @@ fn edit_config(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow
         .or_else(|_| std::env::var("EDITOR"))
         .ok()
         .filter(|e| !e.trim().is_empty())
-        .unwrap_or_else(|| if which("nano") { "nano".into() } else { "vi".into() });
+        .unwrap_or_else(|| if deps::in_path("nano") { "nano".into() } else { "vi".into() });
     ratatui::restore();
     let mut parts = editor.split_whitespace();
     let program = parts.next().unwrap_or("vi");
@@ -175,8 +179,4 @@ fn edit_config(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow
         Err(e) => app.status = format!("⚠ Can't run {editor}: {e}"),
     }
     Ok(())
-}
-
-fn which(program: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
 }

@@ -45,6 +45,21 @@ jobs:
           ref: ${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      # The tag is the release version, so `dev` never has to drop its `-dev`
+      # suffix to cut one. `dev` carries `0.6.3-dev`; tagging `v0.6.3` builds a
+      # binary that reports `0.6.3`, which is what the archive is named after.
+      - name: Version from the tag
+        run: |
+          version="${TAG#v}"
+          case "$version" in
+            *-*) echo "::error::tag $TAG carries a prerelease suffix; tag a release version" >&2; exit 1 ;;
+          esac
+          sed -i "s/^version = \".*\"/version = \"$version\"/" Cargo.toml
+          grep -q "^version = \"$version\"$" Cargo.toml || { echo "::error::could not set version" >&2; exit 1; }
+          echo "building $version from tag $TAG"
+      # The lockfile names boxvibe's own version, so it has to follow. Only the
+      # root package changes, so this needs no network.
+      - run: cargo update --workspace --offline
       - run: cargo test --locked
       - run: cargo build --release --locked
       - name: Package

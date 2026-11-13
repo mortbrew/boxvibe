@@ -1,0 +1,19 @@
+# What CodeQL reads.
+#
+# The tests are excluded. They are not compiled into the shipped binary, and
+# they trip two queries that have nothing to say about them:
+#
+# - `rust/cleartext-logging`: a test that fails prints what it was looking at,
+#   `assert!(cond, "{}", app.status)`. `status` can hold the account name
+#   ("Signing in as …"), so the taint chain is real, but the sink is a panic
+#   message in a test binary, not a log file.
+# - `rust/hard-coded-cryptographic-value`: the fake Pandora server's fixtures
+#   carry a made-up password for the stub to expect.
+#
+# Rust has no inline suppression (`// codeql[...]` needs an AlertSuppression
+# query that Rust does not have yet: github/codeql#21637), so a whole-file
+# ignore is the only way to say this once instead of dismissing each alert as
+# line numbers move. That is why every `mod tests` lives in its own file.
+name: boxvibe
+paths-ignore:
+  - "**/tests.rs"

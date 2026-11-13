@@ -1,6 +1,7 @@
 //! `--snapshot FILE`: draws one demo frame with ratatui's TestBackend and
 //! writes it as HTML (each cell coloured as in a terminal), which a headless
-//! browser can turn into a PNG (the README screenshots use `scripts/screenshots.py`).
+//! browser can turn into a PNG. The README screenshots no longer use this:
+//! `src/screenshots.rs` rasterizes the frame directly.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -108,7 +109,7 @@ pub fn write(config: Config, screen: &str, cols: u16, rows: u16, out: &Path) -> 
         _ => {}
     }
     let mut terminal = Terminal::new(TestBackend::new(cols, rows))?;
-    terminal.draw(|frame| ui::draw(frame, &app))?;
+    terminal.draw(|frame| ui::draw(frame, &mut app))?;
     let html = to_html(terminal.backend().buffer(), &app.palette);
     std::fs::write(out, html)?;
     Ok(())

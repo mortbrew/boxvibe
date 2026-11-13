@@ -28,7 +28,7 @@ Rules that follow from this:
 - `dev` is the repository's default branch, so clones, PRs and the web UI all
   land there by default.
 - `main` is protected by the "Protect main" ruleset (§4): no force-push, no
-  deletion, no direct push, and `fmt`, `ci` and `msrv` must be green.
+  deletion, no direct push, and `fmt`, `ci`, `msrv` and `CodeQL` must be green.
 - Feature branches are short-lived and deleted after merge. If a branch's work
   is merged, the branch goes.
 - Never leave a stale branch on origin. A branch that is not `dev` or `main`
@@ -43,6 +43,7 @@ All of these are required. Copy them from boxvibe rather than retyping.
 .github/workflows/audit.yml
 .github/workflows/codeql.yml
 .github/workflows/release.yml
+.github/codeql/codeql-config.yml
 .github/dependabot.yml
 .cursor/rules/versioning-and-testing.mdc
 docs/setup.md          <- this file
@@ -184,9 +185,34 @@ jobs:
         with:
           languages: rust
           build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
       - uses: github/codeql-action/analyze@v4
         with:
           category: "/language:rust"
+```
+
+### `.github/codeql/codeql-config.yml`
+
+```yaml
+# What CodeQL reads.
+#
+# The tests are excluded. They are not compiled into the shipped binary, and
+# they trip two queries that have nothing to say about them:
+#
+# - `rust/cleartext-logging`: a test that fails prints what it was looking at,
+#   `assert!(cond, "{}", app.status)`. `status` can hold the account name
+#   ("Signing in as …"), so the taint chain is real, but the sink is a panic
+#   message in a test binary, not a log file.
+# - `rust/hard-coded-cryptographic-value`: the fake Pandora server's fixtures
+#   carry a made-up password for the stub to expect.
+#
+# Rust has no inline suppression (`// codeql[...]` needs an AlertSuppression
+# query that Rust does not have yet: github/codeql#21637), so a whole-file
+# ignore is the only way to say this once instead of dismissing each alert as
+# line numbers move. That is why every `mod tests` lives in its own file.
+name: boxvibe
+paths-ignore:
+  - "**/tests.rs"
 ```
 
 ### `.github/workflows/release.yml`
@@ -359,7 +385,8 @@ gh api -X POST repos/mortbrew/<repo>/rulesets --input - <<'JSON'
         "required_status_checks": [
           { "context": "fmt" },
           { "context": "ci" },
-          { "context": "msrv" }
+          { "context": "msrv" },
+          { "context": "CodeQL" }
         ]
       }
     }
@@ -376,12 +403,22 @@ What each rule buys:
 - `non_fast_forward` — no force-push over published history.
 - `deletion` — `main` cannot be deleted.
 - `pull_request` — no direct push to `main`; it only moves by PR.
-- `required_status_checks` — `fmt`, `ci` and `msrv` must pass first.
+- `required_status_checks` — `fmt`, `ci`, `msrv` and `CodeQL` must pass first.
 
-**The required list is deliberately short.** `audit` and `codeql` are not
-required, because they are slow and occasionally flaky, and a required check
-that flakes blocks releases. That is exactly why §7 exists: the required three
-are the *minimum*, not the whole story.
+**`CodeQL` is required; `audit` is not.** CodeQL is the one check that reads
+the code for security problems, so a pull request that introduces an alert
+should not be mergeable. It is slow (about five minutes) but it does not flake:
+it either finds something or it does not.
+
+The context is `CodeQL`, not `analyze`. `analyze` is the workflow's job name and
+only says the scan ran; `CodeQL` is the check GitHub's code scanning reports,
+and it is the one that fails when there are new alerts. Requiring the wrong one
+would gate merges on a job that passes even with alerts open.
+
+`audit` stays out: it fails on a RustSec advisory in a dependency, which is
+usually fixed by a version bump rather than by the pull request at hand, and a
+required check that blocks on someone else's CVE stops releases for reasons the
+author cannot fix. §7 still says to read it.
 
 ## 5. Security settings
 
@@ -427,15 +464,20 @@ for b in <deleted branches>; do git config --remove-section "branch.$b"; done
 
 ## 7. Before merging or releasing, read every check
 
-The ruleset only *requires* `fmt`, `ci` and `msrv`. A pull request can therefore
-merge with `audit` or `codeql` red. That has happened: a release PR merged while
-CodeQL was failing, because only the required three were looked at.
+The ruleset requires `fmt`, `ci`, `msrv` and `CodeQL`. A pull request can still
+merge with `audit` red, and it can merge with any check that is not in that list.
+That has happened: a release PR merged while CodeQL was failing, before it was
+required, because only the required three were looked at.
 
 - Run `gh pr checks <n>` and read **all** of it, not just the required contexts.
   Anything not `pass` is a blocker until it is understood.
 - `codeql` failing means new code-scanning alerts. Read them with
   `gh api repos/mortbrew/<repo>/code-scanning/alerts?state=open` and fix or
   dismiss each one with a reason. Do not merge on top of them.
+  Test-only alerts should not appear at all: `.github/codeql/codeql-config.yml`
+  ignores `**/tests.rs`, which is why every `mod tests` lives in its own file.
+  An alert in a `tests.rs` means the ignore stopped matching, not that the test
+  needs changing.
 - `audit` failing means a RustSec advisory in `Cargo.lock`. Bump the dependency;
   do not ignore it.
 
@@ -455,16 +497,56 @@ does not need this approval.
 
 ## 9. Versions
 
-`dev`'s `Cargo.toml` version runs **ahead** of the newest published release.
-That is deliberate: the version string is drawn on screen, so seeing the higher
-number confirms the running binary is a build from source rather than the
-released one.
+`dev` carries a **prerelease** version: the number of the next release with a
+`-dev` suffix, so `Cargo.toml` says `0.6.3-dev` rather than `0.6.2`. That is
+deliberate: the version string is drawn on screen, so seeing `v0.6.3-dev`
+confirms at a glance that the running binary is a build from source rather than
+a released one.
 
-- Keep the bump in `Cargo.toml` only; `env!("CARGO_PKG_VERSION")` propagates it.
+The suffix is what lets one string do both jobs:
+
+- Semver orders a prerelease *below* its release, so `0.6.2-dev < 0.6.2 < 0.6.3-dev`.
+- The updater compares only the numeric core (`vibekit::update::version` strips
+  everything after `-`), so `0.6.2-dev == 0.6.2`: no spurious "update available"
+  on a source build.
+- The number moves forward at each release instead of being reconciled after it.
+
+### Which number to bump
+
+After a release, `dev` goes up by **one patch** (`0.6.2` → `0.6.3-dev`). That is
+the default and covers fixes and small features.
+
+Bump the **minor** instead only when the release carries a big feature worth
+announcing (`.6.x` → `.7.0-dev`). Bump the **major** only when an
+on-disk format breaks — `config.toml`, the theme store, the pinned list — since
+that needs migration code whatever semver says.
+
+The rule exists so the number means something: a patch release that quietly
+carried a headline feature makes the version lie about what is in it.
+
+### Cutting a release
+
+`dev` is always ahead of `main`, and that is the point: you code and commit on
+`dev`, and `main` only ever holds what has shipped. Releasing does not touch
+`dev` at all.
+
+1. Pull request `dev` into `main` and merge it.
+2. Tag the merge commit on `main` with the version you are shipping:
+   `git tag -a v0.6.3 -m "boxvibe v0.6.3" <merge-sha> && git push origin v0.6.3`.
+3. `release.yml` builds from that tag and sets `Cargo.toml` to the tag's
+   version, so the binary reports `0.6.3` even though `dev` says `0.6.3-dev`.
+4. Back on `dev`, bump by one patch (`0.6.3-dev` → `0.6.4-dev`) when you next
+   touch the version, or leave it until the next release is in sight.
+
+The tag must not carry a suffix: `release.yml` rejects one, because an archive
+named `v0.6.3-dev` would ship a binary claiming to be a source build.
+
+- Keep every bump in `Cargo.toml` only; `env!("CARGO_PKG_VERSION")` propagates it.
 - Update `Cargo.lock` with `cargo update --workspace --offline`, never by hand.
 - `CHANGELOG.md` sections are historical records of shipped releases, so they
-  keep the version that shipped.
-- After a release, bump `dev` ahead of the tag that was just cut.
+  keep the version that shipped, without the suffix.
+- The literal `"0.4.0"` in `src/snapshot.rs` is fabricated update data for the
+  screenshots; leave it.
 - A source build reporting no update available is expected, not a bug.
 
 ## 10. Verification
@@ -476,14 +558,14 @@ Run all of this. Every line must pass before the repo counts as set up.
 gh api repos/mortbrew/<repo>/branches --paginate -q '.[].name'   # dev, main
 gh api repos/mortbrew/<repo> -q '.default_branch'                # dev
 
-# 2. The ruleset protects main, and requires the three checks.
+# 2. The ruleset protects main, and requires the four checks.
 gh api repos/mortbrew/<repo>/rulesets -q '.[].id' | while read id; do
   gh api repos/mortbrew/<repo>/rulesets/$id \
     -q '{name:.name, include:.conditions.ref_name.include, rules:[.rules[].type],
          required:[.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context]}'
 done
 # expect: include ["refs/heads/main"], rules include pull_request and
-#         required_status_checks, required ["fmt","ci","msrv"]
+#         required_status_checks, required ["fmt","ci","msrv","CodeQL"]
 
 # 3. Security settings are on.
 gh api repos/mortbrew/<repo> -q '.security_and_analysis'

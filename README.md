@@ -280,9 +280,15 @@ The images in `docs/screenshots/` are drawn from demo mode at 160×40 in Tokyo
 Night, with a made-up cover:
 
 ```sh
-cargo test --release screenshots -- --ignored   # writes target/screenshots/*.json
-python3 scripts/screenshots.py                  # draws docs/screenshots/*.png
+cargo test --release screenshots -- --ignored   # writes docs/screenshots/*.png
 ```
+
+The test rasterizes each frame itself (`src/screenshots.rs`), so it needs no
+browser and no Python. It does need DejaVu Sans Mono and the Nerd Font symbols
+(`ttf-dejavu` and `ttf-nerd-fonts-symbols-mono` on Arch); set
+`BOXVIBE_SCREENSHOT_FONT`, `BOXVIBE_SCREENSHOT_FONT_BOLD` and
+`BOXVIBE_SCREENSHOT_FONT_NERD` to point at the `.ttf` files if they live
+somewhere unusual.
 
 ## Development
 
@@ -315,16 +321,27 @@ file wins.
 
 ### Versions
 
-`dev`'s `Cargo.toml` version runs **ahead** of the newest published release
-(`0.6.1` while the latest release is `v0.6.0`). That is deliberate. The version
-string is drawn on the splash, the About panel, the status bar and the box
-frames, so seeing `v0.6.1` confirms the running binary is a build from source
-rather than the released one.
+`dev`'s `Cargo.toml` version is a **prerelease**: the number of the next release
+with a `-dev` suffix (`0.6.3-dev` while the latest release is `v0.6.2`). That is
+deliberate. The version string is drawn on the splash, the About panel, the
+status bar and the box frames, so seeing `v0.6.3-dev` confirms the running
+binary is a build from source rather than the released one.
 
+The suffix is what makes one string do both jobs: semver orders `0.6.3-dev`
+below `0.6.2`, and the updater compares only the numeric core, so a source
+build never reports a spurious update.
+
+- After a release, `dev` goes up by **one patch** (`0.6.2` → `0.6.3-dev`).
+  Bump the minor only for a big feature worth announcing, and the major only
+  when an on-disk format breaks. The full rule is in
+  [`docs/setup.md`](docs/setup.md) §9.
 - Keep the bump in `Cargo.toml` only; `env!("CARGO_PKG_VERSION")` propagates it.
   Update `Cargo.lock` with `cargo update --workspace --offline`, never by hand.
+- To cut a release: merge `dev` into `main` and tag the merge commit. The tag
+  is the shipped version, so `dev` keeps its suffix and nothing is committed
+  for a release. `release.yml` sets `Cargo.toml` from the tag.
 - `CHANGELOG.md` sections are historical records of shipped releases, so they
-  keep the version that shipped.
+  keep the version that shipped, without the suffix.
 - The literal `"0.4.0"` in `src/snapshot.rs` is fabricated update data for the
   screenshots; leave it.
 - A source build reporting no update available is expected, not a bug.

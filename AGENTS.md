@@ -22,14 +22,21 @@ CI (`.github/workflows/ci.yml`) also runs `cargo build --release --locked`. Linu
 - `src/pandora/` — Pandora client
 - `src/audio.rs`, `src/art.rs`, `src/config.rs` — playback, covers, `config.toml`
 - `docs/setup.md` — branch, CI, and repo-settings checklist
-- `docs/screenshots/`, `scripts/screenshots.py` — generated images
+- `docs/screenshots/`, `src/screenshots.rs` — generated images
 - `packaging/` — linux package notes
 
-Unit tests sit next to the code (`mod tests`). Scratch dirs go under `target/tmp`.
+Unit tests sit next to the code, in a `tests.rs` beside it (`src/app/tests.rs` for
+`src/app.rs`, declared as `#[cfg(test)] mod tests;`). Keeping them in their own file
+is what lets `.github/codeql/codeql-config.yml` ignore them: Rust has no inline
+CodeQL suppression, so a whole-file ignore is the only way to stop the test-only
+`cleartext-logging` and `hard-coded-cryptographic-value` alerts coming back as line
+numbers move. Scratch dirs go under `target/tmp`.
 
 ## Conventions
 
 - Run the binary from `target/`. Do not install it to `PATH`.
-- `dev`'s version stays ahead of the latest release on purpose. Do not revert it or hand-edit `Cargo.lock`.
+- `dev`'s version is a prerelease (`0.6.3-dev`) so a source build is obvious on
+  screen. After a release it goes up by one patch; see `docs/setup.md` §9.
+  Do not revert it or hand-edit `Cargo.lock`.
 - `rustfmt.toml`: `max_width = 120`. Do not set `TMPDIR` in `.cargo/config.toml`.
 - `main` changes only through a pull request, and only to cut a release.

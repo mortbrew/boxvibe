@@ -42,17 +42,19 @@ fn path() -> Option<&'static PathBuf> {
 /// Errors writing it are ignored: a log is not worth a crash or a message.
 pub fn note(args: std::fmt::Arguments<'_>) {
     let Some(path) = path() else { return };
-    write(path, &format!("{} {args}", crate::ads::iso_utc(std::time::SystemTime::now())));
+    append(path, CAP, &format!("{} {args}", crate::time::iso_utc(std::time::SystemTime::now())));
 }
 
-fn write(path: &Path, line: &str) {
-    if std::fs::metadata(path).is_ok_and(|m| m.len() > CAP) {
+/// Adds one line to the log at `path`, moving it to `.old` first when it has
+/// grown past `cap`. Control characters become spaces, so a newline in a title
+/// cannot split the line. Errors are ignored: a log is not worth a crash.
+pub fn append(path: &Path, cap: u64, line: &str) {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > cap) {
         let _ = std::fs::rename(path, path.with_extension("log.old"));
     }
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    // One line, whatever was handed in: a newline in a title would split it.
     let line: String = line.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{line}");
@@ -73,35 +75,4 @@ macro_rules! log {
 pub(crate) use log;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_line_is_one_line_whatever_it_was_given() {
-        let dir = crate::config::scratch_dir(&format!("boxvibe-log-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let file = dir.join("boxvibe.log");
-        write(&file, "a\nb\tc");
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "a b c\n");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_full_log_moves_aside_and_starts_again() {
-        let dir = crate::config::scratch_dir(&format!("boxvibe-log-cap-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let file = dir.join("boxvibe.log");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(&file, vec![b'x'; CAP as usize + 1]).unwrap();
-        write(&file, "after the cap");
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "after the cap\n");
-        assert!(file.with_extension("log.old").exists(), "the old log is kept");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn the_head_of_a_payload_is_hex() {
-        assert_eq!(head(&[0xff, 0xfb, 0x90]), "ff fb 90");
-        assert_eq!(head(&[]), "");
-    }
-}
+mod tests;

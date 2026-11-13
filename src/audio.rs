@@ -15,9 +15,42 @@
 //! per-song `fileGain`, never above 1.0.
 
 use std::io::Cursor;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::log::log;
+
+/// A stream that has not moved for this long has lost its device (unplugged,
+/// or PipeWire restarted): no samples are being pulled any more.
+const STALL_AFTER: Duration = Duration::from_secs(3);
+
+/// Spots a stream that stopped moving.
+///
+/// A dead stream does not report anything through [`Audio::finished`]: its
+/// queue still holds the song, so it never looks empty, and its position stops
+/// advancing because nothing is consuming samples. Without this the player sat
+/// on a frozen progress bar for ever.
+#[derive(Default)]
+struct Stall {
+    seen: Option<(Duration, Instant)>,
+}
+
+impl Stall {
+    /// Whether `pos` has not moved since it was last seen moving.
+    fn stuck(&mut self, pos: Duration, now: Instant) -> bool {
+        match self.seen {
+            Some((last, at)) if pos == last => now.duration_since(at) >= STALL_AFTER,
+            _ => {
+                self.seen = Some((pos, now));
+                false
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.seen = None;
+    }
+}
 
 /// A clock that can pause: where a song is when nothing makes a sound.
 #[derive(Default)]
@@ -58,15 +91,20 @@ pub struct Audio {
     rate: Option<u32>,
     /// Why there is no sound, when there is none.
     pub problem: Option<String>,
+    /// The last error the sound device reported, if any (see [`Audio::take_device_error`]).
+    device_error: Arc<Mutex<Option<String>>>,
+    /// Spots a stream that stopped moving (see [`Stall`]).
+    stall: Stall,
 }
 
 impl Audio {
     /// Opens the default sound device; `silent` (demo) skips it.
     pub fn open(silent: bool, volume: u8) -> Self {
+        let device_error: Arc<Mutex<Option<String>>> = Arc::default();
         let (device, problem) = if silent {
             (None, None)
         } else {
-            match open_device() {
+            match open_device(Arc::clone(&device_error)) {
                 Ok(mut device) => {
                     device.log_on_drop(false);
                     (Some(device), None)
@@ -87,11 +125,31 @@ impl Audio {
             fade: 1.0,
             rate,
             problem,
+            device_error,
+            stall: Stall::default(),
         }
     }
 
     pub fn has_device(&self) -> bool {
         self.device.is_some()
+    }
+
+    /// The sound device's last error, once (the stream died under us).
+    ///
+    /// rodio's default callback prints to stderr, which the interface owns:
+    /// the message would land in the middle of the screen and be wiped by the
+    /// next frame. Taking it here puts it in the log and the status line.
+    pub fn take_device_error(&mut self) -> Option<String> {
+        self.device_error.lock().ok()?.take()
+    }
+
+    /// Whether the stream has stopped moving (the device went away).
+    pub fn stalled(&mut self) -> bool {
+        if self.player.is_none() || self.paused {
+            return false;
+        }
+        let pos = self.position();
+        self.stall.stuck(pos, Instant::now())
     }
 
     /// Starts a song from its downloaded bytes (`None`: the silent clock
@@ -104,6 +162,7 @@ impl Audio {
         self.active = true;
         self.clock = Clock::default();
         self.clock.resume();
+        self.stall.reset();
         let (Some(device), Some(data)) = (&self.device, data) else { return Ok(()) };
         let decoder = decoder(data)?;
         let player = rodio::Player::connect_new(device.mixer());
@@ -128,6 +187,7 @@ impl Audio {
         self.muted = false;
         self.gain_db = 0.0;
         self.clock = Clock::default();
+        self.stall.reset();
     }
 
     /// Mutes or unmutes what is playing; the volume stays what it was.
@@ -170,6 +230,10 @@ impl Audio {
             }
         } else {
             self.clock.resume();
+            // The position did not move while paused, so the stall clock must
+            // start again: otherwise resuming after a few seconds looks like a
+            // stream that died and the song is skipped on the spot.
+            self.stall.reset();
             if let Some(p) = &self.player {
                 p.play();
             }
@@ -370,10 +434,24 @@ const BUFFER_FRAMES: u32 = 4096;
 
 /// The default sound device with a roomier buffer; rodio's own choice when
 /// the device won't take it.
-fn open_device() -> Result<rodio::MixerDeviceSink, rodio::DeviceSinkError> {
+///
+/// The error callback is ours rather than rodio's default, which prints to
+/// stderr: the interface owns the screen, so that message would appear over
+/// the UI and be wiped by the next frame. It is kept for [`Audio::take_device_error`].
+fn open_device(device_error: Arc<Mutex<Option<String>>>) -> Result<rodio::MixerDeviceSink, rodio::DeviceSinkError> {
+    let on_error = move |e: rodio::cpal::Error| {
+        if let Ok(mut slot) = device_error.lock() {
+            *slot = Some(e.to_string());
+        }
+    };
     rodio::DeviceSinkBuilder::from_default_device()
+        .map(|b| b.with_error_callback(on_error.clone()))
         .and_then(|b| b.with_buffer_size(rodio::cpal::BufferSize::Fixed(BUFFER_FRAMES)).open_stream())
-        .or_else(|_| rodio::DeviceSinkBuilder::open_default_sink())
+        .or_else(|_| {
+            rodio::DeviceSinkBuilder::from_default_device()
+                .map(|b| b.with_error_callback(on_error))
+                .and_then(|b| b.open_stream())
+        })
 }
 
 /// A source with every sample kept inside ±1.0.
@@ -566,213 +644,7 @@ impl<S: rodio::Source> rodio::Source for Resampled<S> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn junk_is_not_a_song() {
-        assert!(decoder(b"not audio at all, just text".to_vec()).is_err());
-        // And it says so in terms of the song, not with syom's "Unsupported
-        // audio format" from the AAC attempt that was never going to work.
-        let Err(why) = decoder(b"<html>not a song</html>".to_vec()) else {
-            panic!("an HTML error page decoded as audio");
-        };
-        assert!(why.starts_with("can't decode this song: "), "{why}");
-        assert!(!why.contains("Unsupported audio format"), "{why}");
-    }
-
-    /// An MP3 frame: 128 kbps, 44.1 kHz, stereo, 417 bytes of silence.
-    fn mp3_frame() -> Vec<u8> {
-        let mut f = vec![0xff, 0xfb, 0x90, 0x64];
-        f.resize(417, 0);
-        f
-    }
-
-    /// An ID3v2.4 tag of `size` bytes, as Pandora's MP3s carry.
-    fn id3(size: usize) -> Vec<u8> {
-        let mut t = b"ID3\x04\x00\x00".to_vec();
-        t.extend([(size >> 21) as u8 & 0x7f, (size >> 14) as u8 & 0x7f, (size >> 7) as u8 & 0x7f, size as u8 & 0x7f]);
-        t.resize(10 + size, 0);
-        t
-    }
-
-    /// The bug behind the skipping: an MP3 behind an ID3 tag is not AAC, but
-    /// syom called it `Malformed(AdtsLayer)` rather than `NotAac`, so the
-    /// fallback never ran and every MP3 was skipped instead of played.
-    #[test]
-    fn an_mp3_behind_an_id3_tag_is_not_taken_for_aac() {
-        let mut tagged = id3(64);
-        tagged.extend(mp3_frame());
-        assert!(!super::is_aac(&tagged), "an MP3 with an ID3 tag is not AAC");
-        assert!(super::decoder(tagged).is_ok(), "and it decodes as MP3");
-    }
-
-    #[test]
-    fn the_container_is_recognised_past_an_id3_tag() {
-        // ADTS, with and without a tag in front.
-        let adts = [0xff, 0xf1, 0x50, 0x80];
-        assert!(super::is_aac(&adts));
-        let mut tagged = id3(32);
-        tagged.extend(adts);
-        assert!(super::is_aac(&tagged), "the tag is skipped, not the frame");
-        // LATM/LOAS and MP4.
-        assert!(super::is_aac(&[0x56, 0xe0, 0x00]));
-        assert!(super::is_aac(b"\0\0\0\x20ftypM4A "));
-        assert!(!super::is_aac(&mp3_frame()));
-        assert!(!super::is_aac(b""));
-        assert!(!super::is_aac(b"ID3"));
-    }
-
-    /// A `free` box before `ftyp` is legal, and ffmpeg writes one: such a
-    /// file was taken for MP3 and skipped before this was handled.
-    #[test]
-    fn an_mp4_is_recognised_behind_a_leading_free_box() {
-        let mut data = Vec::new();
-        data.extend(8u32.to_be_bytes());
-        data.extend(b"free");
-        data.extend(0x20u32.to_be_bytes());
-        data.extend(b"ftypM4A ");
-        assert!(super::is_aac(&data), "ftyp is not always the first box");
-        // A `wide` box too, and a 64-bit `mdat` size is not mistaken for one.
-        let mut wide = Vec::new();
-        wide.extend(8u32.to_be_bytes());
-        wide.extend(b"wide");
-        wide.extend(0x20u32.to_be_bytes());
-        wide.extend(b"ftypM4A ");
-        assert!(super::is_aac(&wide));
-        // A box that is not one of the leading ones is not MP4.
-        let mut other = Vec::new();
-        other.extend(8u32.to_be_bytes());
-        other.extend(b"junk");
-        other.extend(0x20u32.to_be_bytes());
-        other.extend(b"ftypM4A ");
-        assert!(!super::is_aac(&other));
-    }
-
-    #[test]
-    fn an_id3_tag_is_measured_by_its_own_size() {
-        assert_eq!(super::id3_len(b"not a tag at all"), 0);
-        assert_eq!(super::id3_len(&id3(0)), 10);
-        assert_eq!(super::id3_len(&id3(100)), 110);
-        // A tag claiming more than the file holds stops at the end.
-        let mut short = id3(100);
-        short.truncate(40);
-        assert_eq!(super::id3_len(&short), 40);
-    }
-
-    #[test]
-    fn file_gain_scales_the_volume_like_the_website_and_never_clips() {
-        // -6 dB is half the amplitude; 0 dB changes nothing.
-        assert!((level(100, -6.0206) - 0.5).abs() < 1e-3);
-        assert_eq!(level(70, 0.0), gain(70));
-        assert!((level(50, -3.0) - gain(50) * 0.70795).abs() < 1e-4);
-        // Turned up: louder below full volume, never above 1.0.
-        assert!(level(50, 3.0) > gain(50));
-        assert_eq!(level(100, 6.0), 1.0);
-        assert_eq!(level(100, 40.0), 1.0);
-        assert!(level(90, 2.0) <= 1.0);
-        // Nonsense from the server is ignored.
-        assert_eq!(level(80, f32::NAN), gain(80));
-        assert_eq!(level(0, 6.0), 0.0);
-    }
-
-    #[test]
-    fn muted_is_silent_and_unmuting_brings_back_the_volume() {
-        let mut a = Audio::open(true, 60);
-        a.start(None, -2.0, true).unwrap();
-        assert_eq!(a.level(), 0.0);
-        a.set_volume(80);
-        assert_eq!(a.level(), 0.0, "a volume change while muted is kept, not heard");
-        a.set_muted(false);
-        assert_eq!(a.level(), level(80, -2.0));
-        a.start(None, 0.0, true).unwrap();
-        a.stop();
-        assert!(!a.is_muted(), "stopping (an ad failing, quitting) unmutes");
-    }
-
-    /// A tone as a rodio source.
-    fn tone(freq: f32, rate: u32, secs: f32, amp: f32) -> rodio::buffer::SamplesBuffer {
-        let n = (rate as f32 * secs) as usize;
-        let samples: Vec<f32> = (0..n)
-            .flat_map(|i| {
-                let v = amp * (2.0 * std::f32::consts::PI * freq * i as f32 / rate as f32).sin();
-                [v, v]
-            })
-            .collect();
-        rodio::buffer::SamplesBuffer::new(rodio::nz!(2), rodio::SampleRate::new(rate).unwrap(), samples)
-    }
-
-    #[test]
-    fn resampling_keeps_the_length_and_the_tone_and_stays_inside_full_scale() {
-        use rodio::Source;
-        let r = Resampled::new(tone(1000.0, 22050, 1.0, 0.99), 48000);
-        assert_eq!(r.sample_rate().get(), 48000);
-        assert_eq!(r.channels().get(), 2);
-        let out: Vec<f32> = r.collect();
-        let frames = out.len() / 2;
-        assert!((47_900..=48_100).contains(&frames), "{frames} frames for a second");
-        assert!(out.iter().all(|s| s.abs() <= 1.0));
-        // Away from the ends: the same 0.99 peak, and both channels alike.
-        let middle = &out[2000..out.len() - 2000];
-        let peak = middle.iter().fold(0f32, |m, s| m.max(s.abs()));
-        assert!((0.97..=1.0).contains(&peak), "peak {peak}");
-        assert!(middle.chunks(2).all(|f| (f[0] - f[1]).abs() < 1e-6));
-        // A 1 kHz tone crosses zero 2000 times a second.
-        let left: Vec<f32> = middle.iter().step_by(2).copied().collect();
-        let crossings = left.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count() as f32;
-        let secs = left.len() as f32 / 48000.0;
-        assert!((crossings / secs - 1000.0).abs() < 5.0, "{} Hz", crossings / secs);
-    }
-
-    #[test]
-    fn resampling_is_smoother_than_straight_lines() {
-        // A 9 kHz tone at 22.05 kHz, taken to 48 kHz: what is left over after
-        // removing the tone itself is the noise added. The sinc filter's must be
-        // far below what linear interpolation (rodio's converter) leaves.
-        let (freq, from, to) = (9000.0f64, 22050u32, 48000u32);
-        let input: Vec<f32> = tone(freq as f32, from, 0.5, 0.5).step_by(2).collect();
-        let ours: Vec<f32> = Resampled::new(tone(freq as f32, from, 0.5, 0.5), to).step_by(2).collect();
-        let ideal = |j: usize| 0.5 * (2.0 * std::f64::consts::PI * freq * j as f64 / f64::from(to)).sin();
-        let linear = |j: usize| {
-            let pos = j as f64 * f64::from(from) / f64::from(to);
-            let (i, t) = (pos.floor() as usize, pos.fract());
-            f64::from(input[i]) * (1.0 - t) + f64::from(*input.get(i + 1).unwrap_or(&0.0)) * t
-        };
-        let range = 1000..ours.len() - 1000;
-        let err = |f: &dyn Fn(usize) -> f64| {
-            (range.clone().map(|j| (f(j) - ideal(j)).powi(2)).sum::<f64>() / range.len() as f64).sqrt()
-        };
-        let (sinc, lin) = (err(&|j| f64::from(ours[j])), err(&linear));
-        assert!(sinc * 10.0 < lin, "sinc {sinc:.5} vs linear {lin:.5}");
-    }
-
-    #[test]
-    fn volume_curve() {
-        assert_eq!(gain(0), 0.0);
-        assert_eq!(gain(100), 1.0);
-        assert!(gain(50) < 0.5);
-    }
-
-    /// `BOXVIBE_DECODE=a.mp3:b.m4a cargo test decodes_real_files -- --ignored`
-    #[test]
-    #[ignore]
-    fn decodes_real_files() {
-        use rodio::Source;
-        for file in std::env::var("BOXVIBE_DECODE").unwrap_or_default().split(':').filter(|f| !f.is_empty()) {
-            let d = decoder(std::fs::read(file).unwrap()).unwrap_or_else(|e| panic!("{file}: {e}"));
-            let (rate, channels) = (d.sample_rate(), d.channels());
-            let (mut n, mut peak, mut over) = (0usize, 0f32, 0usize);
-            for s in d {
-                n += 1;
-                peak = peak.max(s.abs());
-                over += usize::from(s.abs() > 1.0);
-            }
-            let secs = n as f32 / f32::from(channels.get()) / rate.get() as f32;
-            eprintln!("{file}: {rate:?} Hz, {channels:?} ch, {secs:.1} s, peak {peak:.3}, {over} samples over 1.0");
-            assert!(n > 0, "{file} decodes to samples");
-        }
-    }
-}
+mod tests;
 
 #[cfg(test)]
 mod he_aac {

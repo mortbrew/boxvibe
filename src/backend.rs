@@ -17,6 +17,89 @@ use crate::pandora::{
 };
 use crate::update::{self, Checked, Update};
 
+/// What a [`Reply::Failed`] was about. A typed domain instead of a string, so
+/// the compiler checks that every failure is routed somewhere: a new variant
+/// cannot be silently swallowed by the catch-all status line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Failed {
+    Stations,
+    Rename,
+    Remove,
+    Details,
+    Seeds,
+    Suggestions,
+    AddSeed,
+    RemoveSeed,
+    ThumbsHistory,
+    DeleteThumb,
+    Search,
+    RecentlyPlayed,
+    CreateStation,
+    Artist,
+    Shuffle,
+    Mode,
+    Playlist,
+    Thumbs,
+    ClearThumb,
+    Tired,
+    Ads,
+}
+
+impl Failed {
+    /// Every domain, for the drift guard in the tests.
+    #[cfg(test)]
+    pub const ALL: [Failed; 21] = [
+        Failed::Stations,
+        Failed::Rename,
+        Failed::Remove,
+        Failed::Details,
+        Failed::Seeds,
+        Failed::Suggestions,
+        Failed::AddSeed,
+        Failed::RemoveSeed,
+        Failed::ThumbsHistory,
+        Failed::DeleteThumb,
+        Failed::Search,
+        Failed::RecentlyPlayed,
+        Failed::CreateStation,
+        Failed::Artist,
+        Failed::Shuffle,
+        Failed::Mode,
+        Failed::Playlist,
+        Failed::Thumbs,
+        Failed::ClearThumb,
+        Failed::Tired,
+        Failed::Ads,
+    ];
+
+    /// The word the status line uses: `⚠ playlist: ...`.
+    pub fn what(self) -> &'static str {
+        match self {
+            Failed::Stations => "stations",
+            Failed::Rename => "rename",
+            Failed::Remove => "remove",
+            Failed::Details => "details",
+            Failed::Seeds => "seeds",
+            Failed::Suggestions => "suggestions",
+            Failed::AddSeed => "add seed",
+            Failed::RemoveSeed => "remove seed",
+            Failed::ThumbsHistory => "thumbs history",
+            Failed::DeleteThumb => "delete thumb",
+            Failed::Search => "search",
+            Failed::RecentlyPlayed => "recently played",
+            Failed::CreateStation => "create station",
+            Failed::Artist => "artist",
+            Failed::Shuffle => "shuffle",
+            Failed::Mode => "mode",
+            Failed::Playlist => "playlist",
+            Failed::Thumbs => "thumbs",
+            Failed::ClearThumb => "clear thumb",
+            Failed::Tired => "tired",
+            Failed::Ads => "ads",
+        }
+    }
+}
+
 pub enum Request {
     Login {
         username: String,
@@ -260,7 +343,7 @@ pub enum Reply {
         message: String,
     },
     Failed {
-        what: &'static str,
+        what: Failed,
         message: String,
     },
     /// `None`: no cover (download or decode failed).
@@ -406,7 +489,7 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
                         station.name = name.clone();
                         Reply::StationRenamed { station_id, name }
                     }
-                    None => Reply::Failed { what: "rename", message: "no such station".into() },
+                    None => Reply::Failed { what: Failed::Rename, message: "no such station".into() },
                 }
             }
             Request::RemoveStation { station_id } => {
@@ -415,7 +498,7 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
                         stations.remove(at);
                         Reply::StationRemoved { station_id }
                     }
-                    None => Reply::Failed { what: "remove", message: "no such station".into() },
+                    None => Reply::Failed { what: Failed::Remove, message: "no such station".into() },
                 }
             }
             Request::StationDetails { station_id, .. } => {
@@ -427,11 +510,11 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
             }
             Request::AddSeed { station_id, seed_id, .. } => match editing.add_seed(&station_id, &seed_id) {
                 Ok(name) => Reply::SeedAdded { station_id, name },
-                Err(message) => Reply::Failed { what: "add seed", message },
+                Err(message) => Reply::Failed { what: Failed::AddSeed, message },
             },
             Request::RemoveSeed { station_id, seed_id, .. } => match editing.remove_seed(&station_id, &seed_id) {
                 Ok(name) => Reply::SeedRemoved { station_id, name },
-                Err(message) => Reply::Failed { what: "remove seed", message },
+                Err(message) => Reply::Failed { what: Failed::RemoveSeed, message },
             },
             Request::Feedback { station_id, positive, start } => {
                 Reply::Feedback { page: editing.feedback(&station_id, positive, start), station_id, positive, start }
@@ -439,7 +522,7 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
             Request::DeleteFeedback { station_id, feedback_id, positive } => {
                 match editing.delete_feedback(&station_id, &feedback_id, positive) {
                     Ok(()) => Reply::FeedbackDeleted { station_id, positive },
-                    Err(message) => Reply::Failed { what: "delete thumb", message },
+                    Err(message) => Reply::Failed { what: Failed::DeleteThumb, message },
                 }
             }
             Request::Search { query } => Reply::SearchResults { hits: demo::search(&query), query },
@@ -471,12 +554,12 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
                         }
                     }
                 }
-                None => Reply::Failed { what: "create station", message: "no such artist, song or genre".into() },
+                None => Reply::Failed { what: Failed::CreateStation, message: "no such artist, song or genre".into() },
             },
             Request::Artist { name, .. } => Reply::Artist(demo::artist(&name)),
             Request::Shuffle => match stations.iter().find(|s| s.is_shuffle) {
                 Some(s) => Reply::Shuffle(s.clone()),
-                None => Reply::Failed { what: "shuffle", message: "no Shuffle station".into() },
+                None => Reply::Failed { what: Failed::Shuffle, message: "no Shuffle station".into() },
             },
             Request::StationModes { station_id } => {
                 let on = *modes.get(&station_id).unwrap_or(&0);
@@ -488,8 +571,10 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
                         modes.insert(station_id.clone(), mode_id);
                         Reply::StationModes { station_id, modes: demo::modes(mode_id), set: true }
                     }
-                    Some(m) => Reply::Failed { what: "mode", message: format!("{} needs Pandora Premium", m.name) },
-                    None => Reply::Failed { what: "mode", message: "no such mode".into() },
+                    Some(m) => {
+                        Reply::Failed { what: Failed::Mode, message: format!("{} needs Pandora Premium", m.name) }
+                    }
+                    None => Reply::Failed { what: Failed::Mode, message: "no such mode".into() },
                 }
             }
             Request::Browse { path } => Reply::Browse { sections: demo::browse_at(path.as_deref()), path },
@@ -533,44 +618,46 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                 Err(e) => Reply::LoginFailed { wrong_password: e == Error::WrongLogin, message: e.to_string() },
             },
             Request::Stations => {
-                run(&mut client, &login, &mut took_over, "stations", |c| c.stations().map(Reply::Stations))
+                run(&mut client, &login, &mut took_over, Failed::Stations, |c| c.stations().map(Reply::Stations))
             }
-            Request::RenameStation { station_id, name } => run(&mut client, &login, &mut took_over, "rename", |c| {
-                c.rename_station(&station_id, &name)
-                    .map(|name| Reply::StationRenamed { station_id: station_id.clone(), name })
-            }),
-            Request::RemoveStation { station_id } => run(&mut client, &login, &mut took_over, "remove", |c| {
+            Request::RenameStation { station_id, name } => {
+                run(&mut client, &login, &mut took_over, Failed::Rename, |c| {
+                    c.rename_station(&station_id, &name)
+                        .map(|name| Reply::StationRenamed { station_id: station_id.clone(), name })
+                })
+            }
+            Request::RemoveStation { station_id } => run(&mut client, &login, &mut took_over, Failed::Remove, |c| {
                 c.remove_station(&station_id).map(|()| Reply::StationRemoved { station_id: station_id.clone() })
             }),
             Request::StationDetails { station_id, current } => {
-                run(&mut client, &login, &mut took_over, "details", |c| {
+                run(&mut client, &login, &mut took_over, Failed::Details, |c| {
                     c.station_details(&station_id, current)
                         .map(|details| Reply::StationDetails { station_id: station_id.clone(), details })
                 })
             }
-            Request::Seeds { station_id } => run(&mut client, &login, &mut took_over, "seeds", |c| {
+            Request::Seeds { station_id } => run(&mut client, &login, &mut took_over, Failed::Seeds, |c| {
                 c.seeds(&station_id).map(|seeds| Reply::Seeds { station_id: station_id.clone(), seeds })
             }),
             Request::SeedSuggestions { station_id, seed_music_id } => {
-                run(&mut client, &login, &mut took_over, "suggestions", |c| {
+                run(&mut client, &login, &mut took_over, Failed::Suggestions, |c| {
                     c.seed_suggestions(&station_id, &seed_music_id)
                         .map(|hits| Reply::SeedSuggestions { station_id: station_id.clone(), hits })
                 })
             }
             Request::AddSeed { station_id, seed_id, name } => {
-                run(&mut client, &login, &mut took_over, "add seed", |c| {
+                run(&mut client, &login, &mut took_over, Failed::AddSeed, |c| {
                     c.add_seed(&station_id, &seed_id)
                         .map(|()| Reply::SeedAdded { station_id: station_id.clone(), name: name.clone() })
                 })
             }
             Request::RemoveSeed { station_id, seed_id, name } => {
-                run(&mut client, &login, &mut took_over, "remove seed", |c| {
+                run(&mut client, &login, &mut took_over, Failed::RemoveSeed, |c| {
                     c.remove_seed(&station_id, &seed_id)
                         .map(|()| Reply::SeedRemoved { station_id: station_id.clone(), name: name.clone() })
                 })
             }
             Request::Feedback { station_id, positive, start } => {
-                run(&mut client, &login, &mut took_over, "thumbs history", |c| {
+                run(&mut client, &login, &mut took_over, Failed::ThumbsHistory, |c| {
                     c.station_feedback(&station_id, positive, start).map(|page| Reply::Feedback {
                         station_id: station_id.clone(),
                         positive,
@@ -580,16 +667,16 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                 })
             }
             Request::DeleteFeedback { station_id, feedback_id, positive } => {
-                run(&mut client, &login, &mut took_over, "delete thumb", |c| {
+                run(&mut client, &login, &mut took_over, Failed::DeleteThumb, |c| {
                     c.delete_feedback(&feedback_id, positive)
                         .map(|()| Reply::FeedbackDeleted { station_id: station_id.clone(), positive })
                 })
             }
-            Request::Search { query } => run(&mut client, &login, &mut took_over, "search", |c| {
+            Request::Search { query } => run(&mut client, &login, &mut took_over, Failed::Search, |c| {
                 c.search(&query).map(|hits| Reply::SearchResults { query: query.clone(), hits })
             }),
             Request::RecentlyPlayed { generation } => {
-                let reply = run(&mut client, &login, &mut took_over, "recently played", |c| {
+                let reply = run(&mut client, &login, &mut took_over, Failed::RecentlyPlayed, |c| {
                     c.recently_played(RECENT_PAGE, &[]).map(|sources| Reply::Recent { generation, sources })
                 });
                 match reply {
@@ -597,29 +684,33 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                     other => other,
                 }
             }
-            Request::CreateStation { pandora_id } => run(&mut client, &login, &mut took_over, "create station", |c| {
-                c.create_station(&pandora_id).map(Reply::StationCreated)
-            }),
-            Request::Artist { music_id, name } => run(&mut client, &login, &mut took_over, "artist", |c| {
+            Request::CreateStation { pandora_id } => {
+                run(&mut client, &login, &mut took_over, Failed::CreateStation, |c| {
+                    c.create_station(&pandora_id).map(Reply::StationCreated)
+                })
+            }
+            Request::Artist { music_id, name } => run(&mut client, &login, &mut took_over, Failed::Artist, |c| {
                 c.artist_by_name(&music_id, &name).map(Reply::Artist)
             }),
             Request::Shuffle => {
-                run(&mut client, &login, &mut took_over, "shuffle", |c| c.shuffle().map(Reply::Shuffle))
+                run(&mut client, &login, &mut took_over, Failed::Shuffle, |c| c.shuffle().map(Reply::Shuffle))
             }
-            Request::StationModes { station_id } => run(&mut client, &login, &mut took_over, "mode", |c| {
+            Request::StationModes { station_id } => run(&mut client, &login, &mut took_over, Failed::Mode, |c| {
                 c.station_modes(&station_id).map(|modes| Reply::StationModes {
                     station_id: station_id.clone(),
                     modes,
                     set: false,
                 })
             }),
-            Request::SetStationMode { station_id, mode_id } => run(&mut client, &login, &mut took_over, "mode", |c| {
-                c.set_station_mode(&station_id, mode_id).map(|modes| Reply::StationModes {
-                    station_id: station_id.clone(),
-                    modes,
-                    set: true,
+            Request::SetStationMode { station_id, mode_id } => {
+                run(&mut client, &login, &mut took_over, Failed::Mode, |c| {
+                    c.set_station_mode(&station_id, mode_id).map(|modes| Reply::StationModes {
+                        station_id: station_id.clone(),
+                        modes,
+                        set: true,
+                    })
                 })
-            }),
+            }
             Request::Browse { path } => {
                 let outcome = pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| match &path {
                     Some(p) => c.directory_at(p),
@@ -630,10 +721,10 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                     Err(e) => Reply::BrowseFailed { path, message: e.to_string() },
                 }
             }
-            Request::Playlist { station_id } => run(&mut client, &login, &mut took_over, "playlist", |c| {
+            Request::Playlist { station_id } => run(&mut client, &login, &mut took_over, Failed::Playlist, |c| {
                 c.fragment(&station_id).map(|songs| Reply::Playlist { station_id: station_id.clone(), songs })
             }),
-            Request::Rate { track_token, positive } => run(&mut client, &login, &mut took_over, "thumbs", |c| {
+            Request::Rate { track_token, positive } => run(&mut client, &login, &mut took_over, Failed::Thumbs, |c| {
                 c.add_feedback(&track_token, positive).map(|feedback_id| Reply::Rated {
                     track_token: track_token.clone(),
                     positive,
@@ -641,15 +732,15 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                 })
             }),
             Request::ClearThumb { track_token, feedback_id, positive } => {
-                run(&mut client, &login, &mut took_over, "clear thumb", |c| {
+                run(&mut client, &login, &mut took_over, Failed::ClearThumb, |c| {
                     c.delete_feedback(&feedback_id, positive)
                         .map(|()| Reply::ThumbCleared { track_token: track_token.clone() })
                 })
             }
-            Request::Tired { track_token } => run(&mut client, &login, &mut took_over, "tired", |c| {
+            Request::Tired { track_token } => run(&mut client, &login, &mut took_over, Failed::Tired, |c| {
                 c.add_tired(&track_token).map(|()| Reply::Tired { track_token: track_token.clone() })
             }),
-            Request::AdList { ask } => run(&mut client, &login, &mut took_over, "ads", |c| {
+            Request::AdList { ask } => run(&mut client, &login, &mut took_over, Failed::Ads, |c| {
                 c.ad_list(&ask)
                     .map(|v| Reply::AdList { station_id: ask.station_id.clone(), ads: ads::parse_ad_list(&v, true) })
             }),
@@ -693,13 +784,13 @@ fn run(
     client: &mut Client,
     login: &Option<(String, String)>,
     took_over: &mut bool,
-    what: &'static str,
+    what: Failed,
     call: impl FnMut(&mut Client) -> Result<Reply, Error>,
 ) -> Reply {
     pandora::with_retries(client, login.as_ref(), took_over, call).unwrap_or_else(|e| failed(what, e))
 }
 
-fn failed(what: &'static str, error: Error) -> Reply {
+fn failed(what: Failed, error: Error) -> Reply {
     Reply::Failed { what, message: error.to_string() }
 }
 
@@ -707,12 +798,25 @@ fn audio_worker(requests: Receiver<Request>, replies: Sender<Reply>, user_agent:
     let client = Client::new(user_agent);
     for request in requests {
         let Request::Audio { track_token, url } = request else { continue };
-        let reply = if url.is_empty() {
-            Reply::AudioFailed { track_token, message: "Pandora gave no audio URL for this song".into() }
-        } else {
-            match client.fetch_audio(&url) {
-                Ok(data) => Reply::Audio { track_token, data },
-                Err(e) => Reply::AudioFailed { track_token, message: e.to_string() },
+        // A panic here must not take the worker with it: every later song would
+        // then wait for an answer that never comes.
+        let fetched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if url.is_empty() {
+                return Err("Pandora gave no audio URL for this song".to_owned());
+            }
+            client.fetch_audio(&url).map_err(|e| e.to_string())
+        }));
+        let reply = match fetched {
+            Ok(Ok(data)) => Reply::Audio { track_token, data },
+            Ok(Err(message)) => Reply::AudioFailed { track_token, message },
+            Err(payload) => {
+                let why = payload
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_owned())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                crate::log::log!("download: crashed for {track_token}: {why}");
+                Reply::AudioFailed { track_token, message: "the download crashed".into() }
             }
         };
         if replies.send(reply).is_err() {
@@ -761,3 +865,6 @@ fn art_worker(requests: Receiver<Request>, replies: Sender<Reply>, demo: bool, u
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -392,12 +392,13 @@ const AAC_FEED: usize = 4 * 1024;
 /// latency and peak PCM stay O(frame). Flat M4A needs random access, so that
 /// path still expands once via [`aac_oneshot`].
 fn aac(mut data: Vec<u8>) -> Result<Box<dyn rodio::Source + Send>, (syom::AacError, Vec<u8>)> {
-    // An ID3 tag hides the `ftyp` box. The edit list lives in the M4A after it.
+    // An ID3 tag on ADTS is the `iTunSMPB` gapless trim, and syom needs it.
+    // On M4A the same tag only hides `ftyp`, so it comes off before the edit list.
     let body_at = id3_len(&data);
-    if body_at > 0 {
-        data.drain(..body_at);
-    }
-    if is_mp4(&data) {
+    if is_mp4(&data[body_at..]) {
+        if body_at > 0 {
+            data.drain(..body_at);
+        }
         match aac_oneshot(&data) {
             Ok(source) => return Ok(source),
             // Pandora's `elst` duration is often not a whole number of output

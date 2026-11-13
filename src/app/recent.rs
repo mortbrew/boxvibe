@@ -111,4 +111,39 @@ impl App {
             None => self.status = format!("“{}” isn't one of your stations any more", self.recent_title(&source)),
         }
     }
+
+    pub(super) fn reply_recent(&mut self, generation: u64, sources: Vec<RecentSource>) {
+        if !self.accept_recent(generation) {
+            return;
+        }
+        // A new row is inserted above Pinned. Stay on the menu entry
+        // the cursor was already on, and on the same recent source.
+        let had = self.recent_row();
+        let selected = self.menu_selected();
+        let keep = self.recent.get(self.recent_cursor).map(|s| s.id.clone());
+        self.recent = self.filter_recent(sources);
+        if let Some(id) = keep
+            && let Some(at) = self.recent.iter().position(|s| s.id == id)
+        {
+            self.recent_cursor = at;
+        } else {
+            self.recent_cursor = self.recent_cursor.min(self.recent.len().saturating_sub(1));
+        }
+        if !had && self.recent_row() {
+            self.refresh_menu_cache();
+            let items = self.menu_items();
+            if let Some(i) = items.iter().position(|m| *m == selected) {
+                self.menu_cursor = i;
+            }
+        }
+        self.finish_recent_request();
+    }
+
+    pub(super) fn reply_recent_failed(&mut self, generation: u64, message: String) {
+        if !self.accept_recent(generation) {
+            return;
+        }
+        self.status = format!("⚠ Recently Played: {message}");
+        self.finish_recent_request();
+    }
 }

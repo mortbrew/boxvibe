@@ -255,4 +255,96 @@ impl App {
     pub fn history_index(&self) -> usize {
         self.history_cursor.min(self.history.len().saturating_sub(1))
     }
+
+    pub(super) fn song_mut(&mut self, token: &str) -> Option<&mut Song> {
+        self.now.iter_mut().chain(self.history.iter_mut()).chain(self.queue.iter_mut()).find(|s| s.track_token == token)
+    }
+
+    pub(super) fn find_song(&self, token: &str) -> Option<&Song> {
+        self.now.iter().chain(self.history.iter()).chain(self.queue.iter()).find(|s| s.track_token == token)
+    }
+
+    pub fn station_name(&self) -> Option<&str> {
+        let id = self.current_station.as_deref()?;
+        self.stations.iter().find(|s| s.id == id).map(|s| s.name.as_str())
+    }
+
+    pub(super) fn reply_playlist(&mut self, station_id: String, songs: Vec<Song>) {
+        if self.current_station.as_deref() != Some(&station_id) {
+            return;
+        }
+        self.in_flight.end_playlist();
+        if songs.is_empty() && self.now.is_none() {
+            self.status = "Pandora sent no songs for this station".into();
+        }
+        self.queue.extend(songs);
+        if self.now.is_none() && !self.ad_break() {
+            self.advance();
+        } else if self.now.is_some() {
+            self.prefetch();
+        }
+    }
+
+    pub(super) fn reply_rated(&mut self, track_token: String, positive: bool, feedback_id: String) {
+        if let Some(song) = self.song_mut(&track_token) {
+            song.feedback_id = feedback_id;
+        }
+        let ic = crate::icons::icons(self.config.ui.icons);
+        let what = if positive { format!("{} Liked", ic.up) } else { format!("{} Disliked", ic.down) };
+        let title = self.find_song(&track_token).map(|s| s.title.clone()).unwrap_or_default();
+        self.status = format!("{what}: {title}");
+    }
+
+    pub(super) fn reply_thumb_cleared(&mut self, track_token: String) {
+        let title = self.song_mut(&track_token).map(|s| {
+            s.feedback_id.clear();
+            s.title.clone()
+        });
+        self.status = format!("Thumb taken back: {}", title.unwrap_or_default());
+    }
+
+    pub(super) fn reply_took_over(&mut self) {
+        self.status = "Pandora was playing on another device with this account: boxvibe took over".into();
+    }
+
+    pub(super) fn reply_tired(&mut self, track_token: String) {
+        let title = self.find_song(&track_token).map(|s| s.title.clone()).unwrap_or_default();
+        let sleep = crate::icons::icons(self.config.ui.icons).sleep;
+        self.status = format!("{sleep} Tired of {title}: Pandora won't play it for a month");
+    }
+
+    pub(super) fn reply_audio(&mut self, track_token: String, data: Vec<u8>, generation: u64) {
+        if generation != self.audio_generation {
+            return;
+        }
+        let Some(data) = self.ad_audio_arrived(&track_token, data) else { return };
+        // Success (or a late drop) must free the token so a later prefetch /
+        // cache miss can ask again — failures already remove in AudioFailed.
+        self.requested.remove(&track_token);
+        if self.buffering.as_ref().is_some_and(|(t, _)| *t == track_token) {
+            self.buffering = None;
+            if !self.play_now(Some(data)) {
+                // The audio would not start: skip on, as `next_song` does.
+                self.advance();
+            }
+        } else if self.queue.iter().any(|s| s.track_token == track_token) {
+            self.keep_audio(track_token, data);
+        }
+    }
+
+    pub(super) fn reply_audio_failed(&mut self, track_token: String, message: String, generation: u64) {
+        if generation != self.audio_generation {
+            return;
+        }
+        if self.ad_audio_failed(&track_token, &message) {
+            return;
+        }
+        self.requested.remove(&track_token);
+        if self.buffering.as_ref().is_some_and(|(t, _)| *t == track_token) {
+            crate::log::log!("download: failed for {track_token}: {message}");
+            self.buffering = None;
+            self.status = format!("⚠ {message}: skipping");
+            self.advance();
+        }
+    }
 }

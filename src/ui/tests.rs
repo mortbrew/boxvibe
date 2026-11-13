@@ -550,9 +550,7 @@ fn favorites_in_the_menu_line_up_and_the_add_row_sits_over_the_radio_icons() {
             app.config.ui.favorites.push(Favorite { id: st.id.clone(), name: st.name.clone() });
         }
         app.config.ui.favorites.push(Favorite { id: "gone".into(), name: "Quiet Storm".into() });
-        // Two rows taller than the old 34: the bar gap costs one row of content,
-        // and all four favorites have to stay on screen for this to line them up.
-        let buffer = screen(&mut app, 120, 36).1;
+        let buffer = screen(&mut app, 120, 34).1;
         let at: Vec<_> = ["Today's Hits", "M83 Radio", "Shuffle", "Quiet Storm"]
             .iter()
             .map(|n| (*n, name_column(&buffer, n, 1, 29)))
@@ -604,7 +602,7 @@ fn the_genre_popup_explains_the_problem_and_both_icons() {
         assert!(g.contains(ic.genre_station) && g[..g.find("Genre station: made").unwrap()].contains(ic.genre_station));
         assert!(o.contains(ic.own_station) && o[..o.find("Your own station").unwrap()].contains(ic.own_station));
         // The bar at the bottom still has the error, and its keys.
-        assert!(lines[31].contains("Pandora doesn't let you rename “Today's Hits”"), "{}", lines[31]);
+        assert!(lines[32].contains("Pandora doesn't let you rename “Today's Hits”"), "{}", lines[32]);
         assert!(
             lines[33].contains("Space") && lines[33].contains("Enter") && lines[33].contains("Esc"),
             "{}",
@@ -1406,25 +1404,6 @@ fn shift_q_shows_the_quit_box_and_says_q_again_quits() {
 }
 
 #[test]
-fn a_blank_row_separates_the_status_bar_from_the_key_bar() {
-    let mut app = demo();
-    app.config.ui.icons = crate::config::IconSet::Unicode;
-    app.status = "hello status".into();
-    for (cols, rows) in [(120u16, 36u16), (80, 24), (200, 50)] {
-        let (lines, _) = screen(&mut app, cols, rows);
-        let last = rows as usize - 1;
-        // The key bar is the bottom row and the status bar sits BAR_GAP above it.
-        assert!(lines[last].contains("Now Playing") || lines[last].contains("Quit"), "{cols}x{rows}: {}", lines[last]);
-        let status = last - usize::from(BAR_GAP) - 1;
-        assert!(lines[status].starts_with(" hello status"), "{cols}x{rows}: {}", lines[status]);
-        // Every row between them is blank, so the two bars do not read as one block.
-        for (y, line) in lines.iter().enumerate().take(last).skip(status + 1) {
-            assert!(line.trim().is_empty(), "{cols}x{rows}: row {y} is not blank: {line:?}");
-        }
-    }
-}
-
-#[test]
 fn the_logo_and_version_sit_on_the_menus_top_border() {
     let mut app = demo();
     app.config.ui.icons = crate::config::IconSet::Unicode;
@@ -1437,7 +1416,7 @@ fn the_logo_and_version_sit_on_the_menus_top_border() {
     assert!(top[..menu_end + '┐'.len_utf8()].ends_with(&version), "{top}");
     assert!(top.contains("Now Playing"), "no header row: Now Playing's border is the first row: {top}");
     assert!(!lines.iter().any(|l| l.contains("demo@") || l.contains("not logged in ")));
-    assert!(lines[33].starts_with(" hello status"), "status bar above the keys: {}", lines[33]);
+    assert!(lines[34].starts_with(" hello status"), "status bar above the keys: {}", lines[34]);
     // "box" and its icon blue, "vibe" the text colour.
     let p = app.palette;
     let x = top.chars().position(|c| c == 'b').unwrap() as u16;
@@ -1512,8 +1491,8 @@ fn now_playing_heads_the_menu_with_an_inset_rule() {
 fn song_panes_fit_ten_rows_and_now_playing_takes_the_rest() {
     let mut app = demo();
     // Side by side: Up Next and History are SONG_PANE (13) tall, Now Playing the rest.
-    for (rows, want) in [(36, 20), (50, 34), (20, 11)] {
-        assert_eq!(now_playing_height(rows - 3, false), want, "{rows} rows");
+    for (rows, want) in [(36, 21), (50, 35), (20, 11)] {
+        assert_eq!(now_playing_height(rows - 2, false), want, "{rows} rows");
         let (lines, _) = screen(&mut app, 120, rows);
         let up = lines.iter().position(|l| l.contains("Up Next (")).expect("Up Next");
         assert_eq!(up, usize::from(want), "Up Next right under Now Playing");
@@ -1718,16 +1697,16 @@ fn the_account_sits_at_the_right_of_the_status_bar() {
     app.status = "hello status".into();
     app.session = Session::LoggedIn;
     let (lines, buffer) = screen(&mut app, 120, 36);
-    let bar = &lines[33];
+    let bar = &lines[34];
     assert!(bar.starts_with(" hello status"), "{bar}");
     assert!(bar.trim_end().ends_with("Logged In As: toby@example.com"), "{bar}");
     assert!(bar.ends_with("Logged In As: toby@example.com "), "one space before the edge: {bar:?}");
     let x = (bar.chars().count() - "Logged In As: toby@example.com ".len()) as u16;
-    assert_eq!(buffer[(x, 33)].fg, app.palette.blue, "tubevibe's account colour");
+    assert_eq!(buffer[(x, 34)].fg, app.palette.blue, "tubevibe's account colour");
     // Narrow, with a long status: both cut, never overlapping.
     app.status = "a very long status message that goes on and on and on".into();
     let (lines, _) = screen(&mut app, 40, 36);
-    let bar = &lines[33];
+    let bar = &lines[34];
     assert!(bar.contains('…') && bar.contains('@'), "{bar}");
     assert!(bar.trim_end().ends_with("toby@example.com"), "narrow: just the email, whole: {bar}");
     assert!(!bar.contains("Logged In As"), "{bar}");
@@ -1737,7 +1716,7 @@ fn the_account_sits_at_the_right_of_the_status_bar() {
     // Logged out: nothing on the right.
     app.session = Session::LoggedOut;
     let (lines, _) = screen(&mut app, 120, 36);
-    assert!(!lines[33].contains("toby@"), "{}", lines[33]);
+    assert!(!lines[34].contains("toby@"), "{}", lines[34]);
 }
 
 #[test]
@@ -1751,7 +1730,7 @@ fn the_status_bar_shows_the_look_and_the_sleep_timer_left_of_the_account_and_dro
     app.config.ui.art_tint = crate::config::ArtTint::Duotone;
     app.session = Session::LoggedIn;
     app.status = "hi".into();
-    let bar = screen(&mut app, 200, 36).0[33].clone();
+    let bar = screen(&mut app, 200, 36).0[34].clone();
     assert!(
         bar.trim_end()
             .ends_with("Gruvbox · Art Picture · 8-bit · Tint Duotone · MP3 192 kbps · Logged In As: toby@example.com"),
@@ -1759,21 +1738,21 @@ fn the_status_bar_shows_the_look_and_the_sleep_timer_left_of_the_account_and_dro
     );
     // The look is in the account's colour; the separators stay muted.
     let (lines, buffer) = screen(&mut app, 200, 36);
-    let col = |s: &str| lines[33].chars().take(lines[33].find(s).unwrap()).count() as u16;
+    let col = |s: &str| lines[34].chars().take(lines[34].find(s).unwrap()).count() as u16;
     for label in ["Gruvbox", "Art Picture", "8-bit", "Tint Duotone", "MP3 192 kbps", "Logged In As"] {
-        assert_eq!(buffer[(col(label), 33)].fg, app.palette.blue, "{label}");
+        assert_eq!(buffer[(col(label), 34)].fg, app.palette.blue, "{label}");
     }
-    assert_eq!(buffer[(col("Gruvbox") + 8, 33)].fg, app.palette.muted);
+    assert_eq!(buffer[(col("Gruvbox") + 8, 34)].fg, app.palette.muted);
     app.sleep = Some(crate::app::Sleep::Minutes(15, std::time::Instant::now()));
-    let bar = screen(&mut app, 200, 36).0[33].clone();
+    let bar = screen(&mut app, 200, 36).0[34].clone();
     assert!(bar.contains("☾ 15:00 · Gruvbox") || bar.contains("☾ 14:59 · Gruvbox"), "{bar}");
     // Narrower: the tint goes first, then the rest of the look; the timer stays.
-    let bar = screen(&mut app, 150, 36).0[33].clone();
+    let bar = screen(&mut app, 150, 36).0[34].clone();
     assert!(bar.contains("☾ 1") && bar.contains("Logged In As") && !bar.contains("Tint"), "{bar}");
-    let bar = screen(&mut app, 96, 36).0[33].clone();
+    let bar = screen(&mut app, 96, 36).0[34].clone();
     assert!(bar.contains("☾ 1") && !bar.contains("Gruvbox") && bar.contains("toby@example.com"), "{bar}");
     app.sleep = Some(crate::app::Sleep::EndOfSong);
-    assert!(screen(&mut app, 200, 36).0[33].contains("☾ end of song"));
+    assert!(screen(&mut app, 200, 36).0[34].contains("☾ end of song"));
 }
 
 #[test]
@@ -1816,26 +1795,26 @@ fn the_status_bar_names_the_stream_left_of_the_account_and_follows_the_song() {
     app.session = Session::LoggedIn;
     app.status = "hi".into();
     // The demo songs are 192 kbps MP3.
-    let bar = screen(&mut app, 200, 36).0[33].clone();
+    let bar = screen(&mut app, 200, 36).0[34].clone();
     assert!(bar.trim_end().ends_with("MP3 192 kbps · Logged In As: toby@example.com"), "{bar}");
     // A free plan's HE-AAC: the label follows the song, not the setting.
     app.stream = Some((crate::pandora::AudioFormat::Aac, 64));
-    let bar = screen(&mut app, 200, 36).0[33].clone();
+    let bar = screen(&mut app, 200, 36).0[34].clone();
     assert!(bar.trim_end().ends_with("AAC 64 kbps · Logged In As: toby@example.com"), "{bar}");
     // A stream that did not say its bitrate names the format alone.
     app.stream = Some((crate::pandora::AudioFormat::Mp3, 0));
-    assert!(screen(&mut app, 200, 36).0[33].contains("· MP3 · Logged In As"));
+    assert!(screen(&mut app, 200, 36).0[34].contains("· MP3 · Logged In As"));
     // Nothing known yet, or an unknown format: no label at all.
     app.stream = Some((crate::pandora::AudioFormat::Unknown, 128));
-    assert!(!screen(&mut app, 200, 36).0[33].contains("kbps"));
+    assert!(!screen(&mut app, 200, 36).0[34].contains("kbps"));
     app.stream = None;
-    assert!(!screen(&mut app, 200, 36).0[33].contains("kbps"));
+    assert!(!screen(&mut app, 200, 36).0[34].contains("kbps"));
     // Narrow: the look goes before the stream, which goes before the timer.
     app.stream = Some((crate::pandora::AudioFormat::Aac, 64));
     app.sleep = Some(crate::app::Sleep::Minutes(15, std::time::Instant::now()));
-    let bar = screen(&mut app, 150, 36).0[33].clone();
+    let bar = screen(&mut app, 150, 36).0[34].clone();
     assert!(bar.contains("AAC 64 kbps") && bar.contains("☾ 1") && !bar.contains("Tint"), "{bar}");
-    let bar = screen(&mut app, 96, 36).0[33].clone();
+    let bar = screen(&mut app, 96, 36).0[34].clone();
     assert!(bar.contains("☾ 1") && bar.contains("toby@example.com") && !bar.contains("kbps"), "{bar}");
 }
 
@@ -1847,16 +1826,16 @@ fn following_omarchy_the_status_bar_names_its_theme_in_the_account_colour() {
     app.config.ui.set_theme("omarchy");
     app.omarchy_theme = Some("Tokyo Night".into());
     let (lines, buffer) = screen(&mut app, 200, 36);
-    let bar = &lines[33];
+    let bar = &lines[34];
     assert!(bar.contains("omarchy: Tokyo Night · Art"), "{bar}");
     let x = bar.chars().take(bar.find("omarchy: Tokyo").unwrap()).count() as u16;
-    assert_eq!((buffer[(x, 33)].fg, buffer[(x + 12, 33)].fg), (app.palette.blue, app.palette.blue));
+    assert_eq!((buffer[(x, 34)].fg, buffer[(x + 12, 34)].fg), (app.palette.blue, app.palette.blue));
     // Its name not known yet: just "Omarchy"; a picked theme: its own name.
     app.omarchy_theme = None;
-    assert!(screen(&mut app, 200, 36).0[33].contains("Omarchy · Art"));
+    assert!(screen(&mut app, 200, 36).0[34].contains("Omarchy · Art"));
     app.config.ui.set_theme("gruvbox");
     app.omarchy_theme = Some("Tokyo Night".into());
-    let bar = screen(&mut app, 200, 36).0[33].clone();
+    let bar = screen(&mut app, 200, 36).0[34].clone();
     assert!(bar.contains("Gruvbox · Art") && !bar.contains("omarchy:"), "{bar}");
 }
 
@@ -1923,7 +1902,7 @@ fn now_playing_art_fills_the_pane_with_info_time_and_volume_beside_it() {
     let mut app = demo();
     app.config.ui.icons = crate::config::IconSet::Unicode;
     let (lines, _) = screen(&mut app, 120, 36);
-    let rows = usize::from(now_playing_height(33, false));
+    let rows = usize::from(now_playing_height(34, false));
     let menu = |l: &String| l.chars().skip(30).collect::<String>();
     let art = app.art.last_area;
     assert_eq!(

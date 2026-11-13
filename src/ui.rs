@@ -70,10 +70,6 @@ pub fn menu_width(app: &App, screen: u16) -> u16 {
 /// Blank columns between the menu and the page, so the two frames do not touch.
 pub const PANE_GAP: u16 = 1;
 
-/// Blank rows between the status bar and the key bar, so the two do not read as
-/// one block of text at the bottom of the screen.
-pub const BAR_GAP: u16 = 1;
-
 pub fn draw(frame: &mut Frame, app: &mut App) {
     BORDERS.set(app.config.ui.border_style);
     let p = app.palette;
@@ -87,13 +83,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
     let ic = icons(app.config.ui.icons);
-    let [body, status, _, keys] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(1),
-        Constraint::Length(BAR_GAP),
-        Constraint::Length(1),
-    ])
-    .areas(area);
+    let [body, status, keys] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1)]).areas(area);
     let side = menu_width(app, body.width);
     let [left, _, right] =
         Layout::horizontal([Constraint::Length(side), Constraint::Length(PANE_GAP), Constraint::Fill(1)]).areas(body);

@@ -564,18 +564,24 @@ impl<S: rodio::Source> Resampled<S> {
     /// Reads input until frame `upto` is there (or the input ends).
     fn fill(&mut self, upto: i64) {
         while !self.done && self.read <= upto {
-            let mut frame = Vec::with_capacity(self.channels);
+            // Push channels straight into `frames` — no per-frame Vec on the
+            // audio callback path. A short read rolls the partial frame back.
+            let before = self.frames.len();
+            let mut got = 0;
             for _ in 0..self.channels {
                 match self.input.next() {
-                    Some(s) => frame.push(s),
+                    Some(s) => {
+                        self.frames.push_back(s);
+                        got += 1;
+                    }
                     None => break,
                 }
             }
-            if frame.len() < self.channels {
+            if got < self.channels {
+                self.frames.truncate(before);
                 self.done = true;
                 break;
             }
-            self.frames.extend(frame);
             self.read += 1;
         }
     }

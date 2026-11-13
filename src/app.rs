@@ -2113,6 +2113,9 @@ impl App {
             Reply::AdList { station_id, ads } => self.ad_list_arrived(&station_id, ads),
             Reply::Audio { track_token, data } => {
                 let Some(data) = self.ad_audio_arrived(&track_token, data) else { return };
+                // Success (or a late drop) must free the token so a later prefetch /
+                // cache miss can ask again — failures already remove in AudioFailed.
+                self.requested.remove(&track_token);
                 if self.buffering.as_ref().is_some_and(|(t, _)| *t == track_token) {
                     self.buffering = None;
                     if !self.play_now(Some(data)) {

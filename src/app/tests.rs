@@ -1073,6 +1073,18 @@ fn a_download_that_never_answers_is_given_up_on() {
 }
 
 #[test]
+fn a_successful_download_leaves_requested_so_it_can_be_asked_again() {
+    // Prefetch inserts into `requested` and used to leave the token there after
+    // a good Reply::Audio, so a later cache miss could never re-fetch.
+    let mut app = demo();
+    let token = app.queue.front().unwrap().track_token.clone();
+    app.requested.insert(token.clone());
+    app.on_reply(Reply::Audio { track_token: token.clone(), data: vec![1, 2, 3] });
+    assert!(!app.requested.contains(&token));
+    assert!(app.audio_cache.contains(&token), "bytes for an Up Next song are kept");
+}
+
+#[test]
 fn a_run_of_held_dislikes_is_walked_in_one_call() {
     // `next_song` used to reach the next song by calling `advance`, which called
     // `next_song` again, so a run of songs to skip was a recursion. It is a loop

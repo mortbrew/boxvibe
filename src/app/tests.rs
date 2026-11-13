@@ -1061,6 +1061,7 @@ fn a_download_that_never_answers_is_given_up_on() {
     // player would sit on "buffering…" for the rest of the session.
     let mut app = demo();
     let playing = app.now.as_ref().unwrap().track_token.clone();
+    let before = app.audio_generation;
     app.buffering = Some((playing.clone(), Instant::now()));
     app.buffer_tick();
     assert!(app.buffering.is_some(), "a download still in time is left alone");
@@ -1070,6 +1071,7 @@ fn a_download_that_never_answers_is_given_up_on() {
     assert!(app.buffering.is_none(), "the wait is over");
     assert!(app.status.contains("took too long"), "{}", app.status);
     assert_ne!(app.now.as_ref().unwrap().track_token, playing, "the next song starts");
+    assert_ne!(app.audio_generation, before, "the timed-out download's generation is invalidated");
 }
 
 #[test]
@@ -1091,9 +1093,42 @@ fn a_successful_download_leaves_requested_so_it_can_be_asked_again() {
     let mut app = demo();
     let token = app.queue.front().unwrap().track_token.clone();
     app.requested.insert(token.clone());
-    app.on_reply(Reply::Audio { track_token: token.clone(), data: vec![1, 2, 3] });
+    app.on_reply(Reply::Audio { track_token: token.clone(), data: vec![1, 2, 3], generation: app.audio_generation });
     assert!(!app.requested.contains(&token));
     assert!(app.audio_cache.contains(&token), "bytes for an Up Next song are kept");
+}
+
+#[test]
+fn a_stale_audio_reply_is_ignored_after_the_generation_bumps() {
+    let mut app = demo();
+    let token = app.queue.front().unwrap().track_token.clone();
+    let stale = app.audio_generation;
+    app.requested.insert(token.clone());
+    app.bump_audio_generation();
+    app.on_reply(Reply::Audio { track_token: token.clone(), data: vec![9, 9, 9], generation: stale });
+    assert!(!app.audio_cache.contains(&token), "bytes from an old generation are dropped");
+    assert!(!app.requested.contains(&token), "bump cleared requested; stale reply must not touch it");
+}
+
+#[test]
+fn tune_bumps_audio_generation_and_skip_while_playing_does_not() {
+    let mut app = demo();
+    let before = app.audio_generation;
+    assert!(app.buffering.is_none() && app.now.is_some());
+    app.advance();
+    assert_eq!(app.audio_generation, before, "a normal advance keeps the prefetch generation");
+    app.tune(1);
+    assert_ne!(app.audio_generation, before, "tuning abandons queued downloads");
+}
+
+#[test]
+fn advancing_while_buffering_bumps_audio_generation() {
+    let mut app = demo();
+    let before = app.audio_generation;
+    let playing = app.now.as_ref().unwrap().track_token.clone();
+    app.buffering = Some((playing, Instant::now()));
+    app.advance();
+    assert_ne!(app.audio_generation, before);
 }
 
 #[test]
@@ -1562,7 +1597,11 @@ fn an_ad_question_that_fails_or_never_answers_goes_on_to_the_next_song() {
     app.ad = AdPhase::Asking(Instant::now());
     app.ad_list_arrived(&app.current_station.clone().unwrap(), crate::demo::ads(3));
     assert!(app.ad_view().is_some_and(|v| v.loading));
-    app.on_reply(Reply::AudioFailed { track_token: format!("ad:{}:0", app.ad_serial), message: "gone".into() });
+    app.on_reply(Reply::AudioFailed {
+        track_token: format!("ad:{}:0", app.ad_serial),
+        message: "gone".into(),
+        generation: app.audio_generation,
+    });
     assert!(!app.ad_break() && app.status.contains("playing on"), "{}", app.status);
 }
 

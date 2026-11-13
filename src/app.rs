@@ -996,6 +996,8 @@ pub struct App {
     /// The covers.
     pub art: crate::art::Art,
     requested: HashSet<String>,
+    /// Invalidates queued / late audio downloads (see [`App::bump_audio_generation`]).
+    audio_generation: u64,
     pub audio: Audio,
     backend: Backend,
     /// Where the Pandora password is kept (see [`crate::keychain`]).
@@ -1129,6 +1131,7 @@ impl App {
             buffering: None,
             audio_cache: audio_cache::AudioCache::default(),
             requested: HashSet::new(),
+            audio_generation: 0,
             audio,
             backend,
             keychain,
@@ -2247,7 +2250,10 @@ impl App {
                 self.status = format!("{sleep} Tired of {title}: Pandora won't play it for a month");
             }
             Reply::AdList { station_id, ads } => self.ad_list_arrived(&station_id, ads),
-            Reply::Audio { track_token, data } => {
+            Reply::Audio { track_token, data, generation } => {
+                if generation != self.audio_generation {
+                    return;
+                }
                 let Some(data) = self.ad_audio_arrived(&track_token, data) else { return };
                 // Success (or a late drop) must free the token so a later prefetch /
                 // cache miss can ask again — failures already remove in AudioFailed.
@@ -2263,7 +2269,10 @@ impl App {
                 }
             }
             Reply::Art { url, image } => self.art.arrived(url, image),
-            Reply::AudioFailed { track_token, message } => {
+            Reply::AudioFailed { track_token, message, generation } => {
+                if generation != self.audio_generation {
+                    return;
+                }
                 if self.ad_audio_failed(&track_token, &message) {
                     return;
                 }
@@ -2541,6 +2550,9 @@ impl App {
         self.stations.clear();
         // A dislike held on an Up Next row belongs to the account that held it.
         self.held_dislikes.clear();
+        self.bump_audio_generation();
+        self.buffering = None;
+        self.audio_cache.clear();
         self.forget_recent();
         self.current_station = None;
         self.menu_cursor = 0;
@@ -3220,6 +3232,7 @@ impl App {
             self.queue.clear();
             self.audio_cache.clear();
             self.buffering = None;
+            self.bump_audio_generation();
             self.in_flight.end_playlist();
             self.current_station = None;
             if self.view == View::Player {

@@ -4,6 +4,19 @@
 use super::*;
 
 impl App {
+    /// Invalidate queued / late audio downloads (station change, timeout, …).
+    pub(super) fn bump_audio_generation(&mut self) {
+        self.audio_generation = self.audio_generation.wrapping_add(1);
+        self.backend.set_audio_epoch(self.audio_generation);
+        self.requested.clear();
+    }
+
+    /// Ask the audio worker for `url`, stamped with the current generation.
+    pub(super) fn send_audio(&mut self, track_token: String, url: String) {
+        let generation = self.audio_generation;
+        self.backend.send(Request::Audio { track_token, url, generation });
+    }
+
     pub(super) fn tune(&mut self, index: usize) {
         let Some(station) = self.stations.get(index).cloned() else { return };
         if let Some(song) = self.now.take() {
@@ -13,7 +26,7 @@ impl App {
         self.ad = AdPhase::Off;
         self.queue.clear();
         self.audio_cache.clear();
-        self.requested.clear();
+        self.bump_audio_generation();
         // Held dislikes are for songs of the station being left.
         self.held_dislikes.clear();
         self.buffering = None;
@@ -47,6 +60,12 @@ impl App {
     }
 
     pub(super) fn advance(&mut self) {
+        // Abandoning a download in flight: invalidate its generation so a
+        // queued fetch for this song does not block the next one. A normal
+        // skip while already playing leaves the prefetch generation alone.
+        if self.buffering.is_some() {
+            self.bump_audio_generation();
+        }
         if let Some(song) = self.now.take() {
             self.push_history(song);
         }
@@ -92,7 +111,7 @@ impl App {
                 // The download answers later and calls `play_now` itself.
                 self.buffering = Some((token.clone(), Instant::now()));
                 if self.requested.insert(token.clone()) {
-                    self.backend.send(Request::Audio { track_token: token, url });
+                    self.send_audio(token, url);
                 }
                 break;
             };
@@ -134,7 +153,7 @@ impl App {
         if let Some(next) = self.queue.front()
             && self.requested.insert(next.track_token.clone())
         {
-            self.backend.send(Request::Audio { track_token: next.track_token.clone(), url: next.audio_url.clone() });
+            self.send_audio(next.track_token.clone(), next.audio_url.clone());
         }
     }
 
@@ -147,9 +166,8 @@ impl App {
         }
         let token = token.clone();
         crate::log::log!("download: no answer for {token} in {BUFFER_TIMEOUT:?}: skipping");
-        self.buffering = None;
-        self.requested.remove(&token);
         self.status = "⚠ The song took too long to download: skipping".into();
+        // `advance` bumps the generation while `buffering` is still set.
         self.advance();
     }
 

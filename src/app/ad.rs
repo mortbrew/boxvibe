@@ -157,7 +157,7 @@ impl App {
         let token = format!("ad:{}:{}", play.serial, play.brk.index());
         let url = ad.audio_url.clone();
         play.waiting = Some((token.clone(), Instant::now()));
-        self.backend.send(Request::Audio { track_token: token, url });
+        self.send_audio(token, url);
     }
 
     /// The audio worker brought an ad (true: it was the one waited for).

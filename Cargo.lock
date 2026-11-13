@@ -407,7 +407,7 @@ dependencies = [
 
 [[package]]
 name = "boxvibe"
-version = "0.7.0-dev"
+version = "0.6.3-dev"
 dependencies = [
  "ab_glyph",
  "anyhow",

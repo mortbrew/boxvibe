@@ -486,31 +486,44 @@ does not need this approval.
 ## 9. Versions
 
 `dev` carries a **prerelease** version: the number of the next release with a
-`-dev` suffix, so `Cargo.toml` says `0.7.0-dev` rather than `0.7.0`. That is
-deliberate: the version string is drawn on screen, so seeing `v0.7.0-dev`
+`-dev` suffix, so `Cargo.toml` says `0.6.3-dev` rather than `0.6.2`. That is
+deliberate: the version string is drawn on screen, so seeing `v0.6.3-dev`
 confirms at a glance that the running binary is a build from source rather than
 a released one.
 
 The suffix is what lets one string do both jobs:
 
-- Semver orders a prerelease *below* its release, so `0.6.2-dev < 0.6.2 < 0.7.0-dev`.
+- Semver orders a prerelease *below* its release, so `0.6.2-dev < 0.6.2 < 0.6.3-dev`.
 - The updater compares only the numeric core (`vibekit::update::version` strips
   everything after `-`), so `0.6.2-dev == 0.6.2`: no spurious "update available"
   on a source build.
 - The number moves forward at each release instead of being reconciled after it.
 
-Cutting a release:
+### Which number to bump
 
-1. On `dev`, drop the suffix (`0.7.0-dev` → `0.7.0`) and update `Cargo.lock`
+After a release, `dev` goes up by **one patch** (`0.6.2` → `0.6.3-dev`). That is
+the default and covers fixes and small features.
+
+Bump the **minor** instead only when the release carries a big feature worth
+announcing (`.6.x` → `.7.0-dev`). Bump the **major** only when an
+on-disk format breaks — `config.toml`, the theme store, the pinned list — since
+that needs migration code whatever semver says.
+
+The rule exists so the number means something: a patch release that quietly
+carried a headline feature makes the version lie about what is in it.
+
+### Cutting a release
+
+1. On `dev`, drop the suffix (`0.6.3-dev` → `0.6.2`) and update `Cargo.lock`
    with `cargo update --workspace --offline`.
-2. Commit ("Release 0.7.0") and push `dev`.
+2. Commit ("Release 0.6.2") and push `dev`.
 3. Pull request `dev` into `main`, and merge it.
-4. Tag the merge commit on `main` as `v0.7.0`. The tag must point at a commit
+4. Tag the merge commit on `main` as `v0.6.2`. The tag must point at a commit
    whose `Cargo.toml` has no suffix: `release.yml` names the archives from the
    git tag while the binary reports `Cargo.toml`, so a mismatch ships an archive
    called one thing whose binary says another.
-5. Back on `dev`, bump to the next number with a fresh suffix (`0.8.0-dev`) and
-   carry on ahead of the tag.
+5. Back on `dev`, bump by one patch with a fresh suffix (`0.6.3-dev`) and carry on
+   ahead of the tag.
 
 - Keep every bump in `Cargo.toml` only; `env!("CARGO_PKG_VERSION")` propagates it.
 - Update `Cargo.lock` with `cargo update --workspace --offline`, never by hand.

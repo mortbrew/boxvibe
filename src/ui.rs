@@ -1717,13 +1717,17 @@ pub const SONG_ROWS: u16 = 10;
 pub const SONG_PANE: u16 = SONG_ROWS + 3;
 /// Now Playing never gets fewer rows than this while the song panes have room to give.
 pub const NOW_PLAYING_MIN: u16 = 11;
+/// Rows Now Playing keeps when the window is narrow and the cover sits above the song.
+pub const NOW_PLAYING_STACKED_MIN: u16 = 22;
 
 /// Now Playing's rows: whatever the song panes (one row of them, or two
-/// stacked) leave; on a short screen it keeps [`NOW_PLAYING_MIN`] and the
-/// song panes shrink and scroll instead.
+/// stacked) leave. On a short screen it keeps its minimum — [`NOW_PLAYING_MIN`]
+/// beside the song panes, [`NOW_PLAYING_STACKED_MIN`] when they are stacked —
+/// and the song panes shrink and scroll instead.
 pub fn now_playing_height(height: u16, stacked: bool) -> u16 {
     let songs = if stacked { 2 * SONG_PANE } else { SONG_PANE };
-    height.saturating_sub(songs).max(NOW_PLAYING_MIN).min(height)
+    let min = if stacked { NOW_PLAYING_STACKED_MIN } else { NOW_PLAYING_MIN };
+    height.saturating_sub(songs).max(min).min(height)
 }
 
 fn draw_player(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
@@ -1787,16 +1791,28 @@ fn draw_now_playing(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
         );
         return;
     };
-    // The art fills the padded height, two cells wide per row so it looks
-    // square; song info, the time line and the volume sit to its right and
-    // end as far from the right border as the art is from the left one.
-    let art_w = (inner.height * 2).min(inner.width / 2);
-    let art = Rect { width: art_w, ..inner };
-    // The picture sits against the left padding; the info starts a few
-    // cells after wherever the picture really ended.
-    let drawn = draw_art(frame, &mut app.art, look, song, art);
-    let info_x = (drawn.right() + 3).min(inner.right());
-    let info = Rect { x: info_x, width: inner.right() - info_x, ..inner };
+    // Wide: the art fills the padded height, two cells wide per row so it
+    // looks square, and the song sits to its right. Narrow (the same width
+    // that stacks Up Next over History): the art is centred on top and the
+    // song, time line and volume sit underneath it.
+    let info = if area.width < STACK_BELOW {
+        let info_floor = 9.min(inner.height);
+        let square = inner.width / 2;
+        let art_h = square.min(inner.height.saturating_sub(info_floor)).max(1.min(inner.height));
+        let [art_area, below] = Layout::vertical([Constraint::Length(art_h), Constraint::Fill(1)]).areas(inner);
+        let art_w = art_area.height.saturating_mul(2).min(art_area.width);
+        let art = Rect { x: art_area.x + art_area.width.saturating_sub(art_w) / 2, width: art_w, ..art_area };
+        draw_art(frame, &mut app.art, look, song, art);
+        below
+    } else {
+        let art_w = (inner.height * 2).min(inner.width / 2);
+        let art = Rect { width: art_w, ..inner };
+        // The picture sits against the left padding; the info starts a few
+        // cells after wherever the picture really ended.
+        let drawn = draw_art(frame, &mut app.art, look, song, art);
+        let info_x = (drawn.right() + 3).min(inner.right());
+        Rect { x: info_x, width: inner.right() - info_x, ..inner }
+    };
     let label = |text: &str| Span::styled(format!("{text:<9}"), Style::new().fg(p.muted));
     let state = if app.buffering.is_some() {
         Span::styled(format!("{} buffering…", ic.loading), Style::new().fg(p.yellow))

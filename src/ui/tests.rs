@@ -1499,7 +1499,7 @@ fn song_panes_fit_ten_rows_and_now_playing_takes_the_rest() {
     }
     // Stacked: two song panes of 13 each.
     assert_eq!(now_playing_height(48, true), 22);
-    assert_eq!(now_playing_height(30, true), NOW_PLAYING_MIN, "short: Now Playing keeps its minimum");
+    assert_eq!(now_playing_height(30, true), NOW_PLAYING_STACKED_MIN, "short: the stacked card keeps its minimum");
     assert_eq!(now_playing_height(5, true), 5, "never more than the screen");
     // A full History (10 songs) fits exactly: last row right above the bottom border.
     for i in 0..12 {
@@ -1929,6 +1929,30 @@ fn now_playing_art_fills_the_pane_with_info_time_and_volume_beside_it() {
     for key in ["-/d", "+/u", "space"] {
         assert!(!lines[..rows].iter().any(|l| l.contains(key)), "no {key} under the buttons");
     }
+}
+
+#[test]
+fn now_playing_stacks_the_cover_over_the_song_when_narrow() {
+    let mut app = demo();
+    app.config.ui.icons = crate::config::IconSet::Unicode;
+    let (lines, _) = screen(&mut app, 80, 50);
+    let rows = usize::from(now_playing_height(48, true));
+    let art = app.art.last_area;
+    let title = app.now.as_ref().unwrap().title.clone();
+    let title_at = lines.iter().position(|l| l.contains(&title)).expect("title");
+    let time = lines.iter().position(|l| l.contains('●')).expect("time");
+    assert!(u16::try_from(title_at).unwrap() >= art.y + art.height, "cover above the title");
+    assert!(title_at < time && time < rows, "time under the song, still in the pane");
+    let top = lines.iter().position(|l| l.contains("Now Playing ·")).unwrap();
+    let title_col = lines[top].find("Now Playing").unwrap();
+    let chars: Vec<char> = lines[top].chars().collect();
+    let title_at = lines[top][..title_col].chars().count();
+    let left = (0..title_at).rev().find(|&x| matches!(chars[x], '╭' | '┌' | '┏')).unwrap() as u16;
+    let right = (title_at..chars.len()).find(|&x| matches!(chars[x], '╮' | '┐' | '┓')).unwrap() as u16;
+    let mid = left + (right - left) / 2;
+    let art_mid = art.x + art.width / 2;
+    assert!(art_mid.abs_diff(mid) <= 2, "cover centred: art {art_mid}, card {mid}");
+    assert!(lines[time].chars().position(|c| c == '●').unwrap() > usize::from(left));
 }
 
 /// Every row of Up Next and History ends in its own column: the rating

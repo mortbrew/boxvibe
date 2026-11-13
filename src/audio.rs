@@ -302,9 +302,9 @@ pub fn decoder(data: Vec<u8>) -> Result<Box<dyn rodio::Source + Send>, String> {
     let decoded = if is_aac {
         // A container that looks like AAC but that syom cannot read is still
         // worth trying as MP3: a wrong guess must not cost a song.
-        match aac(&data) {
+        match aac(data) {
             Ok(source) => Ok(source),
-            Err(e) => {
+            Err((e, data)) => {
                 log!("decode: syom could not read it ({e}), trying symphonia");
                 mp3(data)
             }
@@ -381,8 +381,31 @@ fn id3_len(data: &[u8]) -> usize {
     (10 + size as usize + footer).min(data.len())
 }
 
-/// AAC (ADTS or MP4) through syom, which decodes HE-AAC properly.
-fn aac(data: &[u8]) -> Result<Box<dyn rodio::Source + Send>, syom::AacError> {
+/// How many compressed bytes to push into syom per pull. Keeps pending PCM
+/// to a handful of AAC frames instead of the whole song.
+const AAC_FEED: usize = 4 * 1024;
+
+/// AAC through syom, which decodes HE-AAC properly.
+///
+/// ADTS/LATM (Pandora's free-tier `aacplus`) streams frame-by-frame so start
+/// latency and peak PCM stay O(frame). Flat M4A needs random access, so that
+/// path still expands once via [`aac_oneshot`].
+fn aac(data: Vec<u8>) -> Result<Box<dyn rodio::Source + Send>, (syom::AacError, Vec<u8>)> {
+    let body = &data[id3_len(&data)..];
+    if is_mp4(body) {
+        return aac_oneshot(&data).map_err(|e| (e, data));
+    }
+    match AacStream::open(data) {
+        Ok(stream) => Ok(Box::new(stream)),
+        Err((e, data)) => match aac_oneshot(&data) {
+            Ok(source) => Ok(source),
+            Err(_) => Err((e, data)),
+        },
+    }
+}
+
+/// Whole-buffer AAC decode (M4A, or ADTS fallback if the push decoder fails).
+fn aac_oneshot(data: &[u8]) -> Result<Box<dyn rodio::Source + Send>, syom::AacError> {
     let decoded = syom::decode_with(data, &syom::DecodeOptions::audio())?;
     let channels = decoded.channels.len();
     if channels == 0 || decoded.sample_rate == 0 {
@@ -399,6 +422,136 @@ fn aac(data: &[u8]) -> Result<Box<dyn rodio::Source + Send>, syom::AacError> {
     let channels = rodio::ChannelCount::new(channels as u16).ok_or(syom::AacError::NotAac)?;
     let rate = rodio::SampleRate::new(decoded.sample_rate).ok_or(syom::AacError::NotAac)?;
     Ok(Box::new(rodio::buffer::SamplesBuffer::new(channels, rate, samples)))
+}
+
+/// Lazy HE-AAC/AAC source: compressed bytes stay put; PCM is one feed's
+/// frames at a time via [`syom::Decoder::feed`].
+struct AacStream {
+    data: Vec<u8>,
+    fed: usize,
+    dec: syom::Decoder,
+    pending: Vec<f32>,
+    at: usize,
+    rate: u32,
+    channels: u16,
+    finished: bool,
+}
+
+impl AacStream {
+    fn open(data: Vec<u8>) -> Result<Self, (syom::AacError, Vec<u8>)> {
+        let mut stream = Self {
+            data,
+            fed: 0,
+            dec: syom::Decoder::new(syom::DecodeOptions::audio()),
+            pending: Vec::new(),
+            at: 0,
+            rate: 0,
+            channels: 0,
+            finished: false,
+        };
+        // First frame sets rate/channels before rodio asks for them.
+        if let Err(e) = stream.pull() {
+            return Err((e, stream.data));
+        }
+        if stream.rate == 0 || stream.channels == 0 {
+            return Err((syom::AacError::NotAac, stream.data));
+        }
+        Ok(stream)
+    }
+
+    /// Decode until `pending` has samples, or the stream is finished.
+    fn pull(&mut self) -> Result<(), syom::AacError> {
+        self.pending.clear();
+        self.at = 0;
+        while self.pending.is_empty() && !self.finished {
+            if self.fed < self.data.len() {
+                let end = (self.fed + AAC_FEED).min(self.data.len());
+                // Owned chunk so `feed` can borrow the decoder without `data`.
+                let chunk = self.data[self.fed..end].to_vec();
+                self.fed = end;
+                let mut rate = self.rate;
+                let mut channels = self.channels;
+                let mut pcm = Vec::new();
+                self.dec.feed(&chunk, |frame| {
+                    if rate == 0 {
+                        rate = frame.sample_rate;
+                        channels = frame.planar.len() as u16;
+                    }
+                    interleave_frame(frame, &mut pcm);
+                    Ok(())
+                })?;
+                self.rate = rate;
+                self.channels = channels;
+                self.pending = pcm;
+            } else {
+                let mut rate = self.rate;
+                let mut channels = self.channels;
+                let mut pcm = Vec::new();
+                let result = self.dec.finish(|frame| {
+                    if rate == 0 {
+                        rate = frame.sample_rate;
+                        channels = frame.planar.len() as u16;
+                    }
+                    interleave_frame(frame, &mut pcm);
+                    Ok(())
+                });
+                self.finished = true;
+                self.rate = rate;
+                self.channels = channels;
+                self.pending = pcm;
+                result?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn interleave_frame(frame: syom::Frame<'_>, out: &mut Vec<f32>) {
+    out.reserve(frame.samples * frame.planar.len());
+    for i in 0..frame.samples {
+        for plane in frame.planar {
+            out.push(plane.get(i).copied().unwrap_or(0.0));
+        }
+    }
+}
+
+impl Iterator for AacStream {
+    type Item = rodio::Sample;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.at < self.pending.len() {
+                let sample = self.pending[self.at];
+                self.at += 1;
+                return Some(sample);
+            }
+            if self.finished {
+                return None;
+            }
+            if self.pull().is_err() {
+                self.finished = true;
+                return None;
+            }
+        }
+    }
+}
+
+impl rodio::Source for AacStream {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+
+    fn channels(&self) -> rodio::ChannelCount {
+        rodio::ChannelCount::new(self.channels).unwrap_or(rodio::nz!(2))
+    }
+
+    fn sample_rate(&self) -> rodio::SampleRate {
+        rodio::SampleRate::new(self.rate).unwrap_or(rodio::nz!(44100))
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
 }
 
 /// MP3 through symphonia, which handles it well.
@@ -684,5 +837,15 @@ mod he_aac {
         let d = super::decoder(lc).unwrap();
         assert_eq!(d.sample_rate().get(), 44_100);
         assert!(d.count() > 40_000);
+    }
+
+    /// Streaming must match the one-shot PCM length for the same ADTS bytes
+    /// (and must not need the whole song expanded before the first sample).
+    #[test]
+    fn adts_streaming_matches_oneshot_length() {
+        let adts = he_aac();
+        let oneshot = super::aac_oneshot(&adts).unwrap().count();
+        let streamed = super::AacStream::open(adts).unwrap().count();
+        assert_eq!(streamed, oneshot);
     }
 }

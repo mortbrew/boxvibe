@@ -15,15 +15,17 @@
 //!
 //! Settings changed from the app are written back with [`set_values`], which
 //! keeps the user's comments and formatting. The file is always written with
-//! mode 600. It never holds the Pandora password: that lives in the desktop
-//! keychain ([`crate::keychain`]). A password an older boxvibe left in the file
-//! (`[account]` or `[pandora]` `password`) is still read, once, so it can be
-//! moved to the keychain; [`forget_plaintext_password`] then deletes it.
+//! mode 600 and its directory with mode 700. It never holds the Pandora
+//! password: that lives in the desktop keychain ([`crate::keychain`]). A
+//! password an older boxvibe left in the file (`[account]` or `[pandora]`
+//! `password`) is still read, once, so it can be moved to the keychain;
+//! [`forget_plaintext_password`] then deletes it.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
@@ -35,8 +37,9 @@ pub struct Config {
 }
 
 /// A password. It prints as `<hidden>` in `{:?}` (so it can't end up in a log
-/// or a panic message by accident), and is never written to the config file.
-#[derive(Clone, Default, PartialEq, Eq, Deserialize)]
+/// or a panic message by accident), is wiped from memory on drop / clear, and
+/// is never written to the config file.
+#[derive(Clone, Default, PartialEq, Eq, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(transparent)]
 pub struct Secret(String);
 
@@ -55,7 +58,7 @@ impl Secret {
     }
 
     pub fn clear(&mut self) {
-        self.0.clear();
+        self.0.zeroize();
     }
 }
 
@@ -1067,10 +1070,13 @@ impl Config {
     }
 }
 
-/// Writes `text` to `path` with mode 600 (owner only), creating the folder.
+/// Writes `text` to `path` with mode 600 (owner only), creating the folder at
+/// mode 700 so others cannot list it for the config file name.
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
+        #[cfg(unix)]
+        std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
     }
     // Write next to it and rename, so a crash never leaves half a config. The
     // temporary name carries the pid, so two boxvibes writing at once cannot

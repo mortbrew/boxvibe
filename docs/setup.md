@@ -514,16 +514,20 @@ carried a headline feature makes the version lie about what is in it.
 
 ### Cutting a release
 
-1. On `dev`, drop the suffix (`0.6.3-dev` → `0.6.2`) and update `Cargo.lock`
-   with `cargo update --workspace --offline`.
-2. Commit ("Release 0.6.2") and push `dev`.
-3. Pull request `dev` into `main`, and merge it.
-4. Tag the merge commit on `main` as `v0.6.2`. The tag must point at a commit
-   whose `Cargo.toml` has no suffix: `release.yml` names the archives from the
-   git tag while the binary reports `Cargo.toml`, so a mismatch ships an archive
-   called one thing whose binary says another.
-5. Back on `dev`, bump by one patch with a fresh suffix (`0.6.3-dev`) and carry on
-   ahead of the tag.
+`dev` is always ahead of `main`, and that is the point: you code and commit on
+`dev`, and `main` only ever holds what has shipped. Releasing does not touch
+`dev` at all.
+
+1. Pull request `dev` into `main` and merge it.
+2. Tag the merge commit on `main` with the version you are shipping:
+   `git tag -a v0.6.3 -m "boxvibe v0.6.3" <merge-sha> && git push origin v0.6.3`.
+3. `release.yml` builds from that tag and sets `Cargo.toml` to the tag's
+   version, so the binary reports `0.6.3` even though `dev` says `0.6.3-dev`.
+4. Back on `dev`, bump by one patch (`0.6.3-dev` → `0.6.4-dev`) when you next
+   touch the version, or leave it until the next release is in sight.
+
+The tag must not carry a suffix: `release.yml` rejects one, because an archive
+named `v0.6.3-dev` would ship a binary claiming to be a source build.
 
 - Keep every bump in `Cargo.toml` only; `env!("CARGO_PKG_VERSION")` propagates it.
 - Update `Cargo.lock` with `cargo update --workspace --offline`, never by hand.

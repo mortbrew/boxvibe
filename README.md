@@ -337,9 +337,9 @@ build never reports a spurious update.
   [`docs/setup.md`](docs/setup.md) §9.
 - Keep the bump in `Cargo.toml` only; `env!("CARGO_PKG_VERSION")` propagates it.
   Update `Cargo.lock` with `cargo update --workspace --offline`, never by hand.
-- To cut a release: drop the suffix on `dev`, merge to `main`, tag that commit,
-  then bump `dev` by one patch with a fresh suffix. The tag must point at a
-  commit with no suffix, or the archive name and the binary disagree.
+- To cut a release: merge `dev` into `main` and tag the merge commit. The tag
+  is the shipped version, so `dev` keeps its suffix and nothing is committed
+  for a release. `release.yml` sets `Cargo.toml` from the tag.
 - `CHANGELOG.md` sections are historical records of shipped releases, so they
   keep the version that shipped, without the suffix.
 - The literal `"0.4.0"` in `src/snapshot.rs` is fabricated update data for the

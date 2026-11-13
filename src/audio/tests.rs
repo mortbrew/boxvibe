@@ -29,7 +29,7 @@ fn id3(size: usize) -> Vec<u8> {
 
 /// An M4A syom accepts, then the same file with a movie timescale that does
 /// not divide the edit-list duration. That is the Pandora shape: syom refuses
-/// it, and symphonia cannot play it either.
+/// it until the edit list is dropped.
 fn fractional_edit_m4a() -> Vec<u8> {
     let pcm = vec![0.2f32; 44_100];
     let mut file = std::io::Cursor::new(Vec::new());
@@ -43,9 +43,8 @@ fn fractional_edit_m4a() -> Vec<u8> {
 }
 
 /// The skip from the playback log: syom says the edit list is not a whole
-/// number of samples, the symphonia fallback cannot read the bytes either,
-/// and the song used to be skipped. It still has to play, at 44.1 kHz, with
-/// or without the ID3 tag some downloads carry in front.
+/// number of samples, and the song used to be skipped. It still has to play,
+/// at 44.1 kHz, with or without the ID3 tag some downloads carry in front.
 #[test]
 fn a_fractional_edit_list_is_not_skipped() {
     use rodio::Source;
@@ -56,10 +55,6 @@ fn a_fractional_edit_list_is_not_skipped() {
         let body = &data[id3_len(&data)..];
         let err = syom::decode_with(body, &syom::DecodeOptions::audio()).unwrap_err();
         assert!(elst_not_whole_samples(&err), "{label}: {err}");
-        let Err(fallback) = super::mp3(data.clone()) else {
-            panic!("{label}: symphonia playing this would hide a dropped retry");
-        };
-        assert!(fallback.starts_with("can't decode this song: "), "{label}: {fallback}");
         let mut decoded = decoder(data).unwrap_or_else(|e| panic!("{label}: {e}"));
         assert_eq!(decoded.sample_rate().get(), 44_100, "{label}");
         assert_eq!(decoded.channels().get(), 1, "{label}");
@@ -87,6 +82,21 @@ fn set_box_timescale(data: &mut [u8], kind: &[u8; 4], timescale: u32) -> bool {
         }
     }
     false
+}
+
+/// Pandora's ads are MP4 AAC. syom sometimes refuses them, and the fallback
+/// has to be a real MP4 decoder: rodio's `mp3` feature alone reports an IO
+/// error and the ad is skipped. syom's own M4A is not a file symphonia will
+/// play (it has no SL descriptor), so the check is that the demuxer runs.
+#[test]
+fn the_symphonia_fallback_still_has_an_mp4_demuxer() {
+    let pcm = vec![0.2f32; 16_384];
+    let mut file = std::io::Cursor::new(Vec::new());
+    syom::encode_write_m4a(&mut file, &[&pcm[..]], 44_100, &syom::EncodeOptions::default()).unwrap();
+    let Err(err) = super::symphonia(file.into_inner(), "audio/mp4") else {
+        panic!("syom's m4a is not a file symphonia plays");
+    };
+    assert!(err.contains("isomp4"), "without the mp4 feature this is an IO error and the ad is skipped: {err}");
 }
 
 /// The bug behind the skipping: an MP3 behind an ID3 tag is not AAC, but

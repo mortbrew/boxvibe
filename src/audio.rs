@@ -307,11 +307,14 @@ pub fn decoder(data: Vec<u8>) -> Result<Box<dyn rodio::Source + Send>, String> {
             Ok(source) => Ok(source),
             Err((e, data)) => {
                 log!("decode: syom could not read it ({e}), trying symphonia");
-                mp3(data)
+                // ADTS is not an MP4 file. The mpeg hint is for real MP3s,
+                // below: it makes the MP3 reader claim an M4A and then fail.
+                let mime = if is_mp4(&data) { "audio/mp4" } else { "audio/aac" };
+                symphonia(data, mime)
             }
         }
     } else {
-        mp3(data)
+        symphonia(data, "audio/mpeg")
     };
     match &decoded {
         Ok(source) => {
@@ -644,14 +647,19 @@ impl rodio::Source for AacStream {
     }
 }
 
-/// MP3 through symphonia, which handles it well.
-fn mp3(data: Vec<u8>) -> Result<Box<dyn rodio::Source + Send>, String> {
+/// Symphonia, for MP3 and for the AAC syom refuses.
+///
+/// Pandora's ads are MP4. syom sometimes stops on an AAC extension it does
+/// not know (`extension_type`), and this fallback is what plays them. It
+/// needs rodio's `mp4` feature: `mp3` alone has no AAC demuxer, so the ad
+/// fails to open and is skipped.
+fn symphonia(data: Vec<u8>, mime: &str) -> Result<Box<dyn rodio::Source + Send>, String> {
     let len = data.len() as u64;
     rodio::Decoder::builder()
         .with_data(Cursor::new(data))
         .with_byte_len(len)
         .with_seekable(true)
-        .with_mime_type("audio/mpeg")
+        .with_mime_type(mime)
         .build()
         .map(|d| Box::new(d) as Box<dyn rodio::Source + Send>)
         .map_err(|e| format!("can't decode this song: {e}"))

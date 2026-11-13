@@ -391,10 +391,32 @@ const AAC_FEED: usize = 4 * 1024;
 /// ADTS/LATM (Pandora's free-tier `aacplus`) streams frame-by-frame so start
 /// latency and peak PCM stay O(frame). Flat M4A needs random access, so that
 /// path still expands once via [`aac_oneshot`].
-fn aac(data: Vec<u8>) -> Result<Box<dyn rodio::Source + Send>, (syom::AacError, Vec<u8>)> {
-    let body = &data[id3_len(&data)..];
-    if is_mp4(body) {
-        return aac_oneshot(&data).map_err(|e| (e, data));
+fn aac(mut data: Vec<u8>) -> Result<Box<dyn rodio::Source + Send>, (syom::AacError, Vec<u8>)> {
+    // An ID3 tag hides the `ftyp` box. The edit list lives in the M4A after it.
+    let body_at = id3_len(&data);
+    if body_at > 0 {
+        data.drain(..body_at);
+    }
+    if is_mp4(&data) {
+        match aac_oneshot(&data) {
+            Ok(source) => return Ok(source),
+            // Pandora's `elst` duration is often not a whole number of output
+            // samples. syom refuses the file, and symphonia then fails the
+            // same bytes with an IO error, so the song is skipped. Dropping
+            // the edit list plays the whole file (a few milliseconds of
+            // encoder delay included) at the real rate.
+            Err(e) if elst_not_whole_samples(&e) => {
+                if !relax_elst(&mut data) {
+                    return Err((e, data));
+                }
+                log!("decode: edit list was not a whole number of samples; playing the whole file");
+                return match aac_oneshot(&data) {
+                    Ok(source) => Ok(source),
+                    Err(e) => Err((e, data)),
+                };
+            }
+            Err(e) => return Err((e, data)),
+        }
     }
     match AacStream::open(data) {
         Ok(stream) => Ok(Box::new(stream)),
@@ -402,6 +424,59 @@ fn aac(data: Vec<u8>) -> Result<Box<dyn rodio::Source + Send>, (syom::AacError, 
             Ok(source) => Ok(source),
             Err(_) => Err((e, data)),
         },
+    }
+}
+
+/// syom's exact edit-list conversion: `duration * rate` must divide the movie
+/// timescale. Pandora's M4A often does not.
+fn elst_not_whole_samples(err: &syom::AacError) -> bool {
+    err.to_string().contains("not an integer number of samples")
+}
+
+/// Sets every `elst` entry count to 0, which syom treats as "no edit list".
+/// Returns whether a count was cleared.
+fn relax_elst(data: &mut [u8]) -> bool {
+    let mut changed = false;
+    walk_boxes(data, 0, data.len(), 0, &mut changed);
+    changed
+}
+
+/// Containers that hold an `elst`. `mdat` is samples, so it is not walked.
+fn is_container(kind: &[u8]) -> bool {
+    matches!(kind, b"moov" | b"trak" | b"edts" | b"mdia" | b"minf" | b"stbl" | b"udta")
+}
+
+fn walk_boxes(data: &mut [u8], start: usize, end: usize, depth: usize, changed: &mut bool) {
+    if depth > 8 {
+        return;
+    }
+    let mut at = start;
+    while at + 8 <= end {
+        let size32 = u32::from_be_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]) as usize;
+        let kind = [data[at + 4], data[at + 5], data[at + 6], data[at + 7]];
+        let (header, size) = if size32 == 1 {
+            if at + 16 > end {
+                return;
+            }
+            let large = u64::from_be_bytes(data[at + 8..at + 16].try_into().unwrap()) as usize;
+            (16, large)
+        } else if size32 == 0 {
+            (8, end - at)
+        } else {
+            (8, size32)
+        };
+        if size < header || at.saturating_add(size) > end {
+            return;
+        }
+        let body = at + header;
+        let body_end = at + size;
+        if &kind == b"elst" && body + 8 <= body_end && data[body + 4..body + 8] != [0, 0, 0, 0] {
+            data[body + 4..body + 8].fill(0);
+            *changed = true;
+        } else if is_container(&kind) {
+            walk_boxes(data, body, body_end, depth + 1, changed);
+        }
+        at += size;
     }
 }
 

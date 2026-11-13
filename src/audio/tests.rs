@@ -27,6 +27,68 @@ fn id3(size: usize) -> Vec<u8> {
     t
 }
 
+/// An M4A syom accepts, then the same file with a movie timescale that does
+/// not divide the edit-list duration. That is the Pandora shape: syom refuses
+/// it, and symphonia cannot play it either.
+fn fractional_edit_m4a() -> Vec<u8> {
+    let pcm = vec![0.2f32; 44_100];
+    let mut file = std::io::Cursor::new(Vec::new());
+    syom::encode_write_m4a(&mut file, &[&pcm], 44_100, &syom::EncodeOptions::default()).unwrap();
+    let mut data = file.into_inner();
+    syom::decode_with(&data, &syom::DecodeOptions::audio()).expect("the unpatched file is valid AAC");
+    // Movie timescale equal to the sample rate always divides. A timescale
+    // that does not divide `duration * 44100` is what Pandora's files hit.
+    assert!(set_box_timescale(&mut data, b"mvhd", 1_000_000), "the movie timescale is there to break");
+    data
+}
+
+/// The skip from the playback log: syom says the edit list is not a whole
+/// number of samples, the symphonia fallback cannot read the bytes either,
+/// and the song used to be skipped. It still has to play, at 44.1 kHz, with
+/// or without the ID3 tag some downloads carry in front.
+#[test]
+fn a_fractional_edit_list_is_not_skipped() {
+    use rodio::Source;
+    let plain = fractional_edit_m4a();
+    let mut tagged = id3(24);
+    tagged.extend(plain.iter().copied());
+    for (label, data) in [("plain", plain), ("behind an id3 tag", tagged)] {
+        let body = &data[id3_len(&data)..];
+        let err = syom::decode_with(body, &syom::DecodeOptions::audio()).unwrap_err();
+        assert!(elst_not_whole_samples(&err), "{label}: {err}");
+        let Err(fallback) = super::mp3(data.clone()) else {
+            panic!("{label}: symphonia playing this would hide a dropped retry");
+        };
+        assert!(fallback.starts_with("can't decode this song: "), "{label}: {fallback}");
+        let mut decoded = decoder(data).unwrap_or_else(|e| panic!("{label}: {e}"));
+        assert_eq!(decoded.sample_rate().get(), 44_100, "{label}");
+        assert_eq!(decoded.channels().get(), 1, "{label}");
+        assert_eq!(decoded.by_ref().take(8_000).count(), 8_000, "{label}: samples actually come out");
+    }
+}
+
+/// `mvhd`/`mdhd` version 0: timescale is the u32 at byte 12 of the box body.
+fn set_box_timescale(data: &mut [u8], kind: &[u8; 4], timescale: u32) -> bool {
+    let mut at = 0usize;
+    while at + 8 <= data.len() {
+        let size = u32::from_be_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]) as usize;
+        if size < 8 || at + size > data.len() {
+            return false;
+        }
+        if &data[at + 4..at + 8] == kind && at + 8 + 16 <= at + size {
+            data[at + 8 + 12..at + 8 + 16].copy_from_slice(&timescale.to_be_bytes());
+            return true;
+        }
+        // Descend into containers; skip sample data.
+        if matches!(&data[at + 4..at + 8], b"moov" | b"trak" | b"mdia") {
+            at += 8;
+        } else {
+            at += size;
+        }
+    }
+    false
+}
+
 /// The bug behind the skipping: an MP3 behind an ID3 tag is not AAC, but
 /// syom called it `Malformed(AdtsLayer)` rather than `NotAac`, so the
 /// fallback never ran and every MP3 was skipped instead of played.

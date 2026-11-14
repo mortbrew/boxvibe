@@ -189,3 +189,15 @@ fn a_disabled_tracker_sends_nothing_and_a_blocked_url_is_never_fetched() {
         Tracker::new(true, true, "ua").fire(vec!["http://127.0.0.1:9/a".into(), "https://localhost/".into()]).is_none()
     );
 }
+
+#[test]
+fn a_full_tracking_queue_drops_the_newest_batch() {
+    // No worker drains the channel, so try_send fills then returns None —
+    // the production path that avoids a thread per fire().
+    let (tracker, _rx) = Tracker::with_undrained_queue(false);
+    let url = "http://example.com/t".to_owned();
+    for _ in 0..crate::ads::TRACKING_QUEUE {
+        assert!(tracker.fire(vec![url.clone()]).is_some(), "queued while there is room");
+    }
+    assert!(tracker.fire(vec![url]).is_none(), "a full queue drops the batch");
+}

@@ -14,8 +14,9 @@
 //! inside ±1.0, then scaled by [`level`]: the volume curve times Pandora's
 //! per-song `fileGain`, never above 1.0.
 
+use std::collections::HashMap;
 use std::io::Cursor;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::log::log;
@@ -302,15 +303,18 @@ pub fn decoder(data: Vec<u8>) -> Result<Box<dyn rodio::Source + Send>, String> {
     let decoded = if is_aac {
         // A container that looks like AAC but that syom cannot read is still
         // worth trying as MP3: a wrong guess must not cost a song.
-        match aac(&data) {
+        match aac(data) {
             Ok(source) => Ok(source),
-            Err(e) => {
+            Err((e, data)) => {
                 log!("decode: syom could not read it ({e}), trying symphonia");
-                mp3(data)
+                // ADTS is not an MP4 file. The mpeg hint is for real MP3s,
+                // below: it makes the MP3 reader claim an M4A and then fail.
+                let mime = if is_mp4(&data) { "audio/mp4" } else { "audio/aac" };
+                symphonia(data, mime)
             }
         }
     } else {
-        mp3(data)
+        symphonia(data, "audio/mpeg")
     };
     match &decoded {
         Ok(source) => {
@@ -381,8 +385,107 @@ fn id3_len(data: &[u8]) -> usize {
     (10 + size as usize + footer).min(data.len())
 }
 
-/// AAC (ADTS or MP4) through syom, which decodes HE-AAC properly.
-fn aac(data: &[u8]) -> Result<Box<dyn rodio::Source + Send>, syom::AacError> {
+/// How many compressed bytes to push into syom per pull. Keeps pending PCM
+/// to a handful of AAC frames instead of the whole song.
+const AAC_FEED: usize = 4 * 1024;
+
+/// AAC through syom, which decodes HE-AAC properly.
+///
+/// ADTS/LATM (Pandora's free-tier `aacplus`) streams frame-by-frame so start
+/// latency and peak PCM stay O(frame). Flat M4A needs random access, so that
+/// path still expands once via [`aac_oneshot`].
+fn aac(mut data: Vec<u8>) -> Result<Box<dyn rodio::Source + Send>, (syom::AacError, Vec<u8>)> {
+    // An ID3 tag on ADTS is the `iTunSMPB` gapless trim, and syom needs it.
+    // On M4A the same tag only hides `ftyp`, so it comes off before the edit list.
+    let body_at = id3_len(&data);
+    if is_mp4(&data[body_at..]) {
+        if body_at > 0 {
+            data.drain(..body_at);
+        }
+        match aac_oneshot(&data) {
+            Ok(source) => return Ok(source),
+            // Pandora's `elst` duration is often not a whole number of output
+            // samples. syom refuses the file, and symphonia then fails the
+            // same bytes with an IO error, so the song is skipped. Dropping
+            // the edit list plays the whole file (a few milliseconds of
+            // encoder delay included) at the real rate.
+            Err(e) if elst_not_whole_samples(&e) => {
+                if !relax_elst(&mut data) {
+                    return Err((e, data));
+                }
+                log!("decode: edit list was not a whole number of samples; playing the whole file");
+                return match aac_oneshot(&data) {
+                    Ok(source) => Ok(source),
+                    Err(e) => Err((e, data)),
+                };
+            }
+            Err(e) => return Err((e, data)),
+        }
+    }
+    match AacStream::open(data) {
+        Ok(stream) => Ok(Box::new(stream)),
+        Err((e, data)) => match aac_oneshot(&data) {
+            Ok(source) => Ok(source),
+            Err(_) => Err((e, data)),
+        },
+    }
+}
+
+/// syom's exact edit-list conversion: `duration * rate` must divide the movie
+/// timescale. Pandora's M4A often does not.
+fn elst_not_whole_samples(err: &syom::AacError) -> bool {
+    err.to_string().contains("not an integer number of samples")
+}
+
+/// Sets every `elst` entry count to 0, which syom treats as "no edit list".
+/// Returns whether a count was cleared.
+fn relax_elst(data: &mut [u8]) -> bool {
+    let mut changed = false;
+    walk_boxes(data, 0, data.len(), 0, &mut changed);
+    changed
+}
+
+/// Containers that hold an `elst`. `mdat` is samples, so it is not walked.
+fn is_container(kind: &[u8]) -> bool {
+    matches!(kind, b"moov" | b"trak" | b"edts" | b"mdia" | b"minf" | b"stbl" | b"udta")
+}
+
+fn walk_boxes(data: &mut [u8], start: usize, end: usize, depth: usize, changed: &mut bool) {
+    if depth > 8 {
+        return;
+    }
+    let mut at = start;
+    while at + 8 <= end {
+        let size32 = u32::from_be_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]) as usize;
+        let kind = [data[at + 4], data[at + 5], data[at + 6], data[at + 7]];
+        let (header, size) = if size32 == 1 {
+            if at + 16 > end {
+                return;
+            }
+            let large = u64::from_be_bytes(data[at + 8..at + 16].try_into().unwrap()) as usize;
+            (16, large)
+        } else if size32 == 0 {
+            (8, end - at)
+        } else {
+            (8, size32)
+        };
+        if size < header || at.saturating_add(size) > end {
+            return;
+        }
+        let body = at + header;
+        let body_end = at + size;
+        if &kind == b"elst" && body + 8 <= body_end && data[body + 4..body + 8] != [0, 0, 0, 0] {
+            data[body + 4..body + 8].fill(0);
+            *changed = true;
+        } else if is_container(&kind) {
+            walk_boxes(data, body, body_end, depth + 1, changed);
+        }
+        at += size;
+    }
+}
+
+/// Whole-buffer AAC decode (M4A, or ADTS fallback if the push decoder fails).
+fn aac_oneshot(data: &[u8]) -> Result<Box<dyn rodio::Source + Send>, syom::AacError> {
     let decoded = syom::decode_with(data, &syom::DecodeOptions::audio())?;
     let channels = decoded.channels.len();
     if channels == 0 || decoded.sample_rate == 0 {
@@ -401,14 +504,162 @@ fn aac(data: &[u8]) -> Result<Box<dyn rodio::Source + Send>, syom::AacError> {
     Ok(Box::new(rodio::buffer::SamplesBuffer::new(channels, rate, samples)))
 }
 
-/// MP3 through symphonia, which handles it well.
-fn mp3(data: Vec<u8>) -> Result<Box<dyn rodio::Source + Send>, String> {
+/// Decoder state, kept separate from [`AacStream::data`] so `feed` can borrow
+/// compressed bytes in place without an overlapping borrow on `Self`.
+struct AacDecode {
+    dec: syom::Decoder,
+    /// Reused across pulls; capacity grows once then stays.
+    pending: Vec<f32>,
+    at: usize,
+    rate: u32,
+    channels: u16,
+    finished: bool,
+}
+
+/// Lazy HE-AAC/AAC source: compressed bytes stay put; PCM is one feed's
+/// frames at a time via [`syom::Decoder::feed`].
+struct AacStream {
+    data: Vec<u8>,
+    fed: usize,
+    decode: AacDecode,
+}
+
+impl AacStream {
+    fn open(data: Vec<u8>) -> Result<Self, (syom::AacError, Vec<u8>)> {
+        let mut stream = Self {
+            data,
+            fed: 0,
+            decode: AacDecode {
+                dec: syom::Decoder::new(syom::DecodeOptions::audio()),
+                pending: Vec::new(),
+                at: 0,
+                rate: 0,
+                channels: 0,
+                finished: false,
+            },
+        };
+        // First frame sets rate/channels before rodio asks for them.
+        if let Err(e) = stream.pull() {
+            return Err((e, stream.data));
+        }
+        if stream.decode.rate == 0 || stream.decode.channels == 0 {
+            return Err((syom::AacError::NotAac, stream.data));
+        }
+        Ok(stream)
+    }
+
+    /// Decode until `pending` has samples, or the stream is finished.
+    fn pull(&mut self) -> Result<(), syom::AacError> {
+        self.decode.pending.clear();
+        self.decode.at = 0;
+        while self.decode.pending.is_empty() && !self.decode.finished {
+            if self.fed < self.data.len() {
+                let end = (self.fed + AAC_FEED).min(self.data.len());
+                let start = self.fed;
+                self.fed = end;
+                // Reuse `pending`'s capacity; take it so `feed` can borrow it
+                // while holding `dec`. `data` and `decode.dec` are disjoint fields.
+                let mut pcm = std::mem::take(&mut self.decode.pending);
+                pcm.clear();
+                let mut rate = self.decode.rate;
+                let mut channels = self.decode.channels;
+                let result = self.decode.dec.feed(&self.data[start..end], |frame| {
+                    if rate == 0 {
+                        rate = frame.sample_rate;
+                        channels = frame.planar.len() as u16;
+                    }
+                    interleave_frame(frame, &mut pcm);
+                    Ok(())
+                });
+                self.decode.rate = rate;
+                self.decode.channels = channels;
+                self.decode.pending = pcm;
+                result?;
+            } else {
+                let mut pcm = std::mem::take(&mut self.decode.pending);
+                pcm.clear();
+                let mut rate = self.decode.rate;
+                let mut channels = self.decode.channels;
+                let result = self.decode.dec.finish(|frame| {
+                    if rate == 0 {
+                        rate = frame.sample_rate;
+                        channels = frame.planar.len() as u16;
+                    }
+                    interleave_frame(frame, &mut pcm);
+                    Ok(())
+                });
+                self.decode.finished = true;
+                self.decode.rate = rate;
+                self.decode.channels = channels;
+                self.decode.pending = pcm;
+                result?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn interleave_frame(frame: syom::Frame<'_>, out: &mut Vec<f32>) {
+    out.reserve(frame.samples * frame.planar.len());
+    for i in 0..frame.samples {
+        for plane in frame.planar {
+            out.push(plane.get(i).copied().unwrap_or(0.0));
+        }
+    }
+}
+
+impl Iterator for AacStream {
+    type Item = rodio::Sample;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.decode.at < self.decode.pending.len() {
+                let sample = self.decode.pending[self.decode.at];
+                self.decode.at += 1;
+                return Some(sample);
+            }
+            if self.decode.finished {
+                return None;
+            }
+            if self.pull().is_err() {
+                self.decode.finished = true;
+                return None;
+            }
+        }
+    }
+}
+
+impl rodio::Source for AacStream {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+
+    fn channels(&self) -> rodio::ChannelCount {
+        rodio::ChannelCount::new(self.decode.channels).unwrap_or(rodio::nz!(2))
+    }
+
+    fn sample_rate(&self) -> rodio::SampleRate {
+        rodio::SampleRate::new(self.decode.rate).unwrap_or(rodio::nz!(44100))
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
+}
+
+/// Symphonia, for MP3 and for the AAC syom refuses.
+///
+/// Pandora's ads are MP4. syom sometimes stops on an AAC extension it does
+/// not know (`extension_type`), and this fallback is what plays them. It
+/// needs rodio's `mp4` feature: `mp3` alone has no AAC demuxer, so the ad
+/// fails to open and is skipped.
+fn symphonia(data: Vec<u8>, mime: &str) -> Result<Box<dyn rodio::Source + Send>, String> {
     let len = data.len() as u64;
     rodio::Decoder::builder()
         .with_data(Cursor::new(data))
         .with_byte_len(len)
         .with_seekable(true)
-        .with_mime_type("audio/mpeg")
+        .with_mime_type(mime)
         .build()
         .map(|d| Box::new(d) as Box<dyn rodio::Source + Send>)
         .map_err(|e| format!("can't decode this song: {e}"))
@@ -484,6 +735,51 @@ const TAPS: usize = 16;
 /// Filter phases between two input samples (the nearest one is used).
 const PHASES: usize = 512;
 
+/// Builds the sinc weight table for resampling `from` → `to`. Depends only on
+/// the two rates (and the fixed tap/phase counts), so [`sinc_table`] caches it.
+fn build_sinc_table(from: u32, to: u32) -> Vec<f32> {
+    let cutoff = 0.92 * (f64::from(to) / f64::from(from)).min(1.0) * 0.5;
+    let n = 2 * TAPS;
+    let mut table = Vec::with_capacity((PHASES + 1) * n);
+    for phase in 0..=PHASES {
+        let frac = phase as f64 / PHASES as f64;
+        let row: Vec<f64> = (0..n)
+            .map(|k| {
+                // Distance from the output point to input sample k.
+                let x = k as f64 - (TAPS as f64 - 1.0) - frac;
+                let sinc = if x.abs() < 1e-9 {
+                    2.0 * cutoff
+                } else {
+                    (2.0 * std::f64::consts::PI * cutoff * x).sin() / (std::f64::consts::PI * x)
+                };
+                let w = (x + TAPS as f64) / (2.0 * TAPS as f64);
+                let blackman =
+                    0.42 - 0.5 * (2.0 * std::f64::consts::PI * w).cos() + 0.08 * (4.0 * std::f64::consts::PI * w).cos();
+                sinc * blackman.max(0.0)
+            })
+            .collect();
+        // Each row adds up to 1, so a steady level stays that level.
+        let sum: f64 = row.iter().sum();
+        table.extend(row.iter().map(|w| (w / sum) as f32));
+    }
+    table
+}
+
+type SincTableCache = Mutex<HashMap<(u32, u32), Arc<[f32]>>>;
+
+/// Shared sinc tables keyed by `(from, to)`. Built once per rate pair.
+fn sinc_table(from: u32, to: u32) -> Arc<[f32]> {
+    static CACHE: OnceLock<SincTableCache> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(table) = guard.get(&(from, to)) {
+        return Arc::clone(table);
+    }
+    let table: Arc<[f32]> = Arc::from(build_sinc_table(from, to));
+    guard.insert((from, to), Arc::clone(&table));
+    table
+}
+
 /// A source resampled to `rate` with a Blackman-windowed sinc filter, cut
 /// off a little below the lower of the two Nyquist frequencies, and clamped
 /// to ±1.0 (the filter can overshoot a little on a song mastered to the top).
@@ -492,8 +788,9 @@ pub struct Resampled<S> {
     channels: usize,
     from: u32,
     to: u32,
-    /// `PHASES + 1` rows of `2 * TAPS` weights.
-    table: Vec<f32>,
+    /// `PHASES + 1` rows of `2 * TAPS` weights (shared across songs with the
+    /// same rate pair).
+    table: Arc<[f32]>,
     /// Input frames from `base` on, interleaved.
     frames: std::collections::VecDeque<f32>,
     /// Input frame index of `frames`' first frame.
@@ -512,36 +809,12 @@ impl<S: rodio::Source> Resampled<S> {
     pub fn new(input: S, to: u32) -> Self {
         let channels = usize::from(input.channels().get());
         let from = input.sample_rate().get();
-        let cutoff = 0.92 * (f64::from(to) / f64::from(from)).min(1.0) * 0.5;
-        let n = 2 * TAPS;
-        let mut table = Vec::with_capacity((PHASES + 1) * n);
-        for phase in 0..=PHASES {
-            let frac = phase as f64 / PHASES as f64;
-            let row: Vec<f64> = (0..n)
-                .map(|k| {
-                    // Distance from the output point to input sample k.
-                    let x = k as f64 - (TAPS as f64 - 1.0) - frac;
-                    let sinc = if x.abs() < 1e-9 {
-                        2.0 * cutoff
-                    } else {
-                        (2.0 * std::f64::consts::PI * cutoff * x).sin() / (std::f64::consts::PI * x)
-                    };
-                    let w = (x + TAPS as f64) / (2.0 * TAPS as f64);
-                    let blackman = 0.42 - 0.5 * (2.0 * std::f64::consts::PI * w).cos()
-                        + 0.08 * (4.0 * std::f64::consts::PI * w).cos();
-                    sinc * blackman.max(0.0)
-                })
-                .collect();
-            // Each row adds up to 1, so a steady level stays that level.
-            let sum: f64 = row.iter().sum();
-            table.extend(row.iter().map(|w| (w / sum) as f32));
-        }
         Self {
             input,
             channels,
             from,
             to,
-            table,
+            table: sinc_table(from, to),
             frames: std::collections::VecDeque::new(),
             base: 0,
             read: 0,
@@ -564,18 +837,24 @@ impl<S: rodio::Source> Resampled<S> {
     /// Reads input until frame `upto` is there (or the input ends).
     fn fill(&mut self, upto: i64) {
         while !self.done && self.read <= upto {
-            let mut frame = Vec::with_capacity(self.channels);
+            // Push channels straight into `frames` — no per-frame Vec on the
+            // audio callback path. A short read rolls the partial frame back.
+            let before = self.frames.len();
+            let mut got = 0;
             for _ in 0..self.channels {
                 match self.input.next() {
-                    Some(s) => frame.push(s),
+                    Some(s) => {
+                        self.frames.push_back(s);
+                        got += 1;
+                    }
                     None => break,
                 }
             }
-            if frame.len() < self.channels {
+            if got < self.channels {
+                self.frames.truncate(before);
                 self.done = true;
                 break;
             }
-            self.frames.extend(frame);
             self.read += 1;
         }
     }
@@ -678,5 +957,15 @@ mod he_aac {
         let d = super::decoder(lc).unwrap();
         assert_eq!(d.sample_rate().get(), 44_100);
         assert!(d.count() > 40_000);
+    }
+
+    /// Streaming must match the one-shot PCM length for the same ADTS bytes
+    /// (and must not need the whole song expanded before the first sample).
+    #[test]
+    fn adts_streaming_matches_oneshot_length() {
+        let adts = he_aac();
+        let oneshot = super::aac_oneshot(&adts).unwrap().count();
+        let streamed = super::AacStream::open(adts).unwrap().count();
+        assert_eq!(streamed, oneshot);
     }
 }

@@ -13,7 +13,7 @@ categories = ["command-line-utilities", "multimedia::audio"]
 exclude = ["/docs/screenshots"]
 
 [dependencies]
-vibekit = { git = "https://github.com/mortbrew/vibekit", tag = "v0.2.0" }
+vibekit = { git = "https://github.com/mortbrew/vibekit", tag = "v0.3.0" }
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 crossterm = "0.29"
@@ -21,8 +21,8 @@ directories = "6.0.0"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 ratatui = "0.30"
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
+# `mp4` stays: some ads are AAC that syom refuses, and the fallback is symphonia.
 rodio = { version = "0.23", default-features = false, features = ["playback", "mp3", "mp4"] }
-rustfft = "6"
 secret-service = { version = "5.2.0", features = ["rt-async-io-crypto-rust"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_ignored = "0.1.14"
@@ -34,6 +34,7 @@ toml_edit = "0.25.17"
 unicode-width = "0.2.2"
 ureq = "3"
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 # The README screenshots: `src/screenshots.rs` rasterizes the demo frames.

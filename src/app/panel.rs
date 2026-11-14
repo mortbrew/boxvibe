@@ -153,9 +153,9 @@ impl App {
             // Songs already fetched were picked in the old mode: fetch afresh.
             if self.current_station.as_deref() == Some(station_id) {
                 for song in std::mem::take(&mut self.queue) {
-                    self.audio_cache.forget(&song.track_token);
-                    self.requested.remove(&song.track_token);
+                    self.audio_fetch.cache.forget(&song.track_token);
                 }
+                self.bump_audio_generation();
                 self.next_cursor = 0;
                 self.request_more();
             }

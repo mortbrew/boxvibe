@@ -132,6 +132,18 @@ impl Mpris {
         }
     }
 
+    /// Update only the playback position (no metadata rebuild / D-Bus signal).
+    pub fn touch_position(&mut self, position_secs: f64) {
+        if let Ok(mut shared) = self.shown.lock() {
+            shared.position = (position_secs * 1_000_000.0) as i64;
+        }
+    }
+
+    /// Whether the last Snapshot already matches this track token and play state.
+    pub fn same_identity(&self, track: &str, playing: Option<bool>) -> bool {
+        self.last.as_ref().is_some_and(|s| s.track == track && s.playing == playing)
+    }
+
     #[cfg(test)]
     pub fn shown(&self) -> Snapshot {
         self.shown.lock().unwrap().now.clone()

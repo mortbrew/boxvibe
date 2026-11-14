@@ -127,19 +127,33 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow::Result
         if app.edit_config {
             app.edit_config = false;
             edit_config(terminal, app)?;
+            app.mark_draw();
         }
         app.art.set_overlay(app.overlay_open());
         if std::mem::take(&mut app.art.needs_clear) {
             terminal.clear()?;
+            app.mark_draw();
         }
-        terminal.draw(|frame| ui::draw(frame, app))?;
+        // Tick still runs ~10 Hz for downloads / stalls; paint only when dirty
+        // or a whole-second progress / sleep / notifications clock advances.
+        if app.take_needs_draw() {
+            terminal.draw(|frame| ui::draw(frame, app))?;
+        }
         // Faster while the boot screen moves, 10 fps otherwise.
         let frame_time = Duration::from_millis(if app.splash.is_some() { 40 } else { 100 });
         let wait = frame_time.saturating_sub(last.elapsed());
+        // Wait for the first event (or the frame budget), then drain anything
+        // else already queued so held keys are not limited to one per frame.
         if event::poll(wait)? {
-            match event::read()? {
-                Event::Key(key) if key.kind != KeyEventKind::Release => app.on_key(key),
-                _ => {}
+            loop {
+                match event::read()? {
+                    Event::Key(key) if key.kind != KeyEventKind::Release => app.on_key(key),
+                    Event::Resize(_, _) => app.mark_draw(),
+                    _ => {}
+                }
+                if !event::poll(Duration::ZERO)? {
+                    break;
+                }
             }
         }
         if last.elapsed() >= frame_time {

@@ -9,6 +9,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use crate::ads::{self, Ad};
+use crate::config::Secret;
 use crate::demo;
 use crate::keychain::Keychain;
 use crate::pandora::{
@@ -103,8 +104,10 @@ impl Failed {
 pub enum Request {
     Login {
         username: String,
-        password: String,
+        password: Secret,
     },
+    /// Clears the API worker's saved credentials and Pandora session.
+    Logout,
     Stations,
     /// Rename a station on the Pandora account.
     RenameStation {
@@ -215,9 +218,12 @@ pub enum Request {
     Started {
         track_token: String,
     },
+    /// Song or ad audio. `generation` comes back on the reply so a late
+    /// answer (or a fetch queued before a station change) can be dropped.
     Audio {
         track_token: String,
         url: String,
+        generation: u64,
     },
     Quality(Quality),
     /// An album cover for Now Playing (its own thread: never waits on audio).
@@ -337,10 +343,12 @@ pub enum Reply {
     Audio {
         track_token: String,
         data: Vec<u8>,
+        generation: u64,
     },
     AudioFailed {
         track_token: String,
         message: String,
+        generation: u64,
     },
     Failed {
         what: Failed,
@@ -377,7 +385,7 @@ pub enum KeychainReply {
 /// user to unlock it, which must never freeze the interface).
 pub enum KeychainJob {
     Load,
-    Save(String),
+    Save(Secret),
     Forget { loud: bool },
 }
 
@@ -387,6 +395,9 @@ pub struct Backend {
     art: Sender<Request>,
     pub replies: Receiver<Reply>,
     tx: Sender<Reply>,
+    /// Shared with the audio worker: queued fetches whose generation is older
+    /// than this are skipped before HTTP (see [`Backend::set_audio_epoch`]).
+    audio_epoch: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Backend {
@@ -405,26 +416,38 @@ impl Backend {
         let (api, api_rx) = mpsc::channel();
         let (audio, audio_rx) = mpsc::channel();
         let (art, art_rx) = mpsc::channel();
+        let audio_epoch = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let art_tx = reply_tx.clone();
         let art_agent = user_agent.clone();
         thread::spawn(move || art_worker(art_rx, art_tx, demo, &art_agent));
         if demo {
             let demo_tx = reply_tx.clone();
+            let epoch = std::sync::Arc::clone(&audio_epoch);
             thread::spawn(move || demo_worker(api_rx, demo_tx));
             thread::spawn(move || {
+                use std::sync::atomic::Ordering;
                 for request in audio_rx {
-                    if let Request::Audio { track_token, .. } = request {
-                        let _ = reply_tx.send(Reply::Audio { track_token, data: Vec::new() });
+                    if let Request::Audio { track_token, generation, .. } = request {
+                        if generation != epoch.load(Ordering::Acquire) {
+                            continue;
+                        }
+                        let _ = reply_tx.send(Reply::Audio { track_token, data: Vec::new(), generation });
                     }
                 }
             });
         } else {
             let api_tx = reply_tx.clone();
             let agent = user_agent.clone();
+            let epoch = std::sync::Arc::clone(&audio_epoch);
             thread::spawn(move || api_worker(api_rx, api_tx, quality, &agent));
-            thread::spawn(move || audio_worker(audio_rx, reply_tx, &user_agent));
+            thread::spawn(move || audio_worker(audio_rx, reply_tx, &user_agent, epoch));
         }
-        Self { api, audio, art, replies, tx }
+        Self { api, audio, art, replies, tx, audio_epoch }
+    }
+
+    /// Invalidate queued (and late) audio downloads older than `generation`.
+    pub fn set_audio_epoch(&self, generation: u64) {
+        self.audio_epoch.store(generation, std::sync::atomic::Ordering::Release);
     }
 
     /// Runs `job` on the Pandora password of `account` in `keychain`; the
@@ -435,7 +458,7 @@ impl Backend {
             let reply = match job {
                 KeychainJob::Load => KeychainReply::Loaded(keychain.get(&account).map_err(|e| e.to_string())),
                 KeychainJob::Save(password) => {
-                    KeychainReply::Saved(keychain.set(&account, &password).map_err(|e| e.to_string()))
+                    KeychainReply::Saved(keychain.set(&account, password.expose()).map_err(|e| e.to_string()))
                 }
                 KeychainJob::Forget { loud } => {
                     KeychainReply::Forgotten { result: keychain.forget(&account).map_err(|e| e.to_string()), loud }
@@ -595,7 +618,8 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
             | Request::Art { .. }
             | Request::Quality(_)
             | Request::Started { .. }
-            | Request::AdImpression { .. } => continue,
+            | Request::AdImpression { .. }
+            | Request::Logout => continue,
         };
         if replies.send(reply).is_err() {
             break;
@@ -606,17 +630,24 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
 fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Quality, user_agent: &str) {
     let mut client = Client::new(user_agent);
     client.set_quality(quality);
-    let mut login: Option<(String, String)> = None;
+    let mut login: Option<(String, Secret)> = None;
     for request in requests {
         let mut took_over = false;
         let reply = match request {
-            Request::Login { username, password } => match client.login(&username, &password) {
+            Request::Login { username, password } => match client.login(&username, password.expose()) {
                 Ok(()) => {
                     login = Some((username, password));
                     Reply::LoggedIn { hifi: client.account.hifi() }
                 }
                 Err(e) => Reply::LoginFailed { wrong_password: e == Error::WrongLogin, message: e.to_string() },
             },
+            Request::Logout => {
+                if let Some((_, pass)) = login.take() {
+                    drop(pass); // ZeroizeOnDrop
+                }
+                client.clear_session();
+                continue;
+            }
             Request::Stations => {
                 run(&mut client, &login, &mut took_over, Failed::Stations, |c| c.stations().map(Reply::Stations))
             }
@@ -782,7 +813,7 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
 /// One API call with the retries; its failure as a [`Reply::Failed`].
 fn run(
     client: &mut Client,
-    login: &Option<(String, String)>,
+    login: &Option<(String, Secret)>,
     took_over: &mut bool,
     what: Failed,
     call: impl FnMut(&mut Client) -> Result<Reply, Error>,
@@ -794,21 +825,44 @@ fn failed(what: Failed, error: Error) -> Reply {
     Reply::Failed { what, message: error.to_string() }
 }
 
-fn audio_worker(requests: Receiver<Request>, replies: Sender<Reply>, user_agent: &str) {
+fn audio_worker(
+    requests: Receiver<Request>,
+    replies: Sender<Reply>,
+    user_agent: &str,
+    epoch: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) {
+    use std::sync::atomic::Ordering;
     let client = Client::new(user_agent);
     for request in requests {
-        let Request::Audio { track_token, url } = request else { continue };
+        let Request::Audio { track_token, url, generation } = request else { continue };
+        // Abandoned after a station change / timeout: do not start HTTP.
+        if generation != epoch.load(Ordering::Acquire) {
+            continue;
+        }
         // A panic here must not take the worker with it: every later song would
         // then wait for an answer that never comes.
+        let epoch_for_fetch = std::sync::Arc::clone(&epoch);
         let fetched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if url.is_empty() {
                 return Err("Pandora gave no audio URL for this song".to_owned());
             }
-            client.fetch_audio(&url).map_err(|e| e.to_string())
+            // Abort between chunks when the app bumps the generation (skip /
+            // station change / logout) so we do not wait for a full body.
+            let cancel = || generation != epoch_for_fetch.load(Ordering::Acquire);
+            match client.fetch_audio(&url, cancel) {
+                Ok(Some(data)) => Ok(Some(data)),
+                Ok(None) => Ok(None),
+                Err(e) => Err(e.to_string()),
+            }
         }));
+        // Epoch moved during the fetch: drop the bytes (and skip the reply).
+        if generation != epoch.load(Ordering::Acquire) {
+            continue;
+        }
         let reply = match fetched {
-            Ok(Ok(data)) => Reply::Audio { track_token, data },
-            Ok(Err(message)) => Reply::AudioFailed { track_token, message },
+            Ok(Ok(Some(data))) => Reply::Audio { track_token, data, generation },
+            Ok(Ok(None)) => continue, // cancelled mid-body; no reply
+            Ok(Err(message)) => Reply::AudioFailed { track_token, message, generation },
             Err(payload) => {
                 let why = payload
                     .downcast_ref::<&str>()
@@ -816,7 +870,7 @@ fn audio_worker(requests: Receiver<Request>, replies: Sender<Reply>, user_agent:
                     .or_else(|| payload.downcast_ref::<String>().cloned())
                     .unwrap_or_default();
                 crate::log::log!("download: crashed for {track_token}: {why}");
-                Reply::AudioFailed { track_token, message: "the download crashed".into() }
+                Reply::AudioFailed { track_token, message: "the download crashed".into(), generation }
             }
         };
         if replies.send(reply).is_err() {

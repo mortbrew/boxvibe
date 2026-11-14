@@ -250,8 +250,8 @@ fn an_expired_login_logs_in_again_once() {
         _ => (200, "{}".into()),
     }));
     let mut c = Client::with_base(&base, "");
-    let login = ("me".to_owned(), "pw".to_owned());
-    c.login(&login.0, &login.1).unwrap();
+    let login = ("me".to_owned(), crate::config::Secret::new("pw"));
+    c.login(&login.0, login.1.expose()).unwrap();
     let mut took_over = false;
     let stations = with_retries(&mut c, Some(&login), &mut took_over, |c| c.stations()).unwrap();
     assert_eq!(stations.len(), 1);
@@ -267,8 +267,8 @@ fn a_login_that_keeps_expiring_gives_up() {
         _ => (401, r#"{"errorCode":1001,"errorString":"INVALID_REQUEST","message":"Invalid Auth Token"}"#.into()),
     }));
     let mut c = Client::with_base(&base, "");
-    let login = ("me".to_owned(), "pw".to_owned());
-    c.login(&login.0, &login.1).unwrap();
+    let login = ("me".to_owned(), crate::config::Secret::new("pw"));
+    c.login(&login.0, login.1.expose()).unwrap();
     let err = with_retries(&mut c, Some(&login), &mut false, |c| c.stations()).unwrap_err();
     assert!(err.is_auth_expired());
 }
@@ -289,8 +289,8 @@ fn another_device_streaming_is_taken_over_once() {
         _ => (200, "{}".into()),
     }));
     let mut c = Client::with_base(&base, "");
-    let login = ("me".to_owned(), "pw".to_owned());
-    c.login(&login.0, &login.1).unwrap();
+    let login = ("me".to_owned(), crate::config::Secret::new("pw"));
+    c.login(&login.0, login.1.expose()).unwrap();
     let mut took_over = false;
     let songs = with_retries(&mut c, Some(&login), &mut took_over, |c| c.fragment("st")).unwrap();
     assert_eq!(songs.len(), 1, "the ad is dropped");

@@ -56,10 +56,21 @@ jobs:
           esac
           sed -i "s/^version = \".*\"/version = \"$version\"/" Cargo.toml
           grep -q "^version = \"$version\"$" Cargo.toml || { echo "::error::could not set version" >&2; exit 1; }
+          # The lockfile names boxvibe's own version, so it has to follow or
+          # `--locked` fails. Rewrite that one entry rather than running
+          # `cargo update`: the latter resolves the whole graph, and the
+          # `vibekit` git dependency is not in the cache on a fresh runner, so
+          # it needs the network and fails under `--offline`.
+          python3 - "$version" <<'PY'
+          import re, sys
+          version = sys.argv[1]
+          text = open("Cargo.lock").read()
+          new, n = re.subn(r'(name = "boxvibe"\nversion = ")[^"]*(")', r'\g<1>' + version + r'\g<2>', text)
+          if n != 1:
+              sys.exit(f"expected one boxvibe entry in Cargo.lock, found {n}")
+          open("Cargo.lock", "w").write(new)
+          PY
           echo "building $version from tag $TAG"
-      # The lockfile names boxvibe's own version, so it has to follow. Only the
-      # root package changes, so this needs no network.
-      - run: cargo update --workspace --offline
       - run: cargo test --locked
       - run: cargo build --release --locked
       - name: Package

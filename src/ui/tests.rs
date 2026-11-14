@@ -18,7 +18,6 @@ fn the_theme_picker_never_cuts_its_tags_or_hints() {
         let all = lines.join("\n");
         assert!(all.contains(vibekit::picker::SEARCH_HINT), "{cols}: search hint cut\n{all}");
         assert!(all.contains("in use "), "{cols}: tag cut\n{all}");
-        assert!(!all.contains("installed"), "{cols}\n{all}");
     }
     app.on_key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Tab));
     for cols in [80, 160] {
@@ -671,7 +670,7 @@ fn the_settings_page_lists_the_genre_popup_row() {
     let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("Genre station edit popup"), "{text}");
     let line = text.lines().find(|l| l.contains("Genre station edit popup")).unwrap();
-    assert!(line.contains(" on"), "{line}");
+    assert!(line.contains(" On"), "{line}");
 }
 
 #[test]
@@ -962,14 +961,22 @@ fn settings_has_no_column_headers_and_starts_with_its_first_section() {
 
 #[test]
 fn colours_behind_a_popup_fade_toward_the_background() {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
     let bg = Color::Rgb(20, 20, 30);
-    let Color::Rgb(r, g, b) = dim_color(Color::Rgb(250, 200, 0), bg) else { panic!() };
+    let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
+    buf[(0, 0)].set_fg(Color::Rgb(250, 200, 0)).set_bg(Color::Reset);
+    buf[(1, 0)].set_fg(bg);
+    buf[(2, 0)].set_fg(Color::Yellow);
+    let area = buf.area;
+    vibekit::dialog::dim(&mut buf, area, 0.6, bg);
+    let Color::Rgb(r, g, b) = buf[(0, 0)].fg else { panic!() };
     assert!(r < 130 && g < 110 && b > 20, "darker, toward the background: {r} {g} {b}");
     assert!(r.abs_diff(b) < 70, "less saturated: {r} vs {b}");
-    assert_eq!(dim_color(bg, bg), bg, "the background stays");
-    assert_eq!(dim_color(Color::Yellow, bg), Color::DarkGray);
-    assert_eq!(dim_color(Color::Indexed(208), bg), Color::DarkGray);
-    assert_eq!(dim_color(Color::Reset, bg), Color::Reset);
+    assert_eq!(buf[(0, 0)].bg, Color::Reset);
+    assert_eq!(buf[(1, 0)].fg, bg, "the background stays");
+    assert!(buf[(2, 0)].modifier.contains(Modifier::DIM));
 }
 
 #[test]
@@ -1384,8 +1391,8 @@ fn the_quit_question_is_vibekits_confirm_with_a_blank_line_above_the_question() 
 
 #[test]
 fn a_long_question_wraps_and_cuts_to_fit() {
-    assert_eq!(wrap_question("Quit boxvibe?", 36, 3), ["Quit boxvibe?"]);
-    let w = wrap_question("one two three four five six seven", 9, 2);
+    assert_eq!(wrap("Quit boxvibe?", 36, 3), ["Quit boxvibe?"]);
+    let w = wrap("one two three four five six seven", 9, 2);
     assert_eq!(w.len(), 2, "{w:?}");
     assert!(w[1].ends_with('…') && w.iter().all(|l| l.width() <= 9), "{w:?}");
 }
@@ -1499,7 +1506,7 @@ fn song_panes_fit_ten_rows_and_now_playing_takes_the_rest() {
     }
     // Stacked: two song panes of 13 each.
     assert_eq!(now_playing_height(48, true), 22);
-    assert_eq!(now_playing_height(30, true), NOW_PLAYING_MIN, "short: Now Playing keeps its minimum");
+    assert_eq!(now_playing_height(30, true), NOW_PLAYING_STACKED_MIN, "short: the stacked card keeps its minimum");
     assert_eq!(now_playing_height(5, true), 5, "never more than the screen");
     // A full History (10 songs) fits exactly: last row right above the bottom border.
     for i in 0..12 {
@@ -1766,25 +1773,30 @@ fn a_free_plans_quality_row_is_greyed_out_like_a_greyed_theme_select() {
     let row = |app: &mut App| {
         let (lines, buffer) = screen(app, 120, 40);
         let y = lines.iter().position(|l| l.contains("Audio quality")).expect("the row") as u16;
-        // Find the label's column by its cells: the icon before it is
-        // double-width, so a char index would land in the wrong place.
+        // Label starts after the leading space of a vibekit settings row.
         let x = (0..120u16)
             .find(|&x| (0..13).map(|i| buffer[(x + i, y)].symbol()).collect::<String>() == "Audio quality")
             .expect("the label");
-        (lines[y as usize].clone(), buffer[(x, y)].fg)
+        let starts_with = |needle: &str| {
+            let n = needle.len() as u16;
+            (0..120u16.saturating_sub(n))
+                .find(|&x| (0..n).map(|i| buffer[(x + i, y)].symbol()).collect::<String>() == needle)
+        };
+        let value_x = starts_with("your plan").or_else(|| starts_with("high")).or_else(|| starts_with("standard"));
+        (lines[y as usize].clone(), buffer[(x, y)].fg, value_x.map(|vx| buffer[(vx, y)].fg))
     };
     // Plus / Premium: the label is the normal text colour.
     app.hifi = Some(true);
-    let (line, fg) = row(&mut app);
+    let (line, fg, _) = row(&mut app);
     assert_eq!(fg, app.palette.fg, "{line}");
-    // A free plan: greyed, like Theme Select under Auto Mode.
+    // A free plan: value greyed, like Theme Select under Auto Mode.
     app.hifi = Some(false);
-    let (line, fg) = row(&mut app);
-    assert_eq!(fg, app.palette.muted, "{line}");
+    let (line, _, value_fg) = row(&mut app);
+    assert_eq!(value_fg, Some(app.palette.muted), "{line}");
     assert!(line.contains("your plan: 64 kbps HE-AAC"), "{line}");
-    // Not logged in: the plan is unknown, so it stays usable.
+    // Not logged in: the plan is unknown, so it stays usable (accent › picker).
     app.hifi = None;
-    assert_eq!(row(&mut app).1, app.palette.fg);
+    assert_eq!(row(&mut app).2, Some(app.palette.accent));
 }
 
 #[test]
@@ -1929,6 +1941,30 @@ fn now_playing_art_fills_the_pane_with_info_time_and_volume_beside_it() {
     for key in ["-/d", "+/u", "space"] {
         assert!(!lines[..rows].iter().any(|l| l.contains(key)), "no {key} under the buttons");
     }
+}
+
+#[test]
+fn now_playing_stacks_the_cover_over_the_song_when_narrow() {
+    let mut app = demo();
+    app.config.ui.icons = crate::config::IconSet::Unicode;
+    let (lines, _) = screen(&mut app, 80, 50);
+    let rows = usize::from(now_playing_height(48, true));
+    let art = app.art.last_area;
+    let title = app.now.as_ref().unwrap().title.clone();
+    let title_at = lines.iter().position(|l| l.contains(&title)).expect("title");
+    let time = lines.iter().position(|l| l.contains('●')).expect("time");
+    assert!(u16::try_from(title_at).unwrap() >= art.y + art.height, "cover above the title");
+    assert!(title_at < time && time < rows, "time under the song, still in the pane");
+    let top = lines.iter().position(|l| l.contains("Now Playing ·")).unwrap();
+    let title_col = lines[top].find("Now Playing").unwrap();
+    let chars: Vec<char> = lines[top].chars().collect();
+    let title_at = lines[top][..title_col].chars().count();
+    let left = (0..title_at).rev().find(|&x| matches!(chars[x], '╭' | '┌' | '┏')).unwrap() as u16;
+    let right = (title_at..chars.len()).find(|&x| matches!(chars[x], '╮' | '┐' | '┓')).unwrap() as u16;
+    let mid = left + (right - left) / 2;
+    let art_mid = art.x + art.width / 2;
+    assert!(art_mid.abs_diff(mid) <= 2, "cover centred: art {art_mid}, card {mid}");
+    assert!(lines[time].chars().position(|c| c == '●').unwrap() > usize::from(left));
 }
 
 /// Every row of Up Next and History ends in its own column: the rating

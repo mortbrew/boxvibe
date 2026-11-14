@@ -41,10 +41,14 @@ impl App {
 
     /// Drops the list and invalidates an answer still in flight.
     pub(super) fn forget_recent(&mut self) {
+        let had = self.recent_row();
         self.recent_state.reset();
         self.recent.clear();
         self.recent_cursor = 0;
         self.recent_hidden.clear();
+        if had {
+            self.refresh_menu_cache();
+        }
     }
 
     pub(super) fn filter_recent(&self, sources: Vec<RecentSource>) -> Vec<RecentSource> {
@@ -56,6 +60,9 @@ impl App {
         self.recent_hidden.insert(source.id.clone());
         self.recent.retain(|s| s.id != source.id);
         self.recent_cursor = self.recent_cursor.min(self.recent.len().saturating_sub(1));
+        if self.recent.is_empty() {
+            self.refresh_menu_cache();
+        }
         self.status = format!(
             "Removed “{}” from Recently Played here (this device only; Pandora's history is unchanged)",
             self.recent_title(&source)
@@ -103,5 +110,40 @@ impl App {
             None if self.stations.is_empty() => self.status = "The stations are still loading".into(),
             None => self.status = format!("“{}” isn't one of your stations any more", self.recent_title(&source)),
         }
+    }
+
+    pub(super) fn reply_recent(&mut self, generation: u64, sources: Vec<RecentSource>) {
+        if !self.accept_recent(generation) {
+            return;
+        }
+        // A new row is inserted above Pinned. Stay on the menu entry
+        // the cursor was already on, and on the same recent source.
+        let had = self.recent_row();
+        let selected = self.menu_selected();
+        let keep = self.recent.get(self.recent_cursor).map(|s| s.id.clone());
+        self.recent = self.filter_recent(sources);
+        if let Some(id) = keep
+            && let Some(at) = self.recent.iter().position(|s| s.id == id)
+        {
+            self.recent_cursor = at;
+        } else {
+            self.recent_cursor = self.recent_cursor.min(self.recent.len().saturating_sub(1));
+        }
+        if !had && self.recent_row() {
+            self.refresh_menu_cache();
+            let items = self.menu_items();
+            if let Some(i) = items.iter().position(|m| *m == selected) {
+                self.menu_cursor = i;
+            }
+        }
+        self.finish_recent_request();
+    }
+
+    pub(super) fn reply_recent_failed(&mut self, generation: u64, message: String) {
+        if !self.accept_recent(generation) {
+            return;
+        }
+        self.status = format!("⚠ Recently Played: {message}");
+        self.finish_recent_request();
     }
 }

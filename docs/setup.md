@@ -41,6 +41,7 @@ All of these are required. Copy them from boxvibe rather than retyping.
 ```
 .github/workflows/ci.yml
 .github/workflows/audit.yml
+.github/workflows/udeps.yml
 .github/workflows/codeql.yml
 .github/workflows/release.yml
 .github/codeql/codeql-config.yml
@@ -151,6 +152,47 @@ jobs:
       - run: cargo install cargo-audit --locked
       - run: cargo audit
 ```
+
+### `.github/workflows/udeps.yml`
+
+`cargo udeps` on nightly: fails when `Cargo.toml` lists a crate nothing in the
+tree uses. Same trigger as `ci` (push and PRs to `main`/`dev`). Like `audit`,
+it is **not** a required status check on the "Protect main" ruleset.
+
+```yaml
+# `cargo udeps`: fails when Cargo.toml lists a crate nothing in the tree uses.
+# Would have caught the unused rustfft dependency. Not a required status check.
+name: udeps
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  udeps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-udeps
+      - run: cargo +nightly udeps --locked
+```
+
+If the crate needs system libraries to build, keep the same `apt-get install`
+line as in `ci.yml`.
 
 ### `.github/workflows/codeql.yml`
 
@@ -415,10 +457,11 @@ only says the scan ran; `CodeQL` is the check GitHub's code scanning reports,
 and it is the one that fails when there are new alerts. Requiring the wrong one
 would gate merges on a job that passes even with alerts open.
 
-`audit` stays out: it fails on a RustSec advisory in a dependency, which is
-usually fixed by a version bump rather than by the pull request at hand, and a
-required check that blocks on someone else's CVE stops releases for reasons the
-author cannot fix. §7 still says to read it.
+`audit` and `udeps` stay out: `audit` fails on a RustSec advisory in a
+dependency, which is usually fixed by a version bump rather than by the pull
+request at hand, and a required check that blocks on someone else's CVE stops
+releases for reasons the author cannot fix; `udeps` needs nightly and is a
+hygiene signal, not a merge gate. §7 still says to read every check.
 
 ## 5. Security settings
 

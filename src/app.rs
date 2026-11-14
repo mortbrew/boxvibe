@@ -6,8 +6,11 @@
 //! Up Next and History), the station list, Settings or About. There is no
 //! separate login screen: the account lives in Settings, and the first run
 //! opens Settings on it.
+//!
+//! Domain helpers live beside this file (`account`, `stations`, `playback`,
+//! `reply`, …) as more `impl App` blocks — one `App`, split for reading.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -27,18 +30,23 @@ use crate::pandora::{
 use crate::theme::{self, Palette};
 use crate::update::{Progress, Replace, Update};
 
+mod account;
 mod ad;
 mod audio_cache;
+mod audio_fetch;
 mod browse;
 mod browse_pages;
 mod dialogs;
 mod editor;
 mod in_flight;
+mod menu;
 mod panel;
 mod pending_password;
 mod playback;
 mod recent;
 mod recent_state;
+mod reply;
+mod stations;
 mod themes;
 mod view_all;
 pub use ad::{AdPhase, AdView, End};
@@ -988,14 +996,11 @@ pub struct App {
     pub ad: AdPhase,
     ad_serial: u32,
     ad_tracker: ads::Tracker,
-    /// The song whose audio is downloading, and since when (a download that
-    /// never answers must not hold the player forever).
-    pub buffering: Option<(String, Instant)>,
-    /// Downloaded songs kept for their turn (see [`audio_cache`]).
-    audio_cache: audio_cache::AudioCache,
+    /// Download pipeline: generation, buffering, cache, requested set
+    /// (see [`audio_fetch`]).
+    pub(crate) audio_fetch: audio_fetch::AudioFetch,
     /// The covers.
     pub art: crate::art::Art,
-    requested: HashSet<String>,
     pub audio: Audio,
     backend: Backend,
     /// Where the Pandora password is kept (see [`crate::keychain`]).
@@ -1022,6 +1027,13 @@ pub struct App {
     pub restart: bool,
     /// Shift+Q asked "Quit boxvibe?": y quits, any other key doesn't (like tubevibe).
     pub quit: bool,
+    /// The main loop paints only when this is set, or when a whole-second
+    /// progress / sleep / notifications clock advances (see [`App::take_needs_draw`]).
+    needs_draw: bool,
+    /// Last whole-second fingerprint drawn for time-based UI (progress, sleep, ago).
+    drawn_clock: Option<u64>,
+    /// Cached main-menu rows and Browse pins (see [`menu::MenuModel`]).
+    menu: menu::MenuModel,
 }
 
 const HISTORY_LEN: usize = 10;
@@ -1116,9 +1128,7 @@ impl App {
             ad: AdPhase::Off,
             ad_serial: 0,
             ad_tracker: ads::Tracker::new(!demo, true, &user_agent),
-            buffering: None,
-            audio_cache: audio_cache::AudioCache::default(),
-            requested: HashSet::new(),
+            audio_fetch: audio_fetch::AudioFetch::default(),
             audio,
             backend,
             keychain,
@@ -1133,6 +1143,9 @@ impl App {
             restart: false,
             art: crate::art::Art::default(),
             quit: false,
+            needs_draw: true,
+            drawn_clock: None,
+            menu: menu::MenuModel::default(),
             config,
             config_path,
             user_themes: if demo {
@@ -1147,6 +1160,7 @@ impl App {
             demo,
         };
         app.apply_theme();
+        app.refresh_menu_cache();
         app.status = ConfigWarning::summary(warnings)
             .or_else(|| app.audio.problem.clone())
             .unwrap_or_else(|| if demo { "Demo mode: made-up stations, no sound".into() } else { String::new() });
@@ -1161,28 +1175,53 @@ impl App {
         app
     }
 
-    /// First thing after a start: log in with what is saved, or ask.
-    fn start_account(&mut self) {
-        if self.config.has_login() {
-            // A password an older boxvibe left in config.toml moves to the keychain
-            // (once Pandora accepts it; see `Reply::LoggedIn`).
-            self.pending_password.read_from_file();
-            self.log_in();
-        } else if !self.config.pandora.username.trim().is_empty() {
-            // The usual start: the password is in the keychain.
-            let user = self.config.pandora.username.trim().to_owned();
-            self.backend.keychain(&self.keychain, &user, KeychainJob::Load);
-            if self.status.is_empty() {
-                self.status = "Getting your password from the keychain…".into();
-            }
-        } else {
-            // First run: Settings, on the account, typing the email.
-            self.view = View::Settings;
-            self.focus = Focus::Content;
-            self.settings_cursor = Setting::at(Setting::Email);
-            self.open_prompt(Prompt::Email);
-            self.status = "Welcome to boxvibe: log in with your Pandora account".into();
+    /// Ask the main loop to paint on the next pass.
+    pub fn mark_draw(&mut self) {
+        self.needs_draw = true;
+    }
+
+    /// Whether the main loop should call `terminal.draw` this frame.
+    ///
+    /// Splash always paints (animation). Otherwise: an explicit [`mark_draw`],
+    /// or a change in the whole-second clocks shown on screen (progress bar,
+    /// sleep countdown, Notifications "ago").
+    pub fn take_needs_draw(&mut self) -> bool {
+        if self.splash.is_some() {
+            self.needs_draw = false;
+            return true;
         }
+        if std::mem::take(&mut self.needs_draw) {
+            self.drawn_clock = None;
+            return true;
+        }
+        let clock = self.ui_clock();
+        if clock != self.drawn_clock {
+            self.drawn_clock = clock;
+            return true;
+        }
+        false
+    }
+
+    /// Whole-second fingerprint of time-based chrome (progress / sleep / ago).
+    fn ui_clock(&self) -> Option<u64> {
+        let mut parts = [0u64; 3];
+        let mut any = false;
+        if self.audio.is_active() {
+            parts[0] = self.audio.position().as_secs();
+            any = true;
+        }
+        if matches!(self.sleep, Some(Sleep::Minutes(..)))
+            && let Some(left) = self.sleep_left()
+        {
+            parts[1] = left.as_secs();
+            any = true;
+        }
+        if self.view == View::Notifications && !self.notes.is_empty() {
+            // `ago` changes at the minute; track minutes so we do not paint at 1 Hz.
+            parts[2] = self.notes.iter().map(|(at, _)| at.elapsed().as_secs() / 60).sum();
+            any = true;
+        }
+        any.then_some(parts[0] ^ parts[1].wrapping_mul(0x9E37) ^ parts[2].wrapping_mul(0xC2B2))
     }
 
     /// Looks at the system in the background (fonts get 1.5 s at most). The
@@ -1287,26 +1326,72 @@ impl App {
         self.favorites_in_menu() && self.stations.is_empty()
     }
 
-    pub fn menu_items(&self) -> Vec<MenuItem> {
-        let top = self.has_now_playing().then_some(MenuItem::NowPlaying);
-        let pins = (0..self.browse_menu_pins().len()).map(MenuItem::BrowsePin);
+    /// Inputs that shape the main menu (and Browse pin list).
+    fn menu_epoch(&self) -> u64 {
+        let mut h = 0u64;
+        h ^= u64::from(self.has_now_playing());
+        h ^= u64::from(self.recent_row()) << 1;
+        h ^= u64::from(self.config.ui.pinned_in_menu) << 2;
+        h ^= u64::from(self.favorites_in_menu()) << 3;
+        h = h.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(self.config.ui.favorites.len() as u64);
+        for &(key, _) in config::BROWSE_SECTIONS {
+            if self.config.browse.pinned_key(key) {
+                h = h.wrapping_mul(31).wrapping_add(key.len() as u64 + 1);
+            }
+        }
+        for (key, on) in &self.config.browse.sections {
+            if *on {
+                h = h.wrapping_mul(31).wrapping_add(key.len() as u64 + 17);
+            }
+        }
+        h
+    }
+
+    fn build_menu_items(pin_count: usize, now: bool, recent: bool, pinned: bool, favs: usize) -> Vec<MenuItem> {
+        let top = now.then_some(MenuItem::NowPlaying);
         top.into_iter()
             .chain([MenuItem::Stations])
             // Recently Played sits where Pinned used to, above Pinned. An empty
             // list keeps the row absent. Pinned stays above the Browse sections.
-            .chain(self.recent_row().then_some(MenuItem::RecentlyPlayed))
-            .chain(self.config.ui.pinned_in_menu.then_some(MenuItem::Pinned))
-            .chain(pins)
-            .chain(
-                (0..if self.favorites_in_menu() { self.config.ui.favorites.len() } else { 0 }).map(MenuItem::Favorite),
-            )
+            .chain(recent.then_some(MenuItem::RecentlyPlayed))
+            .chain(pinned.then_some(MenuItem::Pinned))
+            .chain((0..pin_count).map(MenuItem::BrowsePin))
+            .chain((0..favs).map(MenuItem::Favorite))
             .chain([MenuItem::Settings, MenuItem::Notifications, MenuItem::About, MenuItem::Quit])
             .collect()
     }
 
+    /// Rebuilds the cached menu rows and Browse pin labels.
+    pub(crate) fn refresh_menu_cache(&mut self) {
+        let pins = Self::build_browse_pins(&self.config);
+        let items = Self::build_menu_items(
+            pins.len(),
+            self.has_now_playing(),
+            self.recent_row(),
+            self.config.ui.pinned_in_menu,
+            if self.favorites_in_menu() { self.config.ui.favorites.len() } else { 0 },
+        );
+        self.menu.refresh(self.menu_epoch(), pins, items);
+    }
+
+    pub fn menu_items(&self) -> std::borrow::Cow<'_, [MenuItem]> {
+        if self.menu.is_current(self.menu_epoch()) {
+            return std::borrow::Cow::Borrowed(self.menu.items());
+        }
+        // Stale (tests that mutate config/recent without refresh): compute fresh.
+        let pins = Self::build_browse_pins(&self.config);
+        std::borrow::Cow::Owned(Self::build_menu_items(
+            pins.len(),
+            self.has_now_playing(),
+            self.recent_row(),
+            self.config.ui.pinned_in_menu,
+            if self.favorites_in_menu() { self.config.ui.favorites.len() } else { 0 },
+        ))
+    }
+
     pub fn menu_selected(&self) -> MenuItem {
         let items = self.menu_items();
-        items[self.menu_cursor.min(items.len() - 1)]
+        items[self.menu_cursor.min(items.len().saturating_sub(1))]
     }
 
     fn open_menu_item(&mut self) {
@@ -1461,112 +1546,6 @@ impl App {
         self.backend.send(Request::CreateStation { pandora_id: pandora_id.to_owned() });
     }
 
-    /// Pandora made (or already had) a station: it joins the list, and plays.
-    /// Shift+X: plays Pandora's Shuffle, which mixes songs from the account's
-    /// stations (Pandora makes it if the account has none yet).
-    fn play_shuffle(&mut self) {
-        if let Some(at) = self.stations.iter().position(|s| s.is_shuffle) {
-            if self.current_station.as_deref() == Some(self.stations[at].id.as_str()) {
-                self.status = "Already playing Shuffle".into();
-                return;
-            }
-            self.stations_cursor = at;
-            self.on_add_row = false;
-            self.tune(at);
-            return;
-        }
-        self.status = "Asking Pandora for your Shuffle station…".into();
-        self.backend.send(Request::Shuffle);
-    }
-
-    fn shuffle_arrived(&mut self, station: Station) {
-        let at = match self.stations.iter().position(|s| s.id == station.id) {
-            Some(at) => at,
-            None => {
-                self.stations.insert(0, station);
-                0
-            }
-        };
-        self.stations_cursor = at;
-        self.on_add_row = false;
-        self.tune(at);
-    }
-
-    fn station_created(&mut self, station: Station) {
-        self.in_flight.end_station();
-        let at = match self.stations.iter().position(|s| s.id == station.id) {
-            Some(at) => at,
-            None => {
-                // Newest first, after Shuffle (which stays on top).
-                let at = usize::from(self.stations.first().is_some_and(|s| s.is_shuffle));
-                self.stations.insert(at, station);
-                at
-            }
-        };
-        self.on_add_row = false;
-        self.stations_cursor = at;
-        self.tune(at);
-    }
-
-    pub fn stations_index(&self) -> usize {
-        self.stations_cursor.min(self.stations.len().saturating_sub(1))
-    }
-
-    pub fn is_favorite(&self, id: &str) -> bool {
-        self.config.ui.favorites.iter().any(|f| f.id == id)
-    }
-
-    /// `f`: stars or unstars the station under the cursor (the list, a
-    /// favorite in the menu) or else the one playing; saved as `[playback] favorites`.
-    fn toggle_favorite(&mut self) {
-        let (id, name) = match (self.focus, self.view, self.menu_selected()) {
-            (Focus::Content, View::Stations, _) if self.on_add_row => {
-                self.status = "f stars a station: move onto one".into();
-                return;
-            }
-            (Focus::Content, View::Stations, _) => match self.stations.get(self.stations_index()) {
-                Some(s) => (s.id.clone(), s.name.clone()),
-                None => return,
-            },
-            (Focus::Menu, _, MenuItem::Favorite(i)) => {
-                let f = &self.config.ui.favorites[i];
-                (f.id.clone(), f.name.clone())
-            }
-            _ => match self.current_station.as_ref().and_then(|id| self.stations.iter().find(|s| &s.id == id)) {
-                Some(s) => (s.id.clone(), s.name.clone()),
-                None => {
-                    self.status = "Open Stations to pick one to favorite".into();
-                    return;
-                }
-            },
-        };
-        let selected = self.menu_selected();
-        if let Some(at) = self.config.ui.favorites.iter().position(|f| f.id == id) {
-            self.config.ui.favorites.remove(at);
-            self.status = format!("Removed {name} from Favorites");
-        } else {
-            self.config.ui.favorites.push(config::Favorite { id, name: name.clone() });
-            self.status = format!("{name} added to Favorites");
-        }
-        // The menu cursor stays on its entry (or the one that took its place).
-        if let Some(i) = self.menu_items().iter().position(|m| *m == selected) {
-            self.menu_cursor = i;
-        }
-        self.menu_cursor = self.menu_cursor.min(self.menu_items().len() - 1);
-        self.save_favorites();
-    }
-
-    fn save_favorites(&mut self) {
-        let mut list = toml_edit::Array::new();
-        for f in &self.config.ui.favorites {
-            let mut t = toml_edit::InlineTable::new();
-            t.insert("id", f.id.as_str().into());
-            t.insert("name", f.name.as_str().into());
-            list.push(t);
-        }
-        self.save(&[("playback", "favorites", toml_edit::Value::Array(list))]);
-    }
-
     /// Shift+I: pins the selected song (Up Next, History) or else the playing one.
     /// `.`: the song menu for the selected (or playing) song.
     fn open_song_menu(&mut self) {
@@ -1578,7 +1557,7 @@ impl App {
             self.status = "Ads have no song menu".into();
             return;
         }
-        self.song_menu = Some(SongMenu { song, cursor: 0 });
+        self.song_menu = Some(SongMenu { song: song.clone(), cursor: 0 });
     }
 
     fn song_menu_key(&mut self, key: KeyEvent) {
@@ -1614,8 +1593,8 @@ impl App {
                 if let Some(at) = self.queue.iter().position(|s| s.track_token == song.track_token) {
                     self.queue.remove(at);
                     self.held_dislikes.remove(&song.track_token);
-                    self.requested.remove(&song.track_token);
-                    self.audio_cache.forget(&song.track_token);
+                    self.audio_fetch.requested.remove(&song.track_token);
+                    self.audio_fetch.cache.forget(&song.track_token);
                 }
                 self.status = format!("Tired of “{}”: Pandora rests it for a month", song.title);
             }
@@ -1706,19 +1685,17 @@ impl App {
 
     /// The song a song key is for: the Up Next or History row when that
     /// pane has the keys, else the playing song.
-    fn selected_song(&self) -> Option<Song> {
+    fn selected_song(&self) -> Option<&Song> {
         match (self.in_songs(), self.pane) {
             (true, Pane::UpNext) => self.queue.get(self.next_index()),
             (true, Pane::History) => self.history.get(self.history_index()),
             _ => None,
         }
         .or(self.now.as_ref())
-        .cloned()
     }
 
     fn pin(&mut self) {
-        let song = self.selected_song();
-        let Some(song) = song else {
+        let Some(song) = self.selected_song() else {
             self.status = "No song to pin: pick a station first".into();
             return;
         };
@@ -1726,15 +1703,18 @@ impl App {
             self.status = "Ads can't be pinned".into();
             return;
         }
-        if self.pins.iter().any(|p| p.same(&song)) {
+        if self.pins.iter().any(|p| p.same(song)) {
             self.status = format!("“{}” is already pinned", song.title);
             return;
         }
-        self.pins.insert(0, crate::pinned::Pin::of(&song, &crate::pinned::today()));
+        let pin = crate::pinned::Pin::of(song, &crate::pinned::today());
+        let title = pin.title.clone();
+        let artist = pin.artist.clone();
+        self.pins.insert(0, pin);
         self.pinned_cursor = 0;
         self.save_pins();
         let where_ = if self.config.ui.pinned_in_menu { "the menu's Pinned" } else { "pinned.toml" };
-        self.status = format!("Pinned “{}” by {} (see {where_})", song.title, song.artist);
+        self.status = format!("Pinned “{title}” by {artist} (see {where_})");
     }
 
     fn save_pins(&mut self) {
@@ -1780,6 +1760,7 @@ impl App {
         if self.status == self.last_status {
             return;
         }
+        self.mark_draw();
         self.last_status.clone_from(&self.status);
         if self.status.trim().is_empty() || self.notes.front().is_some_and(|(_, s)| *s == self.status) {
             return;
@@ -1819,6 +1800,15 @@ impl App {
     // --- Every frame ---
 
     pub fn tick(&mut self) {
+        // One owned token for the dirty check; compared by &str after the
+        // mutating work so we don't hold a borrow across the tick body.
+        let before_token = self.now.as_ref().map(|s| s.track_token.clone());
+        let before = (
+            self.splash.is_some(),
+            self.audio_fetch.buffering.is_some(),
+            self.audio.is_paused(),
+            std::mem::discriminant(&self.ad),
+        );
         if self.splash.is_some_and(|t| t.elapsed() >= SPLASH) {
             self.splash = None;
         }
@@ -1866,7 +1856,18 @@ impl App {
             if let Some(p) = self.omarchy.poll() {
                 self.palette = p;
                 self.omarchy_theme = self.omarchy.name.clone();
+                self.mark_draw();
             }
+        }
+        let after = (
+            self.splash.is_some(),
+            self.audio_fetch.buffering.is_some(),
+            self.audio.is_paused(),
+            std::mem::discriminant(&self.ad),
+        );
+        let token_changed = before_token.as_deref() != self.now.as_ref().map(|s| s.track_token.as_str());
+        if before != after || token_changed {
+            self.mark_draw();
         }
     }
 
@@ -1885,6 +1886,15 @@ impl App {
                 _ => {}
             }
         }
+        let pos = self.audio.position().as_secs_f64();
+        let track = self.now.as_ref().map(|s| s.track_token.as_str()).unwrap_or("");
+        let playing = self.now.as_ref().map(|_| !self.audio.is_paused());
+        let Some(m) = self.mpris.as_mut() else { return };
+        // Skip rebuilding the owned Snapshot when only the position moved.
+        if m.same_identity(track, playing) {
+            m.touch_position(pos);
+            return;
+        }
         let snap = match &self.now {
             Some(s) => crate::mpris::Snapshot {
                 title: s.title.clone(),
@@ -1898,10 +1908,7 @@ impl App {
             },
             None => crate::mpris::Snapshot::default(),
         };
-        let pos = self.audio.position().as_secs_f64();
-        if let Some(m) = self.mpris.as_mut() {
-            m.show(snap, pos);
-        }
+        m.show(snap, pos);
     }
 
     /// Asks for the covers of this song and the next one.
@@ -1909,10 +1916,10 @@ impl App {
         if self.config.ui.album_art == AlbumArt::Off {
             return;
         }
-        let urls = [self.now.as_ref(), self.queue.front()].map(|s| s.map(|s| s.cover_art_url.clone()));
-        for url in urls.into_iter().flatten() {
-            if self.art.want(&url) {
-                self.backend.send(Request::Art { url });
+        for song in [self.now.as_ref(), self.queue.front()].into_iter().flatten() {
+            let url = song.cover_art_url.as_str();
+            if self.art.want(url) {
+                self.backend.send(Request::Art { url: url.to_owned() });
             }
         }
     }
@@ -1925,494 +1932,6 @@ impl App {
             self.on_reply(reply);
             self.want_art();
         }
-    }
-
-    pub(crate) fn on_reply(&mut self, reply: Reply) {
-        if self.editor_reply(&reply) {
-            return;
-        }
-        match reply {
-            Reply::LoggedIn { hifi } => {
-                self.hifi = Some(hifi);
-                let first = self.session != Session::LoggedIn;
-                self.session = Session::LoggedIn;
-                if !self.demo {
-                    let email = self.config.pandora.username.clone();
-                    self.save(&[("account", "email_or_username", email.as_str().into())]);
-                    // The password goes to the keychain, now that Pandora has taken it.
-                    if self.pending_password.needs_saving() {
-                        self.pending_password.sent();
-                        let password = self.config.pandora.password.expose().to_owned();
-                        self.backend.keychain(&self.keychain, &email, KeychainJob::Save(password));
-                    }
-                    // The status bar's right side says who is logged in.
-                    self.status = if self.keychain_state == KeychainState::Unavailable {
-                        NO_KEYCHAIN.into()
-                    } else {
-                        String::new()
-                    };
-                }
-                if first && self.view == View::Settings && self.stations.is_empty() {
-                    // Straight to the music after logging in from Settings.
-                    self.view = View::Player;
-                    self.focus = Focus::Menu;
-                }
-                self.backend.send(Request::Stations);
-            }
-            Reply::LoginFailed { message, wrong_password } => {
-                if wrong_password {
-                    // A wrong password is not kept: not in memory, not in the keychain.
-                    self.config.pandora.password.clear();
-                    self.pending_password.done();
-                    self.forget_saved_password(false);
-                }
-                self.session = Session::Failed(message.clone());
-                self.status = format!("⚠ Login failed: {message}");
-                self.view = View::Settings;
-                self.focus = Focus::Content;
-                self.settings_cursor = Setting::at(Setting::LogIn);
-            }
-            Reply::Keychain(reply) => self.on_keychain(reply),
-            Reply::Stations(stations) => {
-                self.stations = stations;
-                self.on_add_row = self.stations.is_empty();
-                let last = &self.config.pandora.last_station;
-                let at = self.stations.iter().position(|s| &s.id == last);
-                self.stations_cursor = at.unwrap_or(0);
-                // One call per session, after the list: a station entry carries
-                // no name, so the row joins names from `stations`.
-                self.ask_recently_played();
-                // Favorites keep the names Pandora uses now, and one whose
-                // station Pandora no longer has goes -- but only on a list we
-                // can trust: a logged-in account that really has stations. An
-                // empty list is a logged-out or brand-new account, and pruning
-                // on it would throw away every star.
-                let mut renamed = false;
-                let trusted = self.session == Session::LoggedIn && !self.stations.is_empty();
-                let before = self.config.ui.favorites.len();
-                if trusted {
-                    self.config.ui.favorites.retain(|f| self.stations.iter().any(|s| s.id == f.id));
-                }
-                let pruned = before - self.config.ui.favorites.len();
-                for f in &mut self.config.ui.favorites {
-                    if let Some(s) = self.stations.iter().find(|s| s.id == f.id)
-                        && s.name != f.name
-                    {
-                        f.name = s.name.clone();
-                        renamed = true;
-                    }
-                }
-                if renamed || pruned > 0 {
-                    self.save_favorites();
-                }
-                if self.stations.is_empty() {
-                    self.status = "This account has no stations yet: create one on pandora.com".into();
-                } else if self.config.ui.autoplay_last_station && self.current_station.is_none() {
-                    // Shuffle comes first in the list: start on a real station.
-                    if at.is_none() && self.stations.len() > 1 && self.stations[0].is_shuffle {
-                        self.stations_cursor = 1;
-                    }
-                    self.tune(self.stations_cursor);
-                } else if self.current_station.is_none() && self.status.is_empty() {
-                    // Startup always stays on Now Playing (idle); Stations is opened by hand.
-                    self.status = "Nothing playing: open My Stations (Shift+S) to pick one".into();
-                }
-                // Last, so autoplay's "Tuning in to …" does not hide it.
-                if pruned > 0 {
-                    self.status = match pruned {
-                        1 => "A favorite was removed: that station is gone from Pandora".into(),
-                        n => format!("{n} favorites were removed: those stations are gone from Pandora"),
-                    };
-                }
-            }
-            Reply::StationRenamed { station_id, name } => {
-                if let Some(s) = self.stations.iter_mut().find(|s| s.id == station_id) {
-                    s.name = name.clone();
-                }
-                let mut starred = false;
-                for f in self.config.ui.favorites.iter_mut().filter(|f| f.id == station_id) {
-                    f.name = name.clone();
-                    starred = true;
-                }
-                if starred {
-                    self.save_favorites();
-                }
-                self.status = format!("Station renamed to “{name}” on your Pandora account");
-            }
-            Reply::StationRemoved { station_id } => self.station_removed(&station_id),
-            Reply::StationDetails { station_id, details } => {
-                if let Some(d) = self.details_mut().filter(|d| d.station_id == station_id) {
-                    d.from_pandora = Some(Ok(details));
-                }
-            }
-            Reply::SearchResults { query, hits } => {
-                if self.editor_search_results(&query, &hits) {
-                    return;
-                }
-                if let Some(search) = self.add_station.as_mut().filter(|s| s.asked.as_deref() == Some(query.as_str())) {
-                    search.waiting = false;
-                    search.error = None;
-                    // Typing on while it searched keeps the keys in the text.
-                    let same = search.text.text().trim() == query;
-                    search.mode = if hits.is_empty() || !same { SearchMode::Typing } else { SearchMode::Results };
-                    search.cursor = search.prefer.and_then(|k| hits.iter().position(|h| h.kind == k)).unwrap_or(0);
-                    search.hits = hits;
-                }
-            }
-            Reply::StationCreated(station) => self.station_created(station),
-            Reply::Artist(info) => self.artist_loaded(info),
-            Reply::Shuffle(station) => self.shuffle_arrived(station),
-            Reply::StationModes { station_id, modes, set } => self.modes_loaded(&station_id, modes, set),
-            Reply::Browse { path, sections } => self.browse_loaded(path, sections),
-            Reply::BrowseFailed { path, message } => {
-                let index = path.is_none();
-                self.note_browse_failure(path, message.clone());
-                if index {
-                    self.status = format!("⚠ browse: {message}");
-                }
-            }
-            Reply::Playlist { station_id, songs } => {
-                if self.current_station.as_deref() != Some(&station_id) {
-                    return;
-                }
-                self.in_flight.end_playlist();
-                if songs.is_empty() && self.now.is_none() {
-                    self.status = "Pandora sent no songs for this station".into();
-                }
-                self.queue.extend(songs);
-                if self.now.is_none() && !self.ad_break() {
-                    self.advance();
-                } else if self.now.is_some() {
-                    self.prefetch();
-                }
-            }
-            Reply::Rated { track_token, positive, feedback_id } => {
-                if let Some(song) = self.song_mut(&track_token) {
-                    song.feedback_id = feedback_id;
-                }
-                let ic = crate::icons::icons(self.config.ui.icons);
-                let what = if positive { format!("{} Liked", ic.up) } else { format!("{} Disliked", ic.down) };
-                let title = self.find_song(&track_token).map(|s| s.title.clone()).unwrap_or_default();
-                self.status = format!("{what}: {title}");
-            }
-            Reply::ThumbCleared { track_token } => {
-                let title = self.song_mut(&track_token).map(|s| {
-                    s.feedback_id.clear();
-                    s.title.clone()
-                });
-                self.status = format!("Thumb taken back: {}", title.unwrap_or_default());
-            }
-            Reply::TookOver => {
-                self.status = "Pandora was playing on another device with this account: boxvibe took over".into();
-            }
-            Reply::Tired { track_token } => {
-                let title = self.find_song(&track_token).map(|s| s.title.clone()).unwrap_or_default();
-                let sleep = crate::icons::icons(self.config.ui.icons).sleep;
-                self.status = format!("{sleep} Tired of {title}: Pandora won't play it for a month");
-            }
-            Reply::AdList { station_id, ads } => self.ad_list_arrived(&station_id, ads),
-            Reply::Audio { track_token, data } => {
-                let Some(data) = self.ad_audio_arrived(&track_token, data) else { return };
-                if self.buffering.as_ref().is_some_and(|(t, _)| *t == track_token) {
-                    self.buffering = None;
-                    if !self.play_now(Some(data)) {
-                        // The audio would not start: skip on, as `next_song` does.
-                        self.advance();
-                    }
-                } else if self.queue.iter().any(|s| s.track_token == track_token) {
-                    self.keep_audio(track_token, data);
-                }
-            }
-            Reply::Art { url, image } => self.art.arrived(url, image),
-            Reply::AudioFailed { track_token, message } => {
-                if self.ad_audio_failed(&track_token, &message) {
-                    return;
-                }
-                self.requested.remove(&track_token);
-                if self.buffering.as_ref().is_some_and(|(t, _)| *t == track_token) {
-                    crate::log::log!("download: failed for {track_token}: {message}");
-                    self.buffering = None;
-                    self.status = format!("⚠ {message}: skipping");
-                    self.advance();
-                }
-            }
-            // The editor took these (or it was closed meanwhile).
-            Reply::Seeds { .. }
-            | Reply::SeedSuggestions { .. }
-            | Reply::SeedAdded { .. }
-            | Reply::SeedRemoved { .. }
-            | Reply::Feedback { .. }
-            | Reply::FeedbackDeleted { .. } => {}
-            Reply::Recent { generation, sources } => {
-                if !self.accept_recent(generation) {
-                    return;
-                }
-                // A new row is inserted above Pinned. Stay on the menu entry
-                // the cursor was already on, and on the same recent source.
-                let had = self.recent_row();
-                let selected = self.menu_selected();
-                let keep = self.recent.get(self.recent_cursor).map(|s| s.id.clone());
-                self.recent = self.filter_recent(sources);
-                if let Some(id) = keep
-                    && let Some(at) = self.recent.iter().position(|s| s.id == id)
-                {
-                    self.recent_cursor = at;
-                } else {
-                    self.recent_cursor = self.recent_cursor.min(self.recent.len().saturating_sub(1));
-                }
-                if !had && self.recent_row() {
-                    let items = self.menu_items();
-                    if let Some(i) = items.iter().position(|m| *m == selected) {
-                        self.menu_cursor = i;
-                    }
-                }
-                self.finish_recent_request();
-            }
-            Reply::RecentFailed { generation, message } => {
-                if !self.accept_recent(generation) {
-                    return;
-                }
-                self.status = format!("⚠ Recently Played: {message}");
-                self.finish_recent_request();
-            }
-            Reply::Failed { what, message } => {
-                if self.editor_failed(what, &message) || self.panel_failed(what, &message) {
-                    return;
-                }
-                match what {
-                    Failed::RecentlyPlayed => {
-                        if self.recent_state.loading() {
-                            self.status = format!("⚠ Recently Played: {message}");
-                            self.finish_recent_request();
-                        }
-                        return;
-                    }
-                    Failed::Shuffle => {
-                        self.status = format!("⚠ No Shuffle: {message}");
-                        return;
-                    }
-                    Failed::Ads => {
-                        self.ad_ask_failed(&message);
-                        return;
-                    }
-                    Failed::Playlist => self.in_flight.end_playlist(),
-                    Failed::Search => {
-                        if let Some(search) = self.add_station.as_mut() {
-                            search.waiting = false;
-                            search.error = Some(message);
-                            return;
-                        }
-                    }
-                    Failed::CreateStation => self.in_flight.end_station(),
-                    Failed::Details => {
-                        if let Some(d) = self.details_mut().filter(|d| d.from_pandora.is_none()) {
-                            d.from_pandora = Some(Err(message.clone()));
-                            return;
-                        }
-                    }
-                    _ => {}
-                }
-                self.status = format!("⚠ {}: {message}", what.what());
-            }
-            Reply::UpdateFound(update) => {
-                self.status = format!(
-                    "{} boxvibe {} available · see About",
-                    crate::icons::icons(self.config.ui.icons).update,
-                    update.version
-                );
-                self.update = Some(update);
-            }
-            Reply::UpToDate => self.up_to_date = self.update.is_none(),
-            Reply::UpdateProgress(percent) => {
-                if let (Progress::Downloading(_), Some(update)) = (&self.self_update, &self.update) {
-                    self.self_update = Progress::Downloading(percent);
-                    self.status = format!("⬇ Updating boxvibe to {}… {percent}%", update.version);
-                }
-            }
-            Reply::SelfUpdated(Ok(version)) => {
-                self.status = format!("✔ boxvibe {version} installed · Restart Now in About opens it");
-                self.self_update = Progress::Done(version);
-            }
-            Reply::SelfUpdated(Err(error)) => {
-                self.status = format!("⚠ Could not update: {error}");
-                self.self_update = Progress::Failed(error);
-            }
-        }
-    }
-
-    fn song_mut(&mut self, token: &str) -> Option<&mut Song> {
-        self.now.iter_mut().chain(self.history.iter_mut()).chain(self.queue.iter_mut()).find(|s| s.track_token == token)
-    }
-
-    fn find_song(&self, token: &str) -> Option<&Song> {
-        self.now.iter().chain(self.history.iter()).chain(self.queue.iter()).find(|s| s.track_token == token)
-    }
-
-    pub fn station_name(&self) -> Option<&str> {
-        let id = self.current_station.as_deref()?;
-        self.stations.iter().find(|s| s.id == id).map(|s| s.name.as_str())
-    }
-
-    // --- Pandora ---
-
-    fn log_in(&mut self) {
-        let (username, password) = if self.demo {
-            ("demo".to_owned(), String::new())
-        } else {
-            (self.config.pandora.username.trim().to_owned(), self.config.pandora.password.expose().to_owned())
-        };
-        if !self.demo && username.is_empty() {
-            self.status = "⚠ Type your Pandora email first".into();
-            self.settings_cursor = Setting::at(Setting::Email);
-            return;
-        }
-        if !self.demo && password.is_empty() {
-            // Nothing in the keychain (or no keychain): ask, like a login form.
-            self.ask_password();
-            return;
-        }
-        self.session = Session::SigningIn;
-        if !self.demo {
-            // No account name here: `status` is kept for the Notifications page
-            // and is the one string that could reach a log, so it stays free of
-            // anything personal. Settings shows which account is signing in.
-            self.status = "Signing in…".into();
-        }
-        self.backend.send(Request::Login { username, password });
-    }
-
-    /// Opens the password box (Settings, on Log in).
-    fn ask_password(&mut self) {
-        self.view = View::Settings;
-        self.focus = Focus::Content;
-        self.open_prompt(Prompt::Password);
-        self.settings_cursor = Setting::at(Setting::LogIn);
-        // The account is on the Settings row above, so it is not repeated here.
-        self.status = "Type your password".into();
-    }
-
-    /// The password popup with `typed` already in it (the snapshot screens).
-    pub(crate) fn ask_password_for_snapshot(&mut self, typed: &str) {
-        self.ask_password();
-        for c in typed.chars() {
-            self.query.key(
-                ratatui::crossterm::event::KeyEvent::new(
-                    ratatui::crossterm::event::KeyCode::Char(c),
-                    ratatui::crossterm::event::KeyModifiers::NONE,
-                ),
-                MAX_PROMPT,
-            );
-        }
-    }
-
-    /// What the keychain answered (it always runs on its own thread).
-    fn on_keychain(&mut self, reply: KeychainReply) {
-        match reply {
-            KeychainReply::Loaded(Ok(Some(password))) => {
-                if self.config.pandora.password.is_empty() {
-                    self.config.pandora.password = Secret::new(password);
-                    self.keychain_state = KeychainState::Saved;
-                    self.log_in();
-                }
-            }
-            KeychainReply::Loaded(Ok(None)) => {
-                self.keychain_state = KeychainState::NotSaved;
-                if self.config.pandora.password.is_empty() {
-                    self.ask_password();
-                }
-            }
-            KeychainReply::Loaded(Err(_)) => {
-                self.keychain_state = KeychainState::Unavailable;
-                if self.config.pandora.password.is_empty() {
-                    self.ask_password();
-                }
-                self.status = NO_KEYCHAIN.into();
-            }
-            KeychainReply::Saved(Ok(())) => {
-                self.keychain_state = KeychainState::Saved;
-                if std::mem::take(&mut self.pending_password).in_file() {
-                    // Only now, with the keychain holding it, does the file let go of it.
-                    self.status =
-                        match self.config_path.as_deref().filter(|_| !self.demo).map(config::forget_plaintext_password)
-                        {
-                            Some(Err(e)) => format!("⚠ {e}"),
-                            Some(Ok(true)) => "Your password moved from config.toml to the keychain".into(),
-                            _ => String::new(),
-                        };
-                }
-            }
-            KeychainReply::Saved(Err(_)) => {
-                // The password stays in memory for this session, and nowhere on disk.
-                // (One an older boxvibe left in config.toml is left there: it isn't lost.)
-                self.keychain_state = KeychainState::Unavailable;
-                self.pending_password.done();
-                self.status = NO_KEYCHAIN.into();
-            }
-            KeychainReply::Forgotten { result: Ok(()), .. } => {
-                if self.keychain_state == KeychainState::Saved {
-                    self.keychain_state = KeychainState::NotSaved;
-                }
-            }
-            KeychainReply::Forgotten { result: Err(_), loud } => {
-                self.keychain_state = KeychainState::Unavailable;
-                if loud {
-                    self.status = format!("{NO_KEYCHAIN}: nothing saved to forget");
-                }
-            }
-        }
-    }
-
-    /// Deletes the saved password: from the keychain, and from config.toml if an
-    /// older boxvibe left it there. `loud`: the user asked, so say it.
-    fn forget_saved_password(&mut self, loud: bool) {
-        if self.demo {
-            if loud {
-                self.status = "The demo has no password".into();
-            }
-            return;
-        }
-        let user = self.config.pandora.username.trim().to_owned();
-        if !user.is_empty() {
-            self.backend.keychain(&self.keychain, &user, KeychainJob::Forget { loud });
-        }
-        let from_file = self.config_path.as_deref().map(config::forget_plaintext_password);
-        self.pending_password.done();
-        if let Some(Err(e)) = from_file {
-            self.status = format!("⚠ {e}");
-        } else if loud {
-            self.status = "Forgot the saved password: you'll be asked for it next start".into();
-        }
-        if self.keychain_state == KeychainState::Saved {
-            self.keychain_state = KeychainState::NotSaved;
-        }
-    }
-
-    fn log_out(&mut self) {
-        self.audio.stop();
-        self.ad = AdPhase::Off;
-        self.now = None;
-        self.stream = None;
-        // The next account's plan is not known until it logs in, so Audio
-        // quality must not stay greyed out from this one.
-        self.hifi = None;
-        self.queue.clear();
-        self.history.clear();
-        self.stations.clear();
-        // A dislike held on an Up Next row belongs to the account that held it.
-        self.held_dislikes.clear();
-        self.forget_recent();
-        self.current_station = None;
-        self.menu_cursor = 0;
-        self.view = View::Settings;
-        self.session = Session::LoggedOut;
-        self.forget_saved_password(false);
-        self.config.pandora.password.clear();
-        self.pending_password.done();
-        self.status = if self.demo || self.keychain_state == KeychainState::Unavailable {
-            "Logged out".into()
-        } else {
-            "Logged out: the saved password was removed from your keychain".into()
-        };
     }
 
     /// The player's panes have the keys.
@@ -2622,12 +2141,14 @@ impl App {
                 let on = !self.config.ui.favorites_in_menu;
                 self.config.ui.favorites_in_menu = on;
                 self.save(&[("look", "favorites_in_menu", on.into())]);
+                self.refresh_menu_cache();
                 self.status = format!("Favorites in menu: {}", if on { "on" } else { "off (kept; f still stars)" });
             }
             Setting::PinnedInMenu => {
                 let on = !self.config.ui.pinned_in_menu;
                 self.config.ui.pinned_in_menu = on;
                 self.save(&[("look", "pinned_in_menu", on.into())]);
+                self.refresh_menu_cache();
                 self.status = format!("Pinned in menu: {}", if on { "on" } else { "off (kept; Shift+I still pins)" });
             }
             Setting::Animations => {
@@ -2647,6 +2168,7 @@ impl App {
                 let on = !self.config.browse.pinned_on_menu(title);
                 self.config.browse.set_pinned(title, on);
                 self.save(&[("browse", key, on.into())]);
+                self.refresh_menu_cache();
                 self.status = format!("{title} on main menu: {}", if on { "on" } else { "off" });
             }
             Setting::EditFile => {
@@ -2711,6 +2233,7 @@ impl App {
                 self.config = config;
                 self.art.forget_shown();
                 self.apply_theme();
+                self.refresh_menu_cache();
                 self.audio.set_volume(self.config.player.volume);
                 self.backend.send(Request::Quality(Quality::parse(&self.config.pandora.audio_quality)));
                 self.status = ConfigWarning::summary(&warnings).unwrap_or_else(|| "config.toml read again".into());
@@ -2772,6 +2295,7 @@ impl App {
     // --- Keys ---
 
     pub fn on_key(&mut self, key: KeyEvent) {
+        self.mark_draw();
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.quit = true;
             return;
@@ -2812,9 +2336,62 @@ impl App {
         if self.song_menu.is_some() {
             return self.song_menu_key(key);
         }
+        // Settings rows follow vibekit STYLE: Space/←→/h/l flip toggles; Enter/→/l open pickers.
+        if self.focus == Focus::Content && self.view == View::Settings && self.settings_row_key(key) {
+            return;
+        }
         if let Some(cmd) = command_for(key) {
             self.run(cmd);
         }
+    }
+
+    /// Handles a Settings-list key that vibekit::settings owns (toggle / open).
+    /// Returns true when the key was consumed so the global binding (Pause, Like…) stays off.
+    fn settings_row_key(&mut self, key: KeyEvent) -> bool {
+        use vibekit::settings::{opens, toggles};
+        let setting = self.setting();
+        let is_toggle = matches!(
+            setting,
+            Setting::Autoplay
+                | Setting::Notify
+                | Setting::Animations
+                | Setting::FavoritesInMenu
+                | Setting::PinnedInMenu
+                | Setting::CheckUpdates
+                | Setting::GenrePopup
+                | Setting::Splash
+                | Setting::BrowseSection(_)
+        );
+        if is_toggle && toggles(key) {
+            self.change_setting();
+            return true;
+        }
+        // Pickers and cycles: Enter / → / l. Theme Select uses the same open keys.
+        let is_picker = matches!(
+            setting,
+            Setting::ThemeSelect
+                | Setting::ThemeAutoMode
+                | Setting::Icons
+                | Setting::BorderStyle
+                | Setting::MenuWidth
+                | Setting::AlbumArt
+                | Setting::RetroMode
+                | Setting::ArtTint
+                | Setting::Quality
+                | Setting::Volume
+                | Setting::GoodVibesOnly
+                | Setting::Email
+                | Setting::Password
+                | Setting::LogIn
+                | Setting::LogOut
+                | Setting::EditFile
+                | Setting::MenuEntry
+        );
+        if is_picker && opens(key) {
+            self.change_setting();
+            return true;
+        }
+        false
     }
 
     fn run(&mut self, cmd: Cmd) {
@@ -2864,8 +2441,11 @@ impl App {
             Cmd::Pin => self.pin(),
             Cmd::SongMenu => self.open_song_menu(),
             Cmd::Mode => {
-                let station =
-                    self.station_to_change().map(|(s, fav)| StationRef { id: s.id, name: s.name, favorite: fav });
+                let station = self.station_to_change().map(|(s, fav)| StationRef {
+                    id: s.id.clone(),
+                    name: s.name.clone(),
+                    favorite: fav,
+                });
                 self.open_modes(station)
             }
             Cmd::Shuffle => self.play_shuffle(),
@@ -2888,16 +2468,13 @@ impl App {
 
     /// The station `r`, `x` and `v` mean: the highlighted one in Stations,
     /// or the station of the favorite the menu is on. `None` anywhere else.
-    pub fn station_in_reach(&self) -> Option<(Station, bool)> {
+    pub fn station_in_reach(&self) -> Option<(&Station, bool)> {
         match (self.focus, self.view, self.menu_selected()) {
             (Focus::Content, View::Stations, _) if self.on_add_row => None,
-            (Focus::Content, View::Stations, _) => {
-                self.stations.get(self.stations_index()).cloned().map(|s| (s, false))
-            }
+            (Focus::Content, View::Stations, _) => self.stations.get(self.stations_index()).map(|s| (s, false)),
             (Focus::Menu, _, MenuItem::Favorite(i)) => {
                 let fav = self.config.ui.favorites.get(i)?;
-                let station = self.stations.iter().find(|s| s.id == fav.id).cloned();
-                station.map(|s| (s, true))
+                self.stations.iter().find(|s| s.id == fav.id).map(|s| (s, true))
             }
             _ => None,
         }
@@ -2905,17 +2482,17 @@ impl App {
 
     /// The playing station, where Now Playing has the keys or the menu is on
     /// its NOW PLAYING entry: what `r` and `e` act on there (not `x`).
-    pub fn playing_station_in_reach(&self) -> Option<Station> {
+    pub fn playing_station_in_reach(&self) -> Option<&Station> {
         let here = match self.focus {
             Focus::Content => self.view == View::Player && self.pane == Pane::NowPlaying,
             Focus::Menu => self.menu_selected() == MenuItem::NowPlaying,
         };
         let id = self.current_station.as_deref().filter(|_| here)?;
-        self.stations.iter().find(|s| s.id == id).cloned()
+        self.stations.iter().find(|s| s.id == id)
     }
 
     /// The station `r` and `e` change: the one in reach, or else the playing one.
-    pub fn station_to_change(&self) -> Option<(Station, bool)> {
+    pub fn station_to_change(&self) -> Option<(&Station, bool)> {
         self.station_in_reach().or_else(|| self.playing_station_in_reach().map(|s| (s, false)))
     }
 
@@ -2935,6 +2512,7 @@ impl App {
         let Some((station, favorite)) = self.station_to_change() else {
             return self.no_station_here("r renames");
         };
+        let station = station.clone();
         if !station.allow_rename {
             self.blocked(&station, "renamed", format!("Pandora doesn't let you rename “{}”", station.name));
             return;
@@ -3048,39 +2626,12 @@ impl App {
         let Some((station, favorite)) = self.station_in_reach() else {
             return self.no_station_here("x deletes");
         };
+        let station = station.clone();
         if !station.allow_delete {
             self.blocked(&station, "deleted", format!("Pandora doesn't let you delete “{}”", station.name));
             return;
         }
         self.ask_delete_station(StationRef { id: station.id, name: station.name, favorite });
-    }
-
-    /// Pandora removed a station: it goes from the list, Favorites and,
-    /// if it was playing, the player.
-    fn station_removed(&mut self, id: &str) {
-        let name = self.stations.iter().find(|s| s.id == id).map(|s| s.name.clone()).unwrap_or_default();
-        let selected = self.menu_selected();
-        self.stations.retain(|s| s.id != id);
-        if self.config.ui.favorites.iter().any(|f| f.id == id) {
-            self.config.ui.favorites.retain(|f| f.id != id);
-            self.save_favorites();
-        }
-        if self.current_station.as_deref() == Some(id) {
-            self.audio.stop();
-            self.now = None;
-            self.queue.clear();
-            self.audio_cache.clear();
-            self.buffering = None;
-            self.in_flight.end_playlist();
-            self.current_station = None;
-            if self.view == View::Player {
-                self.view = View::Stations;
-            }
-        }
-        self.stations_cursor = self.stations_cursor.min(self.stations.len().saturating_sub(1));
-        let items = self.menu_items();
-        self.menu_cursor = items.iter().position(|m| *m == selected).unwrap_or(self.menu_cursor).min(items.len() - 1);
-        self.status = format!("Deleted “{name}” from your Pandora account");
     }
 
     // --- Details (v) ---
@@ -3091,7 +2642,7 @@ impl App {
             Details {
                 station_id: station.id.clone(),
                 station_name: station.name.clone(),
-                of: DetailsOf::Station(Box::new(station)),
+                of: DetailsOf::Station(Box::new(station.clone())),
                 from_pandora: None,
                 why: false,
             }

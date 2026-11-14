@@ -1,10 +1,10 @@
 # The vibekit dependency
 
-boxvibe uses vibekit (dialogs, toasts, settings rows) from GitHub, pinned to a
-tag:
+boxvibe uses vibekit (dialogs, toasts, settings rows, input, private writes,
+desktop entries) from GitHub, pinned to a tag:
 
 ```toml
-vibekit = { git = "https://github.com/mortbrew/vibekit", tag = "v0.2.0" }
+vibekit = { git = "https://github.com/mortbrew/vibekit", tag = "v0.3.0" }
 ```
 
 `Cargo.lock` pins the tag's commit, so a build is reproducible without a

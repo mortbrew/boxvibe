@@ -6,16 +6,28 @@ use super::*;
 
 impl App {
     /// Browse sections pinned on the main menu: `(key, title)`, known first then extras.
-    pub fn browse_menu_pins(&self) -> Vec<(String, String)> {
+    ///
+    /// Borrowed from [`menu::MenuModel`] when current; owned when stale (tests that
+    /// mutate pins without [`App::refresh_menu_cache`]).
+    pub fn browse_menu_pins(&self) -> std::borrow::Cow<'_, [(String, String)]> {
+        if self.menu.is_current(self.menu_epoch()) {
+            std::borrow::Cow::Borrowed(self.menu.browse_pins())
+        } else {
+            std::borrow::Cow::Owned(Self::build_browse_pins(&self.config))
+        }
+    }
+
+    /// Builds the pin list from config (used by [`App::refresh_menu_cache`]).
+    pub(super) fn build_browse_pins(config: &Config) -> Vec<(String, String)> {
         let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for &(key, title) in config::BROWSE_SECTIONS {
-            if self.config.browse.pinned_key(key) {
+            if config.browse.pinned_key(key) {
                 out.push((key.to_owned(), title.to_owned()));
                 seen.insert(key);
             }
         }
-        for (key, on) in &self.config.browse.sections {
+        for (key, on) in &config.browse.sections {
             if *on && !seen.contains(key.as_str()) {
                 let title = key
                     .split('_')
@@ -44,9 +56,12 @@ impl App {
 
     /// Main-menu pin (or `G` for Browse Genres): one section's list.
     pub(super) fn show_browse_pin(&mut self, at: usize) {
-        let Some((_, title)) = self.browse_menu_pins().get(at).cloned() else {
+        let pins = self.browse_menu_pins();
+        let Some((_, title)) = pins.get(at) else {
             return;
         };
+        let title = title.clone();
+        drop(pins);
         self.show_browse_section(&title);
     }
 

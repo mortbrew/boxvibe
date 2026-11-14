@@ -4,8 +4,22 @@ Short and scannable; the git history has the details.
 
 ## Unreleased
 
+## 0.6.3 (2026-11-13)
+
+### Fixed
+- **Songs with a fractional M4A edit list are no longer skipped.** syom refused them because the edit duration was not a whole number of samples, and the symphonia fallback then failed with an I/O error. The edit list is dropped and the song plays at 44.1 kHz.
+- **HE-AAC keeps its gapless trim.** Stripping every ID3 tag also removed the `iTunSMPB` tag on ADTS, so those songs played a little long.
+- **Ads syom cannot decode play again.** Some ads stop on an AAC extension syom does not know. The MP4 decoder had been removed from the fallback, so those ads were skipped. It is restored.
+
+### Changed
+- **Now Playing stacks the cover over the song** when the window is too narrow for them side by side.
+- Settings rows are drawn with vibekit's shared rows.
+
 ### Internal
-- **Adopt vibekit 0.3:** `TextInput`, `Ask<T>`, `write_private`, desktop entry helper, `proc::detached`, `time::iso_utc`, Theme Select `AskDelete` + `CatalogSources::ITERM`, and shared overlay dim. Boxvibe keeps thin wrappers; Pandora domain stays local. Pinned to tag `v0.3.0`.
+- vibekit 0.3: shared text input, dialogs, private file writes, desktop entry, and process helpers. Pinned to tag `v0.3.0`.
+- ADTS HE-AAC is decoded a few frames at a time instead of expanding the whole song to PCM first.
+- Audio downloads carry a generation, so a fetch abandoned by a skip cannot start the next song.
+- Ad tracking is one worker with a fixed-size queue. Logout wipes credentials. Idle frames are not redrawn.
 
 ## 0.6.2 (2026-11-12)
 

@@ -13,8 +13,8 @@ use crate::config::Secret;
 use crate::demo;
 use crate::keychain::Keychain;
 use crate::pandora::{
-    self, AdAsk, ArtistInfo, BrowseSection, Client, Error, FeedbackPage, Quality, RECENT_PAGE, RecentSource, SearchHit,
-    Seed, Song, Station, StationDetails, StationModes,
+    self, AdAsk, ArtistInfo, BrowseSection, Client, EpisodePlayback, Error, FeedbackPage, Quality, RECENT_PAGE,
+    RecentSource, SearchHit, Seed, Song, Station, StationDetails, StationModes,
 };
 use crate::update::{self, Checked, Update};
 
@@ -44,12 +44,13 @@ pub enum Failed {
     ClearThumb,
     Tired,
     Ads,
+    Episode,
 }
 
 impl Failed {
     /// Every domain, for the drift guard in the tests.
     #[cfg(test)]
-    pub const ALL: [Failed; 21] = [
+    pub const ALL: [Failed; 22] = [
         Failed::Stations,
         Failed::Rename,
         Failed::Remove,
@@ -71,6 +72,7 @@ impl Failed {
         Failed::ClearThumb,
         Failed::Tired,
         Failed::Ads,
+        Failed::Episode,
     ];
 
     /// The word the status line uses: `⚠ playlist: ...`.
@@ -97,6 +99,7 @@ impl Failed {
             Failed::ClearThumb => "clear thumb",
             Failed::Tired => "tired",
             Failed::Ads => "ads",
+            Failed::Episode => "episode",
         }
     }
 }
@@ -190,6 +193,16 @@ pub enum Request {
     },
     Playlist {
         station_id: String,
+    },
+    /// Play a podcast episode or program (`PE:` / `PC:`). `name` is the row, for the demo.
+    Episode {
+        source_id: String,
+        name: String,
+    },
+    /// The episode began (`event/started`). A report only, like [`Request::Started`].
+    EpisodeStarted {
+        source_id: String,
+        index: u64,
     },
     Rate {
         track_token: String,
@@ -322,6 +335,8 @@ pub enum Reply {
         station_id: String,
         songs: Vec<Song>,
     },
+    /// A podcast episode ready to play.
+    Episode(EpisodePlayback),
     Rated {
         track_token: String,
         positive: bool,
@@ -605,6 +620,7 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
                 round += 1;
                 Reply::Playlist { songs: demo::playlist(&station_id, round - 1), station_id }
             }
+            Request::Episode { source_id, name } => Reply::Episode(demo::episode(&source_id, &name)),
             Request::Rate { track_token, positive } => {
                 Reply::Rated { feedback_id: format!("demo-fb-{track_token}"), track_token, positive }
             }
@@ -618,6 +634,7 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
             | Request::Art { .. }
             | Request::Quality(_)
             | Request::Started { .. }
+            | Request::EpisodeStarted { .. }
             | Request::AdImpression { .. }
             | Request::Logout => continue,
         };
@@ -755,6 +772,9 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
             Request::Playlist { station_id } => run(&mut client, &login, &mut took_over, Failed::Playlist, |c| {
                 c.fragment(&station_id).map(|songs| Reply::Playlist { station_id: station_id.clone(), songs })
             }),
+            Request::Episode { source_id, .. } => run(&mut client, &login, &mut took_over, Failed::Episode, |c| {
+                c.playback_source(&source_id).map(Reply::Episode)
+            }),
             Request::Rate { track_token, positive } => run(&mut client, &login, &mut took_over, Failed::Thumbs, |c| {
                 c.add_feedback(&track_token, positive).map(|feedback_id| Reply::Rated {
                     track_token: track_token.clone(),
@@ -789,6 +809,15 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                 // A report only: a failure here is not worth a message.
                 let _ = pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| {
                     c.track_started(&track_token)
+                });
+                if !took_over {
+                    continue;
+                }
+                Reply::TookOver
+            }
+            Request::EpisodeStarted { source_id, index } => {
+                let _ = pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| {
+                    c.episode_started(&source_id, index)
                 });
                 if !took_over {
                     continue;

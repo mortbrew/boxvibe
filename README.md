@@ -35,13 +35,13 @@ up to date.
 - **Light on your system**: MP3 and AAC decode in pure Rust. No ffmpeg, no
   mpv, and your password stays in the system keychain.
 
-## Album art, ten ways
+## Album art
 
 boxvibe asks the terminal once what it can draw: **sixel**, **kitty** or
 **iTerm2** terminals get a real picture; everything else (and tmux or Zellij)
 gets coloured half blocks. Then make it your own: `R` steps **Retro mode**
-from HD down to 2-bit pixels, `H` **tints** it with your theme, `C` turns it
-off.
+from HD down to 2-bit pixels, `H` **tints** it with your theme, and `C`
+turns the cover on and off.
 
 | HD | 64-bit | 32-bit |
 |---|---|---|
@@ -186,7 +186,7 @@ The bottom bar shows what works right now, and `?` lists everything.
 | `P` `S` `G` `O` `A` `F` | Now Playing, My Stations, Genres, Settings, About, Favorites |
 | `a` `e` `r` `x` `v` `m` | add, edit, rename, delete, details, mode for a station |
 | `f` · `I` · `X` | favorite a station · pin a song · Shuffle |
-| `C` `R` `H` | album art on / off · Retro level · tint |
+| `C` `R` `H` | album art (picture / off) · Retro level · tint |
 | `B` | sleep timer |
 | `{` `}` | menu narrower / wider |
 | `?` · `Q` / `Ctrl+c` | help · quit (asks) / quit now |
@@ -237,7 +237,7 @@ border_style = "plain"         # plain | rounded | thick | double | none
 menu_width = 30                # the menu, in columns: 20–40, step 2 (at most half the screen); also { and }
 favorites_in_menu = true       # Settings → Favorites in menu: false hides FAVORITES from the menu (kept; f still stars)
 pinned_in_menu = true          # Settings → Pinned in menu: false hides the Pinned entry (Shift+I still pins)
-album_art = "picture"          # picture | off
+album_art = "picture"          # picture | off (Shift+C)
 retro_mode = "hd"              # hd | 64bit | 32bit | 16bit | 8bit | 4bit | 2bit (full / 256 / 128 / 64 / 32 / 16 / 8 px, blocky on purpose)
 tint_art_with_theme_colors = "off"   # Settings → Tint art with theme colors: off | duotone | palette: recolour the cover with the theme's colours
 animations = true              # false: no motion (the 2 second boot screen is skipped); Settings → LOOK → Animations

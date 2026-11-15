@@ -1342,10 +1342,13 @@ fn shift_c_flips_between_the_picture_and_cover_art_off() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let mut app = demo();
     app.config.ui.album_art = crate::config::AlbumArt::Picture;
-    app.on_key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT));
+    let press = |app: &mut crate::app::App| {
+        app.on_key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT));
+    };
+    press(&mut app);
     assert_eq!(app.config.ui.album_art, crate::config::AlbumArt::Off);
     assert_only_message(&mut app, "Cover art off");
-    app.on_key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT));
+    press(&mut app);
     assert_eq!(app.config.ui.album_art, crate::config::AlbumArt::Picture);
     assert!(!screen(&mut app, 120, 36).0.join("\n").contains("Cover art off"));
 }

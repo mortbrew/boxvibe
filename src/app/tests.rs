@@ -2534,10 +2534,11 @@ fn no_key_is_bound_twice_and_the_removed_ones_are_gone() {
 fn shift_c_r_and_h_cycle_the_cover_art_and_save_it() {
     let mut app = saving_app("cover-keys");
     assert_eq!(app.config.ui.album_art, AlbumArt::Picture);
-    app.on_key(shift('C'));
-    assert_eq!(app.config.ui.album_art, AlbumArt::Off);
-    app.on_key(shift('C'));
-    assert_eq!(app.config.ui.album_art, AlbumArt::Picture, "Picture and Off, nothing else");
+    for next in [AlbumArt::Off, AlbumArt::Picture] {
+        app.on_key(shift('C'));
+        assert_eq!(app.config.ui.album_art, next);
+        assert_eq!(app.status, format!("Album art: {}", next.label()));
+    }
     let retro = app.config.ui.retro_mode;
     app.on_key(shift('R'));
     assert_eq!(app.config.ui.retro_mode, retro.next());
@@ -2952,9 +2953,16 @@ fn featured_playlists_and_podcasts_drill_down_in_browse() {
         assert_eq!(app.pages.path(), Some(detail_path));
         move_browse_to(&mut app, leaf);
         app.on_key(key(KeyCode::Enter));
-        assert!(app.status.contains("browse-only") || app.status.contains("can't"), "{section}: {}", app.status);
-        app.on_key(key(KeyCode::Esc));
-        assert_eq!(app.pages.path(), Some(list_path));
+        if section == "Recommended Podcasts" {
+            app.settle(Duration::from_millis(400));
+            assert_eq!(app.now.as_ref().map(|s| s.title.as_str()), Some(leaf), "{section}");
+            assert!(app.on_episode, "{section}");
+            assert!(app.queue.is_empty(), "{section}: an episode does not queue a station");
+        } else {
+            assert!(app.status.contains("browse-only") || app.status.contains("can't"), "{section}: {}", app.status);
+            app.on_key(key(KeyCode::Esc));
+            assert_eq!(app.pages.path(), Some(list_path));
+        }
     }
 }
 

@@ -317,7 +317,7 @@ impl Setting {
                 "The menu's width, 20 to 40 columns (never more than half the screen). Also { and }. Saved as [look] menu_width."
             }
             Self::AlbumArt => {
-                "Picture: the real cover (sixel, kitty, iTerm2, or half blocks in other terminals); Off: no cover, and the space says Cover art off. Also Shift+C. Saved as [look] album_art."
+                "Shift+C switches between Picture (sixel, kitty, iTerm2, or half blocks) and Off (the space says Cover art off). Saved as [look] album_art."
             }
             Self::ArtTint => {
                 "Recolors the album art using your current theme's color scheme. Duotone: theme background to yellow; Palette: only theme colors. Also Shift+H. Saved as [look] tint_art_with_theme_colors."
@@ -332,7 +332,7 @@ impl Setting {
                 "On: the menu has a Pinned entry with the songs Shift+I pinned. Off: the entry is hidden; Shift+I still pins and the list is kept. Saved as [look] pinned_in_menu."
             }
             Self::Animations => {
-                "On: the boot screen fades in. Off: no motion anywhere, so the boot screen is skipped (the song progress and clock still update). Saved as [look] animations."
+                "On: the boot screen fades in. Off: no motion, so the boot screen is skipped (the song progress and clock still update). Saved as [look] animations."
             }
             Self::CheckUpdates => {
                 "Asks GitHub when boxvibe opens; About shows the new version and Update Now. Saved as [boxvibe] look_for_new_versions_on_startup."
@@ -590,6 +590,8 @@ struct BrowsePlace {
 
 enum BrowsePick {
     Station(String, String),
+    /// A podcast episode (`PE:`) or a program row with no page of its own (`PC:`).
+    Episode(String, String),
     Page(String),
     Unsupported(String),
     Header,
@@ -921,6 +923,13 @@ pub struct App {
     last_theme_poll: Instant,
     pub stations: Vec<Station>,
     pub current_station: Option<String>,
+    /// A podcast episode is what is playing, so the queue must not ask for station songs.
+    on_episode: bool,
+    /// Program id (`PC:`) and item index for `event/started`.
+    episode_source: Option<String>,
+    episode_index: u64,
+    /// An episode has been asked for and has not come back yet.
+    episode_wait: bool,
     pub queue: VecDeque<Song>,
     pub now: Option<Song>,
     /// Played songs, newest first.
@@ -1091,6 +1100,10 @@ impl App {
             last_theme_poll: Instant::now(),
             stations: Vec::new(),
             current_station: None,
+            on_episode: false,
+            episode_source: None,
+            episode_index: 0,
+            episode_wait: false,
             queue: VecDeque::new(),
             now: None,
             history: Vec::new(),
@@ -2771,10 +2784,11 @@ impl App {
         self.status = format!("Menu width: {next} columns ({{ and }} change it)");
     }
 
-    /// Settings, and Shift+C: the picture or no cover.
+    /// Settings, and Shift+C: picture, then off.
     fn next_album_art(&mut self) {
         let next = self.config.ui.album_art.next();
         self.config.ui.album_art = next;
+        self.art.forget_shown();
         self.want_art();
         self.save(&[("look", "album_art", next.as_str().into())]);
         self.status = format!("Album art: {}", next.label());

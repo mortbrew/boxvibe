@@ -31,6 +31,7 @@ impl App {
                 }
             }
             Reply::Playlist { station_id, songs } => self.reply_playlist(station_id, songs),
+            Reply::Episode(played) => self.reply_episode(played),
             Reply::Rated { track_token, positive, feedback_id } => self.reply_rated(track_token, positive, feedback_id),
             Reply::ThumbCleared { track_token } => self.reply_thumb_cleared(track_token),
             Reply::TookOver => self.reply_took_over(),
@@ -86,6 +87,7 @@ impl App {
                 return;
             }
             Failed::Playlist => self.in_flight.end_playlist(),
+            Failed::Episode => self.episode_wait = false,
             Failed::Search => {
                 if let Some(search) = self.add_station.as_mut() {
                     search.waiting = false;

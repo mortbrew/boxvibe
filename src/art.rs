@@ -229,6 +229,13 @@ impl Art {
     /// A new theme rebuilds it too (the tint uses its colours).
     pub fn protocol(&mut self, url: &str, look: Look) -> Option<&mut StatefulProtocol> {
         let mode = look.mode;
+        // Off is not drawn. A picture left on screen from the previous step has to go.
+        if mode != AlbumArt::Picture {
+            if self.shown.take().is_some_and(|s| !is_blocks(&s.protocol)) {
+                self.needs_clear = true;
+            }
+            return None;
+        }
         // Half blocks without graphics, under a popup, or when
         // the terminal couldn't encode this cover.
         let picture = match (mode, &self.graphics) {
@@ -249,7 +256,7 @@ impl Art {
                 }
                 (_, Some(image)) => image,
             };
-            let ready = self.prepared(url, &image, look);
+            let ready = (*self.prepared(url, &image, look)).clone();
             // Changing a setting on the same cover keeps the same kind of
             // protocol, so the cover is swapped in place. Tearing it down
             // instead cleared the screen and re-sent the picture, which is what
@@ -277,12 +284,9 @@ impl Art {
     /// look has been drawn before, else built once and kept. The cache stores
     /// exactly what the uncached path computes, so it cannot change the pixels.
     ///
-    /// The returned image is a copy of the cached one, not the `Arc` itself:
-    /// `Picker::new_resize_protocol` takes an owned `DynamicImage`, so the copy
-    /// is unavoidable there. It is also cheap in practice — this runs only when
-    /// the cover or a setting changed, never per frame (`protocol` returns early
-    /// while the shown cover still matches).
-    fn prepared(&mut self, url: &str, image: &Arc<DynamicImage>, look: Look) -> DynamicImage {
+    /// `protocol` copies the pixels only when the cover or a setting changed
+    /// (`Picker` wants an owned image).
+    fn prepared(&mut self, url: &str, image: &Arc<DynamicImage>, look: Look) -> Arc<DynamicImage> {
         // The palette only distinguishes looks that are tinted, as in `Look`'s
         // equality: an untinted cover is the same whatever the theme.
         let key = LookKey {
@@ -293,7 +297,7 @@ impl Art {
         if let Some(at) = self.cache.iter().position(|(u, k, _)| u == url && *k == key) {
             let hit = self.cache.remove(at).expect("just found").2;
             self.cache.push_back((url.into(), key, hit.clone()));
-            return (*hit).clone();
+            return hit;
         }
         let ready = Arc::new(tint(&pixelate(image, look.pixelation), look.tint, &look.palette));
         // One cover's worth of levels, plus this song and the one before it.
@@ -301,7 +305,7 @@ impl Art {
         while self.cache.len() > CACHED_COVERS {
             self.cache.pop_front();
         }
-        (*ready).clone()
+        ready
     }
 
     /// Call after drawing the cover: when the terminal's graphics couldn't

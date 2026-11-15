@@ -1023,3 +1023,47 @@ fn recently_played_parse_is_tolerant_and_reports_graphql_errors() {
     let err = c.recently_played(20, &[]).unwrap_err().to_string();
     assert!(err.contains("no such field"), "{err}");
 }
+
+#[test]
+fn playback_source_asks_for_the_episode_and_reads_its_mp3() {
+    let (base, seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
+        "/api/v1/playback/source" => (
+            200,
+            json!({
+                "item": {
+                    "type": "PodcastEpisode",
+                    "index": 4,
+                    "pandoraId": "PE:9",
+                    "episodeName": "Latest episode",
+                    "programName": "Crime Junkie",
+                    "encoding": "mp3",
+                    "duration": 126,
+                    "fileGain": "-2.5",
+                    "audioUrl": "https://example.test/episode.mp3",
+                    "audioUrlMap": { "highQuality": "https://example.test/high.mp3" },
+                    "artUrl": "https://example.test/art.jpg"
+                },
+                "source": { "type": "PodcastProgram", "pandoraId": "PC:2" }
+            })
+            .to_string(),
+        ),
+        _ => (200, "{}".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.auth = Some("tok".into());
+    let played = c.playback_source("PE:9").unwrap();
+    assert_eq!(played.source_id, "PC:2");
+    assert_eq!(played.index, 4);
+    assert_eq!(played.song.title, "Latest episode");
+    assert_eq!(played.song.artist, "Crime Junkie");
+    assert_eq!(played.song.audio_url, "https://example.test/episode.mp3");
+    assert_eq!(played.song.audio_format, AudioFormat::Mp3);
+    assert_eq!(played.song.length, 126);
+    assert_eq!(played.song.station_id, "");
+    assert!((played.song.gain - -2.5).abs() < 0.01);
+    let seen = seen.lock().unwrap();
+    let body = &seen.iter().find(|s| s.path == "/api/v1/playback/source").unwrap().body;
+    assert_eq!(body["sourceId"], "PE:9");
+    assert_eq!(body["includeItem"], true);
+    assert!(parse_episode(&json!({ "item": { "episodeName": "No file" } }), "PE:1").is_none());
+}

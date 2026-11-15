@@ -254,8 +254,12 @@ impl App {
         let picked = self.browse_rows().get(self.browse_index()).map(|row| match row {
             BrowseRow::Header(_) => BrowsePick::Header,
             BrowseRow::Item(item) => {
+                let episode =
+                    item.pandora_id.starts_with("PE:") || (item.pandora_id.starts_with("PC:") && item.link.is_none());
                 if let Some(id) = item.create_id() {
                     BrowsePick::Station(id.to_owned(), item.name.clone())
+                } else if episode {
+                    BrowsePick::Episode(item.pandora_id.clone(), item.name.clone())
                 } else if let Some(path) = item.link.clone() {
                     BrowsePick::Page(path)
                 } else {
@@ -267,6 +271,7 @@ impl App {
             (true, _, _) => {}
             (_, true, _) => self.retry_browse(),
             (_, _, Some(BrowsePick::Station(id, name))) => self.create_station(&id, &name),
+            (_, _, Some(BrowsePick::Episode(id, name))) => self.play_episode(&id, &name),
             (_, _, Some(BrowsePick::Page(path))) => self.open_browse_link(path),
             (_, _, Some(BrowsePick::Unsupported(name))) => {
                 let pandora_id = self.browse_rows().get(self.browse_index()).and_then(|r| match r {
@@ -274,13 +279,7 @@ impl App {
                     _ => None,
                 });
                 let hint = pandora_id.as_deref().and_then(|id| {
-                    if id.starts_with("PL:") {
-                        Some("playlists are browse-only in boxvibe right now")
-                    } else if id.starts_with("PC:") || id.starts_with("PE:") {
-                        Some("podcasts are browse-only in boxvibe right now")
-                    } else {
-                        None
-                    }
+                    if id.starts_with("PL:") { Some("playlists are browse-only in boxvibe right now") } else { None }
                 });
                 self.status = if let Some(why) = hint {
                     format!("“{name}” can't play here ({why})")

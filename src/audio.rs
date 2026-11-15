@@ -171,7 +171,7 @@ impl Audio {
         match self.rate {
             Some(rate) if rate != rodio::Source::sample_rate(&decoder).get() => {
                 log!("start: resampling to the device's {rate} Hz");
-                player.append(Resampled::new(decoder, rate))
+                player.append(Resampled::new(decoder, rate));
             }
             _ => player.append(Clamped(decoder)),
         }

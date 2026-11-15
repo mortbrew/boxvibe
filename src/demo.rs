@@ -4,9 +4,34 @@
 use std::collections::HashMap;
 
 use crate::pandora::{
-    ArtistInfo, AudioFormat, BrowseItem, BrowseSection, FEEDBACK_PAGE, Feedback, FeedbackPage, HitKind, Rating,
-    SearchHit, Seed, Song, Station, StationDetails, StationMode, StationModes,
+    ArtistInfo, AudioFormat, BrowseItem, BrowseSection, EpisodePlayback, FEEDBACK_PAGE, Feedback, FeedbackPage,
+    HitKind, Rating, SearchHit, Seed, Song, Station, StationDetails, StationMode, StationModes,
 };
+
+/// A podcast episode for `--demo`: the row's name, no station, no real audio.
+pub fn episode(source_id: &str, name: &str) -> EpisodePlayback {
+    EpisodePlayback {
+        source_id: "PC:demo".into(),
+        index: 0,
+        song: Song {
+            title: name.into(),
+            artist: "Crime Junkie".into(),
+            album: String::new(),
+            track_token: source_id.into(),
+            station_id: String::new(),
+            audio_url: "https://example.test/episode.mp3".into(),
+            audio_format: AudioFormat::Mp3,
+            bitrate: 0,
+            cover_art_url: String::new(),
+            detail_url: String::new(),
+            artist_music_id: String::new(),
+            length: 126,
+            gain: 0.0,
+            rating: Rating::None,
+            feedback_id: String::new(),
+        },
+    }
+}
 
 pub fn stations() -> Vec<Station> {
     let names = [

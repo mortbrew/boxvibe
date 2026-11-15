@@ -1746,7 +1746,9 @@ fn draw_art(frame: &mut Frame, art: &mut crate::art::Art, look: crate::art::Look
     if inner.width == 0 || inner.height == 0 {
         return inner;
     }
-    if let Some(cover) = art.protocol(&song.cover_art_url, look) {
+    if look.mode == AlbumArt::Picture
+        && let Some(cover) = art.protocol(&song.cover_art_url, look)
+    {
         // Against the left edge of the box (the pane's padding), centred
         // top to bottom: the picture keeps its shape.
         let fit = cover.size_for(Resize::Fit(None), inner.as_size());
@@ -1760,7 +1762,7 @@ fn draw_art(frame: &mut Frame, art: &mut crate::art::Art, look: crate::art::Look
     }
     art.hide();
     // No cover to draw: say so, in the middle of the space the cover would fill.
-    let loading = look.mode == AlbumArt::Picture
+    let loading = look.mode != AlbumArt::Off
         && !song.cover_art_url.is_empty()
         && matches!(art.status(&song.cover_art_url), Cover::Loading);
     // Off by choice (Shift+C) says so; a song with no cover, or one that failed, says there is none.
@@ -2668,7 +2670,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
     (
         "LOOK AND BOXVIBE",
         &[
-            ("C R H", "album art picture / off · retro HD, 64-bit … 2-bit · tint off / duotone / palette (saved)"),
+            ("C R H", "album art picture / off · retro · tint (saved)"),
             ("{ }", "menu narrower / wider (saved)"),
             ("?", "this help"),
             ("Q Ctrl+c", "quit (asks first; Q again confirms) / quit now"),

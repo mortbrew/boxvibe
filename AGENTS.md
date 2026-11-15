@@ -34,6 +34,7 @@ numbers move. Scratch dirs go under `target/tmp`.
 
 ## Conventions
 
+- Check `vision.md` before deciding a change; escalate anything it doesn't clearly cover to Toby (Captain decision hold).
 - Run the binary from `target/`. Do not install it to `PATH`.
 - `dev`'s version is a prerelease (`0.6.3-dev`) so a source build is obvious on
   screen. After a release it goes up by one patch; see `docs/setup.md` §9.

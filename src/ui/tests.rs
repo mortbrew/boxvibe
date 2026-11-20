@@ -1479,7 +1479,9 @@ fn now_playing_heads_the_menu_with_an_inset_rule() {
     // That rule doubles as MY COLLECTION's, so its heading sits right under it.
     assert!(lines[3].starts_with("│ MY COLLECTION"), "{}", lines[3]);
     // Nothing playing: that rule is absent, and MY COLLECTION is the first row.
+    // A podcast keeps the entry with no station, so the song has to go too.
     app.current_station = None;
+    app.now = None;
     let (idle, _) = screen(&mut app, 120, 36);
     assert!(idle[1].starts_with("│ MY COLLECTION"), "no rule before playback: {}", idle[1]);
     assert!(!idle[1].contains('─'), "{}", idle[1]);

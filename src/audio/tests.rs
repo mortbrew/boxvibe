@@ -53,8 +53,10 @@ fn a_fractional_edit_list_is_not_skipped() {
     tagged.extend(plain.iter().copied());
     for (label, data) in [("plain", plain), ("behind an id3 tag", tagged)] {
         let body = &data[id3_len(&data)..];
-        let err = syom::decode_with(body, &syom::DecodeOptions::audio()).unwrap_err();
-        assert!(elst_not_whole_samples(&err), "{label}: {err}");
+        // syom 0.10.1 refuses this edit list. 0.10.3 decodes it. Either way the song plays.
+        if let Err(err) = syom::decode_with(body, &syom::DecodeOptions::audio()) {
+            assert!(elst_not_whole_samples(&err), "{label}: {err}");
+        }
         let mut decoded = decoder(data).unwrap_or_else(|e| panic!("{label}: {e}"));
         assert_eq!(decoded.sample_rate().get(), 44_100, "{label}");
         assert_eq!(decoded.channels().get(), 1, "{label}");

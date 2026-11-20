@@ -3048,9 +3048,9 @@ dependencies = [
 
 [[package]]
 name = "syom"
-version = "0.10.1"
+version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4dcc9f2b9f8213961f9804076cdbaaf8ed0cea4e7c3a9cd92a9326d23eb97df3"
+checksum = "38d60edf8102a376deb2c2d673dafdb5ca0d40a7ffe7ae38958da9ffba3e6d40"
 
 [[package]]
 name = "tap"

@@ -778,6 +778,60 @@ pub fn parse_track(v: &Value, station_id: &str) -> Option<Song> {
     })
 }
 
+fn playback_body(source_id: &str, device: Option<&str>) -> Value {
+    let mut body = json!({
+        "sourceId": source_id,
+        "includeItem": true,
+        "includeSource": true,
+        "shuffle": false,
+        "skipExplicitCheck": false,
+        "onDemandArtistMessageToken": "",
+        "repeat": null,
+        "sortOrder": null,
+    });
+    if let Some(id) = device {
+        body["deviceUuid"] = json!(id);
+        body["deviceProperties"] = json!({
+            "app_version": AD_APP_VERSION,
+            "device_uuid": id,
+            "device_os": "Linux",
+        });
+    }
+    body
+}
+
+/// A stable id for this install, kept in the cache directory. Not a browser id.
+fn device_uuid() -> String {
+    let Some(dirs) = directories::ProjectDirs::from("", "", "boxvibe") else {
+        return fresh_device_id();
+    };
+    let path = dirs.cache_dir().join("device-id");
+    if let Ok(saved) = std::fs::read_to_string(&path) {
+        let saved = saved.trim();
+        if (8..80).contains(&saved.len()) && saved.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
+            return saved.to_owned();
+        }
+    }
+    let id = fresh_device_id();
+    let _ = std::fs::create_dir_all(dirs.cache_dir());
+    let _ = std::fs::write(path, &id);
+    id
+}
+
+fn fresh_device_id() -> String {
+    let mut bytes = [0u8; 16];
+    if let Ok(mut file) = std::fs::File::open("/dev/urandom") {
+        use std::io::Read;
+        let _ = file.read_exact(&mut bytes);
+    }
+    if bytes == [0u8; 16] {
+        let tick = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(1);
+        bytes = tick.to_le_bytes();
+    }
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
+}
+
 /// `v1/playback/source`: a podcast episode (`PE:`) or program (`PC:`).
 ///
 /// The item's `audioUrl` is a plain mp3. `station_id` stays empty so the
@@ -1300,22 +1354,16 @@ impl Client {
 
     /// `v1/playback/source`: play the podcast episode or program `source_id`.
     ///
-    /// The website sends a device blob alongside these fields. The audio comes
-    /// back on `item.audioUrl` without that blob, so it is left off.
+    /// The website also sends a device id. Audio comes back without it, so the
+    /// first call leaves it off. A 400 is tried once more with a stable id
+    /// this app generated (`~/.cache/boxvibe/device-id`).
     pub fn playback_source(&mut self, source_id: &str) -> Result<EpisodePlayback, Error> {
-        let v = self.post(
-            "/api/v1/playback/source",
-            &json!({
-                "sourceId": source_id,
-                "includeItem": true,
-                "includeSource": true,
-                "shuffle": false,
-                "skipExplicitCheck": false,
-                "onDemandArtistMessageToken": "",
-                "repeat": null,
-                "sortOrder": null,
-            }),
-        )?;
+        let v = match self.post("/api/v1/playback/source", &playback_body(source_id, None)) {
+            Err(Error::Api { status: 400, .. }) => {
+                self.post("/api/v1/playback/source", &playback_body(source_id, Some(&device_uuid())))?
+            }
+            other => other?,
+        };
         parse_episode(&v, source_id).ok_or(Error::InvalidResponse)
     }
 

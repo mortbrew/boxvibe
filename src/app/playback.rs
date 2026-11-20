@@ -312,7 +312,18 @@ impl App {
         self.now.iter().chain(self.history.iter()).chain(self.queue.iter()).find(|s| s.track_token == token)
     }
 
+    /// A podcast episode is what is playing (the Now Playing card says "show").
+    pub fn playing_episode(&self) -> bool {
+        self.on_episode
+    }
+
     pub fn station_name(&self) -> Option<&str> {
+        if self.on_episode {
+            let show = self.now.as_ref().map(|song| song.artist.as_str()).filter(|name| !name.is_empty());
+            if show.is_some() {
+                return show;
+            }
+        }
         let id = self.current_station.as_deref()?;
         self.stations.iter().find(|s| s.id == id).map(|s| s.name.as_str())
     }

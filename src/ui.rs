@@ -1622,6 +1622,7 @@ fn draw_now_playing(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
     // The look is read before the song is borrowed: `draw_art` needs
     // `&mut app.art`, and a borrow of `app.now` would cover the whole struct.
     let look = crate::art::Look::of(&app.config.ui, p);
+    let episode = app.playing_episode();
     let Some(song) = &app.now else {
         let text = match (&app.session, &app.current_station) {
             (Session::LoggedIn, Some(_)) => format!("{} Getting songs from Pandora…", ic.loading),
@@ -1670,7 +1671,7 @@ fn draw_now_playing(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
         Line::from(Span::styled(fit(&song.title, w), Style::new().fg(p.fg).bold())),
         Line::raw(""),
         Line::from(vec![
-            label("artist"),
+            label(if episode { "show" } else { "artist" }),
             Span::styled(fit(&song.artist, w.saturating_sub(9)), Style::new().fg(p.cyan).bold()),
         ]),
         Line::from(vec![label("album"), Span::styled(fit(&song.album, w.saturating_sub(9)), Style::new().fg(p.fg))]),

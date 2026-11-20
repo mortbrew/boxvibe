@@ -72,6 +72,54 @@ fn directory_parses_sections_items_and_annotations() {
 }
 
 #[test]
+fn podcast_categories_use_the_path_and_nested_label_text() {
+    let v = json!({
+        "sections": [{
+            "id": "BS:38",
+            "title": {"labels": [{"text": "Podcasts by Category", "style": "header"}]},
+            "subsections": [{"items": [
+                {
+                    "pandoraId": "BR:38:48",
+                    "webUrl": "/browse/podcasts/categories/true-crime",
+                    "labels": [{"style": "title", "text": {"value": ""}}]
+                },
+                {
+                    "id": "PC:9",
+                    "shareableUrlPath": "/podcast/crime-junkie/PC:9",
+                    "labels": [{"style": "title", "text": {"value": "Crime Junkie"}}],
+                    "text": {"subtitle": "Audiochuck"}
+                },
+                {
+                    "type": "container",
+                    "items": [{
+                        "pandoraId": "PE:4",
+                        "labels": [{"style": "title", "text": "Latest episode"}]
+                    }]
+                }
+            ]}]
+        }],
+        "annotations": {
+            "BR:38:12": {"categoryName": "Comedy", "shareableUrlPath": "/browse/podcasts/categories/comedy"}
+        }
+    });
+    // The annotation id is the row's id when the row itself has no path.
+    let mut with_ann = v.clone();
+    with_ann["sections"][0]["subsections"][0]["items"][0]["pandoraId"] = json!("BR:38:12");
+    with_ann["sections"][0]["subsections"][0]["items"][0].as_object_mut().unwrap().remove("webUrl");
+    let sections = parse_directory(&v);
+    assert_eq!(sections[0].items[0].name, "True Crime");
+    assert_eq!(sections[0].items[0].link.as_deref(), Some("/browse/podcasts/categories/true-crime"));
+    assert_eq!(sections[0].items[1].name, "Crime Junkie");
+    assert_eq!(sections[0].items[1].detail, "Audiochuck");
+    assert_eq!(sections[0].items[1].pandora_id, "PC:9");
+    assert_eq!(sections[0].items[2].name, "Latest episode");
+    assert_eq!(sections[0].items[2].pandora_id, "PE:4");
+    let named = parse_directory(&with_ann);
+    assert_eq!(named[0].items[0].name, "Comedy");
+    assert_eq!(named[0].items[0].link.as_deref(), Some("/browse/podcasts/categories/comedy"));
+}
+
+#[test]
 fn view_all_path_is_kept_and_every_item_is_kept() {
     let items: Vec<_> = (0..40)
         .map(|n| {
@@ -110,4 +158,46 @@ fn view_all_path_is_kept_and_every_item_is_kept() {
     assert_eq!(sections[1].items.len(), 40, "no silent cap");
     assert_eq!(sections[1].items[39].name, "Album 39");
     assert_eq!(sections[2].view_all_path, None);
+}
+
+#[test]
+fn podcast_details_list_episode_ids_and_objects() {
+    let v = json!({
+        "details": {
+            "annotations": {
+                "PE:1": {"name": "Latest episode", "pandoraId": "PE:1", "duration": 3600, "shareableUrlPath": "/podcast/x/PE:1"},
+                "PC:9": {"name": "Crime Junkie", "pandoraId": "PC:9", "type": "PC"}
+            },
+            "podcastProgramDetails": {
+                "pandoraId": "PC:9",
+                "recentEpisodes": ["PE:1", {"pandoraId": "PE:2", "episodeName": "Older", "duration": 90}, null]
+            }
+        }
+    });
+    let sections = parse_podcast_details(&v, "PC:9", "Crime Junkie");
+    assert_eq!(sections.len(), 1);
+    assert_eq!(sections[0].title, "Crime Junkie");
+    assert_eq!(sections[0].items.len(), 2);
+    assert_eq!(sections[0].items[0].pandora_id, "PE:1");
+    assert_eq!(sections[0].items[0].name, "Latest episode");
+    assert_eq!(sections[0].items[0].detail, "1h 0m");
+    assert!(sections[0].items[0].link.is_none(), "a website path must not steal Enter from playback");
+    assert_eq!(sections[0].items[1].name, "Older");
+    assert_eq!(sections[0].items[1].detail, "2 min");
+    let only_notes = json!({
+        "annotations": { "PE:4": {"episodeName": "From the notes", "pandoraId": "PE:4"} }
+    });
+    let sections = parse_podcast_details(&only_notes, "PC:9", "");
+    assert_eq!(sections[0].title, "PC:9");
+    assert_eq!(sections[0].items[0].name, "From the notes");
+    let catalog = json!({
+        "annotations": {
+            "PE:7": {"name": "Latest from the catalog", "pandoraId": "PE:7", "duration": 64, "programName": "Dateline"}
+        },
+        "podcastProgramDetails": { "pandoraId": "PC:9", "recentEpisodes": ["PE:7"] }
+    });
+    let sections = parse_podcast_details(&catalog, "PC:9", "Dateline");
+    assert_eq!(sections[0].items[0].name, "Latest from the catalog");
+    assert_eq!(sections[0].items[0].pandora_id, "PE:7");
+    assert_eq!(sections[0].items[0].detail, "2 min");
 }

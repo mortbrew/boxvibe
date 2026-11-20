@@ -590,8 +590,10 @@ struct BrowsePlace {
 
 enum BrowsePick {
     Station(String, String),
-    /// A podcast episode (`PE:`) or a program row with no page of its own (`PC:`).
+    /// A podcast episode (`PE:`).
     Episode(String, String),
+    /// A podcast program (`PC:`). Its episodes come from `v4/catalog/getDetails`.
+    Show(String, String),
     Page(String),
     Unsupported(String),
     Header,
@@ -605,7 +607,18 @@ pub enum BrowseRow<'a> {
 }
 
 fn same_browse_section(section: &BrowseSection, want: &str) -> bool {
-    section.title == want || config::browse_section_key(&section.title) == want
+    let key = config::browse_section_key(&section.title);
+    let want_key = config::browse_section_key(want);
+    section.title.eq_ignore_ascii_case(want) || key == want || key == want_key || podcast_pin(&want_key, &key)
+}
+
+/// The menu still says Recommended Podcasts when the directory titles the
+/// section Podcasts. A category shelf on a later page is not that pin.
+fn podcast_pin(want_key: &str, section_key: &str) -> bool {
+    want_key == "recommended_podcasts"
+        && section_key.contains("podcast")
+        && !section_key.contains("category")
+        && !section_key.contains("by_category")
 }
 
 /// A station to rename or delete.
@@ -1317,9 +1330,9 @@ impl App {
 
     // --- The menu ---
 
-    /// The menu has its NOW PLAYING entry: a station is playing.
+    /// The menu has its NOW PLAYING entry: a station or a podcast episode is playing.
     pub fn has_now_playing(&self) -> bool {
-        self.current_station.is_some()
+        self.current_station.is_some() || self.now.is_some()
     }
 
     /// The menu lists FAVORITES: the setting is on, something is starred, and

@@ -530,6 +530,11 @@ fn playlist_page(id: &str, title: &str, tracks: &[(&str, &str)]) -> Vec<BrowseSe
     vec![browse_section(id, title, None, items)]
 }
 
+/// Episodes for a program opened from a category (not the `/browse/` demo page).
+pub fn podcast_show(program_id: &str, title: &str) -> Vec<BrowseSection> {
+    podcast_page(program_id, title, &[("Latest episode", "This week"), ("Back catalog", "Archive")])
+}
+
 fn podcast_page(id: &str, title: &str, episodes: &[(&str, &str)]) -> Vec<BrowseSection> {
     let items = episodes
         .iter()

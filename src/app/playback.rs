@@ -16,8 +16,46 @@ impl App {
         self.backend.send(Request::Audio { track_token, url, generation });
     }
 
+    /// Ask Pandora for the podcast `source_id` (`PE:` episode or `PC:` program) and play it.
+    pub(super) fn play_episode(&mut self, source_id: &str, name: &str) {
+        if self.episode_wait {
+            return;
+        }
+        self.episode_wait = true;
+        self.status = format!("Getting “{name}”…");
+        self.backend.send(Request::Episode { source_id: source_id.to_owned(), name: name.to_owned() });
+    }
+
+    /// The episode arrived: play it on its own, and do not pull the station queue along.
+    pub(super) fn reply_episode(&mut self, played: crate::pandora::EpisodePlayback) {
+        self.episode_wait = false;
+        self.on_episode = true;
+        self.episode_source = Some(played.source_id);
+        self.episode_index = played.index;
+        if let Some(song) = self.now.take() {
+            self.push_history(song);
+        }
+        self.audio.stop();
+        self.ad = AdPhase::Off;
+        self.queue.clear();
+        self.audio_fetch.cache.clear();
+        self.bump_audio_generation();
+        self.audio_fetch.buffering = None;
+        self.held_dislikes.clear();
+        let title = played.song.title.clone();
+        let show = played.song.artist.clone();
+        self.queue.push_back(played.song);
+        self.next_song();
+        self.show_now_playing();
+        self.status = format!("Playing {title} — {show}");
+    }
+
     pub(super) fn tune(&mut self, index: usize) {
         let Some(station) = self.stations.get(index).cloned() else { return };
+        self.on_episode = false;
+        self.episode_source = None;
+        self.episode_index = 0;
+        self.episode_wait = false;
         if let Some(song) = self.now.take() {
             self.push_history(song);
         }
@@ -131,6 +169,12 @@ impl App {
     }
 
     pub(super) fn request_more(&mut self) {
+        if self.on_episode {
+            if self.now.is_none() && self.queue.is_empty() {
+                self.status = "That episode is finished".into();
+            }
+            return;
+        }
         if let Some(id) = self.current_station.clone()
             && self.in_flight.begin_playlist()
         {
@@ -205,7 +249,12 @@ impl App {
         match self.audio.start(data, self.now.as_ref().map_or(0.0, |s| s.gain), false) {
             Ok(()) => {
                 // Pandora counts plays (and skips) from this report, like the website.
-                if let Some(song) = &self.now {
+                // An episode uses `event/started`, not the station's `trackStarted`.
+                if self.on_episode {
+                    if let Some(source_id) = self.episode_source.clone() {
+                        self.backend.send(Request::EpisodeStarted { source_id, index: self.episode_index });
+                    }
+                } else if let Some(song) = &self.now {
                     self.backend.send(Request::Started { track_token: song.track_token.clone() });
                 }
                 true
@@ -263,7 +312,18 @@ impl App {
         self.now.iter().chain(self.history.iter()).chain(self.queue.iter()).find(|s| s.track_token == token)
     }
 
+    /// A podcast episode is what is playing (the Now Playing card says "show").
+    pub fn playing_episode(&self) -> bool {
+        self.on_episode
+    }
+
     pub fn station_name(&self) -> Option<&str> {
+        if self.on_episode {
+            let show = self.now.as_ref().map(|song| song.artist.as_str()).filter(|name| !name.is_empty());
+            if show.is_some() {
+                return show;
+            }
+        }
         let id = self.current_station.as_deref()?;
         self.stations.iter().find(|s| s.id == id).map(|s| s.name.as_str())
     }

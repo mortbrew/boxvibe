@@ -34,6 +34,8 @@ numbers move. Scratch dirs go under `target/tmp`.
 
 ## Conventions
 
+- Check `vision.md` before deciding a change; escalate anything it doesn't clearly cover to Toby (Captain decision hold).
+- Do not log in to Pandora, or call pandora.com, from boxvibe's HTTP client or from a test. That client sends a browser User-Agent with only a `csrftoken` cookie, and a scripted `auth/login` is what draws the bot check (HTTP 403). To see a live call, use a browser tab Toby is already logged into and read the traffic. Tests stay on demo mode or the fake server.
 - Run the binary from `target/`. Do not install it to `PATH`.
 - `dev`'s version is a prerelease (`0.6.3-dev`) so a source build is obvious on
   screen. After a release it goes up by one patch; see `docs/setup.md` §9.

@@ -28,7 +28,6 @@ use crate::theme::Palette;
 use crate::update::{Progress, Replace};
 use ratatui_image::{Resize, StatefulImage};
 use vibekit::dialog::{self, Section};
-use vibekit::settings::{self, ThemeRow};
 use vibekit::text::{fit, pad, safe_char_width, safe_width, truncate, wrap};
 
 pub(crate) use vibekit::text::clean;
@@ -349,6 +348,16 @@ fn selection(p: &Palette, focused: bool) -> Style {
     } else {
         Style::new().bg(p.highlight)
     }
+}
+
+/// Reverse a row whose spans already carry a foreground.
+///
+/// [`Line::patch_style`] only sets the line style. A span's own foreground
+/// wins over that, so a label drawn in `p.fg` sits on a bar of `p.fg` and
+/// disappears. The selection has to land on every span.
+fn selected_line(line: Line<'static>, p: &Palette) -> Line<'static> {
+    let style = selection(p, true);
+    Line::from(line.spans.into_iter().map(|span| span.patch_style(style)).collect::<Vec<_>>()).patch_style(style)
 }
 
 /// An icon padded to its worst-case width plus one spare cell when it may
@@ -1622,6 +1631,7 @@ fn draw_now_playing(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
     // The look is read before the song is borrowed: `draw_art` needs
     // `&mut app.art`, and a borrow of `app.now` would cover the whole struct.
     let look = crate::art::Look::of(&app.config.ui, p);
+    let episode = app.playing_episode();
     let Some(song) = &app.now else {
         let text = match (&app.session, &app.current_station) {
             (Session::LoggedIn, Some(_)) => format!("{} Getting songs from Pandora…", ic.loading),
@@ -1670,7 +1680,7 @@ fn draw_now_playing(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
         Line::from(Span::styled(fit(&song.title, w), Style::new().fg(p.fg).bold())),
         Line::raw(""),
         Line::from(vec![
-            label("artist"),
+            label(if episode { "show" } else { "artist" }),
             Span::styled(fit(&song.artist, w.saturating_sub(9)), Style::new().fg(p.cyan).bold()),
         ]),
         Line::from(vec![label("album"), Span::styled(fit(&song.album, w.saturating_sub(9)), Style::new().fg(p.fg))]),
@@ -1746,7 +1756,9 @@ fn draw_art(frame: &mut Frame, art: &mut crate::art::Art, look: crate::art::Look
     if inner.width == 0 || inner.height == 0 {
         return inner;
     }
-    if let Some(cover) = art.protocol(&song.cover_art_url, look) {
+    if look.mode == AlbumArt::Picture
+        && let Some(cover) = art.protocol(&song.cover_art_url, look)
+    {
         // Against the left edge of the box (the pane's padding), centred
         // top to bottom: the picture keeps its shape.
         let fit = cover.size_for(Resize::Fit(None), inner.as_size());
@@ -1760,7 +1772,7 @@ fn draw_art(frame: &mut Frame, art: &mut crate::art::Art, look: crate::art::Look
     }
     art.hide();
     // No cover to draw: say so, in the middle of the space the cover would fill.
-    let loading = look.mode == AlbumArt::Picture
+    let loading = look.mode != AlbumArt::Off
         && !song.cover_art_url.is_empty()
         && matches!(art.status(&song.cover_art_url), Cover::Loading);
     // Off by choice (Shift+C) says so; a song with no cover, or one that failed, says there is none.
@@ -1989,6 +2001,9 @@ fn draw_settings(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     }
     let width = usize::from(list_area.width);
     let lit = focused || app.prompt.is_some();
+    // One icon column, so the values share a vertical line.
+    let icon_w = ic.setting.iter().map(|icon| pad(icon, 2).width()).max().unwrap_or(2);
+    let row_w = width.saturating_sub(icon_w + 1);
     let mut items = Vec::new();
     let mut selected_item = 0;
     let mut group = "";
@@ -2004,16 +2019,14 @@ fn draw_settings(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             selected_item = items.len();
         }
         let selected = lit && i == app.settings_cursor;
-        // Icon column is app-local; vibekit owns the label/value row to its right.
-        // Selection is applied after the prepend so the icon reverses too.
-        let icon = pad(ic.setting[i], 2);
-        let icon_w = icon.width() + 1;
-        let mut line = setting_line(app, *setting, false, width.saturating_sub(icon_w), &p);
+        // Selection is applied after the icon is prepended, so the icon reverses too.
+        let icon = pad(ic.setting[i], icon_w);
+        let mut line = setting_line(app, *setting, false, row_w, &p);
         let mut spans = vec![Span::raw(format!(" {icon}"))];
         spans.extend(std::mem::take(&mut line.spans));
         line.spans = spans;
         if selected {
-            line = line.patch_style(Style::new().fg(p.background).bg(p.fg).add_modifier(Modifier::BOLD));
+            line = selected_line(line, &p);
         }
         items.push(ListItem::new(line));
     }
@@ -2064,46 +2077,58 @@ fn setting_toggle_on(app: &App, setting: Setting) -> bool {
     }
 }
 
-/// Label left / value right / reverse when selected — same layout as vibekit's
-/// private settings row. Used only where the public helpers can't set the value
-/// colour (account status, greyed unavailable rows).
-fn settings_value_row(
+/// How wide the label column is. The longest label, unless the panel is too
+/// narrow to leave the value a few cells — then the label gives way.
+fn settings_label_column(width: usize) -> usize {
+    let longest = Setting::ALL.iter().map(|(_, setting)| safe_width(setting.label())).max().unwrap_or(0);
+    let room = width.saturating_sub(1 + 2 + 8);
+    longest.min(room).max(1)
+}
+
+/// Label, then the value two spaces after that column. Every row uses the
+/// same column, so the values line up next to the labels instead of at the
+/// far edge of the panel.
+fn settings_row(
     label: &str,
     value: &str,
     value_style: Style,
-    selected: bool,
     width: usize,
+    selected: bool,
     p: &Palette,
 ) -> Line<'static> {
-    let value = fit(value, width / 2);
-    let label = fit(label, width.saturating_sub(safe_width(&value) + 3));
-    let gap = width.saturating_sub(safe_width(&label) + safe_width(&value) + 2);
-    let text_style = Style::new().fg(p.fg);
+    let label_col = settings_label_column(width);
+    let value_max = width.saturating_sub(1 + label_col + 2).max(1);
+    let label = truncate(label, label_col);
+    let gap = label_col.saturating_sub(safe_width(&label));
+    let value = truncate(value, value_max);
     let mut line = Line::from(vec![
-        Span::styled(format!(" {label}"), text_style),
-        Span::raw(" ".repeat(gap)),
-        Span::styled(format!("{} ", pad(&value, safe_width(&value))), value_style),
+        Span::styled(format!(" {label}{}", " ".repeat(gap)), Style::new().fg(p.fg)),
+        Span::raw("  "),
+        Span::styled(value, value_style),
     ]);
     if selected {
-        line = line.patch_style(Style::new().fg(p.background).bg(p.fg).add_modifier(Modifier::BOLD));
+        line = selected_line(line, p);
     }
     line
 }
 
 fn setting_line(app: &App, setting: Setting, selected: bool, width: usize, p: &Palette) -> Line<'static> {
     if setting_is_toggle(setting) {
-        return settings::toggle_row(setting.label(), setting_toggle_on(app, setting), selected, width, p);
+        let on = setting_toggle_on(app, setting);
+        let (text, color) = if on { ("On", p.green) } else { ("Off", p.muted) };
+        return settings_row(setting.label(), text, Style::new().fg(color), width, selected, p);
     }
     if setting == Setting::ThemeSelect && !app.theme_select_greyed() {
-        return ThemeRow::line(&app.config.ui.theme_select, selected, width, p);
+        let value = format!("{} ›", crate::theme::label(&app.config.ui.theme_select));
+        return settings_row(setting.label(), &value, Style::new().fg(p.accent), width, selected, p);
     }
     if setting == Setting::ThemeSelect {
-        return settings_value_row(setting.label(), "follows Omarchy", Style::new().fg(p.muted), selected, width, p);
+        return settings_row(setting.label(), "follows Omarchy", Style::new().fg(p.muted), width, selected, p);
     }
     let value = app.setting_value(setting);
     // Account / greyed / action rows need a custom value colour; cycles use the shared picker look.
     if setting == Setting::Quality && app.setting_greyed(setting) {
-        return settings_value_row(setting.label(), &value, Style::new().fg(p.muted), selected, width, p);
+        return settings_row(setting.label(), &value, Style::new().fg(p.muted), width, selected, p);
     }
     if matches!(setting, Setting::Email | Setting::Password | Setting::LogIn | Setting::LogOut | Setting::EditFile) {
         let value_style = match (setting, &app.session) {
@@ -2119,9 +2144,9 @@ fn setting_line(app: &App, setting: Setting, selected: bool, width: usize, p: &P
             (Setting::LogOut, _) => Style::new().fg(p.muted),
             _ => Style::new().fg(p.accent),
         };
-        return settings_value_row(setting.label(), &value, value_style, selected, width, p);
+        return settings_row(setting.label(), &value, value_style, width, selected, p);
     }
-    settings::picker_row(setting.label(), &value, selected, width, p)
+    settings_row(setting.label(), &format!("{value} ›"), Style::new().fg(p.accent), width, selected, p)
 }
 
 fn draw_prompt(frame: &mut Frame, app: &App, prompt: Prompt, area: Rect) {
@@ -2668,7 +2693,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
     (
         "LOOK AND BOXVIBE",
         &[
-            ("C R H", "album art picture / off · retro HD, 64-bit … 2-bit · tint off / duotone / palette (saved)"),
+            ("C R H", "album art picture / off · retro · tint (saved)"),
             ("{ }", "menu narrower / wider (saved)"),
             ("?", "this help"),
             ("Q Ctrl+c", "quit (asks first; Q again confirms) / quit now"),

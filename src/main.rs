@@ -139,7 +139,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow::Result
         if app.take_needs_draw() {
             terminal.draw(|frame| ui::draw(frame, app))?;
         }
-        // Faster while the boot screen moves, 10 fps otherwise.
+        // The boot screen fades, so it needs a quicker frame. Everything else
+        // stays at 10 fps.
         let frame_time = Duration::from_millis(if app.splash.is_some() { 40 } else { 100 });
         let wait = frame_time.saturating_sub(last.elapsed());
         // Wait for the first event (or the frame budget), then drain anything

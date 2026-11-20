@@ -715,6 +715,16 @@ pub fn parse_search(v: &Value) -> Vec<SearchHit> {
         .collect()
 }
 
+/// What `v1/playback/source` returns for a podcast episode: the song to play,
+/// the program id `event/started` wants, and the item's index.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EpisodePlayback {
+    pub song: Song,
+    /// `source.pandoraId` (`PC:…`), else the id that was asked for.
+    pub source_id: String,
+    pub index: u64,
+}
+
 /// One fragment track; `None` for ads, artist and curator messages and
 /// anything else that isn't a song with audio.
 pub fn parse_track(v: &Value, station_id: &str) -> Option<Song> {
@@ -766,6 +776,128 @@ pub fn parse_track(v: &Value, station_id: &str) -> Option<Song> {
         },
         feedback_id: id_of(v, "feedbackId"),
     })
+}
+
+fn playback_body(source_id: &str, device: Option<&str>) -> Value {
+    let mut body = json!({
+        "sourceId": source_id,
+        "includeItem": true,
+        "includeSource": true,
+        "shuffle": false,
+        "skipExplicitCheck": false,
+        "onDemandArtistMessageToken": "",
+        "repeat": null,
+        "sortOrder": null,
+    });
+    if let Some(id) = device {
+        body["deviceUuid"] = json!(id);
+        body["deviceProperties"] = json!({
+            "app_version": AD_APP_VERSION,
+            "device_uuid": id,
+            "device_os": "Linux",
+        });
+    }
+    body
+}
+
+/// A stable id for this install, kept in the cache directory. Not a browser id.
+fn device_uuid() -> String {
+    let Some(dirs) = directories::ProjectDirs::from("", "", "boxvibe") else {
+        return fresh_device_id();
+    };
+    let path = dirs.cache_dir().join("device-id");
+    if let Ok(saved) = std::fs::read_to_string(&path) {
+        let saved = saved.trim();
+        if (8..80).contains(&saved.len()) && saved.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
+            return saved.to_owned();
+        }
+    }
+    let id = fresh_device_id();
+    let _ = std::fs::create_dir_all(dirs.cache_dir());
+    let _ = std::fs::write(path, &id);
+    id
+}
+
+fn fresh_device_id() -> String {
+    let mut bytes = [0u8; 16];
+    if let Ok(mut file) = std::fs::File::open("/dev/urandom") {
+        use std::io::Read;
+        let _ = file.read_exact(&mut bytes);
+    }
+    if bytes == [0u8; 16] {
+        let tick = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(1);
+        bytes = tick.to_le_bytes();
+    }
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
+}
+
+/// `v1/playback/source`: a podcast episode (`PE:`) or program (`PC:`).
+///
+/// The item's `audioUrl` is a plain mp3. `station_id` stays empty so the
+/// player does not ask for a station fragment or a music ad when it ends.
+pub fn parse_episode(v: &Value, asked: &str) -> Option<EpisodePlayback> {
+    let item = v.get("item")?;
+    let title = {
+        let episode = str_of(item, "episodeName");
+        if episode.is_empty() { str_of(item, "name") } else { episode }
+    };
+    let mut artist = str_of(item, "programName");
+    if artist.is_empty() {
+        artist = "Podcast".into();
+    }
+    let audio_url = episode_audio_url(item);
+    if title.is_empty() || audio_url.is_empty() {
+        return None;
+    }
+    let encoding = str_of(item, "encoding").to_ascii_lowercase();
+    let pandora_id = str_of(item, "pandoraId");
+    let token = str_of(item, "trackToken");
+    let source = v.get("source").map(|s| str_of(s, "pandoraId")).unwrap_or_default();
+    Some(EpisodePlayback {
+        source_id: if source.is_empty() { asked.to_owned() } else { source },
+        index: item.get("index").and_then(Value::as_u64).unwrap_or(0),
+        song: Song {
+            title,
+            artist,
+            album: String::new(),
+            track_token: if token.is_empty() { pandora_id } else { token },
+            station_id: String::new(),
+            audio_url,
+            audio_format: if encoding.starts_with("aac") { AudioFormat::Aac } else { AudioFormat::Mp3 },
+            bitrate: 0,
+            cover_art_url: str_of(item, "artUrl"),
+            detail_url: String::new(),
+            artist_music_id: String::new(),
+            length: item.get("duration").and_then(Value::as_u64).unwrap_or(0) as u32,
+            gain: item
+                .get("fileGain")
+                .and_then(|g| g.as_str().and_then(|s| s.trim().parse().ok()).or(g.as_f64()))
+                .unwrap_or(0.0) as f32,
+            rating: Rating::None,
+            feedback_id: String::new(),
+        },
+    })
+}
+
+/// The url the player should open: `audioUrl`, else the best entry in `audioUrlMap`.
+fn episode_audio_url(item: &Value) -> String {
+    let direct = str_of(item, "audioUrl");
+    if !direct.is_empty() {
+        return direct;
+    }
+    let Some(map) = item.get("audioUrlMap") else { return String::new() };
+    for key in ["highQuality", "mediumQuality", "lowQuality"] {
+        let Some(v) = map.get(key) else { continue };
+        if let Some(url) = v.as_str().filter(|s| !s.is_empty()) {
+            return url.to_owned();
+        }
+        let nested = str_of(v, "audioUrl");
+        if !nested.is_empty() {
+            return nested;
+        }
+    }
+    String::new()
 }
 
 /// A string or number field as text (empty when missing).
@@ -1218,6 +1350,27 @@ impl Client {
     pub fn create_station(&mut self, pandora_id: &str) -> Result<Station, Error> {
         let v = self.post("/api/v1/station/createStation", &json!({ "pandoraId": pandora_id, "stationName": "" }))?;
         parse_station(&v).ok_or(Error::InvalidResponse)
+    }
+
+    /// `v1/playback/source`: play the podcast episode or program `source_id`.
+    ///
+    /// The website also sends a device id. Audio comes back without it, so the
+    /// first call leaves it off. A 400 is tried once more with a stable id
+    /// this app generated (`~/.cache/boxvibe/device-id`).
+    pub fn playback_source(&mut self, source_id: &str) -> Result<EpisodePlayback, Error> {
+        let v = match self.post("/api/v1/playback/source", &playback_body(source_id, None)) {
+            Err(Error::Api { status: 400, .. }) => {
+                self.post("/api/v1/playback/source", &playback_body(source_id, Some(&device_uuid())))?
+            }
+            other => other?,
+        };
+        parse_episode(&v, source_id).ok_or(Error::InvalidResponse)
+    }
+
+    /// `v1/event/started`: the episode began, the way `trackStarted` reports a song.
+    pub fn episode_started(&mut self, source_id: &str, index: u64) -> Result<(), Error> {
+        self.post("/api/v1/event/started", &json!({ "sourceId": source_id, "index": index, "elapsedTime": 0 }))
+            .map(|_| ())
     }
 
     /// `v1/playlist/getFragment`: the next few songs of `station_id`.

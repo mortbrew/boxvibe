@@ -282,8 +282,8 @@ pub struct UiConfig {
     /// (`[look] boot_screen`; 0.4 betas called it `splash`, in `[boxvibe]`).
     #[serde(rename = "boot_screen")]
     pub splash: bool,
-    /// Motion in the interface (today: the boot screen's fade). Off: none
-    /// (the boot screen is skipped). `[look] animations`.
+    /// Motion in the interface (the boot screen's fade). Off: none (the boot
+    /// screen is skipped). `[look] animations`.
     pub animations: bool,
     /// The menu lists FAVORITES (`[look] favorites_in_menu`; `f` still stars).
     pub favorites_in_menu: bool,
@@ -470,14 +470,16 @@ impl BorderStyle {
     }
 }
 
-/// Settings → LOOK → Album art.
+/// Settings → LOOK → Album art, and Shift+C. Picture, then off.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AlbumArt {
     /// The best the terminal can draw: sixel, kitty or iTerm2, else half
     /// blocks. 0.3's `blocks` is this too (the retro modes took its place).
+    /// `matrix`, `spectrum` and `scope` were a dev-build experiment; they
+    /// read as Picture.
     #[default]
-    #[serde(alias = "blocks")]
+    #[serde(alias = "blocks", alias = "matrix", alias = "spectrum", alias = "scope")]
     Picture,
     /// No cover: the space says so.
     Off,
@@ -995,6 +997,7 @@ impl Config {
     pub fn parse(text: &str) -> Result<(Self, Vec<ConfigWarning>), toml::de::Error> {
         let mut table: toml::Table = toml::from_str(text)?;
         split_old_theme(&mut table);
+        fold_visualizer(&mut table);
         let mut warnings = Vec::new();
         let mut gathered = gather(table, &mut warnings);
         let mut c = Self::default();
@@ -1070,6 +1073,32 @@ impl Config {
     }
 }
 
+/// `[look] visualizer`, and album art set to matrix, spectrum or scope, belonged
+/// to one dev build. The key goes away and those values become `picture`.
+fn fold_visualizer(table: &mut toml::Table) {
+    let Some(look) = table.get_mut("look").and_then(toml::Value::as_table_mut) else { return };
+    look.remove("visualizer");
+    let dropped = look
+        .get("album_art")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|s| matches!(s, "matrix" | "spectrum" | "scope"));
+    if dropped {
+        look.insert("album_art".into(), toml::Value::String("picture".into()));
+    }
+}
+
+fn fold_visualizer_doc(doc: &mut toml_edit::DocumentMut) {
+    let Some(look) = doc.get_mut("look").and_then(toml_edit::Item::as_table_mut) else { return };
+    look.remove("visualizer");
+    let dropped = look
+        .get("album_art")
+        .and_then(toml_edit::Item::as_str)
+        .is_some_and(|s| matches!(s, "matrix" | "spectrum" | "scope"));
+    if dropped {
+        look.insert("album_art", toml_edit::value("picture"));
+    }
+}
+
 /// Moves every setting still in the 0.1–0.3 tables (`[pandora]`, `[player]`,
 /// `[ui]`) to its table in [`LAYOUT`], keeping its comments, then drops the old
 /// names and the old tables that are empty now. A key already in its new place
@@ -1077,6 +1106,7 @@ impl Config {
 fn migrate(doc: &mut toml_edit::DocumentMut) {
     // REMOVE AT 1.0 (with `OLD_NAMES`): this whole function.
     split_old_theme_doc(doc);
+    fold_visualizer_doc(doc);
     let moves = LAYOUT
         .iter()
         .map(|(new, key, old)| (*old, *key, *new, *key))

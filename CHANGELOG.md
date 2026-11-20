@@ -4,6 +4,18 @@ Short and scannable; the git history has the details.
 
 ## Unreleased
 
+## 0.6.4 (2026-11-20)
+
+### Added
+- **A podcast show opens its episode list, and an episode plays.** Enter on a show loads the episodes; Enter on one starts it. The program plays its latest episode when the list is empty. Now Playing shows the episode, including when there is no station.
+
+### Fixed
+- **Settings values sit beside their labels.** They share one column next to the text instead of the far edge of the panel, and the selected row stays readable on its highlight.
+
+### Internal
+- syom 0.10.3 plays a fractional M4A edit list itself. ureq 3.5.2, toml 1.2.1, and toml_edit 0.25.19.
+- `vision.md` records what is in scope and what needs a decision.
+
 ## 0.6.3 (2026-11-13)
 
 ### Fixed

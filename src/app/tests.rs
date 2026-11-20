@@ -2534,10 +2534,11 @@ fn no_key_is_bound_twice_and_the_removed_ones_are_gone() {
 fn shift_c_r_and_h_cycle_the_cover_art_and_save_it() {
     let mut app = saving_app("cover-keys");
     assert_eq!(app.config.ui.album_art, AlbumArt::Picture);
-    app.on_key(shift('C'));
-    assert_eq!(app.config.ui.album_art, AlbumArt::Off);
-    app.on_key(shift('C'));
-    assert_eq!(app.config.ui.album_art, AlbumArt::Picture, "Picture and Off, nothing else");
+    for next in [AlbumArt::Off, AlbumArt::Picture] {
+        app.on_key(shift('C'));
+        assert_eq!(app.config.ui.album_art, next);
+        assert_eq!(app.status, format!("Album art: {}", next.label()));
+    }
     let retro = app.config.ui.retro_mode;
     app.on_key(shift('R'));
     assert_eq!(app.config.ui.retro_mode, retro.next());
@@ -2952,10 +2953,62 @@ fn featured_playlists_and_podcasts_drill_down_in_browse() {
         assert_eq!(app.pages.path(), Some(detail_path));
         move_browse_to(&mut app, leaf);
         app.on_key(key(KeyCode::Enter));
-        assert!(app.status.contains("browse-only") || app.status.contains("can't"), "{section}: {}", app.status);
-        app.on_key(key(KeyCode::Esc));
-        assert_eq!(app.pages.path(), Some(list_path));
+        if section == "Recommended Podcasts" {
+            app.settle(Duration::from_millis(400));
+            assert_eq!(app.now.as_ref().map(|s| s.title.as_str()), Some(leaf), "{section}");
+            assert!(app.on_episode, "{section}");
+            assert!(app.queue.is_empty(), "{section}: an episode does not queue a station");
+        } else {
+            assert!(app.status.contains("browse-only") || app.status.contains("can't"), "{section}: {}", app.status);
+            app.on_key(key(KeyCode::Esc));
+            assert_eq!(app.pages.path(), Some(list_path));
+        }
     }
+}
+
+#[test]
+fn a_podcast_show_on_the_website_lists_episodes_then_plays_one() {
+    let mut app = demo();
+    app.view = View::Browse;
+    app.focus = Focus::Content;
+    app.browse = BrowseState::Loaded(vec![BrowseSection {
+        id: "BR:38".into(),
+        title: "True Crime".into(),
+        view_all_path: None,
+        items: vec![BrowseItem {
+            name: "Crime Junkie".into(),
+            detail: String::new(),
+            pandora_id: "PC:9".into(),
+            station_factory: String::new(),
+            link: Some("/podcast/crime-junkie/PC:9".into()),
+        }],
+    }]);
+    app.browse_cursor = 1;
+    app.on_key(key(KeyCode::Enter));
+    app.settle(Duration::from_millis(400));
+    assert_eq!(app.pages.path(), Some("podcast:PC:9"));
+    assert!(app.status.contains("Loading") || matches!(app.browse, BrowseState::Loaded(_)));
+    move_browse_to(&mut app, "Latest episode");
+    app.on_key(key(KeyCode::Enter));
+    app.settle(Duration::from_millis(400));
+    assert!(app.on_episode);
+    assert_eq!(app.now.as_ref().map(|s| s.title.as_str()), Some("Latest episode"));
+    assert!(app.queue.is_empty());
+    assert_eq!(app.view, View::Player);
+    assert!(app.has_now_playing());
+    assert!(app.menu_items().contains(&MenuItem::NowPlaying));
+    assert_eq!(app.station_name(), Some("Crime Junkie"));
+}
+
+#[test]
+fn a_show_with_no_listed_episodes_plays_the_program() {
+    let mut app = demo();
+    app.on_reply(Reply::PodcastEmpty { pandora_id: "PC:9".into(), name: "Crime Junkie".into() });
+    app.settle(Duration::from_millis(400));
+    assert!(app.on_episode);
+    assert_eq!(app.now.as_ref().map(|s| s.title.as_str()), Some("Crime Junkie"));
+    assert_eq!(app.view, View::Player);
+    assert!(app.menu_items().contains(&MenuItem::NowPlaying));
 }
 
 #[test]

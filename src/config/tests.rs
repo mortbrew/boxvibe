@@ -430,7 +430,10 @@ fn album_art_and_retro_mode() {
     let (c, w) = Config::parse("[look]\nalbum_art = \"blocks\"\n").unwrap();
     assert_eq!((c.ui.album_art, w.len()), (AlbumArt::Picture, 0), "0.3's blocks is Picture now");
     assert_eq!(AlbumArt::ALL.map(AlbumArt::as_str), ["picture", "off"]);
+    assert_eq!(AlbumArt::Picture.next(), AlbumArt::Off);
     assert_eq!(AlbumArt::Off.next(), AlbumArt::Picture);
+    let (c, w) = Config::parse("[look]\nvisualizer = \"matrix\"\nalbum_art = \"spectrum\"\n").unwrap();
+    assert_eq!((c.ui.album_art, w.len()), (AlbumArt::Picture, 0), "the dev-build drawings are picture again");
     let (c, w) = Config::parse("[ui]\nalbum_art = \"hologram\"\nretro_mode = 7\n").unwrap();
     assert_eq!((c.ui.album_art, c.ui.retro_mode, w.len()), (AlbumArt::Picture, RetroMode::Hd, 2));
     assert!(RetroMode::ALL.iter().all(|a| {

@@ -254,8 +254,14 @@ impl App {
         let picked = self.browse_rows().get(self.browse_index()).map(|row| match row {
             BrowseRow::Header(_) => BrowsePick::Header,
             BrowseRow::Item(item) => {
+                let show = item.pandora_id.starts_with("PC:")
+                    && !item.link.as_deref().is_some_and(|path| path.starts_with("/browse/"));
                 if let Some(id) = item.create_id() {
                     BrowsePick::Station(id.to_owned(), item.name.clone())
+                } else if item.pandora_id.starts_with("PE:") {
+                    BrowsePick::Episode(item.pandora_id.clone(), item.name.clone())
+                } else if show {
+                    BrowsePick::Show(item.pandora_id.clone(), item.name.clone())
                 } else if let Some(path) = item.link.clone() {
                     BrowsePick::Page(path)
                 } else {
@@ -267,6 +273,8 @@ impl App {
             (true, _, _) => {}
             (_, true, _) => self.retry_browse(),
             (_, _, Some(BrowsePick::Station(id, name))) => self.create_station(&id, &name),
+            (_, _, Some(BrowsePick::Episode(id, name))) => self.play_episode(&id, &name),
+            (_, _, Some(BrowsePick::Show(id, name))) => self.open_podcast(&id, &name),
             (_, _, Some(BrowsePick::Page(path))) => self.open_browse_link(path),
             (_, _, Some(BrowsePick::Unsupported(name))) => {
                 let pandora_id = self.browse_rows().get(self.browse_index()).and_then(|r| match r {
@@ -274,13 +282,7 @@ impl App {
                     _ => None,
                 });
                 let hint = pandora_id.as_deref().and_then(|id| {
-                    if id.starts_with("PL:") {
-                        Some("playlists are browse-only in boxvibe right now")
-                    } else if id.starts_with("PC:") || id.starts_with("PE:") {
-                        Some("podcasts are browse-only in boxvibe right now")
-                    } else {
-                        None
-                    }
+                    if id.starts_with("PL:") { Some("playlists are browse-only in boxvibe right now") } else { None }
                 });
                 self.status = if let Some(why) = hint {
                     format!("“{name}” can't play here ({why})")
@@ -291,6 +293,45 @@ impl App {
             (_, _, Some(BrowsePick::Header)) => self.status = "That's a heading. Pick a row under it.".into(),
             _ => {}
         }
+    }
+
+    /// Episodes of a podcast program. The page underneath is kept for Esc.
+    ///
+    /// A `/browse/…` link still opens that directory (the demo show page). A
+    /// website `/podcast/…` path is not a directory, so it is not fetched.
+    fn open_podcast(&mut self, pandora_id: &str, name: &str) {
+        let path = format!("podcast:{pandora_id}");
+        if self.pages.is_on(&path) {
+            return;
+        }
+        if matches!(self.browse, BrowseState::Loaded(_)) {
+            let state = self.browse.clone();
+            let cursor = self.browse_cursor;
+            self.pages.remember(state, cursor);
+        }
+        if let Some(sections) = self.view_all.get(&path) {
+            let sections = sections.clone();
+            self.pages.open(path);
+            self.browse = BrowseState::Loaded(sections);
+            self.place_browse_cursor();
+            return;
+        }
+        self.pages.open(path);
+        self.browse = BrowseState::Loading;
+        self.status = format!("Loading episodes of {name}…");
+        self.backend.send(Request::Podcast { pandora_id: pandora_id.to_owned(), name: name.to_owned() });
+    }
+
+    /// The show listed no episodes. Leave the empty page and play the program.
+    pub(super) fn podcast_unlisted(&mut self, pandora_id: &str, name: &str) {
+        let path = format!("podcast:{pandora_id}");
+        if self.pages.path() == Some(path.as_str())
+            && let Some((state, cursor)) = self.pages.back()
+        {
+            self.browse = state;
+            self.browse_cursor = cursor;
+        }
+        self.play_episode(pandora_id, name);
     }
 
     /// A category shelf's site path. The page underneath is kept for Esc.

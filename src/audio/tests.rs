@@ -27,18 +27,23 @@ fn id3(size: usize) -> Vec<u8> {
     t
 }
 
-/// An M4A syom accepts, then the same file with a movie timescale that does
-/// not divide the edit-list duration. That is the Pandora shape: syom refuses
-/// it until the edit list is dropped.
+/// An M4A syom accepts, then the same length on a movie clock that does not
+/// divide the edit duration into whole samples. That is the Pandora shape.
 fn fractional_edit_m4a() -> Vec<u8> {
     let pcm = vec![0.2f32; 44_100];
     let mut file = std::io::Cursor::new(Vec::new());
     syom::encode_write_m4a(&mut file, &[&pcm], 44_100, &syom::EncodeOptions::default()).unwrap();
     let mut data = file.into_inner();
     syom::decode_with(&data, &syom::DecodeOptions::audio()).expect("the unpatched file is valid AAC");
-    // Movie timescale equal to the sample rate always divides. A timescale
-    // that does not divide `duration * 44100` is what Pandora's files hit.
-    assert!(set_box_timescale(&mut data, b"mvhd", 1_000_000), "the movie timescale is there to break");
+    let old = box_field(&data, b"mvhd", 12).expect("movie timescale");
+    let duration = box_field(&data, b"mvhd", 16).expect("movie duration");
+    let new_ts = 1_000_000u32;
+    // Same wall time, plus one movie tick: `duration * 44100` no longer divides
+    // the clock. Changing only the timescale would shrink the song to ~44 ms.
+    let scaled = |n: u32| u32::try_from(u64::from(n) * u64::from(new_ts) / u64::from(old)).unwrap().saturating_add(1);
+    assert!(set_box_field(&mut data, b"mvhd", 12, new_ts), "movie timescale");
+    assert!(set_box_field(&mut data, b"mvhd", 16, scaled(duration)), "movie duration");
+    assert!(scale_elst(&mut data, old, new_ts), "edit list duration");
     data
 }
 
@@ -53,8 +58,11 @@ fn a_fractional_edit_list_is_not_skipped() {
     tagged.extend(plain.iter().copied());
     for (label, data) in [("plain", plain), ("behind an id3 tag", tagged)] {
         let body = &data[id3_len(&data)..];
-        let err = syom::decode_with(body, &syom::DecodeOptions::audio()).unwrap_err();
-        assert!(elst_not_whole_samples(&err), "{label}: {err}");
+        // syom 0.10.1 refuses this edit list. 0.10.3 rounds it down and plays.
+        // A different error is still a skip.
+        if let Err(err) = syom::decode_with(body, &syom::DecodeOptions::audio()) {
+            assert!(elst_not_whole_samples(&err), "{label}: {err}");
+        }
         let mut decoded = decoder(data).unwrap_or_else(|e| panic!("{label}: {e}"));
         assert_eq!(decoded.sample_rate().get(), 44_100, "{label}");
         assert_eq!(decoded.channels().get(), 1, "{label}");
@@ -62,26 +70,97 @@ fn a_fractional_edit_list_is_not_skipped() {
     }
 }
 
-/// `mvhd`/`mdhd` version 0: timescale is the u32 at byte 12 of the box body.
-fn set_box_timescale(data: &mut [u8], kind: &[u8; 4], timescale: u32) -> bool {
-    let mut at = 0usize;
-    while at + 8 <= data.len() {
-        let size = u32::from_be_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]) as usize;
-        if size < 8 || at + size > data.len() {
-            return false;
+/// `mvhd` version 0: a u32 at `offset` in the box body (12 is the timescale).
+fn box_field(data: &[u8], kind: &[u8; 4], offset: usize) -> Option<u32> {
+    let mut found = None;
+    walk_top(data, &mut |k, body: &[u8]| {
+        if k == *kind && body.len() >= offset + 4 {
+            found = Some(u32::from_be_bytes(body[offset..offset + 4].try_into().unwrap()));
         }
-        if &data[at + 4..at + 8] == kind && at + 8 + 16 <= at + size {
-            data[at + 8 + 12..at + 8 + 16].copy_from_slice(&timescale.to_be_bytes());
-            return true;
+    });
+    found
+}
+
+fn set_box_field(data: &mut [u8], kind: &[u8; 4], offset: usize, value: u32) -> bool {
+    let mut wrote = false;
+    walk_top_mut(data, &mut |k, body: &mut [u8]| {
+        if !wrote && k == *kind && body.len() >= offset + 4 {
+            body[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+            wrote = true;
         }
-        // Descend into containers; skip sample data.
-        if matches!(&data[at + 4..at + 8], b"moov" | b"trak" | b"mdia") {
-            at += 8;
-        } else {
-            at += size;
+    });
+    wrote
+}
+
+/// Scale the first edit's duration onto `new_ts`, plus one tick.
+fn scale_elst(data: &mut [u8], old_ts: u32, new_ts: u32) -> bool {
+    let mut wrote = false;
+    walk_top_mut(data, &mut |k, body: &mut [u8]| {
+        if wrote || k != *b"elst" || body.len() < 16 || body[0] != 0 {
+            return;
         }
+        let dur = u32::from_be_bytes(body[8..12].try_into().unwrap());
+        let scaled = u32::try_from(u64::from(dur) * u64::from(new_ts) / u64::from(old_ts)).unwrap().saturating_add(1);
+        body[8..12].copy_from_slice(&scaled.to_be_bytes());
+        wrote = true;
+    });
+    wrote
+}
+
+fn walk_top(data: &[u8], visit: &mut dyn FnMut([u8; 4], &[u8])) {
+    walk(data, 0, data.len(), 0, &mut |k, body| visit(k, body));
+}
+
+fn walk_top_mut(data: &mut [u8], visit: &mut dyn FnMut([u8; 4], &mut [u8])) {
+    walk_mut(data, 0, data.len(), 0, visit);
+}
+
+fn walk(data: &[u8], start: usize, end: usize, depth: usize, visit: &mut dyn FnMut([u8; 4], &[u8])) {
+    if depth > 8 {
+        return;
     }
-    false
+    let mut at = start;
+    while at + 8 <= end {
+        let size = u32::from_be_bytes(data[at..at + 4].try_into().unwrap()) as usize;
+        if size < 8 || at + size > end {
+            return;
+        }
+        let kind = [data[at + 4], data[at + 5], data[at + 6], data[at + 7]];
+        visit(kind, &data[at + 8..at + size]);
+        if matches!(
+            kind,
+            [b'm', b'o', b'o', b'v'] | [b't', b'r', b'a', b'k'] | [b'e', b'd', b't', b's'] | [b'm', b'd', b'i', b'a']
+        ) {
+            walk(data, at + 8, at + size, depth + 1, visit);
+        }
+        at += size;
+    }
+}
+
+fn walk_mut(data: &mut [u8], start: usize, end: usize, depth: usize, visit: &mut dyn FnMut([u8; 4], &mut [u8])) {
+    if depth > 8 {
+        return;
+    }
+    let mut at = start;
+    while at + 8 <= end {
+        let size = u32::from_be_bytes(data[at..at + 4].try_into().unwrap()) as usize;
+        if size < 8 || at + size > end {
+            return;
+        }
+        let kind = [data[at + 4], data[at + 5], data[at + 6], data[at + 7]];
+        let descend = matches!(
+            kind,
+            [b'm', b'o', b'o', b'v'] | [b't', b'r', b'a', b'k'] | [b'e', b'd', b't', b's'] | [b'm', b'd', b'i', b'a']
+        );
+        {
+            let body = &mut data[at + 8..at + size];
+            visit(kind, body);
+        }
+        if descend {
+            walk_mut(data, at + 8, at + size, depth + 1, visit);
+        }
+        at += size;
+    }
 }
 
 /// Pandora's ads are MP4 AAC. syom sometimes refuses them, and the fallback

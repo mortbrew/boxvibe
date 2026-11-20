@@ -1342,10 +1342,13 @@ fn shift_c_flips_between_the_picture_and_cover_art_off() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let mut app = demo();
     app.config.ui.album_art = crate::config::AlbumArt::Picture;
-    app.on_key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT));
+    let press = |app: &mut crate::app::App| {
+        app.on_key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT));
+    };
+    press(&mut app);
     assert_eq!(app.config.ui.album_art, crate::config::AlbumArt::Off);
     assert_only_message(&mut app, "Cover art off");
-    app.on_key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT));
+    press(&mut app);
     assert_eq!(app.config.ui.album_art, crate::config::AlbumArt::Picture);
     assert!(!screen(&mut app, 120, 36).0.join("\n").contains("Cover art off"));
 }
@@ -1476,7 +1479,9 @@ fn now_playing_heads_the_menu_with_an_inset_rule() {
     // That rule doubles as MY COLLECTION's, so its heading sits right under it.
     assert!(lines[3].starts_with("│ MY COLLECTION"), "{}", lines[3]);
     // Nothing playing: that rule is absent, and MY COLLECTION is the first row.
+    // A podcast keeps the entry with no station, so the song has to go too.
     app.current_station = None;
+    app.now = None;
     let (idle, _) = screen(&mut app, 120, 36);
     assert!(idle[1].starts_with("│ MY COLLECTION"), "no rule before playback: {}", idle[1]);
     assert!(!idle[1].contains('─'), "{}", idle[1]);
@@ -1760,6 +1765,60 @@ fn the_status_bar_shows_the_look_and_the_sleep_timer_left_of_the_account_and_dro
     assert!(bar.contains("☾ 1") && !bar.contains("Gruvbox") && bar.contains("toby@example.com"), "{bar}");
     app.sleep = Some(crate::app::Sleep::EndOfSong);
     assert!(screen(&mut app, 200, 36).0[34].contains("☾ end of song"));
+}
+
+#[test]
+fn settings_values_line_up_beside_the_labels() {
+    let mut app = demo();
+    app.view = View::Settings;
+    app.focus = Focus::Content;
+    app.settings_cursor = Setting::at(Setting::Volume);
+    let (lines, buffer) = screen(&mut app, 160, 42);
+    let at = |row: &str, value: &str| -> (u16, u16, String) {
+        let y = lines.iter().position(|l| l.contains(row)).unwrap_or_else(|| panic!("{row}")) as u16;
+        let cells = |needle: &str, from: u16| {
+            let n = needle.chars().count() as u16;
+            (from..160u16.saturating_sub(n))
+                .find(|&x| (0..n).map(|i| buffer[(x + i, y)].symbol()).collect::<String>() == needle)
+        };
+        let label = cells(row, 0).unwrap_or_else(|| panic!("{row}"));
+        let value_x = cells(value, label).unwrap_or_else(|| panic!("{value} on {row}: {}", lines[y as usize]));
+        (label, value_x, lines[y as usize].clone())
+    };
+    let (border, plain, border_line) = at("Border style", "Plain");
+    let (_, thirty, _) = at("Menu width", "30");
+    let (_, percent, volume_line) = at("Volume", "70%");
+    let (_, on, autoplay_line) = at("Autoplay", "On");
+    assert_eq!(plain, thirty, "values share a column\n{border_line}");
+    assert_eq!(plain, percent, "a short row uses the same column\n{volume_line}");
+    assert_eq!(plain, on, "a long label ends at the same column\n{autoplay_line}");
+    assert!(plain > border && plain - border < 40, "the value sits with the label\n{border_line}");
+    assert!(thirty < 100, "not at the far edge\n{border_line}");
+}
+
+#[test]
+fn the_selected_settings_row_stays_readable_on_its_bar() {
+    let mut app = demo();
+    app.view = View::Settings;
+    app.focus = Focus::Content;
+    app.settings_cursor = Setting::at(Setting::BorderStyle);
+    let (lines, buffer) = screen(&mut app, 100, 40);
+    let y = lines.iter().position(|l| l.contains("Border style")).expect("the row") as u16;
+    let cell = |needle: &str| {
+        let n = needle.len() as u16;
+        let x = (0..100u16.saturating_sub(n))
+            .find(|&x| (0..n).map(|i| buffer[(x + i, y)].symbol()).collect::<String>() == needle)
+            .unwrap_or_else(|| panic!("{needle} on {y}"));
+        buffer[(x, y)].clone()
+    };
+    let label = cell("Border style");
+    let value = cell("Plain");
+    assert_eq!((label.fg, label.bg), (app.palette.background, app.palette.fg), "the label");
+    assert_eq!((value.fg, value.bg), (app.palette.background, app.palette.fg), "the value");
+    // A row that is not selected keeps its own colours.
+    let y = lines.iter().position(|l| l.contains("Audio quality")).expect("another row") as u16;
+    let x = (0..100u16).find(|&x| buffer[(x, y)].symbol() == "A").expect("the label");
+    assert_eq!(buffer[(x, y)].fg, app.palette.fg);
 }
 
 #[test]

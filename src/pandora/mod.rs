@@ -1245,16 +1245,38 @@ impl Client {
     /// (zip, gender, birth, PIN). Missing fields are left out, not sent as null.
     /// `Ok(None)`: Pandora answered 200 without `explicitContentFilterEnabled`.
     pub fn set_explicit_filter(&mut self, username: &str, password: &str, enable: bool) -> Result<Option<bool>, Error> {
+        Ok(self.update_account(username, password, &crate::backend::AccountChange::Explicit(enable))?.1)
+    }
+
+    /// `v1/listener/updateAccount`. Passwords are only arguments. Other listener
+    /// fields login gave us are sent back unchanged. Missing fields are left out.
+    pub fn update_account(
+        &mut self,
+        username: &str,
+        password: &str,
+        change: &crate::backend::AccountChange,
+    ) -> Result<(ListenerProfile, Option<bool>), Error> {
+        let mut profile = self.account.profile.clone();
+        let mut explicit = self.account.explicit_filter;
+        let mut new_password = None;
+        match change {
+            crate::backend::AccountChange::Explicit(on) => explicit = Some(*on),
+            crate::backend::AccountChange::Zip(zip) => profile.zip = Some(zip.clone()),
+            crate::backend::AccountChange::Gender(gender) => profile.gender = Some(gender.clone()),
+            crate::backend::AccountChange::BirthYear(year) => profile.birth_year = Some(*year),
+            crate::backend::AccountChange::Password(next) => new_password = Some(next.expose()),
+        }
         let mut body = json!({
             "currentUsername": username,
             "currentPassword": password,
             "newUsername": username,
-            "enableExplicitContentFilter": enable,
         });
         let Some(map) = body.as_object_mut() else {
             return Err(Error::InvalidResponse);
         };
-        let profile = &self.account.profile;
+        if let Some(on) = explicit {
+            map.insert("enableExplicitContentFilter".into(), json!(on));
+        }
         if let Some(zip) = &profile.zip {
             map.insert("newZipCode".into(), json!(zip));
         }
@@ -1273,6 +1295,9 @@ impl Client {
         if let Some(pin) = &profile.explicit_pin {
             map.insert("explicitPIN".into(), json!(pin));
         }
+        if let Some(next) = new_password {
+            map.insert("newPassword".into(), json!(next));
+        }
         let v = self.post("/api/v1/listener/updateAccount", &body)?;
         let reported = explicit_filter_flag(&v);
         if reported.is_some() {
@@ -1281,8 +1306,10 @@ impl Client {
         let fresh = listener_profile(&v);
         if fresh != ListenerProfile::default() {
             self.account.profile = fresh;
+        } else {
+            self.account.profile = profile;
         }
-        Ok(reported)
+        Ok((self.account.profile.clone(), reported))
     }
 
     /// `v1/auth/logoutAll` from the web client: `{password}` logs out every other device.
@@ -1551,11 +1578,11 @@ impl Client {
         Ok(parse_recently_played(&v))
     }
 
-    /// `v3/sod/search`: artists and songs matching `query`.
+    /// `v3/sod/search`: artists, songs, and podcasts matching `query`.
     pub fn search(&mut self, query: &str) -> Result<Vec<SearchHit>, Error> {
         let v = self.post(
             "/api/v3/sod/search",
-            &json!({ "query": query, "start": 0, "count": 20, "annotate": true, "types": ["AR", "CO", "TR"] }),
+            &json!({ "query": query, "start": 0, "count": 20, "annotate": true, "types": ["AR", "CO", "TR", "PC"] }),
         )?;
         Ok(parse_search(&v))
     }

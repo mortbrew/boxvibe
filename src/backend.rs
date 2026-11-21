@@ -254,10 +254,26 @@ pub enum Request {
     LogoutOtherDevices {
         password: Secret,
     },
+    /// Zip, gender, birth year, or a new password. Passwords are not kept.
+    UpdateAccount {
+        username: String,
+        password: Secret,
+        change: AccountChange,
+    },
     /// An album cover for Now Playing (its own thread: never waits on audio).
     Art {
         url: String,
     },
+}
+
+/// One listener field `updateAccount` should change. The new password is wiped on drop.
+pub enum AccountChange {
+    Zip(String),
+    Gender(String),
+    BirthYear(i64),
+    Password(Secret),
+    /// The explicit filter. Not a Settings row of its own here; `set_explicit_filter` uses it.
+    Explicit(bool),
 }
 
 pub enum Reply {
@@ -269,6 +285,12 @@ pub enum Reply {
         explicit_filter: Option<bool>,
         /// Seconds east of UTC, when login named one.
         tz_offset: Option<i32>,
+        profile: crate::pandora::ListenerProfile,
+    },
+    /// `updateAccount` accepted the change. `password` is true when that was a new password.
+    AccountSaved {
+        profile: crate::pandora::ListenerProfile,
+        password: bool,
     },
     /// The explicit filter after a successful `updateAccount`.
     ExplicitFilter(Option<bool>),
@@ -558,7 +580,26 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
                 station_skip_limit: None,
                 explicit_filter: None,
                 tz_offset: None,
+                profile: crate::pandora::ListenerProfile::default(),
             },
+            Request::UpdateAccount { change, .. } => {
+                let password = matches!(change, AccountChange::Password(_));
+                let profile = match change {
+                    AccountChange::Zip(zip) => {
+                        crate::pandora::ListenerProfile { zip: Some(zip), ..crate::pandora::ListenerProfile::default() }
+                    }
+                    AccountChange::Gender(gender) => crate::pandora::ListenerProfile {
+                        gender: Some(gender),
+                        ..crate::pandora::ListenerProfile::default()
+                    },
+                    AccountChange::BirthYear(year) => crate::pandora::ListenerProfile {
+                        birth_year: Some(year),
+                        ..crate::pandora::ListenerProfile::default()
+                    },
+                    AccountChange::Password(_) | AccountChange::Explicit(_) => crate::pandora::ListenerProfile::default(),
+                };
+                Reply::AccountSaved { profile, password }
+            }
             Request::SetExplicitFilter { enable, .. } => Reply::ExplicitFilter(Some(enable)),
             Request::LogoutOtherDevices { .. } => Reply::OtherDevicesLoggedOut,
             Request::Stations => Reply::Stations(stations.clone()),
@@ -734,6 +775,7 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                         station_skip_limit: client.account.station_skip_limit,
                         explicit_filter: client.account.explicit_filter,
                         tz_offset: client.account.tz_offset,
+                        profile: client.account.profile.clone(),
                     }
                 }
                 Err(e) => Reply::LoginFailed { wrong_password: e == Error::WrongLogin, message: e.to_string() },
@@ -741,6 +783,17 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
             Request::SetExplicitFilter { username, password, enable } => {
                 let reply = account_once(&mut client, login.as_ref(), |c| {
                     c.set_explicit_filter(&username, password.expose(), enable).map(Reply::ExplicitFilter)
+                });
+                drop(password);
+                reply
+            }
+            Request::UpdateAccount { username, password, change } => {
+                let password_change = matches!(change, AccountChange::Password(_));
+                let reply = account_once(&mut client, login.as_ref(), |c| {
+                    c.update_account(&username, password.expose(), &change).map(|(profile, _)| Reply::AccountSaved {
+                        profile,
+                        password: password_change,
+                    })
                 });
                 drop(password);
                 reply

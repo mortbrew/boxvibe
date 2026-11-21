@@ -170,11 +170,18 @@ pub struct PlayerConfig {
     /// accounts get them); Muted plays them silently. Off: no ad is asked
     /// for, so none plays. Written `true`, `"muted"` or `false`.
     pub good_vibes_only: GoodVibes,
+    /// When a podcast episode ends, play the next one from the show list.
+    #[serde(default = "default_on")]
+    pub autoplay_next_episode: bool,
+}
+
+fn default_on() -> bool {
+    true
 }
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self { volume: 70, good_vibes_only: GoodVibes::On }
+        Self { volume: 70, good_vibes_only: GoodVibes::On, autoplay_next_episode: true }
     }
 }
 
@@ -788,6 +795,7 @@ pub const LAYOUT: &[(&str, &str, &str)] = &[
     ("playback", "volume", "player"),
     ("playback", "good_vibes_only", "player"),
     ("playback", "autoplay_last_station", "ui"),
+    ("playback", "autoplay_next_episode", "player"),
     ("playback", "last_station", "pandora"),
     ("playback", "song_change_notifications", "ui"),
     ("playback", "favorites", "ui"),
@@ -1215,6 +1223,15 @@ pub fn forget_plaintext_password(path: &Path) -> Result<bool, ConfigError> {
 /// everything else, comments included, untouched. A file still in the old
 /// layout is moved to the new one first.
 pub fn set_values(path: &Path, values: &[(&str, &str, toml_edit::Value)]) -> Result<(), ConfigError> {
+    // Volume writes on a background thread. Every other save uses this thread.
+    // One lock so the two cannot read the file, then each write their own copy.
+    static WRITE: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let lock = WRITE.get_or_init(|| std::sync::Mutex::new(()));
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    set_values_unlocked(path, values)
+}
+
+fn set_values_unlocked(path: &Path, values: &[(&str, &str, toml_edit::Value)]) -> Result<(), ConfigError> {
     let error = |reason: String| ConfigError::Write { path: path.into(), reason };
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,

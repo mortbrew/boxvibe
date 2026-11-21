@@ -39,6 +39,7 @@ impl App {
         if self.episode_wait {
             return;
         }
+        self.capture_show_list();
         self.episode_wait = true;
         self.status = format!("Getting “{name}”…");
         self.backend.send(Request::Episode { source_id: source_id.to_owned(), name: name.to_owned() });
@@ -66,6 +67,33 @@ impl App {
         self.next_song();
         self.show_now_playing();
         self.status = format!("Playing {title} — {show}");
+    }
+
+    /// The show page's episodes, in the order on screen, so the next one can start.
+    fn capture_show_list(&mut self) {
+        let crate::app::BrowseState::Loaded(sections) = &self.browse else { return };
+        if !self.on_podcast() {
+            return;
+        }
+        let Some(section) = sections.first() else { return };
+        self.show_episodes = section
+            .items
+            .iter()
+            .filter(|item| item.pandora_id.starts_with("PE:"))
+            .map(|item| (item.pandora_id.clone(), item.name.clone()))
+            .collect();
+    }
+
+    /// The episode after the one that just finished, from the loaded show list.
+    fn play_next_episode(&mut self) -> bool {
+        let current = self.episode_source.clone().unwrap_or_default();
+        let Some(at) = self.show_episodes.iter().position(|(id, _)| id == &current) else { return false };
+        let Some((id, name)) = self.show_episodes.iter().skip(at + 1).find(|(id, _)| id != &current).cloned() else {
+            return false;
+        };
+        let name = name.trim_start_matches("Continue · ").to_owned();
+        self.play_episode(&id, &name);
+        true
     }
 
     pub(super) fn tune(&mut self, index: usize) {
@@ -198,6 +226,9 @@ impl App {
     pub(super) fn request_more(&mut self) {
         if self.on_episode {
             if self.now.is_none() && self.queue.is_empty() {
+                if self.config.player.autoplay_next_episode && self.play_next_episode() {
+                    return;
+                }
                 self.status = "That episode is finished".into();
             }
             return;

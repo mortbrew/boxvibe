@@ -258,6 +258,7 @@ fn the_explicit_filter_is_sent_once_and_other_devices_log_out_with_a_password() 
     c.login("me@example.com", "pw").unwrap();
     assert_eq!(c.set_explicit_filter("me@example.com", "once", false).unwrap(), Some(false));
     c.logout_other_devices("once").unwrap();
+    {
     let seen = seen.lock().unwrap();
     assert_eq!(
         seen[2].body,
@@ -275,6 +276,17 @@ fn the_explicit_filter_is_sent_once_and_other_devices_log_out_with_a_password() 
     );
     assert_eq!(seen[3].path, "/api/v1/auth/logoutAll");
     assert_eq!(seen[3].body, json!({ "password": "once" }));
+    }
+    c.update_account(
+        "me@example.com",
+        "once",
+        &crate::backend::AccountChange::Password(crate::config::Secret::new("next-one")),
+    )
+    .unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[4].body["newPassword"], "next-one");
+    assert_eq!(seen[4].body["newZipCode"], "94105");
+    assert!(seen[4].body.get("currentPassword").is_some());
 }
 
 #[test]
@@ -493,14 +505,15 @@ fn renaming_removing_and_details_send_what_the_site_expects() {
 
 fn search_answer() -> Value {
     json!({
-        "results": ["AR:1", "TR:2", "AL:3", "CO:4", "PL:5", "AR:gone", "TR:6"],
+        "results": ["AR:1", "TR:2", "AL:3", "CO:4", "PL:5", "AR:gone", "TR:6", "PC:9"],
         "annotations": {
             "AR:1": { "name": " Tee Grizzley ", "pandoraId": "AR:1", "trackCount": 9, "icon": {} },
             "TR:2": { "name": "Slow Hands", "artistName": "Niall Horan", "pandoraId": "TR:2" },
             "AL:3": { "name": "An album", "pandoraId": "AL:3" },
             "CO:4": { "name": "A Composer", "pandoraId": "CO:4" },
             "PL:5": { "name": "A playlist", "pandoraId": "PL:5" },
-            "TR:6": { "name": "", "pandoraId": "TR:6" }
+            "TR:6": { "name": "", "pandoraId": "TR:6" },
+            "PC:9": { "name": "Crime Junkie", "pandoraId": "PC:9" }
         }
     })
 }
@@ -516,6 +529,7 @@ fn search_keeps_artists_and_songs_in_order_and_ignores_the_rest() {
             (HitKind::Artist, "AR:1", "Tee Grizzley", ""),
             (HitKind::Song, "TR:2", "Slow Hands", "Niall Horan"),
             (HitKind::Artist, "CO:4", "A Composer", ""),
+            (HitKind::Show, "PC:9", "Crime Junkie", ""),
         ]
     );
     assert!(parse_search(&json!({})).is_empty());
@@ -538,14 +552,14 @@ fn searching_and_creating_send_what_the_site_expects() {
     }));
     let mut c = Client::with_base(&base, "");
     c.login("me", "pw").unwrap();
-    assert_eq!(c.search("tee").unwrap().len(), 3);
+    assert_eq!(c.search("tee").unwrap().len(), 4);
     let made = c.create_station("AR:1").unwrap();
     assert_eq!((made.id.as_str(), made.name.as_str()), ("3815", "Tee Grizzley Radio"));
     let seen = seen.lock().unwrap();
     let body = |end: &str| seen.iter().find(|s| s.path.ends_with(end)).unwrap().body.clone();
     assert_eq!(
         body("sod/search"),
-        json!({ "query": "tee", "start": 0, "count": 20, "annotate": true, "types": ["AR", "CO", "TR"] })
+        json!({ "query": "tee", "start": 0, "count": 20, "annotate": true, "types": ["AR", "CO", "TR", "PC"] })
     );
     assert_eq!(body("createStation"), json!({ "pandoraId": "AR:1", "stationName": "" }));
 }

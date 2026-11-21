@@ -275,7 +275,7 @@ impl Editing {
 }
 
 /// The made-up catalogue the demo search looks in: (id, kind, name, artist).
-const CATALOGUE: [(&str, HitKind, &str, &str); 14] = [
+const CATALOGUE: [(&str, HitKind, &str, &str); 15] = [
     ("AR:demo-m83", HitKind::Artist, "M83", ""),
     ("AR:demo-mgmt", HitKind::Artist, "MGMT", ""),
     ("AR:demo-daft", HitKind::Artist, "Daft Punk", ""),
@@ -290,6 +290,7 @@ const CATALOGUE: [(&str, HitKind, &str, &str); 14] = [
     ("TR:demo-1901", HitKind::Song, "1901", "Phoenix"),
     ("TR:demo-dreams", HitKind::Song, "Dreams", "Fleetwood Mac"),
     ("TR:demo-nightcall", HitKind::Song, "Nightcall", "Kavinsky"),
+    ("PC:demo-junkie", HitKind::Show, "Crime Junkie", "audiochuck"),
 ];
 
 /// Artists and songs whose name or artist has `query` in it.

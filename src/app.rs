@@ -19,7 +19,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::ads;
 use crate::audio::Audio;
-use crate::backend::{Backend, Failed, KeychainJob, KeychainReply, Reply, Request};
+use crate::backend::{AccountChange, Backend, Failed, KeychainJob, KeychainReply, Reply, Request};
 use crate::config::{self, AlbumArt, Config, ConfigWarning, GoodVibes, Secret};
 use crate::input::TextInput;
 use crate::keychain::{self, Keychain, NO_KEYCHAIN};
@@ -142,6 +142,16 @@ pub enum OncePassword {
     Explicit(bool),
     /// Log out every other device.
     OtherDevices,
+    /// The current password for a profile or password change already chosen.
+    Account,
+}
+
+/// A listener field waiting for the current password. The new password is a `Secret`.
+enum AccountEdit {
+    Zip(String),
+    Gender(String),
+    BirthYear(i64),
+    Password(Secret),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,6 +159,18 @@ pub enum Prompt {
     Email,
     Password,
     Once(OncePassword),
+    /// A new zip, gender, or birth year.
+    Profile(ProfileField),
+    /// The new password, then again.
+    NewPassword,
+    NewPasswordAgain,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileField {
+    Zip,
+    Gender,
+    BirthYear,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,9 +181,14 @@ pub enum Setting {
     LogOut,
     ExplicitFilter,
     LogOutOthers,
+    ZipCode,
+    Gender,
+    BirthYear,
+    ChangePassword,
     Quality,
     Volume,
     Autoplay,
+    NextEpisode,
     Notify,
     GoodVibesOnly,
     ThemeAutoMode,
@@ -186,13 +213,17 @@ pub enum Setting {
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 37] = [
+    pub const ALL: [(&'static str, Self); 42] = [
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
         ("ACCOUNT", Self::LogOut),
         ("ACCOUNT", Self::ExplicitFilter),
         ("ACCOUNT", Self::LogOutOthers),
+        ("ACCOUNT", Self::ZipCode),
+        ("ACCOUNT", Self::Gender),
+        ("ACCOUNT", Self::BirthYear),
+        ("ACCOUNT", Self::ChangePassword),
         ("BOXVIBE", Self::CheckUpdates),
         ("BOXVIBE", Self::GenrePopup),
         ("BOXVIBE", Self::EditFile),
@@ -200,6 +231,7 @@ impl Setting {
         ("PLAYBACK", Self::Quality),
         ("PLAYBACK", Self::Volume),
         ("PLAYBACK", Self::Autoplay),
+        ("PLAYBACK", Self::NextEpisode),
         ("PLAYBACK", Self::Notify),
         ("PLAYBACK", Self::GoodVibesOnly),
         ("LOOK", Self::ThemeAutoMode),
@@ -239,6 +271,11 @@ impl Setting {
             Self::LogOut => "Log out",
             Self::ExplicitFilter => "Explicit content filter",
             Self::LogOutOthers => "Log out of all other devices",
+            Self::ZipCode => "Zip code",
+            Self::Gender => "Gender",
+            Self::BirthYear => "Birth year",
+            Self::ChangePassword => "Change password",
+            Self::NextEpisode => "Autoplay next episode",
             Self::Quality => "Audio quality",
             Self::Volume => "Volume",
             Self::Autoplay => "Autoplay last station on open",
@@ -278,6 +315,7 @@ impl Setting {
             Self::Quality => Some(("playback", "audio_quality")),
             Self::Volume => Some(("playback", "volume")),
             Self::Autoplay => Some(("playback", "autoplay_last_station")),
+            Self::NextEpisode => Some(("playback", "autoplay_next_episode")),
             Self::Notify => Some(("playback", "song_change_notifications")),
             Self::GoodVibesOnly => Some(("playback", "good_vibes_only")),
             Self::ThemeAutoMode => Some(("look", "theme_auto_mode")),
@@ -296,6 +334,10 @@ impl Setting {
             | Self::LogOut
             | Self::ExplicitFilter
             | Self::LogOutOthers
+            | Self::ZipCode
+            | Self::Gender
+            | Self::BirthYear
+            | Self::ChangePassword
             | Self::EditFile
             | Self::MenuEntry => None,
         }
@@ -318,6 +360,21 @@ impl Setting {
             }
             Self::LogOutOthers => {
                 "Asks, then your password, then logs every other device out of this Pandora account. This computer stays logged in. The password is not saved."
+            }
+            Self::ZipCode => {
+                "The zip code on this Pandora account. Enter types a new one, then your password. The password is not saved, and the other account fields are sent back unchanged."
+            }
+            Self::Gender => {
+                "Gender on this Pandora account, as Pandora stores it. Enter types it, then your password. The password is not saved."
+            }
+            Self::BirthYear => {
+                "Birth year on this Pandora account. Enter types the year, then your password. Month and day are sent back unchanged. The password is not saved."
+            }
+            Self::ChangePassword => {
+                "Enter types the new password twice, then the current one. Nothing is saved or written to the log. The other account fields are sent back unchanged."
+            }
+            Self::NextEpisode => {
+                "On: when a podcast episode ends, the next one on the show page starts. Off: playback stops at the end of the episode. Saved as [playback] autoplay_next_episode."
             }
             Self::Quality => {
                 "high asks for 192 kbps MP3 where your plan has it (Plus, Premium), else 128 kbps MP3; standard asks for 128. A free plan gets 64 kbps HE-AAC whatever you pick, so this is greyed out there and the row says what is really playing. Saved as [playback] audio_quality."
@@ -464,6 +521,16 @@ impl SkipBook {
             .get(station_id)
             .map(|at| at.iter().filter(|t| now.duration_since(**t).unwrap_or_default() < hour).count() as u32)
             .unwrap_or(0)
+    }
+
+    /// Changes when the numbers the skip line shows would change.
+    pub fn stamp(&self) -> u64 {
+        let mut n = u64::from(self.daily_used) ^ (self.day.len() as u64).wrapping_mul(0x9E37);
+        n ^= u64::from(self.daily_limit.unwrap_or(0)) ^ u64::from(self.station_limit.unwrap_or(0));
+        for times in self.stations.values() {
+            n = n.wrapping_add(times.len() as u64);
+        }
+        n
     }
 
     /// `None` until a login reported a limit.
@@ -1222,6 +1289,17 @@ pub struct App {
     pub hifi: Option<bool>,
     /// From login: `Some(true)` means the explicit filter is on. Not written to config.
     pub explicit_filter: Option<bool>,
+    /// Listener fields from login, echoed on `updateAccount`.
+    profile: crate::pandora::ListenerProfile,
+    /// New password typed once, held only until the second box matches.
+    pending_new_password: Option<Secret>,
+    /// Profile or password change waiting for the current password.
+    account_edit: Option<AccountEdit>,
+    /// Episodes of the show page the current episode came from, in list order.
+    show_episodes: Vec<(String, String)>,
+    /// Station id the skip line was built for, and a stamp of the skip book.
+    pub(crate) skip_for: String,
+    pub(crate) skip_stamp: u64,
     /// What Pandora actually sent for the song now playing: its format and
     /// bitrate. `None` until a song plays. The plan's flag says what it
     /// *should* send; this says what it did, which is not always the same.
@@ -1359,6 +1437,12 @@ impl App {
             edit_config: false,
             hifi: None,
             explicit_filter: None,
+            profile: crate::pandora::ListenerProfile::default(),
+            pending_new_password: None,
+            account_edit: None,
+            show_episodes: Vec::new(),
+            skip_for: String::new(),
+            skip_stamp: 0,
             stream: None,
             restart: false,
             art: crate::art::Art::default(),
@@ -1535,6 +1619,9 @@ impl App {
     /// Put the failed-save warning back as a suffix. A newer status stays; the
     /// warning is added until a save succeeds.
     fn stick_config_warning(&mut self) {
+        if self.config_error.is_none() || self.status.contains("settings not saved") {
+            return;
+        }
         let Some(err) = self.config_error.clone() else { return };
         let suffix = format!("settings not saved: {err}");
         if self.status.contains("settings not saved") {
@@ -2266,7 +2353,10 @@ impl App {
             || self.panel.is_some()
             || self.theme_picker.is_some()
             || self.editor.is_some()
-            || matches!(self.prompt, Some(Prompt::Password | Prompt::Once(_)))
+            || matches!(
+                self.prompt,
+                Some(Prompt::Password | Prompt::Once(_) | Prompt::Profile(_) | Prompt::NewPassword | Prompt::NewPasswordAgain)
+            )
     }
 
     pub fn in_songs(&self) -> bool {
@@ -2410,6 +2500,13 @@ impl App {
                 None => "not logged in".into(),
             },
             Setting::LogOutOthers => String::new(),
+            Setting::ZipCode => self.profile_value(|p| p.zip.clone()),
+            Setting::Gender => self.profile_value(|p| p.gender.clone()),
+            Setting::BirthYear => self.profile_value(|p| p.birth_year.map(|y| y.to_string())),
+            Setting::ChangePassword => {
+                if self.session == Session::LoggedIn { "Enter sets a new one".into() } else { "not logged in".into() }
+            }
+            Setting::NextEpisode => on(self.config.player.autoplay_next_episode),
             Setting::Quality => self.quality_label(),
             Setting::Volume => format!("{}%", self.config.player.volume),
             Setting::Autoplay => on(self.config.ui.autoplay_last_station),
@@ -2456,9 +2553,10 @@ impl App {
     pub(crate) fn open_prompt(&mut self, prompt: Prompt) {
         self.query = match prompt {
             Prompt::Email => TextInput::new(&self.config.pandora.username),
-            Prompt::Password | Prompt::Once(_) => TextInput::default(),
+            Prompt::Password | Prompt::Once(_) | Prompt::NewPassword | Prompt::NewPasswordAgain => TextInput::default(),
+            Prompt::Profile(_) => TextInput::default(),
         };
-        if !matches!(prompt, Prompt::Once(_)) {
+        if !matches!(prompt, Prompt::Once(_) | Prompt::Profile(_) | Prompt::NewPassword | Prompt::NewPasswordAgain) {
             let row = if prompt == Prompt::Email { Setting::Email } else { Setting::Password };
             self.settings_cursor = Setting::at(row);
         }
@@ -2473,6 +2571,16 @@ impl App {
             Setting::LogOut => self.ask_logout(),
             Setting::ExplicitFilter => self.ask_explicit_filter(),
             Setting::LogOutOthers => self.ask_logout_others(),
+            Setting::ZipCode => self.open_profile(ProfileField::Zip),
+            Setting::Gender => self.open_profile(ProfileField::Gender),
+            Setting::BirthYear => self.open_profile(ProfileField::BirthYear),
+            Setting::ChangePassword => self.open_new_password(),
+            Setting::NextEpisode => {
+                let on = !self.config.player.autoplay_next_episode;
+                self.config.player.autoplay_next_episode = on;
+                self.save(&[("playback", "autoplay_next_episode", on.into())]);
+                self.status = format!("Autoplay next episode: {}", if on { "on" } else { "off" });
+            }
             Setting::Quality if self.quality_greyed() => {
                 self.status = "Audio quality is Pandora's on a free plan: 64 kbps HE-AAC".into();
             }
@@ -2656,6 +2764,8 @@ impl App {
             KeyCode::Esc => {
                 self.prompt = None;
                 self.query.clear();
+                self.pending_new_password = None;
+                self.account_edit = None;
             }
             KeyCode::Enter | KeyCode::Tab => {
                 let text = self.query.take();
@@ -2697,6 +2807,14 @@ impl App {
                         self.backend.send(Request::LogoutOtherDevices { password });
                         self.status = "Logging out other devices…".into();
                     }
+                    Prompt::Once(OncePassword::Account) => self.send_account_edit(Secret::new(text)),
+                    Prompt::Profile(field) => self.took_profile_value(field, text),
+                    Prompt::NewPassword if text.is_empty() => self.status = "Type the new password".into(),
+                    Prompt::NewPassword => {
+                        self.pending_new_password = Some(Secret::new(text));
+                        self.open_prompt(Prompt::NewPasswordAgain);
+                    }
+                    Prompt::NewPasswordAgain => self.confirm_new_password(text),
                 }
             }
             _ => {

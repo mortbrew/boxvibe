@@ -10,8 +10,29 @@ impl App {
             return;
         }
         match reply {
-            Reply::LoggedIn { hifi, daily_skip_limit, station_skip_limit, explicit_filter, tz_offset } => {
-                self.reply_logged_in(hifi, daily_skip_limit, station_skip_limit, explicit_filter, tz_offset)
+            Reply::LoggedIn { hifi, daily_skip_limit, station_skip_limit, explicit_filter, tz_offset, profile } => {
+                self.reply_logged_in(hifi, daily_skip_limit, station_skip_limit, explicit_filter, tz_offset, profile)
+            }
+            Reply::AccountSaved { profile, password } => {
+                if profile.zip.is_some() {
+                    self.profile.zip = profile.zip;
+                }
+                if profile.gender.is_some() {
+                    self.profile.gender = profile.gender;
+                }
+                if profile.birth_year.is_some() {
+                    self.profile.birth_year = profile.birth_year;
+                }
+                if profile.birth_month.is_some() {
+                    self.profile.birth_month = profile.birth_month;
+                }
+                if profile.birth_day.is_some() {
+                    self.profile.birth_day = profile.birth_day;
+                }
+                if profile.explicit_pin.is_some() {
+                    self.profile.explicit_pin = profile.explicit_pin;
+                }
+                self.status = if password { "Password changed".into() } else { "Account updated".into() };
             }
             Reply::ExplicitFilter(on) => {
                 if let Some(on) = on {

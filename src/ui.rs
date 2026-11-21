@@ -17,7 +17,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
     App, BrowseRow, BrowseState, Details, Editor, EditorTab, FeedState, Focus, Loaded, MenuItem, OncePassword, Pane,
-    Prompt, Rename, SearchMode, Session, Setting, SongAction, StationSearch, View,
+    ProfileField, Prompt, Rename, SearchMode, Session, Setting, SongAction, StationSearch, View,
 };
 use crate::art::Cover;
 use crate::config::{AlbumArt, BorderStyle, GoodVibes};
@@ -85,8 +85,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         crate::splash::draw(frame, &p, progress, &version, "Pandora in your terminal");
         return;
     }
-    let station = app.now.as_ref().map(|s| s.station_id.clone()).unwrap_or_default();
-    app.skip_caption = app.skip_book.label(&station);
+    let station = app.now.as_ref().map(|s| s.station_id.as_str()).unwrap_or("");
+    let stamp = app.skip_book.stamp();
+    if app.skip_for != station || app.skip_stamp != stamp {
+        app.skip_for.clear();
+        app.skip_for.push_str(station);
+        app.skip_stamp = stamp;
+        app.skip_caption = app.skip_book.label(&app.skip_for);
+    }
     let ic = icons(app.config.ui.icons);
     let [body, status, keys] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1)]).areas(area);
@@ -136,6 +142,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if let Some(Prompt::Once(ask)) = app.prompt {
         draw_once_password(frame, app, area, ask);
+    }
+    if let Some(prompt @ (Prompt::Profile(_) | Prompt::NewPassword | Prompt::NewPasswordAgain)) = app.prompt {
+        draw_account_line(frame, app, area, prompt);
     }
     if let Some(notice) = &app.genre_notice {
         draw_genre_notice(frame, &p, ic, area, notice);
@@ -447,6 +456,8 @@ struct StatusParts {
     sleep: Option<String>,
     looks: Vec<String>,
     stream_label: Option<String>,
+    /// Labels that fit this width, already trimmed.
+    extra: Vec<String>,
 }
 
 fn status_inputs_match(parts: &StatusParts, app: &App, width: u16) -> bool {
@@ -492,6 +503,7 @@ fn build_status(app: &App, width: u16) -> StatusParts {
     let sleep = sleep_label(app);
     let looks = look_labels(app);
     let stream_label = stream_label(app);
+    let extra = trim_status(room, &account, sleep.clone(), looks.clone(), stream_label.clone());
     let (sleep_secs, end_of_song) = match app.sleep {
         Some(crate::app::Sleep::Minutes(..)) => (app.sleep_left().map(|d| d.as_secs()), false),
         Some(crate::app::Sleep::EndOfSong) => (None, true),
@@ -519,55 +531,17 @@ fn build_status(app: &App, width: u16) -> StatusParts {
         sleep,
         looks,
         stream_label,
+        extra,
     }
 }
 
-struct StatusDrawn {
-    shown: String,
-    warn: bool,
-    account: Option<String>,
-    sleep: Option<String>,
-    looks: Vec<String>,
-    stream_label: Option<String>,
-}
-
-fn status_drawn(app: &App, width: u16) -> StatusDrawn {
-    thread_local! {
-        static CACHE: std::cell::RefCell<Option<StatusParts>> = const { std::cell::RefCell::new(None) };
-    }
-    CACHE.with(|slot| {
-        let rebuild = slot.borrow().as_ref().is_none_or(|parts| !status_inputs_match(parts, app, width));
-        if rebuild {
-            *slot.borrow_mut() = Some(build_status(app, width));
-        }
-        let parts = slot.borrow();
-        let parts = parts.as_ref().expect("just filled");
-        StatusDrawn {
-            shown: parts.shown.clone(),
-            warn: parts.warn,
-            account: parts.account.clone(),
-            sleep: parts.sleep.clone(),
-            looks: parts.looks.clone(),
-            stream_label: parts.stream_label.clone(),
-        }
-    })
-}
-
-fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
-    let p = app.palette;
-    let parts = status_drawn(app, area.width);
-    let shown = parts.shown;
-    let color = if parts.warn { p.yellow } else { p.fg };
-    frame.render_widget(Block::new().bg(p.highlight), area);
-    // The right side (sleep timer, look, stream, account) gets at most half
-    // the bar, and never less than the status.
-    let account = parts.account;
-    let mut sleep = parts.sleep;
-    let mut looks = parts.looks;
-    let mut stream = parts.stream_label;
-    let room = (area.width / 2).saturating_sub(3) as usize;
-    // What goes when the bar is narrow, first to last: the look labels (from
-    // the last), then the stream, then the timer. The account never goes.
+fn trim_status(
+    room: usize,
+    account: &Option<String>,
+    mut sleep: Option<String>,
+    mut looks: Vec<String>,
+    mut stream: Option<String>,
+) -> Vec<String> {
     let used = |sleep: &Option<String>, looks: &[String], stream: &Option<String>| -> usize {
         let parts = sleep.iter().chain(looks).chain(stream).map(|s| safe_width(s) + 3).sum::<usize>();
         parts + account.as_ref().map_or(0, |a| safe_width(a))
@@ -584,7 +558,33 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         }
         break;
     }
-    let extra: Vec<String> = sleep.into_iter().chain(looks).chain(stream).collect();
+    sleep.into_iter().chain(looks).chain(stream).collect()
+}
+
+fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+    thread_local! {
+        static CACHE: std::cell::RefCell<Option<StatusParts>> = const { std::cell::RefCell::new(None) };
+    }
+    let p = app.palette;
+    CACHE.with(|slot| {
+        let rebuild = slot.borrow().as_ref().is_none_or(|parts| !status_inputs_match(parts, app, area.width));
+        if rebuild {
+            *slot.borrow_mut() = Some(build_status(app, area.width));
+        }
+        let borrowed = slot.borrow();
+        let parts = borrowed.as_ref().expect("just filled");
+        paint_status(frame, p, area, parts);
+    });
+}
+
+fn paint_status(frame: &mut Frame, p: Palette, area: Rect, parts: &StatusParts) {
+    let shown = parts.shown.as_str();
+    let color = if parts.warn { p.yellow } else { p.fg };
+    frame.render_widget(Block::new().bg(p.highlight), area);
+    // The right side (sleep timer, look, stream, account) gets at most half
+    // the bar, and never less than the status.
+    let account = parts.account.as_deref();
+    let extra = &parts.extra;
     let extra_w = extra.iter().map(|s| safe_width(s) + 3).sum::<usize>();
     let want = match &account {
         Some(a) => extra_w + safe_width(a) + 3,
@@ -603,7 +603,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         // The look and stream labels share the account's colour; the sleep
         // timer stays yellow.
         let color = if label.starts_with('☾') { p.yellow } else { p.blue };
-        spans.push(Span::styled(label.clone(), Style::new().fg(color)));
+        spans.push(Span::styled(label.as_str(), Style::new().fg(color)));
         spans.push(Span::styled(" · ", Style::new().fg(p.muted)));
     }
     match &account {
@@ -1440,7 +1440,7 @@ fn draw_add_station(frame: &mut Frame, p: &Palette, screen: Rect, search: &Stati
 }
 
 /// The hints under the add boxes' results; they fit the 62 cells inside the box.
-pub const ADD_RESULTS_HINT: &str = "Enter make station · j/k move · / edit · Esc cancel";
+pub const ADD_RESULTS_HINT: &str = "Enter station or podcast · j/k move · / edit · Esc cancel";
 pub const SEED_RESULTS_HINT: &str = "Enter add seed · j/k move · / edit · Esc cancel";
 
 /// What differs between the add-station box and the editor's add-a-seed box.
@@ -1482,7 +1482,7 @@ fn draw_search_box(frame: &mut Frame, p: &Palette, screen: Rect, search: &Statio
     } else if let Some(error) = &search.error {
         search_error_text(error)
     } else if search.asked.is_some() && search.hits.is_empty() {
-        "No artists or songs found".to_owned()
+        "No artists, songs, or podcasts found".to_owned()
     } else if search.asked.is_none() && look.suggested {
         "Suggested for this station (or type to search)".to_owned()
     } else if search.asked.is_none() {
@@ -1837,7 +1837,7 @@ fn draw_now_playing(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
     let w = info.width as usize;
     let lines = vec![
         Line::from(Span::styled(fit(&song.title, w), Style::new().fg(p.fg).bold())),
-        Line::from(Span::styled(app.skip_caption.clone().unwrap_or_default(), Style::new().fg(p.muted))),
+        Line::from(Span::styled(app.skip_caption.as_deref().unwrap_or(""), Style::new().fg(p.muted))),
         Line::from(vec![
             label(if episode { "show" } else { "artist" }),
             Span::styled(fit(&song.artist, w.saturating_sub(9)), Style::new().fg(p.cyan).bold()),
@@ -2329,6 +2329,7 @@ fn draw_once_password(frame: &mut Frame, app: &App, screen: Rect, ask: OncePassw
         OncePassword::Explicit(true) => "Turn the explicit filter on",
         OncePassword::Explicit(false) => "Turn the explicit filter off",
         OncePassword::OtherDevices => "Log out of all other devices",
+        OncePassword::Account => "Current password",
     };
     let width = 62.min(screen.width.saturating_sub(4));
     let area = dialog::centered(screen, width, 8.min(screen.height));
@@ -2349,12 +2350,42 @@ fn draw_once_password(frame: &mut Frame, app: &App, screen: Rect, ask: OncePassw
     frame.set_cursor_position(Position::new(x.min(area.right().saturating_sub(2)), inner.y + 2));
 }
 
+fn draw_account_line(frame: &mut Frame, app: &App, screen: Rect, prompt: Prompt) {
+    let p = app.palette;
+    let (title, mask, note) = match prompt {
+        Prompt::Profile(ProfileField::Zip) => ("Zip code", false, "The new zip code"),
+        Prompt::Profile(ProfileField::Gender) => ("Gender", false, "Gender, as Pandora stores it"),
+        Prompt::Profile(ProfileField::BirthYear) => ("Birth year", false, "A year, like 1990"),
+        Prompt::NewPassword => ("New password", true, "Type the new password. It is not saved."),
+        Prompt::NewPasswordAgain => ("New password again", true, "Type the same new password again."),
+        _ => return,
+    };
+    let width = 62.min(screen.width.saturating_sub(4));
+    let area = dialog::centered(screen, width, 8.min(screen.height));
+    let block = framed()
+        .border_style(Style::new().fg(p.cyan))
+        .title(Span::styled(format!(" {title} "), Style::new().fg(p.cyan).bold()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let (shown, column) = app.query.window(usize::from(inner.width.saturating_sub(2)), mask, safe_char_width);
+    let lines = vec![
+        Line::from(Span::styled(format!("  {note}"), Style::new().fg(p.yellow))),
+        Line::raw(""),
+        Line::from(Span::styled(format!("  {shown}"), Style::new().fg(p.fg).bold())),
+        Line::from(Span::styled("  Enter continues · Esc cancels", Style::new().fg(p.muted))),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+    let x = inner.x + 2 + column as u16;
+    frame.set_cursor_position(Position::new(x.min(area.right().saturating_sub(2)), inner.y + 2));
+}
+
 fn draw_prompt(frame: &mut Frame, app: &App, prompt: Prompt, area: Rect) {
     let p = app.palette;
     let (label, mask) = match prompt {
         Prompt::Email => ("Pandora email", false),
         Prompt::Password => ("Password · Enter logs in", true),
         Prompt::Once(_) => ("Password", true),
+        Prompt::Profile(_) | Prompt::NewPassword | Prompt::NewPasswordAgain => ("Account", true),
     };
     let (shown, column) = app.query.window(usize::from(area.width.saturating_sub(3)), mask, safe_char_width);
     let block = framed()

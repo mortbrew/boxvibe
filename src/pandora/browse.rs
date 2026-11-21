@@ -329,7 +329,7 @@ pub fn parse_show_page(v: &Value, program_id: &str, fallback_title: &str) -> Vec
                 .unwrap_or(0);
             let item = BrowseItem {
                 name: field_text(ann.get("name")).unwrap_or_else(|| key.clone()),
-                detail: String::new(),
+                detail: episode_blurb(ann),
                 pandora_id: key.clone(),
                 station_factory: String::new(),
                 link: None,
@@ -344,11 +344,13 @@ pub fn parse_show_page(v: &Value, program_id: &str, fallback_title: &str) -> Vec
         if id.starts_with("PE:") {
             let name = anns.get(&id).and_then(|a| field_text(a.get("name"))).unwrap_or_else(|| id.clone());
             items.retain(|item| item.pandora_id != id);
+            let detail = anns.get(&id).map(episode_blurb).unwrap_or_default();
+            let detail = if detail.is_empty() { "Continue".into() } else { format!("Continue · {detail}") };
             items.insert(
                 0,
                 BrowseItem {
                     name: format!("Continue · {name}"),
-                    detail: "Continue".into(),
+                    detail,
                     pandora_id: id,
                     station_factory: String::new(),
                     link: None,
@@ -474,6 +476,31 @@ fn push_episode_node(
         station_factory: String::new(),
         link: None,
     });
+}
+
+/// Date, length, and description when `aesop/getDetails` sent them.
+fn episode_blurb(ann: &Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(date) = field_text(ann.get("releaseDate"))
+        .or_else(|| field_text(ann.get("publishDate")))
+        .or_else(|| field_text(ann.get("date")))
+    {
+        let date = date.trim();
+        let date = if date.len() >= 10 && date.as_bytes().get(4) == Some(&b'-') { &date[..10] } else { date };
+        if !date.is_empty() {
+            parts.push(date.to_owned());
+        }
+    }
+    if let Some(len) = episode_length(ann) {
+        parts.push(len);
+    }
+    if let Some(desc) = field_text(ann.get("description")).or_else(|| field_text(ann.get("summary"))) {
+        let one = desc.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !one.is_empty() {
+            parts.push(one);
+        }
+    }
+    parts.join(" · ")
 }
 
 fn episode_length(node: &Value) -> Option<String> {

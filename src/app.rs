@@ -3347,7 +3347,11 @@ impl App {
 
     /// `U` / `D`: thumbs on the playing song, whatever has the keys.
     fn rate(&mut self, positive: bool) {
-        let Some(song) = self.now.as_mut() else {
+        let Some((token, missing, already)) = self.now.as_ref().map(|song| {
+            let wanted = if positive { Rating::Up } else { Rating::Down };
+            let missing = song.station_id.is_empty() || song.track_token.is_empty();
+            (song.track_token.clone(), missing, song.rating == wanted)
+        }) else {
             self.status = if matches!(self.ad, AdPhase::Playing(_)) {
                 "Ads can't be rated: thumbs are for your songs".into()
             } else {
@@ -3355,13 +3359,10 @@ impl App {
             };
             return;
         };
-        if song.station_id.is_empty() || song.track_token.is_empty() {
+        if missing {
             self.status = "Pandora can't rate this song (no track token)".into();
             return;
         }
-        let token = song.track_token.clone();
-        let already = song.rating == (if positive { Rating::Up } else { Rating::Down });
-        drop(song);
         if already {
             return self.clear_thumb(&token);
         }

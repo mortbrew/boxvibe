@@ -522,7 +522,16 @@ fn build_status(app: &App, width: u16) -> StatusParts {
     }
 }
 
-fn status_parts(app: &App, width: u16) -> std::cell::Ref<'_, StatusParts> {
+struct StatusDrawn {
+    shown: String,
+    warn: bool,
+    account: Option<String>,
+    sleep: Option<String>,
+    looks: Vec<String>,
+    stream_label: Option<String>,
+}
+
+fn status_drawn(app: &App, width: u16) -> StatusDrawn {
     thread_local! {
         static CACHE: std::cell::RefCell<Option<StatusParts>> = const { std::cell::RefCell::new(None) };
     }
@@ -531,23 +540,31 @@ fn status_parts(app: &App, width: u16) -> std::cell::Ref<'_, StatusParts> {
         if rebuild {
             *slot.borrow_mut() = Some(build_status(app, width));
         }
-        std::cell::Ref::map(slot.borrow(), |slot| slot.as_ref().expect("just filled"))
+        let parts = slot.borrow();
+        let parts = parts.as_ref().expect("just filled");
+        StatusDrawn {
+            shown: parts.shown.clone(),
+            warn: parts.warn,
+            account: parts.account.clone(),
+            sleep: parts.sleep.clone(),
+            looks: parts.looks.clone(),
+            stream_label: parts.stream_label.clone(),
+        }
     })
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette;
-    let parts = status_parts(app, area.width);
-    let shown = parts.shown.clone();
+    let parts = status_drawn(app, area.width);
+    let shown = parts.shown;
     let color = if parts.warn { p.yellow } else { p.fg };
     frame.render_widget(Block::new().bg(p.highlight), area);
     // The right side (sleep timer, look, stream, account) gets at most half
     // the bar, and never less than the status.
-    let account = parts.account.clone();
-    let mut sleep = parts.sleep.clone();
-    let mut looks = parts.looks.clone();
-    let mut stream = parts.stream_label.clone();
-    drop(parts);
+    let account = parts.account;
+    let mut sleep = parts.sleep;
+    let mut looks = parts.looks;
+    let mut stream = parts.stream_label;
     let room = (area.width / 2).saturating_sub(3) as usize;
     // What goes when the bar is narrow, first to last: the look labels (from
     // the last), then the stream, then the timer. The account never goes.

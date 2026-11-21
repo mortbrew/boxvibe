@@ -376,6 +376,16 @@ impl Art {
             }
         }
         self.poll();
+        // Tests draw one frame and expect the cover. The pixels are still
+        // built on the art thread; the test thread only waits for them.
+        // The UI thread never waits.
+        #[cfg(test)]
+        if let Some(i) = self.pending.iter().position(|p| p.url == url && p.key == key) {
+            let pending = self.pending.remove(i);
+            if let Ok(image) = pending.rx.recv() {
+                self.store(pending.url, pending.key, image);
+            }
+        }
         self.recall(url, key)
     }
 

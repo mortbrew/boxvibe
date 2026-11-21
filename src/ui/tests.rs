@@ -408,7 +408,7 @@ fn a_genre_station_editor_shows_only_the_two_thumbs_tabs() {
     let row = editor_tab_row(&mut app, 120, 40);
     assert!(!row.contains("Seeds") && row.contains("Thumbs Up") && row.contains("Thumbs Down"), "{row}");
     let bar = key_bar_line(&mut app, 120);
-    assert!(bar.contains("Tab  Thumbs Up") && !bar.contains("Add Seed"), "{bar}");
+    assert!(bar.contains(".  Actions") && bar.contains("?  Help") && bar.contains("Q  Quit"), "{bar}");
     let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("x = take back · Tab = Thumbs Up"), "{text}");
 }
@@ -436,18 +436,18 @@ fn the_editor_has_three_tabs_with_the_thumb_icons_and_counts_in_their_titles() {
     );
     // The hints name the tab Tab goes to, and `t` is gone from them.
     let bar = key_bar_line(&mut app, 120);
-    assert!(bar.contains("Tab  Thumbs Up") && bar.contains("a  Add Seed"), "{bar}");
+    assert!(bar.contains(".  Actions") && !bar.contains("Add Seed"), "{bar}");
     let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("Tab = Thumbs Up") && !text.contains("t = up/down"), "{text}");
     press(&mut app, KeyCode::Tab);
     let bar = key_bar_line(&mut app, 120);
-    assert!(bar.contains("Tab  Thumbs Down") && bar.contains("x  Take Back"), "{bar}");
+    assert!(bar.contains(".  Actions") && !bar.contains("Take Back"), "{bar}");
     assert!(!bar.contains("Show Down") && !bar.contains("t  "), "{bar}");
     let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("x = take back · Tab = Thumbs Down") && !text.contains("t = up/down"), "{text}");
     press(&mut app, KeyCode::Tab);
     let bar = key_bar_line(&mut app, 120);
-    assert!(bar.contains("Tab  Seeds") && bar.contains("x  Take Back"), "{bar}");
+    assert!(bar.contains(".  Actions") && !bar.contains("Take Back"), "{bar}");
     let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("x = take back · Tab = Seeds"), "{text}");
     // Once a list is loaded its total is the count in the title.
@@ -602,11 +602,7 @@ fn the_genre_popup_explains_the_problem_and_both_icons() {
         assert!(o.contains(ic.own_station) && o[..o.find("Your own station").unwrap()].contains(ic.own_station));
         // The bar at the bottom still has the error, and its keys.
         assert!(lines[32].contains("Pandora doesn't let you rename “Today's Hits”"), "{}", lines[32]);
-        assert!(
-            lines[33].contains("Space") && lines[33].contains("Enter") && lines[33].contains("Esc"),
-            "{}",
-            lines[33]
-        );
+        assert!(lines[33].contains(".  Actions") && lines[33].contains("Q  Quit"), "{}", lines[33]);
         // The box ticks with Space.
         app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         let text = screen(&mut app, 110, 34).0.join("\n");

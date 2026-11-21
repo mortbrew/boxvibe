@@ -173,14 +173,15 @@ file. From then on boxvibe logs in by itself and starts your last station.
 ## Keys
 
 Shift+letter goes places from anywhere; lowercase acts on the pane you're in.
-The bottom bar shows what works right now, and `?` lists everything.
+The bottom bar is always `.` Actions, `?` Help, and `Q` Quit (`Q` asks before it quits).
+`?` lists every other key, and `.` opens Actions for the song.
 
 | Key | Action |
 |---|---|
 | `space` / `p` · `N` | play / pause · skip |
 | `U` `D` · `l` `b` | thumbs up / down the playing song · the selected row (again takes it back) |
 | `Z` | tired of this song |
-| `.` | song menu |
+| `.` | Actions: the menu for this song |
 | `Shift+←` `Shift+→` | volume |
 | `j` `k` `↑` `↓` · `Tab` · `Esc` | move · next pane · back to the menu |
 | `P` `S` `G` `O` `A` `F` | Now Playing, My Stations, Genres, Settings, About, Favorites |

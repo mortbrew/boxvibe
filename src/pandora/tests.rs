@@ -67,6 +67,13 @@ fn the_bitrate_pandora_reports_is_kept() {
     assert_eq!(tagged.year, Some(2017));
     assert!(tagged.explicit);
     assert_eq!(parse_track(&track("Plain", "Track"), "st").unwrap().year, None);
+    let mut limited = track("Limited", "Track");
+    limited["allowSkip"] = json!(false);
+    limited["allowSkipTrackWithoutLimit"] = json!(true);
+    let limited = parse_track(&limited, "st").unwrap();
+    assert_eq!(limited.allow_skip, Some(false));
+    assert!(limited.allow_skip_without_limit);
+    assert_eq!(parse_track(&track("Open", "Track"), "st").unwrap().allow_skip, None);
 
     // Saying nothing is 0, not a guess.
     assert_eq!(parse_track(&track("Quiet", "Track"), "st").unwrap().bitrate, 0);
@@ -201,7 +208,8 @@ fn fake_pandora(mut handler: Handler) -> (String, Arc<Mutex<Vec<Seen>>>) {
 
 fn login_ok(token: &str) -> (u16, String) {
     let v = json!({ "authToken": token, "listenerId": "1", "webname": "me",
-                    "config": { "branding": "PandoraPlus", "flags": ["noAds", HIFI_FLAG] } });
+                    "config": { "branding": "PandoraPlus", "flags": ["noAds", HIFI_FLAG],
+                                "dailySkipLimit": 48, "stationSkipLimit": 6 } });
     (200, v.to_string())
 }
 
@@ -215,6 +223,7 @@ fn login_sends_the_site_headers_and_reads_the_flags() {
     c.login("me@example.com", "pw").unwrap();
     assert!(c.account.hifi());
     assert_eq!(c.account.branding, "PandoraPlus");
+    assert_eq!((c.account.daily_skip_limit, c.account.station_skip_limit), (Some(48), Some(6)));
     let seen = seen.lock().unwrap();
     assert_eq!(seen[0].method, "HEAD", "csrftoken first");
     let login = &seen[1];

@@ -1145,6 +1145,22 @@ fn slash_filters_my_stations_and_o_sorts_by_name() {
 }
 
 #[test]
+fn skips_stop_at_the_daily_limit_and_a_free_skip_does_not_count() {
+    let mut app = demo();
+    app.skip_book.set_limits(Some(1), Some(6));
+    let station = app.now.as_ref().unwrap().station_id.clone();
+    assert!(app.spend_skip());
+    app.end_song(End::Skipped);
+    app.settle(std::time::Duration::from_millis(200));
+    assert!(app.now.is_some());
+    assert!(!app.spend_skip());
+    assert!(app.status.contains("today"), "{}", app.status);
+    let label = app.skip_book.label(&station).unwrap();
+    assert!(label.contains("0") && label.contains("today"), "{label}");
+    app.now.as_mut().unwrap().allow_skip_without_limit = true;
+    assert!(app.spend_skip(), "a free skip is not counted");
+}
+
 fn log_out_asks_before_it_happens() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent};
     let mut app = demo();

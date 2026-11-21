@@ -10,7 +10,9 @@ impl App {
             return;
         }
         match reply {
-            Reply::LoggedIn { hifi } => self.reply_logged_in(hifi),
+            Reply::LoggedIn { hifi, daily_skip_limit, station_skip_limit } => {
+                self.reply_logged_in(hifi, daily_skip_limit, station_skip_limit)
+            }
             Reply::LoginFailed { message, wrong_password } => self.reply_login_failed(message, wrong_password),
             Reply::Keychain(reply) => self.on_keychain(reply),
             Reply::Stations(stations) => self.reply_stations(stations),

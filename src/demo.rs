@@ -31,6 +31,8 @@ pub fn episode(source_id: &str, name: &str) -> EpisodePlayback {
             feedback_id: String::new(),
             year: None,
             explicit: false,
+            allow_skip: None,
+            allow_skip_without_limit: false,
         },
     }
 }
@@ -125,6 +127,8 @@ pub fn playlist(station_id: &str, round: usize) -> Vec<Song> {
                 feedback_id: if n == 0 { format!("demo-fb-{round}-{i}") } else { String::new() },
                 year: None,
                 explicit: false,
+                allow_skip: None,
+                allow_skip_without_limit: false,
             }
         })
         .collect()
@@ -198,6 +202,7 @@ impl Editing {
         let (kind, label) = match kind {
             HitKind::Artist => ("Artist", (*name).to_owned()),
             HitKind::Song => ("Song", format!("{name} by {by}")),
+            HitKind::Show => ("Podcast", (*name).to_owned()),
         };
         // Like Pandora: the new seed comes first.
         seeds.insert(0, seed(kind, &label, pandora_id, &pandora_id.replace("AR:", "R-")));

@@ -380,6 +380,94 @@ pub const SLEEP_STEPS: [u64; 4] = [15, 30, 60, 90];
 /// The sleep timer turns the sound down over this long before it pauses.
 pub const SLEEP_FADE: Duration = Duration::from_secs(10);
 
+/// Skips boxvibe has counted. Pandora sends the limits, not how many are left.
+#[derive(Debug, Default)]
+pub struct SkipBook {
+    daily_limit: Option<u32>,
+    station_limit: Option<u32>,
+    /// UTC day `daily_used` belongs to (`YYYY-MM-DD`).
+    day: String,
+    daily_used: u32,
+    /// Station id and the instants a counted skip happened.
+    stations: Vec<(String, Vec<std::time::Instant>)>,
+}
+
+impl SkipBook {
+    pub fn set_limits(&mut self, daily: Option<u32>, station: Option<u32>) {
+        self.daily_limit = daily;
+        self.station_limit = station;
+    }
+
+    fn roll_day(&mut self) {
+        let today = crate::time::today();
+        if self.day != today {
+            self.day = today;
+            self.daily_used = 0;
+        }
+    }
+
+    fn hour_used(&mut self, station_id: &str) -> u32 {
+        let now = std::time::Instant::now();
+        let hour = std::time::Duration::from_secs(3600);
+        let entry = self.stations.iter_mut().find(|(id, _)| id == station_id);
+        let Some((_, at)) = entry else { return 0 };
+        at.retain(|t| now.saturating_duration_since(*t) < hour);
+        at.len() as u32
+    }
+
+    /// `None` until a login reported a limit. Does not drop old skips; [`SkipBook::spend`] does.
+    pub fn label(&self, station_id: &str) -> Option<String> {
+        let today = crate::time::today();
+        let daily_used = if self.day == today { self.daily_used } else { 0 };
+        let now = std::time::Instant::now();
+        let hour = std::time::Duration::from_secs(3600);
+        let hour_used = self
+            .stations
+            .iter()
+            .find(|(id, _)| id == station_id)
+            .map(|(_, at)| at.iter().filter(|t| now.saturating_duration_since(**t) < hour).count() as u32)
+            .unwrap_or(0);
+        let daily = self.daily_limit.map(|n| n.saturating_sub(daily_used));
+        let station = self.station_limit.filter(|_| !station_id.is_empty()).map(|n| n.saturating_sub(hour_used));
+        match (daily, station) {
+            (None, None) => None,
+            (Some(d), None) => Some(format!("{d} skips left today")),
+            (None, Some(s)) => Some(format!("{s} skips left this hour")),
+            (Some(d), Some(s)) => Some(format!("{s} skips left this hour · {d} today")),
+        }
+    }
+
+    /// `Ok(false)`: the skip is free. `Ok(true)`: a counted skip was recorded. `Err`: refused.
+    pub fn spend(&mut self, station_id: &str, free: bool) -> Result<(), String> {
+        self.roll_day();
+        if free {
+            return Ok(());
+        }
+        if let Some(limit) = self.daily_limit
+            && self.daily_used >= limit
+        {
+            return Err("No skips left today".into());
+        }
+        if let Some(limit) = self.station_limit
+            && !station_id.is_empty()
+            && self.hour_used(station_id) >= limit
+        {
+            return Err("No skips left on this station for an hour".into());
+        }
+        if self.daily_limit.is_some() {
+            self.daily_used = self.daily_used.saturating_add(1);
+        }
+        if self.station_limit.is_some() && !station_id.is_empty() {
+            if let Some((_, at)) = self.stations.iter_mut().find(|(id, _)| id == station_id) {
+                at.push(std::time::Instant::now());
+            } else {
+                self.stations.push((station_id.to_owned(), vec![std::time::Instant::now()]));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A sleep timer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sleep {
@@ -1055,6 +1143,8 @@ pub struct App {
     skips_left: u8,
     /// `next_song` stopped because the skip budget ran out.
     resume_skips: bool,
+    /// Skips left today and per station this hour, counted here. Pandora does not send a remaining count.
+    pub skip_book: SkipBook,
     /// `config.toml` could not be written. Shown until a later save works.
     config_error: Option<String>,
     /// `/` on Stations, Browse, or Settings: the text those lists keep.
@@ -1166,6 +1256,7 @@ impl App {
             status: String::new(),
             skips_left: MAX_SKIPS_PER_TICK,
             resume_skips: false,
+            skip_book: SkipBook::default(),
             config_error: None,
             list_filter: String::new(),
             filter_edit: false,
@@ -1688,6 +1779,11 @@ impl App {
     fn make_selected_station(&mut self) {
         let Some(hit) = self.add_station.as_ref().and_then(|s| s.selected().cloned()) else { return };
         self.add_station = None;
+        if hit.kind == crate::pandora::HitKind::Show || hit.id.starts_with("PC:") {
+            self.show_page(View::Browse);
+            self.open_podcast(&hit.id, &hit.name);
+            return;
+        }
         self.create_station(&hit.id, &hit.name);
     }
 
@@ -2167,6 +2263,10 @@ impl App {
     }
 
     fn cycle_station_sort(&mut self) {
+        if self.focus == Focus::Content && self.view == View::Browse && self.on_podcast() {
+            self.flip_episode_order();
+            return;
+        }
         if !(self.focus == Focus::Content && self.view == View::Stations) {
             self.status = "o sorts My Stations".into();
             return;
@@ -2688,6 +2788,9 @@ impl App {
     /// `N`: on to the next song, from anywhere.
     fn skip(&mut self) {
         if self.now.is_some() {
+            if !self.spend_skip() {
+                return;
+            }
             self.status = "Skipped".into();
             self.end_song(End::Skipped);
         } else if matches!(self.ad, AdPhase::Playing(_)) {
@@ -3192,6 +3295,9 @@ impl App {
         self.backend.send(request);
         // Like Pandora: a thumbs down on the playing song skips it.
         if !positive {
+            if !self.spend_skip() {
+                return;
+            }
             self.end_song(End::Skipped);
         }
     }
@@ -3265,6 +3371,9 @@ impl App {
 
     fn tired(&mut self) {
         let Some(song) = &self.now else { return };
+        if !self.spend_skip() {
+            return;
+        }
         self.backend.send(Request::Tired { track_token: song.track_token.clone() });
         self.end_song(End::Skipped);
     }

@@ -16,6 +16,23 @@ impl App {
         self.backend.send(Request::Audio { track_token, url, generation });
     }
 
+    /// A counted skip, or a free one. `false`: Pandora or the limit said no.
+    pub(super) fn spend_skip(&mut self) -> bool {
+        let Some(song) = self.now.clone() else { return false };
+        if song.allow_skip == Some(false) {
+            self.status = "Pandora won't let this song be skipped".into();
+            return false;
+        }
+        let free = song.allow_skip_without_limit;
+        match self.skip_book.spend(&song.station_id, free) {
+            Ok(()) => true,
+            Err(why) => {
+                self.status = why;
+                false
+            }
+        }
+    }
+
     /// Ask Pandora for the podcast `source_id` (`PE:` episode or `PC:` program) and play it.
     pub(super) fn play_episode(&mut self, source_id: &str, name: &str) {
         if self.episode_wait {

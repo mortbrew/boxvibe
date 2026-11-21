@@ -101,6 +101,12 @@ impl App {
         let Some(source) = self.recent.get(self.recent_cursor.min(self.recent.len().saturating_sub(1))).cloned() else {
             return;
         };
+        if source.id.starts_with("PC:") || source.kind == "PC" {
+            let name = self.recent_title(&source);
+            self.show_page(View::Browse);
+            self.open_podcast(&source.id, &name);
+            return;
+        }
         if source.kind != "ST" {
             self.status = format!("“{}” is not a station: play it from Pandora", self.recent_title(&source));
             return;

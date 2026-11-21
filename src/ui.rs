@@ -103,7 +103,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         View::Notifications => draw_notes(frame, app, ic, right),
     }
     draw_status(frame, app, status);
-    draw_keys(frame, &p, &key_caps(app), keys);
+    draw_keys(frame, &p, &bar_keys(), keys);
     if app.overlay_open() {
         // Match vibekit dialog fade: desaturate then blend toward the theme background.
         let area = frame.area();
@@ -425,6 +425,11 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let mut shown = app.status.clone();
     if app.audio_fetch.buffering.is_some() && !shown.to_lowercase().contains("buffering") {
         shown = if shown.is_empty() { "buffering".into() } else { format!("buffering · {shown}") };
+    }
+    if let Some(skips) = app.skip_book.label(app.now.as_ref().map(|s| s.station_id.as_str()).unwrap_or(""))
+        && !shown.contains("skips left")
+    {
+        shown = if shown.is_empty() { skips } else { format!("{skips} · {shown}") };
     }
     if app.now.is_some() && app.audio.playing_silently() && !shown.contains("playing silently") {
         shown = if shown.is_empty() { "playing silently".into() } else { format!("playing silently · {shown}") };
@@ -981,9 +986,14 @@ fn draw_stations(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 fn draw_browse(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let p = &app.palette;
     let focused = app.focus == Focus::Content;
-    let heading = match &app.browse_filter {
-        Some(section) => format!("{} {section}", if section == "Browse Genres" { ic.genre } else { ic.browse }),
-        None => format!("{} Browse", ic.browse),
+    let show = app.on_podcast().then(|| match &app.browse {
+        BrowseState::Loaded(sections) => sections.first().map(|s| s.title.clone()),
+        _ => None,
+    });
+    let heading = match (show.flatten(), &app.browse_filter) {
+        (Some(title), _) => format!("{} {title}", ic.browse),
+        (_, Some(section)) => format!("{} {section}", if section == "Browse Genres" { ic.genre } else { ic.browse }),
+        _ => format!("{} Browse", ic.browse),
     };
     let block = panel(title(heading, p), p, focused);
     let inner = block.inner(area);
@@ -1704,7 +1714,10 @@ fn draw_now_playing(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
     let w = info.width as usize;
     let lines = vec![
         Line::from(Span::styled(fit(&song.title, w), Style::new().fg(p.fg).bold())),
-        Line::raw(""),
+        Line::from(Span::styled(
+            app.skip_book.label(song.station_id.as_str()).unwrap_or_default(),
+            Style::new().fg(p.muted),
+        )),
         Line::from(vec![
             label(if episode { "show" } else { "artist" }),
             Span::styled(fit(&song.artist, w.saturating_sub(9)), Style::new().fg(p.cyan).bold()),
@@ -2317,7 +2330,13 @@ fn draw_about(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 
 // --- Keys ---
 
-/// The keys that work right now: (keys, what they do). The last two (help, quit) always fit.
+/// The bottom bar on every screen: Actions, Help, Quit. The other keys stay in `?` and `.`.
+fn bar_keys() -> Vec<(&'static str, &'static str)> {
+    vec![(".", "Actions"), ("?", "Help"), ("Q", "Quit")]
+}
+
+/// The keys that work right now: (keys, what they do). Help uses this to grey
+/// keys that do nothing on this screen. The bottom bar does not.
 pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.splash.is_some() {
         return Vec::new();
@@ -2700,7 +2719,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("B", "sleep timer: 15, 30, 60, 90 min, end of this song, off (fades out, then pauses)"),
             (
                 ".",
-                "song menu: station from artist / song, tired, share, why, pin, thumbs, artist bio & similar artists…",
+                "Actions: the . menu (station from artist / song, tired, share, why, pin, thumbs, artist bio & similar artists…)",
             ),
             (
                 "m X",

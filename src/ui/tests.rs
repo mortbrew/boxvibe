@@ -268,8 +268,8 @@ fn the_key_bar_has_no_menu_size_hint_and_shows_e_where_the_editor_opens() {
             let mut app = playing_demo("M83 Radio", menu);
             let bar = key_bar_line(&mut app, cols);
             assert!(!bar.contains("Menu Size") && !bar.contains("{/}"), "{cols}: {bar}");
-            assert!(bar.contains("r  Rename") && bar.contains("e  Edit"), "{cols} menu={menu}: {bar}");
-            assert!(bar.contains("?  Help") && bar.contains("Q  Quit"), "{cols}: {bar}");
+            assert!(!bar.contains("Rename") && !bar.contains("Edit"), "{cols} menu={menu}: {bar}");
+            assert!(bar.contains(".  Actions") && bar.contains("?  Help") && bar.contains("Q  Quit"), "{cols}: {bar}");
         }
         // A favorite in the menu.
         let mut app = playing_demo("M83 Radio", true);
@@ -277,8 +277,8 @@ fn the_key_bar_has_no_menu_size_hint_and_shows_e_where_the_editor_opens() {
         app.config.ui.favorites = vec![Favorite { id, name: "Lo-Fi Beats".into() }];
         app.menu_cursor = app.menu_items().iter().position(|m| matches!(m, MenuItem::Favorite(_))).unwrap();
         let bar = key_bar_line(&mut app, cols);
-        assert!(!bar.contains("Menu Size") && bar.contains("?  Help") && bar.contains("Q  Quit"), "{cols}: {bar}");
-        assert!(bar.contains("r  Rename") && bar.contains("e  Edit"), "{cols} favorite: {bar}");
+        assert!(!bar.contains("Menu Size") && bar.contains(".  Actions") && bar.contains("Q  Quit"), "{cols}: {bar}");
+        assert!(!bar.contains("Rename") && !bar.contains("Edit"), "{cols} favorite: {bar}");
         // Never for a station Pandora won't let you change, nor on the plain Stations entry.
         let mut genre = playing_demo("Today's Hits", false);
         assert!(!key_bar_line(&mut genre, cols).contains("Edit"), "genre station");
@@ -288,7 +288,7 @@ fn the_key_bar_has_no_menu_size_hint_and_shows_e_where_the_editor_opens() {
         app.focus = crate::app::Focus::Content;
         app.stations_cursor = 2;
         let bar = key_bar_line(&mut app, cols);
-        assert!(bar.contains("r  Rename") && bar.contains("e  Edit") && !bar.contains("Menu Size"), "{bar}");
+        assert!(bar.contains(".  Actions") && !bar.contains("Rename") && !bar.contains("Menu Size"), "{bar}");
         app.focus = crate::app::Focus::Menu;
         app.menu_cursor = app.menu_items().iter().position(|m| *m == MenuItem::Stations).unwrap();
         let bar = key_bar_line(&mut app, cols);
@@ -1515,7 +1515,7 @@ fn now_playing_heads_the_menu_with_an_inset_rule() {
         let _ = std::fs::write("/opt/cursor/artifacts/genres.txt", page.join("\n"));
     }
     assert!(lines[4].contains("My Stations ("), "{}", lines[4]);
-    assert!(lines[35].contains(" P  Now Playing"), "key bar: {}", lines[35]);
+    assert!(lines[35].contains(".  Actions") && lines[35].contains("Q  Quit"), "key bar: {}", lines[35]);
 }
 
 #[test]
@@ -1587,7 +1587,7 @@ fn stations_page_and_favorites_section() {
         "starred on the page: {lines:#?}"
     );
     assert!(lines[0].contains("My Stations ("), "the page: {}", lines[0]);
-    assert!(lines[35].contains(" f  Favorite"), "key bar: {}", lines[35]);
+    assert!(lines[35].contains(".  Actions") && !lines[35].contains("Favorite"), "key bar: {}", lines[35]);
 }
 
 #[test]

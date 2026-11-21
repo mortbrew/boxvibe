@@ -254,6 +254,8 @@ pub enum Reply {
     /// `hifi`: the plan streams 192 kbps MP3.
     LoggedIn {
         hifi: bool,
+        daily_skip_limit: Option<u32>,
+        station_skip_limit: Option<u32>,
     },
     /// `wrong_password`: Pandora said the email or password is wrong.
     LoginFailed {
@@ -530,7 +532,7 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
     let mut editing = demo::Editing::default();
     for request in requests {
         let reply = match request {
-            Request::Login { .. } => Reply::LoggedIn { hifi: true },
+            Request::Login { .. } => Reply::LoggedIn { hifi: true, daily_skip_limit: None, station_skip_limit: None },
             Request::Stations => Reply::Stations(stations.clone()),
             Request::RenameStation { station_id, name } => {
                 match stations.iter_mut().find(|s| s.id == station_id && s.allow_rename) {
@@ -669,7 +671,11 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
             Request::Login { username, password } => match client.login(&username, password.expose()) {
                 Ok(()) => {
                     login = Some((username, password));
-                    Reply::LoggedIn { hifi: client.account.hifi() }
+                    Reply::LoggedIn {
+                        hifi: client.account.hifi(),
+                        daily_skip_limit: client.account.daily_skip_limit,
+                        station_skip_limit: client.account.station_skip_limit,
+                    }
                 }
                 Err(e) => Reply::LoginFailed { wrong_password: e == Error::WrongLogin, message: e.to_string() },
             },

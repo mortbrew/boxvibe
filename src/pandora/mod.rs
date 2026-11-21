@@ -158,6 +158,8 @@ pub struct RecentSource {
 pub enum HitKind {
     Artist,
     Song,
+    /// A podcast program (`PC:`). Enter opens the show, it does not seed a station.
+    Show,
 }
 
 impl HitKind {
@@ -165,6 +167,7 @@ impl HitKind {
         match self {
             Self::Artist => "Artist",
             Self::Song => "Song",
+            Self::Show => "Podcast",
         }
     }
 }
@@ -248,6 +251,10 @@ pub struct Song {
     pub year: Option<u16>,
     /// Explicit tag when Pandora sends one.
     pub explicit: bool,
+    /// `allowSkip` on the fragment. `None` (missing) means the song can be skipped.
+    pub allow_skip: Option<bool>,
+    /// `allowSkipTrackWithoutLimit`: a skip that does not use the daily or hourly budget.
+    pub allow_skip_without_limit: bool,
 }
 
 /// `[pandora] audio_quality`.
@@ -297,6 +304,10 @@ pub struct Account {
     /// `config.branding`: `Pandora`, `PandoraPlus`, `PandoraPremium`.
     pub branding: String,
     pub flags: Vec<String>,
+    /// `config.dailySkipLimit`. `None` when the login did not say.
+    pub daily_skip_limit: Option<u32>,
+    /// `config.stationSkipLimit`: skips of one station in a rolling hour.
+    pub station_skip_limit: Option<u32>,
 }
 
 impl Account {
@@ -713,6 +724,7 @@ pub fn parse_search(v: &Value) -> Vec<SearchHit> {
                     let by = str_of(note, "artistName").trim().to_owned();
                     Some(SearchHit { id: pandora_id, kind: HitKind::Song, name, by })
                 }
+                "PC" => Some(SearchHit { id: pandora_id, kind: HitKind::Show, name, by: String::new() }),
                 _ => None,
             }
         })
@@ -771,6 +783,8 @@ pub fn parse_track(v: &Value, station_id: &str) -> Option<Song> {
         length: v.get("trackLength").and_then(Value::as_u64).unwrap_or(0) as u32,
         year: track_year(v),
         explicit: track_explicit(v),
+        allow_skip: v.get("allowSkip").and_then(Value::as_bool),
+        allow_skip_without_limit: v.get("allowSkipTrackWithoutLimit").and_then(Value::as_bool).unwrap_or(false),
         gain: v
             .get("fileGain")
             .and_then(|g| g.as_str().and_then(|s| s.trim().parse().ok()).or(g.as_f64()))
@@ -884,6 +898,8 @@ pub fn parse_episode(v: &Value, asked: &str) -> Option<EpisodePlayback> {
             feedback_id: String::new(),
             year: track_year(item),
             explicit: track_explicit(item),
+            allow_skip: None,
+            allow_skip_without_limit: false,
         },
     })
 }
@@ -900,6 +916,12 @@ fn track_year(v: &Value) -> Option<u16> {
         }
     }
     None
+}
+
+fn u32_field(v: &Value, key: &str) -> Option<u32> {
+    let raw = v.get(key)?;
+    let n = raw.as_u64().or_else(|| raw.as_str().and_then(|s| s.trim().parse().ok()))?;
+    u32::try_from(n).ok()
 }
 
 fn track_explicit(v: &Value) -> bool {
@@ -1102,6 +1124,8 @@ impl Client {
                 .and_then(Value::as_array)
                 .map(|f| f.iter().filter_map(Value::as_str).map(str::to_owned).collect())
                 .unwrap_or_default(),
+            daily_skip_limit: config.and_then(|c| u32_field(c, "dailySkipLimit")),
+            station_skip_limit: config.and_then(|c| u32_field(c, "stationSkipLimit")),
         };
         self.auth = Some(token);
         // Every station starts over with a new login.

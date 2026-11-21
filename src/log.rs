@@ -15,8 +15,8 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::sync::OnceLock;
+use std::sync::mpsc;
 
 /// Past this the log moves to `.old` and starts again.
 const CAP: u64 = 512 * 1024;

@@ -410,7 +410,10 @@ fn a_source_with_no_samples_is_a_decode_error() {
             Some(Duration::ZERO)
         }
     }
-    let err = super::with_samples(Box::new(Empty)).unwrap_err();
+    let err = match super::with_samples(Box::new(Empty)) {
+        Ok(_) => panic!("an empty source decoded"),
+        Err(err) => err,
+    };
     assert!(err.contains("no samples"), "{err}");
 }
 

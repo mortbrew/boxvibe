@@ -549,7 +549,7 @@ fn favorites_in_the_menu_line_up_and_the_add_row_sits_over_the_radio_icons() {
             app.config.ui.favorites.push(Favorite { id: st.id.clone(), name: st.name.clone() });
         }
         app.config.ui.favorites.push(Favorite { id: "gone".into(), name: "Quiet Storm".into() });
-        let buffer = screen(&mut app, 120, 34).1;
+        let buffer = screen(&mut app, 120, 40).1;
         let at: Vec<_> = ["Today's Hits", "M83 Radio", "Shuffle", "Quiet Storm"]
             .iter()
             .map(|n| (*n, name_column(&buffer, n, 1, 29)))

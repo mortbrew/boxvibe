@@ -1719,10 +1719,7 @@ fn draw_now_playing(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
     let w = info.width as usize;
     let lines = vec![
         Line::from(Span::styled(fit(&song.title, w), Style::new().fg(p.fg).bold())),
-        Line::from(Span::styled(
-            app.skip_caption.clone().unwrap_or_default(),
-            Style::new().fg(p.muted),
-        )),
+        Line::from(Span::styled(app.skip_caption.clone().unwrap_or_default(), Style::new().fg(p.muted))),
         Line::from(vec![
             label(if episode { "show" } else { "artist" }),
             Span::styled(fit(&song.artist, w.saturating_sub(9)), Style::new().fg(p.cyan).bold()),

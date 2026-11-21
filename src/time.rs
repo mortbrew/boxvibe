@@ -48,7 +48,7 @@ fn local_date(unix: i64) -> Option<String> {
         gmtoff: i64,
         zone: *const i8,
     }
-    extern "C" {
+    unsafe extern "C" {
         fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
     }
     let mut tm = std::mem::MaybeUninit::<Tm>::zeroed();

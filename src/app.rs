@@ -470,10 +470,8 @@ impl SkipBook {
     pub fn label(&self, station_id: &str) -> Option<String> {
         let daily_used = if self.day == self.today() { self.daily_used } else { 0 };
         let daily = self.daily_limit.map(|n| n.saturating_sub(daily_used));
-        let station = self
-            .station_limit
-            .filter(|_| !station_id.is_empty())
-            .map(|n| n.saturating_sub(self.hour_used(station_id)));
+        let station =
+            self.station_limit.filter(|_| !station_id.is_empty()).map(|n| n.saturating_sub(self.hour_used(station_id)));
         match (daily, station) {
             (None, None) => None,
             (Some(d), None) => Some(format!("{d} skips left today")),

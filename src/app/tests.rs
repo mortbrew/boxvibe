@@ -2470,6 +2470,9 @@ fn what_a_setting_says_about_where_it_is_saved_is_true() {
     // Volume: Shift+→ anywhere.
     let mut app = saving_app("saved-volume");
     app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+    std::thread::sleep(Duration::from_millis(520));
+    app.tick();
+    app.flush_volume();
     assert!(saved(&app).contains("[playback]") && saved(&app).contains("volume ="), "{}", saved(&app));
 }
 

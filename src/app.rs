@@ -1066,6 +1066,10 @@ pub struct App {
     pub theme_picker: Option<ThemePicker>,
     pub config: Config,
     pub config_path: Option<PathBuf>,
+    /// Volume waiting to be written, and when the keys have been quiet long enough.
+    pending_volume: Option<u8>,
+    volume_due: Option<Instant>,
+    volume_job: Option<std::thread::JoinHandle<Result<(), String>>>,
     pub demo: bool,
     pub session: Session,
     pub view: View,
@@ -1100,6 +1104,8 @@ pub struct App {
     episode_wait: bool,
     pub queue: VecDeque<Song>,
     pub now: Option<Song>,
+    /// Track token from the previous tick, so the next tick can compare without copying.
+    seen_token: String,
     /// Played songs, newest first.
     pub history: Vec<Song>,
     pub status: String,
@@ -1296,6 +1302,7 @@ impl App {
             episode_wait: false,
             queue: VecDeque::new(),
             now: None,
+            seen_token: String::new(),
             history: Vec::new(),
             status: String::new(),
             skips_left: MAX_SKIPS_PER_TICK,
@@ -1361,6 +1368,9 @@ impl App {
             menu: menu::MenuModel::default(),
             config,
             config_path,
+            pending_volume: None,
+            volume_due: None,
+            volume_job: None,
             user_themes: if demo {
                 Vec::new()
             } else {
@@ -2086,9 +2096,6 @@ impl App {
             self.resume_skips = false;
             self.next_song();
         }
-        // One owned token for the dirty check; compared by &str after the
-        // mutating work so we don't hold a borrow across the tick body.
-        let before_token = self.now.as_ref().map(|s| s.track_token.clone());
         let before = (
             self.splash.is_some(),
             self.audio_fetch.buffering.is_some(),
@@ -2110,6 +2117,7 @@ impl App {
         self.sleep_tick();
         self.device_tick();
         self.skip_book.prune();
+        self.pump_volume_save();
         if self.now.as_ref().is_some_and(|s| self.audio.finished(s.length)) {
             if let Some(song) = &self.now {
                 crate::log::log!(
@@ -2152,7 +2160,11 @@ impl App {
             self.audio.is_paused(),
             std::mem::discriminant(&self.ad),
         );
-        let token_changed = before_token.as_deref() != self.now.as_ref().map(|s| s.track_token.as_str());
+        let after_token = self.now.as_ref().map(|s| s.track_token.as_str()).unwrap_or("");
+        let token_changed = self.seen_token != after_token;
+        if token_changed {
+            self.seen_token.clone_from(after_token);
+        }
         if before != after || token_changed {
             self.mark_draw();
         }
@@ -3341,8 +3353,54 @@ impl App {
         let volume = (i16::from(self.config.player.volume) + by).clamp(0, 100) as u8;
         self.config.player.volume = volume;
         self.audio.set_volume(volume);
-        self.save(&[("playback", "volume", i64::from(volume).into())]);
+        // Written once the keys have been quiet, off this thread. Quit flushes it.
+        self.pending_volume = Some(volume);
+        self.volume_due = Some(Instant::now() + Duration::from_millis(500));
         self.status = format!("Volume {volume}%");
+    }
+
+    /// Start the volume write when the debounce has passed. A write still running waits.
+    fn pump_volume_save(&mut self) {
+        if self.volume_job.as_ref().is_some_and(|job| !job.is_finished()) {
+            return;
+        }
+        if let Some(job) = self.volume_job.take()
+            && let Ok(Err(error)) = job.join()
+        {
+            self.config_error = Some(error);
+            self.stick_config_warning();
+        }
+        if !self.volume_due.is_some_and(|due| Instant::now() >= due) {
+            return;
+        }
+        let Some(volume) = self.pending_volume.take() else {
+            self.volume_due = None;
+            return;
+        };
+        self.volume_due = None;
+        if self.demo {
+            return;
+        }
+        let Some(path) = self.config_path.clone() else { return };
+        self.volume_job = Some(std::thread::spawn(move || {
+            config::set_values(&path, &[("playback", "volume", i64::from(volume).into())]).map_err(|e| e.to_string())
+        }));
+    }
+
+    /// Write any volume still waiting. Quit calls this on this thread after the worker finishes.
+    pub(crate) fn flush_volume(&mut self) {
+        if let Some(job) = self.volume_job.take() {
+            if let Ok(Err(error)) = job.join() {
+                self.config_error = Some(error);
+                self.stick_config_warning();
+            }
+        }
+        let Some(volume) = self.pending_volume.take() else {
+            self.volume_due = None;
+            return;
+        };
+        self.volume_due = None;
+        self.save(&[("playback", "volume", i64::from(volume).into())]);
     }
 
     /// `U` / `D`: thumbs on the playing song, whatever has the keys.

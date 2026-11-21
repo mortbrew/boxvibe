@@ -1003,11 +1003,7 @@ fn parse_hhmm(text: &str) -> Option<i32> {
 
 /// `explicitContentFilterEnabled` on the login body, `config`, or a nested `listener`.
 fn explicit_filter_flag(v: &Value) -> Option<bool> {
-    const KEY: &str = "explicitContentFilterEnabled";
-    v.get(KEY)
-        .and_then(Value::as_bool)
-        .or_else(|| v.get("config").and_then(|c| c.get(KEY)).and_then(Value::as_bool))
-        .or_else(|| v.get("listener").and_then(|c| c.get(KEY)).and_then(Value::as_bool))
+    look_value(v, "explicitContentFilterEnabled").and_then(Value::as_bool)
 }
 
 fn u32_field(v: &Value, key: &str) -> Option<u32> {
@@ -1225,11 +1221,21 @@ impl Client {
             tz_offset: tz_offset_secs(&v),
             profile: listener_profile(&v),
         };
-        self.podcast_related = None;
         self.auth = Some(token);
-        // Every station starts over with a new login.
+        // A new login starts every station over. A token refresh keeps them.
+        self.podcast_related = None;
         self.started.clear();
         Ok(())
+    }
+
+    /// Log in again after a 401 without dropping station-start flags or the related shelf.
+    pub fn refresh_auth(&mut self, username: &str, password: &str) -> Result<(), Error> {
+        let started = std::mem::take(&mut self.started);
+        let related = self.podcast_related.take();
+        let result = self.login(username, password);
+        self.started = started;
+        self.podcast_related = related;
+        result
     }
 
     /// `v1/listener/updateAccount`. The password is only the argument; the caller drops it.
@@ -1245,7 +1251,9 @@ impl Client {
             "newUsername": username,
             "enableExplicitContentFilter": enable,
         });
-        let map = body.as_object_mut().expect("object");
+        let Some(map) = body.as_object_mut() else {
+            return Err(Error::InvalidResponse);
+        };
         let profile = &self.account.profile;
         if let Some(zip) = &profile.zip {
             map.insert("newZipCode".into(), json!(zip));

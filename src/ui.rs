@@ -425,29 +425,130 @@ fn rating_word<'a>(rating: Rating, p: &Palette, ic: &Icons) -> Span<'a> {
 
 /// What is going on, on a shaded bar above the keys (where tubevibe has it),
 /// and "Logged In As: <email>" at its far right.
-fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
-    let p = app.palette;
+struct StatusParts {
+    status: String,
+    skip: String,
+    buffering: bool,
+    silent: bool,
+    sleep_secs: Option<u64>,
+    end_of_song: bool,
+    stream: Option<(crate::pandora::AudioFormat, u32)>,
+    theme: String,
+    omarchy: String,
+    art: String,
+    retro: String,
+    tint: String,
+    user: String,
+    logged_in: bool,
+    width: u16,
+    shown: String,
+    warn: bool,
+    account: Option<String>,
+    sleep: Option<String>,
+    looks: Vec<String>,
+    stream_label: Option<String>,
+}
+
+fn status_inputs_match(parts: &StatusParts, app: &App, width: u16) -> bool {
+    let (sleep_secs, end_of_song) = match app.sleep {
+        Some(crate::app::Sleep::Minutes(..)) => (app.sleep_left().map(|d| d.as_secs()), false),
+        Some(crate::app::Sleep::EndOfSong) => (None, true),
+        None => (None, false),
+    };
+    parts.width == width
+        && parts.status == app.status
+        && parts.skip.as_str() == app.skip_caption.as_deref().unwrap_or("")
+        && parts.buffering == app.audio_fetch.buffering.is_some()
+        && parts.silent == (app.now.is_some() && app.audio.playing_silently())
+        && parts.sleep_secs == sleep_secs
+        && parts.end_of_song == end_of_song
+        && parts.stream == app.stream
+        && parts.theme == app.config.ui.theme()
+        && parts.omarchy.as_str() == app.omarchy_theme.as_deref().unwrap_or("")
+        && parts.art == app.config.ui.album_art.label()
+        && parts.retro == app.config.ui.retro_mode.label()
+        && parts.tint == app.config.ui.art_tint.label()
+        && parts.user == app.config.pandora.username
+        && parts.logged_in == (app.session == Session::LoggedIn)
+}
+
+fn build_status(app: &App, width: u16) -> StatusParts {
     let mut shown = app.status.clone();
-    if app.audio_fetch.buffering.is_some() && !shown.to_lowercase().contains("buffering") {
+    let buffering = app.audio_fetch.buffering.is_some();
+    if buffering && !shown.to_lowercase().contains("buffering") {
         shown = if shown.is_empty() { "buffering".into() } else { format!("buffering · {shown}") };
     }
-    if let Some(skips) = app.skip_caption.clone()
-        && !shown.contains("skips left")
-    {
-        shown = if shown.is_empty() { skips } else { format!("{skips} · {shown}") };
+    let skip = app.skip_caption.clone().unwrap_or_default();
+    if !skip.is_empty() && !shown.contains("skips left") {
+        shown = if shown.is_empty() { skip.clone() } else { format!("{skip} · {shown}") };
     }
-    if app.now.is_some() && app.audio.playing_silently() && !shown.contains("playing silently") {
+    let silent = app.now.is_some() && app.audio.playing_silently();
+    if silent && !shown.contains("playing silently") {
         shown = if shown.is_empty() { "playing silently".into() } else { format!("playing silently · {shown}") };
     }
-    let color = if shown.starts_with('⚠') || shown.starts_with("buffering") { p.yellow } else { p.fg };
+    let warn = shown.starts_with('⚠') || shown.starts_with("buffering");
+    let room = (width / 2).saturating_sub(3) as usize;
+    let account = account_label(app, room);
+    let sleep = sleep_label(app);
+    let looks = look_labels(app);
+    let stream_label = stream_label(app);
+    let (sleep_secs, end_of_song) = match app.sleep {
+        Some(crate::app::Sleep::Minutes(..)) => (app.sleep_left().map(|d| d.as_secs()), false),
+        Some(crate::app::Sleep::EndOfSong) => (None, true),
+        None => (None, false),
+    };
+    StatusParts {
+        status: app.status.clone(),
+        skip,
+        buffering,
+        silent,
+        sleep_secs,
+        end_of_song,
+        stream: app.stream,
+        theme: app.config.ui.theme().to_owned(),
+        omarchy: app.omarchy_theme.clone().unwrap_or_default(),
+        art: app.config.ui.album_art.label().to_owned(),
+        retro: app.config.ui.retro_mode.label().to_owned(),
+        tint: app.config.ui.art_tint.label().to_owned(),
+        user: app.config.pandora.username.clone(),
+        logged_in: app.session == Session::LoggedIn,
+        width,
+        shown,
+        warn,
+        account,
+        sleep,
+        looks,
+        stream_label,
+    }
+}
+
+fn status_parts(app: &App, width: u16) -> std::cell::Ref<'_, StatusParts> {
+    thread_local! {
+        static CACHE: std::cell::RefCell<Option<StatusParts>> = const { std::cell::RefCell::new(None) };
+    }
+    CACHE.with(|slot| {
+        let rebuild = slot.borrow().as_ref().is_none_or(|parts| !status_inputs_match(parts, app, width));
+        if rebuild {
+            *slot.borrow_mut() = Some(build_status(app, width));
+        }
+        std::cell::Ref::map(slot.borrow(), |slot| slot.as_ref().expect("just filled"))
+    })
+}
+
+fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+    let p = app.palette;
+    let parts = status_parts(app, area.width);
+    let shown = parts.shown.as_str();
+    let color = if parts.warn { p.yellow } else { p.fg };
     frame.render_widget(Block::new().bg(p.highlight), area);
     // The right side (sleep timer, look, stream, account) gets at most half
     // the bar, and never less than the status.
+    let account = parts.account.clone();
+    let mut sleep = parts.sleep.clone();
+    let mut looks = parts.looks.clone();
+    let mut stream = parts.stream_label.clone();
+    drop(parts);
     let room = (area.width / 2).saturating_sub(3) as usize;
-    let account = account_label(app, room);
-    let mut sleep = sleep_label(app);
-    let mut looks = look_labels(app);
-    let mut stream = stream_label(app);
     // What goes when the bar is narrow, first to last: the look labels (from
     // the last), then the stream, then the timer. The account never goes.
     let used = |sleep: &Option<String>, looks: &[String], stream: &Option<String>| -> usize {

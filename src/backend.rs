@@ -701,7 +701,7 @@ fn account_once(
             let Some((user, pass)) = saved else {
                 return Reply::AccountActionFailed { message: e.to_string() };
             };
-            if let Err(err) = client.login(user, pass.expose()) {
+            if let Err(err) = client.refresh_auth(user, pass.expose()) {
                 return Reply::AccountActionFailed { message: err.to_string() };
             }
             call(client)

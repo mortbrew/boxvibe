@@ -2163,7 +2163,8 @@ impl App {
         let after_token = self.now.as_ref().map(|s| s.track_token.as_str()).unwrap_or("");
         let token_changed = self.seen_token != after_token;
         if token_changed {
-            self.seen_token.clone_from(after_token);
+            self.seen_token.clear();
+            self.seen_token.push_str(after_token);
         }
         if before != after || token_changed {
             self.mark_draw();

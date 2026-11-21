@@ -538,7 +538,7 @@ fn status_parts(app: &App, width: u16) -> std::cell::Ref<'_, StatusParts> {
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette;
     let parts = status_parts(app, area.width);
-    let shown = parts.shown.as_str();
+    let shown = parts.shown.clone();
     let color = if parts.warn { p.yellow } else { p.fg };
     frame.render_widget(Block::new().bg(p.highlight), area);
     // The right side (sleep timer, look, stream, account) gets at most half

@@ -1709,7 +1709,10 @@ fn draw_now_playing(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
             label(if episode { "show" } else { "artist" }),
             Span::styled(fit(&song.artist, w.saturating_sub(9)), Style::new().fg(p.cyan).bold()),
         ]),
-        Line::from(vec![label("album"), Span::styled(fit(&album_line(song), w.saturating_sub(9)), Style::new().fg(p.fg))]),
+        Line::from(vec![
+            label("album"),
+            Span::styled(fit(&album_line(song), w.saturating_sub(9)), Style::new().fg(p.fg)),
+        ]),
         Line::from(vec![label("rating"), rating_word(song.rating, &p, ic)]),
         Line::from(vec![label("state"), state]),
     ];
@@ -2784,7 +2787,7 @@ pub fn help_for_screen(icon_set: crate::config::IconSet, live: &[(&str, &str)]) 
     let mut dead = Vec::new();
     for (name, keys) in HELP {
         let mut keep = Vec::new();
-        for (k, d) in *keys {
+        for (k, d) in keys.iter() {
             let tokens: Vec<&str> = k.split_whitespace().filter(|t| !t.is_empty()).collect();
             let only_pane = !tokens.is_empty() && tokens.iter().all(|t| pane.contains(t));
             let shown = tokens.iter().any(|t| blob.contains(t));

@@ -141,11 +141,10 @@ impl App {
     /// `?`: Help (`?` or Esc closes it).
     pub fn open_help(&mut self) {
         if !self.dialogs.has::<Help>() {
-            let help =
-                Help {
-                    title: "boxvibe Help".into(),
-                    ..Help::new(crate::ui::help_for_screen(self.config.ui.icons, &crate::ui::key_caps(self)))
-                };
+            let help = Help {
+                title: "boxvibe Help".into(),
+                ..Help::new(crate::ui::help_for_screen(self.config.ui.icons, &crate::ui::key_caps(self)))
+            };
             self.push_dialog(help);
         }
     }

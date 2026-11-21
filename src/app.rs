@@ -2025,11 +2025,8 @@ impl App {
                 use std::io::Write;
                 let mut out = std::io::stdout();
                 let ok = write!(out, "\x1b]52;c;{}\x07", base64(link.as_bytes())).is_ok() && out.flush().is_ok();
-                self.status = if ok {
-                    format!("Copied (via the terminal): {link}")
-                } else {
-                    format!("Copy failed: {link}")
-                };
+                self.status =
+                    if ok { format!("Copied (via the terminal): {link}") } else { format!("Copy failed: {link}") };
             } else {
                 self.status = msg;
             }
@@ -2133,8 +2130,7 @@ impl App {
     }
 
     fn begin_filter(&mut self) {
-        let here = self.focus == Focus::Content
-            && matches!(self.view, View::Stations | View::Browse | View::Settings);
+        let here = self.focus == Focus::Content && matches!(self.view, View::Stations | View::Browse | View::Settings);
         if !here {
             self.status = "/ filters My Stations, Browse, and Settings".into();
             return;

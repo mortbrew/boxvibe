@@ -1531,7 +1531,15 @@ fn song_panes_fit_ten_rows_and_now_playing_takes_the_rest() {
     // Stacked: two song panes of 13 each.
     assert_eq!(now_playing_height(48, true), 22);
     assert_eq!(now_playing_height(30, true), NOW_PLAYING_STACKED_MIN, "short: the stacked card keeps its minimum");
-    assert_eq!(now_playing_height(5, true), 5, "never more than the screen");
+    assert_eq!(now_playing_height(5, true), 3, "two rows stay for the stacked lists");
+    assert_eq!(now_playing_height(8, false), 7, "one row stays for the song panes");
+    let backend = TestBackend::new(8, 1);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let palette = crate::theme::TOKYO_NIGHT;
+    terminal.draw(|frame| progress_bar(frame, &palette, 12, 180, false, frame.area())).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let text: String = (0..8).map(|x| buffer[(x, 0)].symbol()).collect();
+    assert!(!text.chars().any(|c| c == '━' || c == '●' || c == '─'), "no bar glyphs: {text}");
     // A full History (10 songs) fits exactly: last row right above the bottom border.
     for i in 0..12 {
         let mut s = app.now.clone().unwrap();

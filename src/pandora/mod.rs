@@ -927,6 +927,8 @@ fn made_up_csrf() -> String {
 /// A web session: the `csrftoken` and, once logged in, the auth token.
 pub struct Client {
     agent: ureq::Agent,
+    /// `false` only for the test server on `http://`.
+    https_only: bool,
     base: String,
     user_agent: String,
     csrf: Option<String>,
@@ -952,14 +954,17 @@ impl Client {
 
     /// A client for another address (tests run a fake Pandora on localhost).
     pub fn with_base(base: &str, user_agent: &str) -> Self {
+        let https_only = !base.starts_with("http://");
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
+            .https_only(https_only)
             .http_status_as_error(false)
             .build()
             .into();
         let user_agent = if user_agent.trim().is_empty() { DEFAULT_USER_AGENT } else { user_agent.trim() };
         Self {
             agent,
+            https_only,
             base: base.trim_end_matches('/').to_owned(),
             user_agent: user_agent.to_owned(),
             csrf: None,
@@ -1519,6 +1524,12 @@ impl Client {
         if cancel() {
             return Ok(None);
         }
+        if self.https_only && !url.starts_with("https://") {
+            return Err(Error::Http(format!("{what}: refusing a non-HTTPS URL")));
+        }
+        if !url.starts_with("https://") && !url.starts_with("http://") {
+            return Err(Error::Http(format!("{what}: refusing a non-HTTP URL")));
+        }
         let mut response = self
             .agent
             .get(url)
@@ -1555,10 +1566,14 @@ impl Client {
     }
 }
 
+/// Extra attempts after the first, for a dropped connection (`Error::Http`).
+const HTTP_RETRIES: u8 = 2;
+
 /// Runs `call` the way every Pandora call should run: when the login expired
 /// (401), log in again with the saved password and try once more; when another
 /// device is streaming (429 `STREAM_VIOLATION`), take the stream over and try
-/// once more. `took_over` says the second happened.
+/// once more; a transient network error is tried [`HTTP_RETRIES`] more times.
+/// `took_over` says the stream was taken over.
 pub fn with_retries<T>(
     client: &mut Client,
     login: Option<&(String, crate::config::Secret)>,
@@ -1567,6 +1582,7 @@ pub fn with_retries<T>(
 ) -> Result<T, Error> {
     let mut relogged = false;
     let mut retook = false;
+    let mut http_retries = 0u8;
     loop {
         match call(client) {
             Err(e) if e.is_auth_expired() && !relogged => {
@@ -1578,6 +1594,9 @@ pub fn with_retries<T>(
                 retook = true;
                 client.take_over()?;
                 *took_over = true;
+            }
+            Err(Error::Http(_)) if http_retries < HTTP_RETRIES => {
+                http_retries += 1;
             }
             other => return other,
         }

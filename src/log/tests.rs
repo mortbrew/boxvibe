@@ -24,6 +24,24 @@ fn a_full_log_moves_aside_and_starts_again() {
 }
 
 #[test]
+fn a_note_is_written_on_the_log_thread() {
+    let dir = crate::config::scratch_dir(&format!("boxvibe-log-bg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let file = dir.join("boxvibe.log");
+    enqueue(&file, CAP, "from the queue");
+    let mut text = String::new();
+    for _ in 0..100 {
+        text = std::fs::read_to_string(&file).unwrap_or_default();
+        if text.contains("from the queue") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(text, "from the queue\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_head_of_a_payload_is_hex() {
     assert_eq!(head(&[0xff, 0xfb, 0x90]), "ff fb 90");
     assert_eq!(head(&[]), "");

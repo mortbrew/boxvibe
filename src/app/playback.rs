@@ -129,8 +129,14 @@ impl App {
             self.push_history(song);
         }
         loop {
+            if self.skips_left == 0 {
+                // A run of songs that will not decode waits for the next tick.
+                self.resume_skips = true;
+                return;
+            }
             let Some(song) = self.queue.pop_front() else {
                 self.request_more();
+                self.resume_skips = false;
                 return;
             };
             let token = song.track_token.clone();
@@ -150,12 +156,15 @@ impl App {
                 if self.audio_fetch.requested.insert(token.clone()) {
                     self.send_audio(token, url);
                 }
+                self.resume_skips = false;
                 break;
             };
             if self.play_now(data) {
+                self.resume_skips = false;
                 break;
             }
             // The audio would not start: this song is done, so try the next one.
+            self.skips_left = self.skips_left.saturating_sub(1);
             if let Some(song) = self.now.take() {
                 self.push_history(song);
             }
@@ -217,20 +226,30 @@ impl App {
     /// Every frame: a sound device that went away is noticed, so the player
     /// does not sit on a frozen progress bar for ever.
     ///
-    /// A dead stream reports nothing through [`Audio::finished`]: its queue
-    /// still holds the song, so it never looks empty, and its position stops
-    /// advancing because nothing is pulling samples. Both are checked here.
+    /// Device loss is a reported device error, or a stall longer than
+    /// [`crate::audio`] allows. The device is opened again first (or dropped,
+    /// so later songs use the silent clock) and only then is the stuck song skipped.
     pub(super) fn device_tick(&mut self) {
-        if let Some(why) = self.audio.take_device_error() {
-            crate::log::log!("device: {why}");
-            self.status = format!("⚠ The sound device stopped ({why})");
-        }
-        if !self.audio.stalled() {
+        let why = self.audio.take_device_error();
+        let stalled = self.audio.stalled();
+        if why.is_none() && !stalled {
             return;
         }
-        crate::log::log!("device: the stream stopped moving: skipping");
-        self.status = "⚠ The sound device stopped: skipping".into();
-        self.advance();
+        if let Some(why) = why {
+            crate::log::log!("device: {why}");
+            self.status = format!("⚠ The sound device stopped ({why})");
+        } else {
+            crate::log::log!("device: the stream stopped moving: skipping");
+            self.status = "⚠ The sound device stopped: skipping".into();
+        }
+        let playing = self.audio.is_active();
+        self.audio.recover();
+        if !self.audio.has_device() && !self.status.contains("playing silently") {
+            self.status = format!("{} · playing silently", self.status);
+        }
+        if playing {
+            self.advance();
+        }
     }
 
     /// Starts the audio for `now`. `false`: it would not start, so the caller
@@ -374,6 +393,7 @@ impl App {
 
     pub(super) fn reply_audio(&mut self, track_token: String, data: Vec<u8>, generation: u64) {
         if generation != self.audio_fetch.generation {
+            self.note_late_download(&track_token);
             return;
         }
         let Some(data) = self.ad_audio_arrived(&track_token, data) else { return };
@@ -393,6 +413,7 @@ impl App {
 
     pub(super) fn reply_audio_failed(&mut self, track_token: String, message: String, generation: u64) {
         if generation != self.audio_fetch.generation {
+            self.note_late_download(&track_token);
             return;
         }
         if self.ad_audio_failed(&track_token, &message) {
@@ -405,5 +426,20 @@ impl App {
             self.status = format!("⚠ {message}: skipping");
             self.advance();
         }
+    }
+
+    /// A download that arrived after its generation was abandoned. Quiet when
+    /// a newer song is already playing; otherwise say the bytes were dropped.
+    fn note_late_download(&mut self, track_token: &str) {
+        let moved_on = self.now.as_ref().is_some_and(|song| song.track_token != track_token);
+        if moved_on {
+            return;
+        }
+        let title = self
+            .find_song(track_token)
+            .map(|song| song.title.clone())
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| track_token.to_owned());
+        self.status = format!("⚠ Dropped a late download for {title}");
     }
 }

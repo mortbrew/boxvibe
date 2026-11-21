@@ -1067,3 +1067,33 @@ fn playback_source_asks_for_the_episode_and_reads_its_mp3() {
     assert_eq!(body["includeItem"], true);
     assert!(parse_episode(&json!({ "item": { "episodeName": "No file" } }), "PE:1").is_none());
 }
+
+#[test]
+fn a_transient_http_error_is_tried_again_then_given_up() {
+    let mut n = 0;
+    let mut took = false;
+    let mut client = Client::with_base("http://127.0.0.1:9", "");
+    let ok = with_retries(&mut client, None, &mut took, |_| {
+        n += 1;
+        if n < 3 { Err(Error::Http("reset".into())) } else { Ok(1) }
+    })
+    .unwrap();
+    assert_eq!((ok, n), (1, 3));
+    n = 0;
+    let err = with_retries(&mut client, None, &mut took, |_| {
+        n += 1;
+        Err::<(), _>(Error::Http("reset".into()))
+    })
+    .unwrap_err();
+    assert!(matches!(err, Error::Http(_)), "{err:?}");
+    assert_eq!(n, 3, "first try plus two retries");
+}
+
+#[test]
+fn the_pandora_client_refuses_a_non_https_download() {
+    let client = Client::new("");
+    let err = client.fetch_art("http://cdn.example/a.jpg").unwrap_err();
+    assert!(err.to_string().contains("non-HTTPS"), "{err}");
+    let err = client.fetch_audio("file:///tmp/song.mp3", || false).unwrap_err();
+    assert!(err.to_string().contains("non-HTTPS"), "{err}");
+}

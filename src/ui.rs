@@ -1580,7 +1580,10 @@ pub const NOW_PLAYING_STACKED_MIN: u16 = 22;
 pub fn now_playing_height(height: u16, stacked: bool) -> u16 {
     let songs = if stacked { 2 * SONG_PANE } else { SONG_PANE };
     let min = if stacked { NOW_PLAYING_STACKED_MIN } else { NOW_PLAYING_MIN };
-    height.saturating_sub(songs).max(min).min(height)
+    // Up Next and History each keep a row on a short terminal (two when stacked).
+    let lists = if stacked { 2 } else { 1 };
+    let card = height.saturating_sub(songs).max(min);
+    card.min(height.saturating_sub(lists))
 }
 
 fn draw_player(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
@@ -1829,7 +1832,16 @@ fn progress_bar(frame: &mut Frame, p: &Palette, position: u64, length: u64, coun
         (true, false) => format!(" {}", clock(length)),
         (false, _) => " --:--".into(),
     };
-    let bar = (area.width as usize).saturating_sub(left.len() + right.len());
+    let clocks = left.len() + right.len();
+    if usize::from(area.width) <= clocks {
+        let line = Line::from(vec![
+            Span::styled(left, Style::new().fg(p.yellow).bold()),
+            Span::styled(right, Style::new().fg(p.fg)),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
+    let bar = usize::from(area.width) - clocks;
     let ratio = if length > 0 { position as f64 / length as f64 } else { 0.0 };
     let done = ((bar as f64 * ratio) as usize).min(bar.saturating_sub(1));
     let line = Line::from(vec![

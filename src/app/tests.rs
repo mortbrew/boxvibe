@@ -1103,6 +1103,77 @@ fn a_successful_download_leaves_requested_so_it_can_be_asked_again() {
 }
 
 #[test]
+fn a_dead_device_is_dropped_before_the_song_is_skipped() {
+    let mut app = demo();
+    let token = app.now.as_ref().unwrap().track_token.clone();
+    app.audio.force_stall = true;
+    app.device_tick();
+    assert_ne!(app.now.as_ref().map(|s| s.track_token.clone()).as_deref(), Some(token.as_str()));
+    assert!(!app.audio.has_device());
+    assert!(!app.audio.force_stall, "recover clears the stall so the next tick does not skip again");
+    assert!(app.status.contains("playing silently"), "{}", app.status);
+}
+
+#[test]
+fn a_late_download_is_reported_unless_a_newer_song_is_playing() {
+    let mut app = demo();
+    let current = app.now.as_ref().unwrap().track_token.clone();
+    let stale = app.audio_fetch.generation;
+    app.bump_audio_generation();
+    app.on_reply(Reply::Audio { track_token: current, data: vec![1], generation: stale });
+    assert!(app.status.contains("late download"), "{}", app.status);
+
+    let mut app = demo();
+    let older = app.queue.front().unwrap().track_token.clone();
+    let stale = app.audio_fetch.generation;
+    app.bump_audio_generation();
+    app.status.clear();
+    app.on_reply(Reply::Audio { track_token: older, data: vec![1], generation: stale });
+    assert!(!app.status.contains("late download"), "{}", app.status);
+}
+
+#[test]
+fn songs_that_will_not_decode_skip_only_a_few_per_tick() {
+    let mut app = demo();
+    while app.queue.len() < 6 {
+        let mut song = app.now.clone().unwrap();
+        song.track_token = format!("extra-{}", app.queue.len());
+        app.queue.push_back(song);
+    }
+    app.audio.fail_starts = 30;
+    let queued = app.queue.len();
+    app.skips_left = 3;
+    app.next_song();
+    assert_eq!(app.queue.len(), queued - 3, "three failures, then the rest wait");
+    assert!(app.resume_skips);
+    app.tick();
+    assert_eq!(app.queue.len(), queued - 6, "the next tick spends a fresh budget");
+}
+
+#[test]
+fn a_failed_config_save_stays_until_a_save_works() {
+    let dir = crate::config::scratch_dir(&format!("cfg-save-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let blocked = dir.join("config.toml");
+    std::fs::create_dir_all(&blocked).unwrap();
+    let mut app = demo();
+    app.demo = false;
+    app.config_path = Some(blocked);
+    app.save(&[("playback", "volume", 40_i64.into())]);
+    assert!(app.status.contains("not saved"), "{}", app.status);
+    app.status = "Playing".into();
+    app.tick();
+    assert!(app.status.contains("not saved"), "the warning comes back: {}", app.status);
+    let file = dir.join("real.toml");
+    app.config_path = Some(file.clone());
+    app.save(&[("playback", "volume", 41_i64.into())]);
+    assert!(app.config_error.is_none());
+    assert!(std::fs::read_to_string(&file).unwrap().contains("volume"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_stale_audio_reply_is_ignored_after_the_generation_bumps() {
     let mut app = demo();
     let token = app.queue.front().unwrap().track_token.clone();

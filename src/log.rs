@@ -15,6 +15,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::sync::OnceLock;
 
 /// Past this the log moves to `.old` and starts again.
@@ -42,7 +43,26 @@ fn path() -> Option<&'static PathBuf> {
 /// Errors writing it are ignored: a log is not worth a crash or a message.
 pub fn note(args: std::fmt::Arguments<'_>) {
     let Some(path) = path() else { return };
-    append(path, CAP, &format!("{} {args}", crate::time::iso_utc(std::time::SystemTime::now())));
+    enqueue(path, CAP, &format!("{} {args}", crate::time::iso_utc(std::time::SystemTime::now())));
+}
+
+/// Hands a line to the log thread. A full queue drops the line: the UI thread
+/// does not wait on disk.
+pub fn enqueue(path: &Path, cap: u64, line: &str) {
+    let _ = writer().try_send((path.to_path_buf(), cap, line.to_owned()));
+}
+
+fn writer() -> &'static mpsc::SyncSender<(PathBuf, u64, String)> {
+    static TX: OnceLock<mpsc::SyncSender<(PathBuf, u64, String)>> = OnceLock::new();
+    TX.get_or_init(|| {
+        let (tx, rx) = mpsc::sync_channel::<(PathBuf, u64, String)>(64);
+        let _ = std::thread::Builder::new().name("log".into()).spawn(move || {
+            while let Ok((path, cap, line)) = rx.recv() {
+                append(&path, cap, &line);
+            }
+        });
+        tx
+    })
 }
 
 /// Adds one line to the log at `path`, moving it to `.old` first when it has

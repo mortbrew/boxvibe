@@ -6,7 +6,8 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::mpsc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use image::imageops::FilterType;
@@ -132,6 +133,38 @@ pub struct Art {
     pub last_cover: ratatui::layout::Rect,
     /// Prepared covers, newest last: Shift+R cycles back through the levels.
     cache: VecDeque<(String, LookKey, Arc<DynamicImage>)>,
+    /// Covers being pixelated and tinted off the UI thread.
+    pending: Vec<Pending>,
+    /// A prepared cover arrived and the screen should paint it.
+    dirty: bool,
+}
+
+struct Pending {
+    url: String,
+    key: LookKey,
+    rx: mpsc::Receiver<Arc<DynamicImage>>,
+}
+
+struct PrepJob {
+    image: Arc<DynamicImage>,
+    pixelation: RetroMode,
+    tint: ArtTint,
+    palette: Palette,
+    tx: mpsc::Sender<Arc<DynamicImage>>,
+}
+
+fn prep_sender() -> &'static mpsc::Sender<PrepJob> {
+    static TX: OnceLock<mpsc::Sender<PrepJob>> = OnceLock::new();
+    TX.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<PrepJob>();
+        let _ = std::thread::Builder::new().name("art".into()).spawn(move || {
+            while let Ok(job) = rx.recv() {
+                let image = tint(&pixelate(&job.image, job.pixelation), job.tint, &job.palette);
+                let _ = job.tx.send(Arc::new(image));
+            }
+        });
+        tx
+    })
 }
 
 impl Art {
@@ -256,7 +289,12 @@ impl Art {
                 }
                 (_, Some(image)) => image,
             };
-            let ready = (*self.prepared(url, &image, look)).clone();
+            let Some(ready) = self.prepared(url, &image, look) else {
+                // The quantize is still on the art thread. Keep the previous
+                // cover (if it is this song) until the pixels arrive.
+                return self.shown.as_mut().filter(|s| s.url == url).map(|s| &mut s.protocol);
+            };
+            let ready = (*ready).clone();
             // Changing a setting on the same cover keeps the same kind of
             // protocol, so the cover is swapped in place. Tearing it down
             // instead cleared the screen and re-sent the picture, which is what
@@ -286,7 +324,31 @@ impl Art {
     ///
     /// `protocol` copies the pixels only when the cover or a setting changed
     /// (`Picker` wants an owned image).
-    fn prepared(&mut self, url: &str, image: &Arc<DynamicImage>, look: Look) -> Arc<DynamicImage> {
+    /// Take finished covers from the art thread.
+    pub fn poll(&mut self) {
+        let mut i = 0;
+        while i < self.pending.len() {
+            match self.pending[i].rx.try_recv() {
+                Ok(image) => {
+                    let pending = self.pending.remove(i);
+                    self.store(pending.url, pending.key, image);
+                    self.dirty = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => i += 1,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.pending.remove(i);
+                }
+            }
+        }
+    }
+
+    /// Whether `poll` stored a cover the screen has not drawn yet.
+    pub fn take_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty)
+    }
+
+    fn prepared(&mut self, url: &str, image: &Arc<DynamicImage>, look: Look) -> Option<Arc<DynamicImage>> {
+        self.poll();
         // The palette only distinguishes looks that are tinted, as in `Look`'s
         // equality: an untinted cover is the same whatever the theme.
         let key = LookKey {
@@ -294,18 +356,53 @@ impl Art {
             tint: look.tint,
             palette: (look.tint != ArtTint::Off).then_some(look.palette),
         };
-        if let Some(at) = self.cache.iter().position(|(u, k, _)| u == url && *k == key) {
-            let hit = self.cache.remove(at).expect("just found").2;
-            self.cache.push_back((url.into(), key, hit.clone()));
-            return hit;
+        if let Some(hit) = self.recall(url, key) {
+            return Some(hit);
         }
-        let ready = Arc::new(tint(&pixelate(image, look.pixelation), look.tint, &look.palette));
-        // One cover's worth of levels, plus this song and the one before it.
-        self.cache.push_back((url.into(), key, ready.clone()));
+        if !self.pending.iter().any(|p| p.url == url && p.key == key) {
+            let (tx, rx) = mpsc::channel();
+            let job = PrepJob {
+                image: Arc::clone(image),
+                pixelation: look.pixelation,
+                tint: look.tint,
+                palette: look.palette,
+                tx,
+            };
+            if prep_sender().send(job).is_err() {
+                let ready = Arc::new(tint(&pixelate(image, look.pixelation), look.tint, &look.palette));
+                self.store(url.into(), key, ready);
+            } else {
+                self.pending.push(Pending { url: url.into(), key, rx });
+            }
+        }
+        self.poll();
+        self.recall(url, key)
+    }
+
+    fn recall(&mut self, url: &str, key: LookKey) -> Option<Arc<DynamicImage>> {
+        let at = self.cache.iter().position(|(u, k, _)| u == url && *k == key)?;
+        let hit = self.cache.remove(at).expect("just found").2;
+        self.cache.push_back((url.into(), key, hit.clone()));
+        Some(hit)
+    }
+
+    fn store(&mut self, url: String, key: LookKey, ready: Arc<DynamicImage>) {
+        self.cache.push_back((url, key, ready));
         while self.cache.len() > CACHED_COVERS {
             self.cache.pop_front();
         }
-        ready
+    }
+
+    /// Block until the art thread has this cover. Tests only.
+    #[cfg(test)]
+    fn prepare_wait(&mut self, url: &str, image: &Arc<DynamicImage>, look: Look) -> Arc<DynamicImage> {
+        for _ in 0..400 {
+            if let Some(ready) = self.prepared(url, image, look) {
+                return ready;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("cover was not prepared");
     }
 
     /// Call after drawing the cover: when the terminal's graphics couldn't
@@ -441,9 +538,9 @@ pub fn tint(image: &DynamicImage, tint: ArtTint, p: &Palette) -> DynamicImage {
                 std::array::from_fn(|i| (f32::from(lo[i]) + (f32::from(hi[i]) - f32::from(lo[i])) * t).round() as u8)
             }
             // Nearest theme colour by a weighted squared distance, in integers:
-            // the eye is most sensitive to green, least to blue. This runs for
-            // every pixel of every cover on the UI thread, so it stays integer
-            // arithmetic — the float version was ~5M `powi` calls per cover.
+            // the eye is most sensitive to green, least to blue. The art thread
+            // runs this, so the UI thread only blits a cached image. Integer
+            // arithmetic stays: the float version was ~5M `powi` calls per cover.
             _ => *colors
                 .iter()
                 .min_by_key(|c| {

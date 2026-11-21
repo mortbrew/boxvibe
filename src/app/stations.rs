@@ -95,7 +95,7 @@ impl App {
         if let Some(i) = self.menu_items().iter().position(|m| *m == selected) {
             self.menu_cursor = i;
         }
-        self.menu_cursor = self.menu_cursor.min(self.menu_items().len() - 1);
+        self.menu_cursor = self.menu_cursor.min(self.menu_items().len().saturating_sub(1));
         self.save_favorites();
     }
 
@@ -136,7 +136,8 @@ impl App {
         self.refresh_menu_cache();
         self.stations_cursor = self.stations_cursor.min(self.stations.len().saturating_sub(1));
         let items = self.menu_items();
-        self.menu_cursor = items.iter().position(|m| *m == selected).unwrap_or(self.menu_cursor).min(items.len() - 1);
+        let at = items.iter().position(|m| *m == selected).unwrap_or(self.menu_cursor);
+        self.menu_cursor = at.min(items.len().saturating_sub(1));
         self.status = format!("Deleted “{name}” from your Pandora account");
     }
 

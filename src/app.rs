@@ -1024,6 +1024,12 @@ pub struct App {
     /// The covers.
     pub art: crate::art::Art,
     pub audio: Audio,
+    /// Decode failures still allowed before the rest wait for the next tick.
+    skips_left: u8,
+    /// `next_song` stopped because the skip budget ran out.
+    resume_skips: bool,
+    /// `config.toml` could not be written. Shown until a later save works.
+    config_error: Option<String>,
     backend: Backend,
     /// Where the Pandora password is kept (see [`crate::keychain`]).
     keychain: Arc<dyn Keychain>,
@@ -1075,6 +1081,8 @@ const MAX_PROMPT: usize = 256;
 pub const SPLASH: Duration = Duration::from_millis(2000);
 /// A song's audio gets this long to download before it is given up on.
 const BUFFER_TIMEOUT: Duration = Duration::from_secs(30);
+/// Songs that will not decode, per tick, before the rest wait.
+const MAX_SKIPS_PER_TICK: u8 = 3;
 
 impl App {
     pub fn new(config: Config, config_path: Option<PathBuf>, warnings: &[ConfigWarning], demo: bool) -> Self {
@@ -1123,6 +1131,9 @@ impl App {
             now: None,
             history: Vec::new(),
             status: String::new(),
+            skips_left: MAX_SKIPS_PER_TICK,
+            resume_skips: false,
+            config_error: None,
             sleep: None,
             sleep_pause_next: false,
             splash: None,
@@ -1326,9 +1337,20 @@ impl App {
             return;
         }
         let Some(path) = &self.config_path else { return };
-        if let Err(e) = config::set_values(path, values) {
-            self.status = format!("⚠ {e}");
+        match config::set_values(path, values) {
+            Ok(()) => self.config_error = None,
+            Err(e) => {
+                self.config_error = Some(e.to_string());
+                self.stick_config_warning();
+            }
         }
+    }
+
+    /// Put the failed-save warning back. Other status lines replace it; this
+    /// returns it until a save succeeds.
+    fn stick_config_warning(&mut self) {
+        let Some(err) = &self.config_error else { return };
+        self.status = format!("⚠ Settings were not saved: {err}");
     }
 
     // --- The menu ---
@@ -1829,6 +1851,11 @@ impl App {
     // --- Every frame ---
 
     pub fn tick(&mut self) {
+        self.skips_left = MAX_SKIPS_PER_TICK;
+        if self.resume_skips {
+            self.resume_skips = false;
+            self.next_song();
+        }
         // One owned token for the dirty check; compared by &str after the
         // mutating work so we don't hold a borrow across the tick body.
         let before_token = self.now.as_ref().map(|s| s.track_token.clone());
@@ -1898,6 +1925,11 @@ impl App {
         if before != after || token_changed {
             self.mark_draw();
         }
+        self.art.poll();
+        if self.art.take_dirty() {
+            self.mark_draw();
+        }
+        self.stick_config_warning();
     }
 
     /// Media keys in, the playing song out.
@@ -2324,6 +2356,7 @@ impl App {
     // --- Keys ---
 
     pub fn on_key(&mut self, key: KeyEvent) {
+        self.skips_left = MAX_SKIPS_PER_TICK;
         self.mark_draw();
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.quit = true;

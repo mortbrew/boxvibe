@@ -193,7 +193,12 @@ impl App {
         };
     }
 
-    pub(super) fn reply_logged_in(&mut self, hifi: bool, daily_skip_limit: Option<u32>, station_skip_limit: Option<u32>) {
+    pub(super) fn reply_logged_in(
+        &mut self,
+        hifi: bool,
+        daily_skip_limit: Option<u32>,
+        station_skip_limit: Option<u32>,
+    ) {
         self.skip_book.set_limits(daily_skip_limit, station_skip_limit);
         self.hifi = Some(hifi);
         let first = self.session != Session::LoggedIn;

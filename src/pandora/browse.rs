@@ -298,7 +298,9 @@ pub fn parse_show_page(v: &Value, program_id: &str, fallback_title: &str) -> Vec
     let program = anns.get(program_id);
     let name = program.and_then(|p| field_text(p.get("name"))).unwrap_or_else(|| fallback_title.to_owned());
     let publisher = program.and_then(|p| field_text(p.get("publisherName"))).unwrap_or_default();
-    let count = program.and_then(|p| p.get("episodeCount")).and_then(|n| n.as_u64().or_else(|| n.as_str().and_then(|s| s.parse().ok())));
+    let count = program
+        .and_then(|p| p.get("episodeCount"))
+        .and_then(|n| n.as_u64().or_else(|| n.as_str().and_then(|s| s.parse().ok())));
     let mut title = if name.is_empty() { program_id.to_owned() } else { name };
     if !publisher.is_empty() {
         title = format!("{title} · {publisher}");
@@ -310,7 +312,10 @@ pub fn parse_show_page(v: &Value, program_id: &str, fallback_title: &str) -> Vec
         .iter()
         .filter(|(key, _)| key.starts_with("PE:"))
         .map(|(key, ann)| {
-            let order = ann.get("ordering").and_then(|n| n.as_i64().or_else(|| n.as_str().and_then(|s| s.parse().ok()))).unwrap_or(0);
+            let order = ann
+                .get("ordering")
+                .and_then(|n| n.as_i64().or_else(|| n.as_str().and_then(|s| s.parse().ok())))
+                .unwrap_or(0);
             let item = BrowseItem {
                 name: field_text(ann.get("name")).unwrap_or_else(|| key.clone()),
                 detail: String::new(),
@@ -328,13 +333,16 @@ pub fn parse_show_page(v: &Value, program_id: &str, fallback_title: &str) -> Vec
         if id.starts_with("PE:") {
             let name = anns.get(&id).and_then(|a| field_text(a.get("name"))).unwrap_or_else(|| id.clone());
             items.retain(|item| item.pandora_id != id);
-            items.insert(0, BrowseItem {
-                name: format!("Continue · {name}"),
-                detail: "Continue".into(),
-                pandora_id: id,
-                station_factory: String::new(),
-                link: None,
-            });
+            items.insert(
+                0,
+                BrowseItem {
+                    name: format!("Continue · {name}"),
+                    detail: "Continue".into(),
+                    pandora_id: id,
+                    station_factory: String::new(),
+                    link: None,
+                },
+            );
         }
     }
     if items.is_empty() {

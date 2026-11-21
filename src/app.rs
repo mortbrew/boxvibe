@@ -3370,11 +3370,11 @@ impl App {
     }
 
     fn tired(&mut self) {
-        let Some(song) = &self.now else { return };
+        let Some(token) = self.now.as_ref().map(|s| s.track_token.clone()) else { return };
         if !self.spend_skip() {
             return;
         }
-        self.backend.send(Request::Tired { track_token: song.track_token.clone() });
+        self.backend.send(Request::Tired { track_token: token });
         self.end_song(End::Skipped);
     }
 

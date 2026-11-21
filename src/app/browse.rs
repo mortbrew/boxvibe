@@ -376,7 +376,7 @@ impl App {
         true
     }
 
-    pub(super) fn on_podcast(&self) -> bool {
+    pub(crate) fn on_podcast(&self) -> bool {
         self.pages.path().is_some_and(|path| path.starts_with("podcast:"))
     }
 

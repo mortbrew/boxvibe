@@ -184,7 +184,8 @@ fn podcast_details_list_episode_ids_and_objects() {
         }}
     });
     let show = parse_show_page(&show, "PC:9", "Crime Junkie");
-    assert!(show[0].title.contains("Crime Junkie") && show[0].title.contains("audiochuck") && show[0].title.contains("400"));
+    assert!(show[0].title.contains("Crime Junkie"), "{}", show[0].title);
+    assert!(show[0].title.contains("audiochuck") && show[0].title.contains("400"), "{}", show[0].title);
     assert_eq!(show[0].items[0].pandora_id, "PE:2");
     assert!(show[0].items[0].name.starts_with("Continue"));
     assert_eq!(show[0].items[1].pandora_id, "PE:1");

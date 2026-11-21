@@ -3145,6 +3145,7 @@ fn a_podcast_show_on_the_website_lists_episodes_then_plays_one() {
         id: "BR:38".into(),
         title: "True Crime".into(),
         view_all_path: None,
+        art_url: String::new(),
         items: vec![BrowseItem {
             name: "Crime Junkie".into(),
             detail: String::new(),

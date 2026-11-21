@@ -310,6 +310,21 @@ pub struct Account {
     pub station_skip_limit: Option<u32>,
     /// `explicitContentFilterEnabled`: `true` blocks explicit tracks. `None` if the login omitted it.
     pub explicit_filter: Option<bool>,
+    /// Seconds east of UTC, when login named a fixed offset. `None`: use local time.
+    pub tz_offset: Option<i32>,
+    /// Fields `updateAccount` must send back unchanged. Empty means login omitted them.
+    pub profile: ListenerProfile,
+}
+
+/// Listener facts the web client's `updateAccount` body echoes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ListenerProfile {
+    pub zip: Option<String>,
+    pub gender: Option<String>,
+    pub birth_year: Option<i64>,
+    pub birth_month: Option<i64>,
+    pub birth_day: Option<i64>,
+    pub explicit_pin: Option<String>,
 }
 
 impl Account {
@@ -920,6 +935,72 @@ fn track_year(v: &Value) -> Option<u16> {
     None
 }
 
+fn look_value<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
+    v.get(key)
+        .or_else(|| v.get("config").and_then(|c| c.get(key)))
+        .or_else(|| v.get("listener").and_then(|c| c.get(key)))
+}
+
+fn look_str(v: &Value, key: &str) -> Option<String> {
+    let raw = look_value(v, key)?;
+    let text = raw.as_str().map(str::trim).filter(|s| !s.is_empty())?;
+    Some(text.to_owned())
+}
+
+fn look_i64(v: &Value, key: &str) -> Option<i64> {
+    let raw = look_value(v, key)?;
+    raw.as_i64().or_else(|| raw.as_str().and_then(|s| s.trim().parse().ok()))
+}
+
+fn listener_profile(v: &Value) -> ListenerProfile {
+    ListenerProfile {
+        zip: look_str(v, "zipCode"),
+        gender: look_str(v, "gender"),
+        birth_year: look_i64(v, "birthYear"),
+        birth_month: look_i64(v, "birthMonth"),
+        birth_day: look_i64(v, "birthDay"),
+        explicit_pin: look_str(v, "explicitPIN"),
+    }
+}
+
+/// A fixed offset from login. `±HH:MM` or a number (minutes when it fits in a
+/// zone offset, otherwise seconds). An IANA name is ignored: no zone database.
+fn tz_offset_secs(v: &Value) -> Option<i32> {
+    for key in ["timeZoneOffset", "timezoneOffset", "utcOffset", "tzOffset"] {
+        if let Some(n) = look_i64(v, key) {
+            return Some(normalize_offset(n));
+        }
+    }
+    for key in ["timeZone", "timezone"] {
+        if let Some(text) = look_str(v, key)
+            && let Some(off) = parse_hhmm(&text)
+        {
+            return Some(off);
+        }
+    }
+    None
+}
+
+fn normalize_offset(n: i64) -> i32 {
+    let n = n.clamp(-86_400, 86_400);
+    if n.abs() <= 14 * 60 { (n * 60) as i32 } else { n as i32 }
+}
+
+fn parse_hhmm(text: &str) -> Option<i32> {
+    let (sign, rest) = match text.as_bytes().first()? {
+        b'+' => (1, &text[1..]),
+        b'-' => (-1, &text[1..]),
+        _ => return None,
+    };
+    let (h, m) = rest.split_once(':')?;
+    let hours: i32 = h.parse().ok()?;
+    let mins: i32 = m.parse().ok()?;
+    if !(0..24).contains(&hours) || !(0..60).contains(&mins) {
+        return None;
+    }
+    Some(sign * (hours * 3600 + mins * 60))
+}
+
 /// `explicitContentFilterEnabled` on the login body, `config`, or a nested `listener`.
 fn explicit_filter_flag(v: &Value) -> Option<bool> {
     const KEY: &str = "explicitContentFilterEnabled";
@@ -1000,6 +1081,8 @@ pub struct Client {
     started: HashSet<String>,
     /// Pandora refused `mp3`: ask for `aacplus` from then on.
     aac_only: bool,
+    /// `TG:13`, the podcast related shelf. One fetch per login.
+    podcast_related: Option<Vec<browse::BrowseSection>>,
 }
 
 /// The site's own `GetRecentlyPlayedSources` document, copied from its bundle
@@ -1034,6 +1117,7 @@ impl Client {
             quality: Quality::High,
             started: HashSet::new(),
             aac_only: false,
+            podcast_related: None,
         }
     }
 
@@ -1138,7 +1222,10 @@ impl Client {
             daily_skip_limit: config.and_then(|c| u32_field(c, "dailySkipLimit")),
             station_skip_limit: config.and_then(|c| u32_field(c, "stationSkipLimit")),
             explicit_filter: explicit_filter_flag(&v),
+            tz_offset: tz_offset_secs(&v),
+            profile: listener_profile(&v),
         };
+        self.podcast_related = None;
         self.auth = Some(token);
         // Every station starts over with a new login.
         self.started.clear();
@@ -1146,17 +1233,47 @@ impl Client {
     }
 
     /// `v1/listener/updateAccount`. The password is only the argument; the caller drops it.
+    ///
+    /// The body mirrors the web client: current username and password, the same
+    /// username as `newUsername`, and every listener field login gave us
+    /// (zip, gender, birth, PIN). Missing fields are left out, not sent as null.
+    /// `Ok(None)`: Pandora answered 200 without `explicitContentFilterEnabled`.
     pub fn set_explicit_filter(&mut self, username: &str, password: &str, enable: bool) -> Result<Option<bool>, Error> {
-        let v = self.post(
-            "/api/v1/listener/updateAccount",
-            &json!({
-                "currentUsername": username,
-                "currentPassword": password,
-                "enableExplicitContentFilter": enable,
-            }),
-        )?;
-        let reported = explicit_filter_flag(&v).or(Some(enable));
-        self.account.explicit_filter = reported;
+        let mut body = json!({
+            "currentUsername": username,
+            "currentPassword": password,
+            "newUsername": username,
+            "enableExplicitContentFilter": enable,
+        });
+        let map = body.as_object_mut().expect("object");
+        let profile = &self.account.profile;
+        if let Some(zip) = &profile.zip {
+            map.insert("newZipCode".into(), json!(zip));
+        }
+        if let Some(gender) = &profile.gender {
+            map.insert("newGender".into(), json!(gender));
+        }
+        if let Some(year) = profile.birth_year {
+            map.insert("newBirthYear".into(), json!(year));
+        }
+        if let Some(month) = profile.birth_month {
+            map.insert("newBirthMonth".into(), json!(month));
+        }
+        if let Some(day) = profile.birth_day {
+            map.insert("newBirthDay".into(), json!(day));
+        }
+        if let Some(pin) = &profile.explicit_pin {
+            map.insert("explicitPIN".into(), json!(pin));
+        }
+        let v = self.post("/api/v1/listener/updateAccount", &body)?;
+        let reported = explicit_filter_flag(&v);
+        if reported.is_some() {
+            self.account.explicit_filter = reported;
+        }
+        let fresh = listener_profile(&v);
+        if fresh != ListenerProfile::default() {
+            self.account.profile = fresh;
+        }
         Ok(reported)
     }
 
@@ -1646,6 +1763,7 @@ impl Client {
         self.csrf = None;
         self.auth = None;
         self.account = Account::default();
+        self.podcast_related = None;
         self.started.clear();
         self.aac_only = false;
     }

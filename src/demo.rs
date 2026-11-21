@@ -343,7 +343,13 @@ fn linked_shelf(name: &str, pandora_id: &str, path: &str) -> BrowseItem {
 }
 
 fn browse_section(id: &str, title: &str, view_all_path: Option<&str>, items: Vec<BrowseItem>) -> BrowseSection {
-    BrowseSection { id: id.into(), title: title.into(), items, view_all_path: view_all_path.map(str::to_owned) }
+    BrowseSection {
+        id: id.into(),
+        title: title.into(),
+        items,
+        view_all_path: view_all_path.map(str::to_owned),
+        art_url: String::new(),
+    }
 }
 
 /// A small Browse directory for the demo (same section titles as live Pandora).

@@ -10,15 +10,17 @@ impl App {
             return;
         }
         match reply {
-            Reply::LoggedIn { hifi, daily_skip_limit, station_skip_limit, explicit_filter } => {
-                self.reply_logged_in(hifi, daily_skip_limit, station_skip_limit, explicit_filter)
+            Reply::LoggedIn { hifi, daily_skip_limit, station_skip_limit, explicit_filter, tz_offset } => {
+                self.reply_logged_in(hifi, daily_skip_limit, station_skip_limit, explicit_filter, tz_offset)
             }
             Reply::ExplicitFilter(on) => {
-                self.explicit_filter = on;
+                if let Some(on) = on {
+                    self.explicit_filter = Some(on);
+                }
                 self.status = match on {
                     Some(true) => "Explicit filter on: explicit tracks are blocked".into(),
                     Some(false) => "Explicit filter off".into(),
-                    None => "Explicit filter updated".into(),
+                    None => "Pandora did not say whether the explicit filter is on".into(),
                 };
             }
             Reply::OtherDevicesLoggedOut => {

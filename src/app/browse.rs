@@ -383,10 +383,9 @@ impl App {
     /// `o` on a show: newest first or oldest first. Continue-listening stays on top.
     pub(super) fn flip_episode_order(&mut self) {
         let crate::app::BrowseState::Loaded(sections) = &mut self.browse else { return };
-        for section in sections.iter_mut() {
-            let keep = if section.items.first().is_some_and(|item| item.detail == "Continue") { 1 } else { 0 };
-            section.items[keep..].reverse();
-        }
+        let Some(section) = sections.first_mut() else { return };
+        let keep = if section.items.first().is_some_and(|item| item.detail == "Continue") { 1 } else { 0 };
+        section.items[keep..].reverse();
         self.status = "Episode order flipped".into();
     }
 

@@ -18,13 +18,14 @@ impl App {
 
     /// A counted skip, or a free one. `false`: Pandora or the limit said no.
     pub(super) fn spend_skip(&mut self) -> bool {
-        let Some(song) = self.now.clone() else { return false };
+        let Some(song) = self.now.as_ref() else { return false };
         if song.allow_skip == Some(false) {
             self.status = "Pandora won't let this song be skipped".into();
             return false;
         }
         let free = song.allow_skip_without_limit;
-        match self.skip_book.spend(&song.station_id, free) {
+        let station_id = song.station_id.clone();
+        match self.skip_book.spend(&station_id, free) {
             Ok(()) => true,
             Err(why) => {
                 self.status = why;

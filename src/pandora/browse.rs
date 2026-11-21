@@ -20,6 +20,8 @@ pub struct BrowseSection {
     /// `viewAll.webUrl` on the main teaser (`/browse/music/new-music`, …).
     /// `None`: this section has no View-all page (Artists Picked For You).
     pub view_all_path: Option<String>,
+    /// Show `icon.artUrl` when this section is a podcast header. Empty otherwise.
+    pub art_url: String,
 }
 
 /// One row under a Browse section.
@@ -73,10 +75,9 @@ impl Client {
         Ok(parse_directory(&v))
     }
 
-    /// `v4/catalog/getDetails`: the episodes of a podcast program (`PC:`).
+    /// `v1/aesop/getDetails`: the episodes of a podcast program (`PC:`).
     ///
-    /// `recentEpisodes` is a list of `PE:` ids, named from `annotations`.
-    /// A show's `/podcast/…` path is not a directory page.
+    /// The related shelf is `TG:13`, fetched once per login.
     pub fn podcast_episodes(&mut self, pandora_id: &str, title: &str) -> Result<Vec<BrowseSection>, Error> {
         let listener = self.account.listener_id.clone();
         let v = self.post(
@@ -89,9 +90,18 @@ impl Client {
             }),
         )?;
         let mut sections = parse_show_page(&v, pandora_id, title);
-        if let Ok(related) = self.directory_by_id("TG:13") {
-            sections.extend(related);
-        }
+        let related = if let Some(cached) = &self.podcast_related {
+            cached.clone()
+        } else {
+            match self.directory_by_id("TG:13") {
+                Ok(sections) => {
+                    self.podcast_related = Some(sections.clone());
+                    sections
+                }
+                Err(_) => Vec::new(),
+            }
+        };
+        sections.extend(related);
         Ok(sections)
     }
 
@@ -133,7 +143,7 @@ fn parse_section(s: &Value, anns: Option<&serde_json::Map<String, Value>>) -> Op
             collect_items(list, anns, &mut items);
         }
     }
-    Some(BrowseSection { id, title, items, view_all_path: section_view_all_path(s) })
+    Some(BrowseSection { id, title, items, view_all_path: section_view_all_path(s), art_url: String::new() })
 }
 
 /// A row, plus any rows nested inside it. A container with no id of its own
@@ -301,6 +311,7 @@ pub fn parse_show_page(v: &Value, program_id: &str, fallback_title: &str) -> Vec
     let count = program
         .and_then(|p| p.get("episodeCount"))
         .and_then(|n| n.as_u64().or_else(|| n.as_str().and_then(|s| s.parse().ok())));
+    let art_url = program.and_then(|p| p.pointer("/icon/artUrl")).and_then(Value::as_str).unwrap_or("").to_owned();
     let mut title = if name.is_empty() { program_id.to_owned() } else { name };
     if !publisher.is_empty() {
         title = format!("{title} · {publisher}");
@@ -348,10 +359,10 @@ pub fn parse_show_page(v: &Value, program_id: &str, fallback_title: &str) -> Vec
     if items.is_empty() {
         return parse_podcast_details(v, program_id, fallback_title);
     }
-    vec![BrowseSection { id: program_id.to_owned(), title, items, view_all_path: None }]
+    vec![BrowseSection { id: program_id.to_owned(), title, items, view_all_path: None, art_url }]
 }
 
-/// Episodes from `v4/catalog/getDetails`. Names come from the episode or its annotation.
+/// Episodes from the older `v4/catalog/getDetails` shape. Names come from the episode or its annotation.
 ///
 /// `recentEpisodes` is a list of `PE:` ids, episode objects, or both. A program
 /// with no list still contributes annotation episodes. Rows have no site link:
@@ -377,7 +388,7 @@ pub fn parse_podcast_details(v: &Value, program_id: &str, title: &str) -> Vec<Br
         }
     }
     let title = if title.is_empty() { program_id.to_owned() } else { title.to_owned() };
-    vec![BrowseSection { id: program_id.to_owned(), title, items, view_all_path: None }]
+    vec![BrowseSection { id: program_id.to_owned(), title, items, view_all_path: None, art_url: String::new() }]
 }
 
 fn walk_episode_lists(

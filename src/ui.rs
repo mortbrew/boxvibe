@@ -85,6 +85,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         crate::splash::draw(frame, &p, progress, &version, "Pandora in your terminal");
         return;
     }
+    let station = app.now.as_ref().map(|s| s.station_id.clone()).unwrap_or_default();
+    app.skip_caption = app.skip_book.label(&station);
     let ic = icons(app.config.ui.icons);
     let [body, status, keys] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1)]).areas(area);
@@ -103,7 +105,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         View::Notifications => draw_notes(frame, app, ic, right),
     }
     draw_status(frame, app, status);
-    draw_keys(frame, &p, &bar_keys(), keys);
+    draw_keys(frame, &p, bar_keys(), keys);
     if app.overlay_open() {
         // Match vibekit dialog fade: desaturate then blend toward the theme background.
         let area = frame.area();
@@ -429,7 +431,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     if app.audio_fetch.buffering.is_some() && !shown.to_lowercase().contains("buffering") {
         shown = if shown.is_empty() { "buffering".into() } else { format!("buffering · {shown}") };
     }
-    if let Some(skips) = app.skip_book.label(app.now.as_ref().map(|s| s.station_id.as_str()).unwrap_or(""))
+    if let Some(skips) = app.skip_caption.clone()
         && !shown.contains("skips left")
     {
         shown = if shown.is_empty() { skips } else { format!("{skips} · {shown}") };
@@ -1718,7 +1720,7 @@ fn draw_now_playing(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
     let lines = vec![
         Line::from(Span::styled(fit(&song.title, w), Style::new().fg(p.fg).bold())),
         Line::from(Span::styled(
-            app.skip_book.label(song.station_id.as_str()).unwrap_or_default(),
+            app.skip_caption.clone().unwrap_or_default(),
             Style::new().fg(p.muted),
         )),
         Line::from(vec![
@@ -2361,8 +2363,8 @@ fn draw_about(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 // --- Keys ---
 
 /// The bottom bar on every screen: Actions, Help, Quit. The other keys stay in `?` and `.`.
-fn bar_keys() -> Vec<(&'static str, &'static str)> {
-    vec![(".", "Actions"), ("?", "Help"), ("Q", "Quit")]
+fn bar_keys() -> &'static [(&'static str, &'static str)] {
+    &[(".", "Actions"), ("?", "Help"), ("Q", "Quit")]
 }
 
 /// The keys that work right now: (keys, what they do). Help uses this to grey

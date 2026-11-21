@@ -267,6 +267,8 @@ pub enum Reply {
         daily_skip_limit: Option<u32>,
         station_skip_limit: Option<u32>,
         explicit_filter: Option<bool>,
+        /// Seconds east of UTC, when login named one.
+        tz_offset: Option<i32>,
     },
     /// The explicit filter after a successful `updateAccount`.
     ExplicitFilter(Option<bool>),
@@ -551,7 +553,13 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
     for request in requests {
         let reply = match request {
             Request::Login { .. } => {
-                Reply::LoggedIn { hifi: true, daily_skip_limit: None, station_skip_limit: None, explicit_filter: None }
+                Reply::LoggedIn {
+                    hifi: true,
+                    daily_skip_limit: None,
+                    station_skip_limit: None,
+                    explicit_filter: None,
+                    tz_offset: None,
+                }
             }
             Request::SetExplicitFilter { enable, .. } => Reply::ExplicitFilter(Some(enable)),
             Request::LogoutOtherDevices { .. } => Reply::OtherDevicesLoggedOut,
@@ -683,6 +691,35 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
     }
 }
 
+/// One retry for a passworded account call: 401 logs in again, a dropped connection waits and tries once.
+/// The password stays in the `Secret` the caller still holds. Nothing here logs it.
+fn account_once(
+    client: &mut Client,
+    saved: Option<&(String, crate::config::Secret)>,
+    mut call: impl FnMut(&mut Client) -> Result<Reply, Error>,
+) -> Reply {
+    let failed = match call(client) {
+        Err(e) if e.is_auth_expired() => {
+            let Some((user, pass)) = saved else {
+                return Reply::AccountActionFailed { message: e.to_string() };
+            };
+            if let Err(err) = client.login(user, pass.expose()) {
+                return Reply::AccountActionFailed { message: err.to_string() };
+            }
+            call(client)
+        }
+        Err(Error::Http(_)) => {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            call(client)
+        }
+        other => other,
+    };
+    match failed {
+        Ok(reply) => reply,
+        Err(e) => Reply::AccountActionFailed { message: e.to_string() },
+    }
+}
+
 fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Quality, user_agent: &str) {
     let mut client = Client::new(user_agent);
     client.set_quality(quality);
@@ -698,23 +735,22 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                         daily_skip_limit: client.account.daily_skip_limit,
                         station_skip_limit: client.account.station_skip_limit,
                         explicit_filter: client.account.explicit_filter,
+                        tz_offset: client.account.tz_offset,
                     }
                 }
                 Err(e) => Reply::LoginFailed { wrong_password: e == Error::WrongLogin, message: e.to_string() },
             },
             Request::SetExplicitFilter { username, password, enable } => {
-                let reply = match client.set_explicit_filter(&username, password.expose(), enable) {
-                    Ok(on) => Reply::ExplicitFilter(on),
-                    Err(e) => Reply::AccountActionFailed { message: e.to_string() },
-                };
+                let reply = account_once(&mut client, login.as_ref(), |c| {
+                    c.set_explicit_filter(&username, password.expose(), enable).map(Reply::ExplicitFilter)
+                });
                 drop(password);
                 reply
             }
             Request::LogoutOtherDevices { password } => {
-                let reply = match client.logout_other_devices(password.expose()) {
-                    Ok(()) => Reply::OtherDevicesLoggedOut,
-                    Err(e) => Reply::AccountActionFailed { message: e.to_string() },
-                };
+                let reply = account_once(&mut client, login.as_ref(), |c| {
+                    c.logout_other_devices(password.expose()).map(|()| Reply::OtherDevicesLoggedOut)
+                });
                 drop(password);
                 reply
             }

@@ -10,10 +10,10 @@
 //! Domain helpers live beside this file (`account`, `stations`, `playback`,
 //! `reply`, …) as more `impl App` blocks — one `App`, split for reading.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -413,11 +413,13 @@ pub const SLEEP_FADE: Duration = Duration::from_secs(10);
 pub struct SkipBook {
     daily_limit: Option<u32>,
     station_limit: Option<u32>,
-    /// UTC day `daily_used` belongs to (`YYYY-MM-DD`).
+    /// Day `daily_used` belongs to (`YYYY-MM-DD`), in the account zone or local time.
     day: String,
     daily_used: u32,
-    /// Station id and the instants a counted skip happened.
-    stations: Vec<(String, Vec<std::time::Instant>)>,
+    /// `Some`: seconds east of UTC from login. `None`: the computer's timezone.
+    tz_offset: Option<i32>,
+    /// Station id and the wall-clock time of each counted skip.
+    stations: HashMap<String, Vec<SystemTime>>,
 }
 
 impl SkipBook {
@@ -426,37 +428,52 @@ impl SkipBook {
         self.station_limit = station;
     }
 
+    pub fn set_zone(&mut self, tz_offset: Option<i32>) {
+        self.tz_offset = tz_offset;
+    }
+
+    fn today(&self) -> String {
+        match self.tz_offset {
+            Some(offset) => crate::time::day_at_offset(offset),
+            None => crate::time::local_day(),
+        }
+    }
+
     fn roll_day(&mut self) {
-        let today = crate::time::today();
+        let today = self.today();
         if self.day != today {
             self.day = today;
             self.daily_used = 0;
         }
     }
 
-    fn hour_used(&mut self, station_id: &str) -> u32 {
-        let now = std::time::Instant::now();
-        let hour = std::time::Duration::from_secs(3600);
-        let entry = self.stations.iter_mut().find(|(id, _)| id == station_id);
-        let Some((_, at)) = entry else { return 0 };
-        at.retain(|t| now.saturating_duration_since(*t) < hour);
-        at.len() as u32
+    /// Drop skips older than an hour, and stations with none left.
+    pub fn prune(&mut self) {
+        let now = SystemTime::now();
+        let hour = Duration::from_secs(3600);
+        self.stations.retain(|_, at| {
+            at.retain(|t| now.duration_since(*t).unwrap_or_default() < hour);
+            !at.is_empty()
+        });
     }
 
-    /// `None` until a login reported a limit. Does not drop old skips; [`SkipBook::spend`] does.
+    fn hour_used(&self, station_id: &str) -> u32 {
+        let now = SystemTime::now();
+        let hour = Duration::from_secs(3600);
+        self.stations
+            .get(station_id)
+            .map(|at| at.iter().filter(|t| now.duration_since(**t).unwrap_or_default() < hour).count() as u32)
+            .unwrap_or(0)
+    }
+
+    /// `None` until a login reported a limit.
     pub fn label(&self, station_id: &str) -> Option<String> {
-        let today = crate::time::today();
-        let daily_used = if self.day == today { self.daily_used } else { 0 };
-        let now = std::time::Instant::now();
-        let hour = std::time::Duration::from_secs(3600);
-        let hour_used = self
-            .stations
-            .iter()
-            .find(|(id, _)| id == station_id)
-            .map(|(_, at)| at.iter().filter(|t| now.saturating_duration_since(**t) < hour).count() as u32)
-            .unwrap_or(0);
+        let daily_used = if self.day == self.today() { self.daily_used } else { 0 };
         let daily = self.daily_limit.map(|n| n.saturating_sub(daily_used));
-        let station = self.station_limit.filter(|_| !station_id.is_empty()).map(|n| n.saturating_sub(hour_used));
+        let station = self
+            .station_limit
+            .filter(|_| !station_id.is_empty())
+            .map(|n| n.saturating_sub(self.hour_used(station_id)));
         match (daily, station) {
             (None, None) => None,
             (Some(d), None) => Some(format!("{d} skips left today")),
@@ -465,9 +482,10 @@ impl SkipBook {
         }
     }
 
-    /// `Ok(false)`: the skip is free. `Ok(true)`: a counted skip was recorded. `Err`: refused.
+    /// `Ok(())` records a counted skip, or a free one. `Err` refuses it.
     pub fn spend(&mut self, station_id: &str, free: bool) -> Result<(), String> {
         self.roll_day();
+        self.prune();
         if free {
             return Ok(());
         }
@@ -486,11 +504,7 @@ impl SkipBook {
             self.daily_used = self.daily_used.saturating_add(1);
         }
         if self.station_limit.is_some() && !station_id.is_empty() {
-            if let Some((_, at)) = self.stations.iter_mut().find(|(id, _)| id == station_id) {
-                at.push(std::time::Instant::now());
-            } else {
-                self.stations.push((station_id.to_owned(), vec![std::time::Instant::now()]));
-            }
+            self.stations.entry(station_id.to_owned()).or_default().push(SystemTime::now());
         }
         Ok(())
     }
@@ -1173,6 +1187,8 @@ pub struct App {
     resume_skips: bool,
     /// Skips left today and per station this hour, counted here. Pandora does not send a remaining count.
     pub skip_book: SkipBook,
+    /// Skip line for this frame, filled in [`crate::ui::draw`] so the status bar and Now Playing share it.
+    pub skip_caption: Option<String>,
     /// `config.toml` could not be written. Shown until a later save works.
     config_error: Option<String>,
     /// `/` on Stations, Browse, or Settings: the text those lists keep.
@@ -1287,6 +1303,7 @@ impl App {
             skips_left: MAX_SKIPS_PER_TICK,
             resume_skips: false,
             skip_book: SkipBook::default(),
+            skip_caption: None,
             config_error: None,
             list_filter: String::new(),
             filter_edit: false,
@@ -2094,6 +2111,7 @@ impl App {
         }
         self.sleep_tick();
         self.device_tick();
+        self.skip_book.prune();
         if self.now.as_ref().is_some_and(|s| self.audio.finished(s.length)) {
             if let Some(song) = &self.now {
                 crate::log::log!(
@@ -3343,18 +3361,21 @@ impl App {
             self.status = "Pandora can't rate this song (no track token)".into();
             return;
         }
-        if song.rating == (if positive { Rating::Up } else { Rating::Down }) {
-            let token = song.track_token.clone();
+        let token = song.track_token.clone();
+        let already = song.rating == (if positive { Rating::Up } else { Rating::Down });
+        drop(song);
+        if already {
             return self.clear_thumb(&token);
         }
-        song.rating = if positive { Rating::Up } else { Rating::Down };
-        let request = Request::Rate { track_token: song.track_token.clone(), positive };
-        self.backend.send(request);
-        // Like Pandora: a thumbs down on the playing song skips it.
+        // A thumbs down skips the song. Check the skip budget before the thumb is sent.
+        if !positive && !self.spend_skip() {
+            return;
+        }
+        if let Some(song) = self.now.as_mut() {
+            song.rating = if positive { Rating::Up } else { Rating::Down };
+        }
+        self.backend.send(Request::Rate { track_token: token, positive });
         if !positive {
-            if !self.spend_skip() {
-                return;
-            }
             self.end_song(End::Skipped);
         }
     }

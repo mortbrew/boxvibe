@@ -210,7 +210,9 @@ fn login_ok(token: &str) -> (u16, String) {
     let v = json!({ "authToken": token, "listenerId": "1", "webname": "me",
                     "config": { "branding": "PandoraPlus", "flags": ["noAds", HIFI_FLAG],
                                 "dailySkipLimit": 48, "stationSkipLimit": 6,
-                                "explicitContentFilterEnabled": true } });
+                                "explicitContentFilterEnabled": true },
+                    "zipCode": "94105", "gender": "Female", "birthYear": 1990,
+                    "birthMonth": 2, "birthDay": 3, "timeZoneOffset": -28800 });
     (200, v.to_string())
 }
 
@@ -226,6 +228,8 @@ fn login_sends_the_site_headers_and_reads_the_flags() {
     assert_eq!(c.account.branding, "PandoraPlus");
     assert_eq!((c.account.daily_skip_limit, c.account.station_skip_limit), (Some(48), Some(6)));
     assert_eq!(c.account.explicit_filter, Some(true));
+    assert_eq!(c.account.tz_offset, Some(-28800));
+    assert_eq!(c.account.profile.zip.as_deref(), Some("94105"));
     let seen = seen.lock().unwrap();
     assert_eq!(seen[0].method, "HEAD", "csrftoken first");
     let login = &seen[1];
@@ -257,7 +261,17 @@ fn the_explicit_filter_is_sent_once_and_other_devices_log_out_with_a_password() 
     let seen = seen.lock().unwrap();
     assert_eq!(
         seen[2].body,
-        json!({ "currentUsername": "me@example.com", "currentPassword": "once", "enableExplicitContentFilter": false })
+        json!({
+            "currentUsername": "me@example.com",
+            "currentPassword": "once",
+            "newUsername": "me@example.com",
+            "enableExplicitContentFilter": false,
+            "newZipCode": "94105",
+            "newGender": "Female",
+            "newBirthYear": 1990,
+            "newBirthMonth": 2,
+            "newBirthDay": 3
+        })
     );
     assert_eq!(seen[3].path, "/api/v1/auth/logoutAll");
     assert_eq!(seen[3].body, json!({ "password": "once" }));

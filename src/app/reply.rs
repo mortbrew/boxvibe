@@ -10,8 +10,22 @@ impl App {
             return;
         }
         match reply {
-            Reply::LoggedIn { hifi, daily_skip_limit, station_skip_limit } => {
-                self.reply_logged_in(hifi, daily_skip_limit, station_skip_limit)
+            Reply::LoggedIn { hifi, daily_skip_limit, station_skip_limit, explicit_filter } => {
+                self.reply_logged_in(hifi, daily_skip_limit, station_skip_limit, explicit_filter)
+            }
+            Reply::ExplicitFilter(on) => {
+                self.explicit_filter = on;
+                self.status = match on {
+                    Some(true) => "Explicit filter on: explicit tracks are blocked".into(),
+                    Some(false) => "Explicit filter off".into(),
+                    None => "Explicit filter updated".into(),
+                };
+            }
+            Reply::OtherDevicesLoggedOut => {
+                self.status = "Other devices were logged out. This one stays logged in.".into();
+            }
+            Reply::AccountActionFailed { message } => {
+                self.status = format!("⚠ {message}");
             }
             Reply::LoginFailed { message, wrong_password } => self.reply_login_failed(message, wrong_password),
             Reply::Keychain(reply) => self.on_keychain(reply),

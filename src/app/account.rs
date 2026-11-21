@@ -63,6 +63,20 @@ impl App {
         self.status = "Type your password".into();
     }
 
+    /// Settings → Explicit content filter. The password is for this one call.
+    pub(super) fn ask_explicit_filter(&mut self) {
+        if self.session != Session::LoggedIn {
+            self.status = "Log in before changing the explicit filter".into();
+            return;
+        }
+        let Some(now) = self.explicit_filter else {
+            self.status = "Pandora did not say whether the explicit filter is on".into();
+            return;
+        };
+        self.open_prompt(Prompt::Once(OncePassword::Explicit(!now)));
+        self.status = "Type your password. It is used once and not saved.".into();
+    }
+
     /// The password popup with `typed` already in it (the snapshot screens).
     pub(crate) fn ask_password_for_snapshot(&mut self, typed: &str) {
         self.ask_password();
@@ -180,6 +194,7 @@ impl App {
         self.menu_cursor = 0;
         self.view = View::Settings;
         self.session = Session::LoggedOut;
+        self.explicit_filter = None;
         self.refresh_menu_cache();
         self.forget_saved_password(false);
         self.config.pandora.password.clear();
@@ -198,8 +213,10 @@ impl App {
         hifi: bool,
         daily_skip_limit: Option<u32>,
         station_skip_limit: Option<u32>,
+        explicit_filter: Option<bool>,
     ) {
         self.skip_book.set_limits(daily_skip_limit, station_skip_limit);
+        self.explicit_filter = explicit_filter;
         self.hifi = Some(hifi);
         let first = self.session != Session::LoggedIn;
         self.session = Session::LoggedIn;

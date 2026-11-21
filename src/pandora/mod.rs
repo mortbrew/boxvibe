@@ -308,6 +308,8 @@ pub struct Account {
     pub daily_skip_limit: Option<u32>,
     /// `config.stationSkipLimit`: skips of one station in a rolling hour.
     pub station_skip_limit: Option<u32>,
+    /// `explicitContentFilterEnabled`: `true` blocks explicit tracks. `None` if the login omitted it.
+    pub explicit_filter: Option<bool>,
 }
 
 impl Account {
@@ -918,6 +920,15 @@ fn track_year(v: &Value) -> Option<u16> {
     None
 }
 
+/// `explicitContentFilterEnabled` on the login body, `config`, or a nested `listener`.
+fn explicit_filter_flag(v: &Value) -> Option<bool> {
+    const KEY: &str = "explicitContentFilterEnabled";
+    v.get(KEY)
+        .and_then(Value::as_bool)
+        .or_else(|| v.get("config").and_then(|c| c.get(KEY)).and_then(Value::as_bool))
+        .or_else(|| v.get("listener").and_then(|c| c.get(KEY)).and_then(Value::as_bool))
+}
+
 fn u32_field(v: &Value, key: &str) -> Option<u32> {
     let raw = v.get(key)?;
     let n = raw.as_u64().or_else(|| raw.as_str().and_then(|s| s.trim().parse().ok()))?;
@@ -1126,10 +1137,32 @@ impl Client {
                 .unwrap_or_default(),
             daily_skip_limit: config.and_then(|c| u32_field(c, "dailySkipLimit")),
             station_skip_limit: config.and_then(|c| u32_field(c, "stationSkipLimit")),
+            explicit_filter: explicit_filter_flag(&v),
         };
         self.auth = Some(token);
         // Every station starts over with a new login.
         self.started.clear();
+        Ok(())
+    }
+
+    /// `v1/listener/updateAccount`. The password is only the argument; the caller drops it.
+    pub fn set_explicit_filter(&mut self, username: &str, password: &str, enable: bool) -> Result<Option<bool>, Error> {
+        let v = self.post(
+            "/api/v1/listener/updateAccount",
+            &json!({
+                "currentUsername": username,
+                "currentPassword": password,
+                "enableExplicitContentFilter": enable,
+            }),
+        )?;
+        let reported = explicit_filter_flag(&v).or(Some(enable));
+        self.account.explicit_filter = reported;
+        Ok(reported)
+    }
+
+    /// `v1/auth/logoutAll` from the web client: `{password}` logs out every other device.
+    pub fn logout_other_devices(&mut self, password: &str) -> Result<(), Error> {
+        self.post("/api/v1/auth/logoutAll", &json!({ "password": password }))?;
         Ok(())
     }
 

@@ -1162,6 +1162,43 @@ fn skips_stop_at_the_daily_limit_and_a_free_skip_does_not_count() {
 }
 
 #[test]
+#[test]
+fn the_explicit_filter_asks_for_a_password_that_is_not_kept() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let mut app = demo();
+    app.view = View::Settings;
+    app.focus = Focus::Content;
+    app.explicit_filter = Some(true);
+    app.settings_cursor = Setting::at(Setting::ExplicitFilter);
+    assert_eq!(app.setting_value(Setting::ExplicitFilter), "on · explicit blocked");
+    app.on_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.prompt, Some(Prompt::Once(OncePassword::Explicit(false))));
+    for c in "s3cret".chars() {
+        app.on_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    app.on_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.prompt.is_none());
+    assert!(app.config.pandora.password.is_empty());
+    assert!(!app.status.contains("s3cret"), "{}", app.status);
+    app.settle(std::time::Duration::from_millis(300));
+    assert_eq!(app.explicit_filter, Some(false));
+    assert!(app.status.contains("off"), "{}", app.status);
+
+    app.settings_cursor = Setting::at(Setting::LogOutOthers);
+    app.on_key(KeyEvent::from(KeyCode::Enter));
+    app.on_key(KeyEvent::from(KeyCode::Char('y')));
+    assert_eq!(app.prompt, Some(Prompt::Once(OncePassword::OtherDevices)));
+    for c in "s3cret".chars() {
+        app.on_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    app.on_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.config.pandora.password.is_empty());
+    assert!(!app.status.contains("s3cret"), "{}", app.status);
+    app.settle(std::time::Duration::from_millis(300));
+    assert!(app.status.contains("logged out"), "{}", app.status);
+}
+
+#[test]
 fn log_out_asks_before_it_happens() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent};
     let mut app = demo();

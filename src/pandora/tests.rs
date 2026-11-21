@@ -209,7 +209,8 @@ fn fake_pandora(mut handler: Handler) -> (String, Arc<Mutex<Vec<Seen>>>) {
 fn login_ok(token: &str) -> (u16, String) {
     let v = json!({ "authToken": token, "listenerId": "1", "webname": "me",
                     "config": { "branding": "PandoraPlus", "flags": ["noAds", HIFI_FLAG],
-                                "dailySkipLimit": 48, "stationSkipLimit": 6 } });
+                                "dailySkipLimit": 48, "stationSkipLimit": 6,
+                                "explicitContentFilterEnabled": true } });
     (200, v.to_string())
 }
 
@@ -224,6 +225,7 @@ fn login_sends_the_site_headers_and_reads_the_flags() {
     assert!(c.account.hifi());
     assert_eq!(c.account.branding, "PandoraPlus");
     assert_eq!((c.account.daily_skip_limit, c.account.station_skip_limit), (Some(48), Some(6)));
+    assert_eq!(c.account.explicit_filter, Some(true));
     let seen = seen.lock().unwrap();
     assert_eq!(seen[0].method, "HEAD", "csrftoken first");
     let login = &seen[1];
@@ -236,6 +238,29 @@ fn login_sends_the_site_headers_and_reads_the_flags() {
         login.body,
         json!({ "username": "me@example.com", "password": "pw", "keepLoggedIn": true, "existingAuthToken": null })
     );
+}
+
+#[test]
+fn the_explicit_filter_is_sent_once_and_other_devices_log_out_with_a_password() {
+    let (base, seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        "/api/v1/listener/updateAccount" => {
+            (200, json!({ "explicitContentFilterEnabled": false, "listenerId": "1" }).to_string())
+        }
+        "/api/v1/auth/logoutAll" => (200, "{}".into()),
+        _ => (500, "no".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me@example.com", "pw").unwrap();
+    assert_eq!(c.set_explicit_filter("me@example.com", "once", false).unwrap(), Some(false));
+    c.logout_other_devices("once").unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        seen[2].body,
+        json!({ "currentUsername": "me@example.com", "currentPassword": "once", "enableExplicitContentFilter": false })
+    );
+    assert_eq!(seen[3].path, "/api/v1/auth/logoutAll");
+    assert_eq!(seen[3].body, json!({ "password": "once" }));
 }
 
 #[test]

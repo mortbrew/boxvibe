@@ -136,9 +136,20 @@ pub struct GenreNotice {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A password typed for one Pandora account call. It is not the saved login password.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OncePassword {
+    /// The filter should become this (`true` blocks explicit tracks).
+    Explicit(bool),
+    /// Log out every other device.
+    OtherDevices,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Prompt {
     Email,
     Password,
+    Once(OncePassword),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +158,8 @@ pub enum Setting {
     Password,
     LogIn,
     LogOut,
+    ExplicitFilter,
+    LogOutOthers,
     Quality,
     Volume,
     Autoplay,
@@ -174,11 +187,13 @@ pub enum Setting {
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 35] = [
+    pub const ALL: [(&'static str, Self); 37] = [
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
         ("ACCOUNT", Self::LogOut),
+        ("ACCOUNT", Self::ExplicitFilter),
+        ("ACCOUNT", Self::LogOutOthers),
         ("BOXVIBE", Self::CheckUpdates),
         ("BOXVIBE", Self::GenrePopup),
         ("BOXVIBE", Self::EditFile),
@@ -223,6 +238,8 @@ impl Setting {
             Self::Password => "Saved password",
             Self::LogIn => "Log in",
             Self::LogOut => "Log out",
+            Self::ExplicitFilter => "Explicit content filter",
+            Self::LogOutOthers => "Log out of all other devices",
             Self::Quality => "Audio quality",
             Self::Volume => "Volume",
             Self::Autoplay => "Autoplay last station on open",
@@ -275,7 +292,8 @@ impl Setting {
             Self::RetroMode => Some(("look", "retro_mode")),
             Self::ArtTint => Some(("look", "tint_art_with_theme_colors")),
             Self::Animations => Some(("look", "animations")),
-            Self::Password | Self::LogIn | Self::LogOut | Self::EditFile | Self::MenuEntry => None,
+            Self::Password | Self::LogIn | Self::LogOut | Self::ExplicitFilter | Self::LogOutOthers | Self::EditFile
+            | Self::MenuEntry => None,
         }
     }
 
@@ -291,6 +309,12 @@ impl Setting {
                 "Logs in to Pandora with the email above, and the password from your keychain or typed here."
             }
             Self::LogOut => "Stops the music and removes the saved password from your keychain.",
+            Self::ExplicitFilter => {
+                "On blocks explicit tracks (Pandora's explicitContentFilterEnabled). Enter asks for your password and flips it. The password is not saved."
+            }
+            Self::LogOutOthers => {
+                "Asks, then your password, then logs every other device out of this Pandora account. This computer stays logged in. The password is not saved."
+            }
             Self::Quality => {
                 "high asks for 192 kbps MP3 where your plan has it (Plus, Premium), else 128 kbps MP3; standard asks for 128. A free plan gets 64 kbps HE-AAC whatever you pick, so this is greyed out there and the row says what is really playing. Saved as [playback] audio_quality."
             }
@@ -1172,6 +1196,8 @@ pub struct App {
     pub edit_config: bool,
     /// After a login: whether the plan streams 192 kbps MP3.
     pub hifi: Option<bool>,
+    /// From login: `Some(true)` means the explicit filter is on. Not written to config.
+    pub explicit_filter: Option<bool>,
     /// What Pandora actually sent for the song now playing: its format and
     /// bitrate. `None` until a song plays. The plan's flag says what it
     /// *should* send; this says what it did, which is not always the same.
@@ -1306,6 +1332,7 @@ impl App {
             self_update: Progress::Idle,
             edit_config: false,
             hifi: None,
+            explicit_filter: None,
             stream: None,
             restart: false,
             art: crate::art::Art::default(),
@@ -2206,7 +2233,7 @@ impl App {
             || self.panel.is_some()
             || self.theme_picker.is_some()
             || self.editor.is_some()
-            || self.prompt == Some(Prompt::Password)
+            || matches!(self.prompt, Some(Prompt::Password | Prompt::Once(_)))
     }
 
     pub fn in_songs(&self) -> bool {
@@ -2343,6 +2370,13 @@ impl App {
                 Session::Failed(e) => e.clone(),
             },
             Setting::LogOut => String::new(),
+            Setting::ExplicitFilter => match self.explicit_filter {
+                Some(true) => "on · explicit blocked".into(),
+                Some(false) => "off".into(),
+                None if self.session == Session::LoggedIn => "not reported".into(),
+                None => "not logged in".into(),
+            },
+            Setting::LogOutOthers => String::new(),
             Setting::Quality => self.quality_label(),
             Setting::Volume => format!("{}%", self.config.player.volume),
             Setting::Autoplay => on(self.config.ui.autoplay_last_station),
@@ -2389,9 +2423,12 @@ impl App {
     pub(crate) fn open_prompt(&mut self, prompt: Prompt) {
         self.query = match prompt {
             Prompt::Email => TextInput::new(&self.config.pandora.username),
-            Prompt::Password => TextInput::default(),
+            Prompt::Password | Prompt::Once(_) => TextInput::default(),
         };
-        self.settings_cursor = Setting::at(if prompt == Prompt::Email { Setting::Email } else { Setting::Password });
+        if !matches!(prompt, Prompt::Once(_)) {
+            let row = if prompt == Prompt::Email { Setting::Email } else { Setting::Password };
+            self.settings_cursor = Setting::at(row);
+        }
         self.prompt = Some(prompt);
     }
 
@@ -2401,6 +2438,8 @@ impl App {
             Setting::Password => self.forget_saved_password(true),
             Setting::LogIn => self.log_in(),
             Setting::LogOut => self.ask_logout(),
+            Setting::ExplicitFilter => self.ask_explicit_filter(),
+            Setting::LogOutOthers => self.ask_logout_others(),
             Setting::Quality if self.quality_greyed() => {
                 self.status = "Audio quality is Pandora's on a free plan: 64 kbps HE-AAC".into();
             }
@@ -2610,6 +2649,20 @@ impl App {
                         self.pending_password.typed();
                         self.settings_cursor = Setting::at(Setting::LogIn);
                         self.log_in();
+                    }
+                    Prompt::Once(_) if text.is_empty() => {
+                        self.status = "Password needed".into();
+                    }
+                    Prompt::Once(OncePassword::Explicit(enable)) => {
+                        let username = self.config.pandora.username.trim().to_owned();
+                        let password = Secret::new(text);
+                        self.backend.send(Request::SetExplicitFilter { username, password, enable });
+                        self.status = "Updating the explicit filter…".into();
+                    }
+                    Prompt::Once(OncePassword::OtherDevices) => {
+                        let password = Secret::new(text);
+                        self.backend.send(Request::LogoutOtherDevices { password });
+                        self.status = "Logging out other devices…".into();
                     }
                 }
             }

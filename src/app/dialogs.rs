@@ -16,6 +16,8 @@ use vibekit::dialog::{Ask, Confirm, Dialog, Help, Response};
 pub struct Quit;
 /// Settings → Log out, after the question.
 pub struct LogOutAsk;
+/// Settings → Log out of all other devices.
+pub struct LogOutOthersAsk;
 /// The unpin question: which pin.
 #[derive(Clone, Copy)]
 pub struct Unpin(pub usize);
@@ -89,6 +91,19 @@ impl App {
 
     pub fn logout_asked(&self) -> bool {
         self.dialogs.has::<Ask<LogOutAsk>>()
+    }
+
+    pub fn ask_logout_others(&mut self) {
+        if self.session != Session::LoggedIn {
+            self.status = "Log in before logging out other devices".into();
+            return;
+        }
+        if !self.dialogs.has::<Ask<LogOutOthersAsk>>() {
+            let confirm = Confirm::new("logout-others", "Log out of Pandora on every other device?")
+                .title("Log out of all other devices")
+                .labels("Log out", "Stay");
+            self.push_dialog(Ask { confirm, about: LogOutOthersAsk });
+        }
     }
 
     pub(super) fn ask_unpin(&mut self, at: usize) {
@@ -223,6 +238,7 @@ impl App {
     pub(super) fn dialog_key(&mut self, key: KeyEvent) -> bool {
         // What the top question is about: the stack drops it as it answers.
         let logout = self.dialogs.top::<Ask<LogOutAsk>>().is_some();
+        let logout_others = self.dialogs.top::<Ask<LogOutOthersAsk>>().is_some();
         let unpin = self.dialogs.top::<Ask<Unpin>>().map(|a| a.about);
         let forget_recent = self.dialogs.top::<Ask<ForgetRecent>>().map(|a| a.about);
         let delete = self.dialogs.top::<Ask<StationRef>>().map(|a| a.about.clone());
@@ -280,6 +296,14 @@ impl App {
                 self.log_out();
             } else {
                 self.status = "Staying logged in".into();
+            }
+        }
+        if logout_others && closed {
+            if yes {
+                self.open_prompt(Prompt::Once(OncePassword::OtherDevices));
+                self.status = "Type your password. It is used once and not saved.".into();
+            } else {
+                self.status = "Other devices stay logged in".into();
             }
         }
         if let Some(open) = self.dialogs.top_mut::<SystemBox>()

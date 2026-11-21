@@ -244,6 +244,16 @@ pub enum Request {
         generation: u64,
     },
     Quality(Quality),
+    /// Turn Pandora's explicit filter on or off. The password is not kept.
+    SetExplicitFilter {
+        username: String,
+        password: Secret,
+        enable: bool,
+    },
+    /// `v1/auth/logoutAll`: other devices, not this one.
+    LogoutOtherDevices {
+        password: Secret,
+    },
     /// An album cover for Now Playing (its own thread: never waits on audio).
     Art {
         url: String,
@@ -256,6 +266,14 @@ pub enum Reply {
         hifi: bool,
         daily_skip_limit: Option<u32>,
         station_skip_limit: Option<u32>,
+        explicit_filter: Option<bool>,
+    },
+    /// The explicit filter after a successful `updateAccount`.
+    ExplicitFilter(Option<bool>),
+    OtherDevicesLoggedOut,
+    /// A passworded account action failed. The message has no password in it.
+    AccountActionFailed {
+        message: String,
     },
     /// `wrong_password`: Pandora said the email or password is wrong.
     LoginFailed {
@@ -532,7 +550,14 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
     let mut editing = demo::Editing::default();
     for request in requests {
         let reply = match request {
-            Request::Login { .. } => Reply::LoggedIn { hifi: true, daily_skip_limit: None, station_skip_limit: None },
+            Request::Login { .. } => Reply::LoggedIn {
+                hifi: true,
+                daily_skip_limit: None,
+                station_skip_limit: None,
+                explicit_filter: None,
+            },
+            Request::SetExplicitFilter { enable, .. } => Reply::ExplicitFilter(Some(enable)),
+            Request::LogoutOtherDevices { .. } => Reply::OtherDevicesLoggedOut,
             Request::Stations => Reply::Stations(stations.clone()),
             Request::RenameStation { station_id, name } => {
                 match stations.iter_mut().find(|s| s.id == station_id && s.allow_rename) {
@@ -675,10 +700,27 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                         hifi: client.account.hifi(),
                         daily_skip_limit: client.account.daily_skip_limit,
                         station_skip_limit: client.account.station_skip_limit,
+                        explicit_filter: client.account.explicit_filter,
                     }
                 }
                 Err(e) => Reply::LoginFailed { wrong_password: e == Error::WrongLogin, message: e.to_string() },
             },
+            Request::SetExplicitFilter { username, password, enable } => {
+                let reply = match client.set_explicit_filter(&username, password.expose(), enable) {
+                    Ok(on) => Reply::ExplicitFilter(on),
+                    Err(e) => Reply::AccountActionFailed { message: e.to_string() },
+                };
+                drop(password);
+                reply
+            }
+            Request::LogoutOtherDevices { password } => {
+                let reply = match client.logout_other_devices(password.expose()) {
+                    Ok(()) => Reply::OtherDevicesLoggedOut,
+                    Err(e) => Reply::AccountActionFailed { message: e.to_string() },
+                };
+                drop(password);
+                reply
+            }
             Request::Logout => {
                 if let Some((_, pass)) = login.take() {
                     drop(pass); // ZeroizeOnDrop

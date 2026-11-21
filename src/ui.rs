@@ -132,6 +132,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.prompt == Some(Prompt::Password) {
         draw_password_box(frame, app, ic, area);
     }
+    if let Some(Prompt::Once(ask)) = app.prompt {
+        draw_once_password(frame, app, area, ask);
+    }
     if let Some(notice) = &app.genre_notice {
         draw_genre_notice(frame, &p, ic, area, notice);
     }
@@ -2195,12 +2198,38 @@ fn setting_line(app: &App, setting: Setting, selected: bool, width: usize, p: &P
                 Style::new().fg(p.muted)
             }
             (Setting::EditFile, _) => Style::new().fg(p.cyan),
-            (Setting::LogOut, _) => Style::new().fg(p.muted),
+            (Setting::LogOut | Setting::LogOutOthers, _) => Style::new().fg(p.muted),
             _ => Style::new().fg(p.accent),
         };
         return settings_row(setting.label(), &value, value_style, width, selected, p);
     }
     settings_row(setting.label(), &format!("{value} ›"), Style::new().fg(p.accent), width, selected, p)
+}
+
+fn draw_once_password(frame: &mut Frame, app: &App, screen: Rect, ask: OncePassword) {
+    let p = app.palette;
+    let title = match ask {
+        OncePassword::Explicit(true) => "Turn the explicit filter on",
+        OncePassword::Explicit(false) => "Turn the explicit filter off",
+        OncePassword::OtherDevices => "Log out of all other devices",
+    };
+    let width = 62.min(screen.width.saturating_sub(4));
+    let area = dialog::centered(screen, width, 8.min(screen.height));
+    let block = framed()
+        .border_style(Style::new().fg(p.cyan))
+        .title(Span::styled(format!(" {title} "), Style::new().fg(p.cyan).bold()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let (shown, column) = app.query.window(usize::from(inner.width.saturating_sub(2)), true, safe_char_width);
+    let lines = vec![
+        Line::from(Span::styled("  Password is used once and not saved.", Style::new().fg(p.yellow))),
+        Line::raw(""),
+        Line::from(Span::styled(format!("  {shown}"), Style::new().fg(p.fg).bold())),
+        Line::from(Span::styled("  Enter sends it · Esc cancels", Style::new().fg(p.muted))),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+    let x = inner.x + 2 + column as u16;
+    frame.set_cursor_position(Position::new(x.min(area.right().saturating_sub(2)), inner.y + 2));
 }
 
 fn draw_prompt(frame: &mut Frame, app: &App, prompt: Prompt, area: Rect) {

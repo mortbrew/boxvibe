@@ -1162,7 +1162,6 @@ fn skips_stop_at_the_daily_limit_and_a_free_skip_does_not_count() {
 }
 
 #[test]
-#[test]
 fn the_explicit_filter_asks_for_a_password_that_is_not_kept() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent};
     let mut app = demo();

@@ -17,8 +17,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
     App, BrowseRow, BrowseState, Details, Editor, EditorTab, FeedState, Focus, Loaded, MenuItem, OncePassword, Pane,
-    Prompt, Rename,
-    SearchMode, Session, Setting, SongAction, StationSearch, View,
+    Prompt, Rename, SearchMode, Session, Setting, SongAction, StationSearch, View,
 };
 use crate::art::Cover;
 use crate::config::{AlbumArt, BorderStyle, GoodVibes};

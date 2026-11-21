@@ -386,7 +386,8 @@ pub enum Reply {
     },
     /// An answer from the keychain (see [`Backend::keychain`]).
     Keychain(KeychainReply),
-    UpdateFound(Update),
+    /// A newer release, and the changelog lines to show before updating.
+    UpdateFound(Update, Vec<String>),
     UpToDate,
     UpdateProgress(u8),
     SelfUpdated(Result<String, String>),
@@ -498,7 +499,7 @@ impl Backend {
         let tx = self.tx.clone();
         thread::spawn(move || {
             let reply = match update::check() {
-                Checked::Newer(update) => Reply::UpdateFound(update),
+                Checked::Newer(update) => Reply::UpdateFound(update.clone(), update::release_notes(&update.version)),
                 Checked::Latest => Reply::UpToDate,
                 Checked::Unknown => return,
             };

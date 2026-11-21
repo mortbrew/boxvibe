@@ -1034,6 +1034,8 @@ pub struct App {
     pending_password: pending_password::PendingPassword,
     /// A newer release (About shows it).
     pub update: Option<Update>,
+    /// Changelog lines for [`Self::update`]: what the new version adds or fixes.
+    pub update_notes: Vec<String>,
     /// GitHub confirmed this is the latest release.
     pub up_to_date: bool,
     pub self_update: Progress,
@@ -1161,6 +1163,7 @@ impl App {
             keychain_state: KeychainState::Unknown,
             pending_password: pending_password::PendingPassword::default(),
             update: None,
+            update_notes: Vec::new(),
             up_to_date: false,
             self_update: Progress::Idle,
             edit_config: false,

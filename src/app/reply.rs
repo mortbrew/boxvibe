@@ -53,7 +53,7 @@ impl App {
             Reply::Recent { generation, sources } => self.reply_recent(generation, sources),
             Reply::RecentFailed { generation, message } => self.reply_recent_failed(generation, message),
             Reply::Failed { what, message } => self.reply_failed(what, message),
-            Reply::UpdateFound(update) => self.reply_update_found(update),
+            Reply::UpdateFound(update, notes) => self.reply_update_found(update, notes),
             Reply::UpToDate => self.up_to_date = self.update.is_none(),
             Reply::UpdateProgress(percent) => self.reply_update_progress(percent),
             Reply::SelfUpdated(Ok(version)) => {
@@ -108,13 +108,14 @@ impl App {
         self.status = format!("⚠ {}: {message}", what.what());
     }
 
-    fn reply_update_found(&mut self, update: Update) {
+    fn reply_update_found(&mut self, update: Update, notes: Vec<String>) {
         self.status = format!(
             "{} boxvibe {} available · see About",
             crate::icons::icons(self.config.ui.icons).update,
             update.version
         );
         self.update = Some(update);
+        self.update_notes = notes;
     }
 
     fn reply_update_progress(&mut self, percent: u8) {

@@ -2202,6 +2202,12 @@ fn draw_about(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
                     Style::new().fg(p.green).bold(),
                 ),
             ]));
+            if !app.update_notes.is_empty() {
+                lines.push(Line::raw(""));
+                for note in &app.update_notes {
+                    lines.push(Line::from(Span::styled(format!("   • {note}"), Style::new().fg(p.fg))));
+                }
+            }
             lines.push(Line::raw(""));
             // The Update Now button: focused with Tab, pressed with Enter; once
             // the new version is in, it is Restart Now. A package manager owns

@@ -1414,6 +1414,25 @@ fn shift_q_shows_the_quit_box_and_says_q_again_quits() {
 }
 
 #[test]
+fn about_shows_what_changed_before_the_update_button() {
+    let mut app = demo();
+    app.view = View::About;
+    app.focus = Focus::Content;
+    app.update = Some(crate::update::Update {
+        version: "0.6.4".into(),
+        how: String::new(),
+        replace: crate::update::Replace::Ready(String::new()),
+    });
+    app.update_notes = vec!["A podcast episode plays.".into(), "Settings values sit beside their labels.".into()];
+    app.self_update = crate::update::Progress::Done("0.6.4".into());
+    let all = screen(&mut app, 100, 40).0.join("\n");
+    let notes = all.find("A podcast episode plays").expect(&all);
+    let button = all.find("Restart Now").expect(&all);
+    assert!(notes < button, "{all}");
+    assert!(all.contains("Settings values sit beside their labels"), "{all}");
+}
+
+#[test]
 fn the_logo_and_version_sit_on_the_menus_top_border() {
     let mut app = demo();
     app.config.ui.icons = crate::config::IconSet::Unicode;

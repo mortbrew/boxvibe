@@ -1115,6 +1115,52 @@ fn a_dead_device_is_dropped_before_the_song_is_skipped() {
 }
 
 #[test]
+fn a_device_error_does_not_skip_a_song_that_is_still_moving() {
+    let mut app = demo();
+    let token = app.now.as_ref().unwrap().track_token.clone();
+    app.audio.inject_device_error("gone");
+    app.device_tick();
+    assert_eq!(app.now.as_ref().map(|s| s.track_token.clone()).as_deref(), Some(token.as_str()));
+    assert!(app.status.contains("sound device"), "{}", app.status);
+}
+
+#[test]
+fn slash_filters_my_stations_and_o_sorts_by_name() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let mut app = demo();
+    app.view = View::Stations;
+    app.focus = Focus::Content;
+    app.on_key(KeyEvent::from(KeyCode::Char('/')));
+    for c in ['M', '8', '3'] {
+        app.on_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    let names: Vec<_> = app.station_order().iter().map(|&i| app.stations[i].name.as_str()).collect();
+    assert!(names.iter().all(|n| n.to_lowercase().contains("m83")), "{names:?}");
+    app.on_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.list_filter.is_empty());
+    app.on_key(KeyEvent::from(KeyCode::Char('o')));
+    assert_eq!(app.config.ui.station_sort, "name");
+    let order = app.station_order();
+    assert!(app.stations[order[0]].is_shuffle);
+}
+
+#[test]
+fn log_out_asks_before_it_happens() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let mut app = demo();
+    app.view = View::Settings;
+    app.focus = Focus::Content;
+    app.settings_cursor = Setting::at(Setting::LogOut);
+    app.on_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.logout_asked());
+    assert!(matches!(app.session, Session::LoggedIn));
+    app.on_key(KeyEvent::from(KeyCode::Char('n')));
+    assert!(!app.logout_asked());
+    assert!(matches!(app.session, Session::LoggedIn));
+    assert!(app.status.contains("Staying logged in"), "{}", app.status);
+}
+
+#[test]
 fn a_late_download_is_reported_unless_a_newer_song_is_playing() {
     let mut app = demo();
     let current = app.now.as_ref().unwrap().track_token.clone();
@@ -1164,7 +1210,7 @@ fn a_failed_config_save_stays_until_a_save_works() {
     assert!(app.status.contains("not saved"), "{}", app.status);
     app.status = "Playing".into();
     app.tick();
-    assert!(app.status.contains("not saved"), "the warning comes back: {}", app.status);
+    assert!(app.status.contains("Playing") && app.status.contains("not saved"), "a suffix: {}", app.status);
     let file = dir.join("real.toml");
     app.config_path = Some(file.clone());
     app.save(&[("playback", "volume", 41_i64.into())]);

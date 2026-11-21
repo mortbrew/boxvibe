@@ -449,6 +449,10 @@ pub enum Cmd {
     SongMenu,
     Mode,
     Shuffle,
+    /// `/` on My Stations, Browse, or Settings.
+    Filter,
+    /// `o` on My Stations: name, recent, thumbs.
+    Sort,
 }
 
 /// One key and what it does. Shift+letters are the capital letters;
@@ -504,6 +508,8 @@ pub const KEYMAP: &[Binding] = &[
     bind(KeyCode::Char('v'), Cmd::Details),
     bind(KeyCode::Char('e'), Cmd::Edit),
     bind(KeyCode::Char('m'), Cmd::Mode),
+    bind(KeyCode::Char('/'), Cmd::Filter),
+    bind(KeyCode::Char('o'), Cmd::Sort),
     bind(KeyCode::Char('X'), Cmd::Shuffle),
     bind(KeyCode::Char('j'), Cmd::Down),
     bind(KeyCode::Down, Cmd::Down),
@@ -898,6 +904,27 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// wl-copy, else xclip. The caller is a background thread. `osc52\n` means both failed.
+fn copy_link(link: &str) -> String {
+    let tools: [(&str, &[&str]); 2] = [("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])];
+    for (tool, args) in tools {
+        let child = std::process::Command::new(tool)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        if let Ok(mut child) = child {
+            use std::io::Write;
+            let wrote = child.stdin.take().is_some_and(|mut i| i.write_all(link.as_bytes()).is_ok());
+            if wrote && child.wait().is_ok_and(|s| s.success()) {
+                return format!("Copied: {link}");
+            }
+        }
+    }
+    format!("osc52\n{link}")
+}
+
 pub struct App {
     /// Media keys and the desktop's player widget (`None` until main starts it).
     pub mpris: Option<crate::mpris::Mpris>,
@@ -1030,6 +1057,12 @@ pub struct App {
     resume_skips: bool,
     /// `config.toml` could not be written. Shown until a later save works.
     config_error: Option<String>,
+    /// `/` on Stations, Browse, or Settings: the text those lists keep.
+    pub list_filter: String,
+    /// Letters go into [`App::list_filter`] until Enter or Esc.
+    pub filter_edit: bool,
+    /// Clipboard copy started off the UI thread; the next tick reads the result.
+    clipboard: Option<std::sync::mpsc::Receiver<String>>,
     backend: Backend,
     /// Where the Pandora password is kept (see [`crate::keychain`]).
     keychain: Arc<dyn Keychain>,
@@ -1134,6 +1167,9 @@ impl App {
             skips_left: MAX_SKIPS_PER_TICK,
             resume_skips: false,
             config_error: None,
+            list_filter: String::new(),
+            filter_edit: false,
+            clipboard: None,
             sleep: None,
             sleep_pause_next: false,
             splash: None,
@@ -1199,6 +1235,9 @@ impl App {
             mpris: None,
             demo,
         };
+        if !demo {
+            app.restore_place();
+        }
         app.apply_theme();
         app.refresh_menu_cache();
         app.status = ConfigWarning::summary(warnings)
@@ -1346,11 +1385,68 @@ impl App {
         }
     }
 
-    /// Put the failed-save warning back. Other status lines replace it; this
-    /// returns it until a save succeeds.
+    /// Put the failed-save warning back as a suffix. A newer status stays; the
+    /// warning is added until a save succeeds.
     fn stick_config_warning(&mut self) {
-        let Some(err) = &self.config_error else { return };
-        self.status = format!("⚠ Settings were not saved: {err}");
+        let Some(err) = self.config_error.clone() else { return };
+        let suffix = format!("settings not saved: {err}");
+        if self.status.contains("settings not saved") {
+            return;
+        }
+        if self.status.is_empty() {
+            self.status = format!("⚠ {suffix}");
+        } else {
+            self.status = format!("{} · {suffix}", self.status);
+        }
+    }
+
+    /// Last view and pane from config, when the names are ones this version knows.
+    fn restore_place(&mut self) {
+        self.view = match self.config.ui.last_view.as_str() {
+            "stations" => View::Stations,
+            "browse" => View::Browse,
+            "pinned" => View::Pinned,
+            "recent" => View::Recent,
+            "settings" => View::Settings,
+            "notifications" => View::Notifications,
+            "about" => View::About,
+            "player" => View::Player,
+            _ => self.view,
+        };
+        self.pane = match self.config.ui.last_pane.as_str() {
+            "now" => Pane::NowPlaying,
+            "next" => Pane::UpNext,
+            "history" => Pane::History,
+            _ => self.pane,
+        };
+    }
+
+    /// Remember the page and pane. Volume is saved where it changes.
+    fn remember_place(&mut self) {
+        if self.demo || self.config_path.is_none() {
+            return;
+        }
+        let view = match self.view {
+            View::Player => "player",
+            View::Stations => "stations",
+            View::Browse => "browse",
+            View::Pinned => "pinned",
+            View::Recent => "recent",
+            View::Settings => "settings",
+            View::Notifications => "notifications",
+            View::About => "about",
+        };
+        let pane = match self.pane {
+            Pane::NowPlaying => "now",
+            Pane::UpNext => "next",
+            Pane::History => "history",
+        };
+        if self.config.ui.last_view == view && self.config.ui.last_pane == pane {
+            return;
+        }
+        self.config.ui.last_view = view.into();
+        self.config.ui.last_pane = pane.into();
+        self.save(&[("look", "last_view", view.into()), ("look", "last_pane", pane.into())]);
     }
 
     // --- The menu ---
@@ -1506,6 +1602,10 @@ impl App {
     /// Settings or About (menu entry, `O` or `A`): the page, with the keys
     /// on it and its menu entry selected.
     fn show_page(&mut self, view: View) {
+        if self.view != view {
+            self.list_filter.clear();
+            self.filter_edit = false;
+        }
         self.view = view;
         self.point_menu_at_view();
         self.focus = Focus::Content;
@@ -1513,6 +1613,10 @@ impl App {
 
     /// My Stations (menu entry or `S`): the list, with the keys on it.
     fn show_stations(&mut self) {
+        if self.view != View::Stations {
+            self.list_filter.clear();
+            self.filter_edit = false;
+        }
         self.view = View::Stations;
         self.focus = Focus::Content;
         self.on_add_row = false;
@@ -1691,28 +1795,12 @@ impl App {
             self.status = format!("Demo: would copy {link}");
             return;
         }
-        let tools: [(&str, &[&str]); 2] = [("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])];
-        for (tool, args) in tools {
-            let child = std::process::Command::new(tool)
-                .args(args)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-            if let Ok(mut child) = child {
-                use std::io::Write;
-                let wrote = child.stdin.take().is_some_and(|mut i| i.write_all(link.as_bytes()).is_ok());
-                if wrote && child.wait().is_ok_and(|s| s.success()) {
-                    self.status = format!("Copied: {link}");
-                    return;
-                }
-            }
-        }
-        use std::io::Write;
-        let mut out = std::io::stdout();
-        let _ = write!(out, "\x1b]52;c;{}\x07", base64(link.as_bytes()));
-        let _ = out.flush();
-        self.status = format!("Copied (via the terminal): {link}");
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.clipboard = Some(rx);
+        self.status = "Copying…".into();
+        let _ = std::thread::Builder::new().name("clipboard".into()).spawn(move || {
+            let _ = tx.send(copy_link(&link));
+        });
     }
 
     fn show_song_details(&mut self, song: Song, why: bool) {
@@ -1929,6 +2017,24 @@ impl App {
         if self.art.take_dirty() {
             self.mark_draw();
         }
+        if let Some(rx) = &self.clipboard
+            && let Ok(msg) = rx.try_recv()
+        {
+            self.clipboard = None;
+            if let Some(link) = msg.strip_prefix("osc52\n") {
+                use std::io::Write;
+                let mut out = std::io::stdout();
+                let ok = write!(out, "\x1b]52;c;{}\x07", base64(link.as_bytes())).is_ok() && out.flush().is_ok();
+                self.status = if ok {
+                    format!("Copied (via the terminal): {link}")
+                } else {
+                    format!("Copy failed: {link}")
+                };
+            } else {
+                self.status = msg;
+            }
+        }
+        self.remember_place();
         self.stick_config_warning();
     }
 
@@ -2018,6 +2124,70 @@ impl App {
 
     pub fn setting(&self) -> Setting {
         Setting::ALL[self.settings_cursor.min(Setting::ALL.len() - 1)].1
+    }
+
+    /// Settings rows the filter keeps. An empty filter keeps every row.
+    pub fn setting_visible(&self, setting: Setting) -> bool {
+        let q = self.list_filter.trim();
+        q.is_empty() || setting.label().to_lowercase().contains(&q.to_lowercase())
+    }
+
+    fn begin_filter(&mut self) {
+        let here = self.focus == Focus::Content
+            && matches!(self.view, View::Stations | View::Browse | View::Settings);
+        if !here {
+            self.status = "/ filters My Stations, Browse, and Settings".into();
+            return;
+        }
+        self.filter_edit = true;
+        self.status = "Type to filter · Enter keeps it · Esc clears".into();
+    }
+
+    fn filter_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.list_filter.clear();
+                self.filter_edit = false;
+                self.status = "Filter cleared".into();
+            }
+            KeyCode::Enter => {
+                self.filter_edit = false;
+                self.status = if self.list_filter.trim().is_empty() {
+                    "Filter cleared".into()
+                } else {
+                    format!("Filter: {}", self.list_filter)
+                };
+            }
+            KeyCode::Backspace => {
+                self.list_filter.pop();
+            }
+            KeyCode::Char(c)
+                if !key.modifiers.contains(KeyModifiers::CONTROL) && self.list_filter.chars().count() < 40 =>
+            {
+                self.list_filter.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn cycle_station_sort(&mut self) {
+        if !(self.focus == Focus::Content && self.view == View::Stations) {
+            self.status = "o sorts My Stations".into();
+            return;
+        }
+        let next = match self.config.ui.station_sort.as_str() {
+            "name" => "recent",
+            "recent" => "thumbs",
+            _ => "name",
+        };
+        self.config.ui.station_sort = next.into();
+        self.save(&[("look", "station_sort", next.into())]);
+        let label = match next {
+            "name" => "name",
+            "recent" => "recently played",
+            _ => "thumbs in History",
+        };
+        self.status = format!("My Stations: {label}");
     }
 
     /// The Audio quality row: the choice, and what Pandora is really sending.
@@ -2134,7 +2304,7 @@ impl App {
             Setting::Email => self.open_prompt(Prompt::Email),
             Setting::Password => self.forget_saved_password(true),
             Setting::LogIn => self.log_in(),
-            Setting::LogOut => self.log_out(),
+            Setting::LogOut => self.ask_logout(),
             Setting::Quality if self.quality_greyed() => {
                 self.status = "Audio quality is Pandora's on a free plan: 64 kbps HE-AAC".into();
             }
@@ -2398,6 +2568,9 @@ impl App {
         if self.song_menu.is_some() {
             return self.song_menu_key(key);
         }
+        if self.filter_edit {
+            return self.filter_key(key);
+        }
         // Settings rows follow vibekit STYLE: Space/←→/h/l flip toggles; Enter/→/l open pickers.
         if self.focus == Focus::Content && self.view == View::Settings && self.settings_row_key(key) {
             return;
@@ -2511,6 +2684,8 @@ impl App {
                 self.open_modes(station)
             }
             Cmd::Shuffle => self.play_shuffle(),
+            Cmd::Filter => self.begin_filter(),
+            Cmd::Sort => self.cycle_station_sort(),
         }
     }
 
@@ -2789,15 +2964,33 @@ impl App {
         let clamp = |at: usize, len: usize| step(at, len, by);
         match (self.focus, self.view) {
             (Focus::Menu, _) => self.menu_cursor = clamp(self.menu_cursor, self.menu_items().len()),
-            (Focus::Content, View::Settings) => self.settings_cursor = clamp(self.settings_cursor, Setting::ALL.len()),
+            (Focus::Content, View::Settings) => {
+                let len = Setting::ALL.len();
+                if len == 0 {
+                    return;
+                }
+                let mut at = clamp(self.settings_cursor, len);
+                for _ in 0..len {
+                    if self.setting_visible(Setting::ALL[at].1) {
+                        break;
+                    }
+                    at = step(at, len, if by < 0 { -1 } else { 1 });
+                }
+                self.settings_cursor = at;
+            }
             (Focus::Content, View::Player) => self.move_song(by),
             (Focus::Content, View::Stations) => {
-                // The "Add station…" row is the list's first row.
-                let at = if self.on_add_row { 0 } else { self.stations_index() + 1 };
-                let to = clamp(at, self.stations.len() + 1);
+                // The "Add station…" row is the list's first row. Movement stays on the filtered order.
+                let order = self.station_order();
+                let at = if self.on_add_row {
+                    0
+                } else {
+                    order.iter().position(|&i| i == self.stations_index()).map(|p| p + 1).unwrap_or(0)
+                };
+                let to = clamp(at, order.len() + 1);
                 self.on_add_row = to == 0;
                 if to > 0 {
-                    self.stations_cursor = to - 1;
+                    self.stations_cursor = order[to - 1];
                 }
             }
             (Focus::Content, View::Browse) => {

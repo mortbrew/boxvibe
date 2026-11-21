@@ -60,6 +60,13 @@ fn the_bitrate_pandora_reports_is_kept() {
     let mut text = track("Text", "Track");
     text["bitrate"] = json!("192");
     assert_eq!(parse_track(&text, "st").unwrap().bitrate, 192);
+    let mut tagged = track("Tagged", "Track");
+    tagged["albumYear"] = json!(2017);
+    tagged["explicit"] = json!(true);
+    let tagged = parse_track(&tagged, "st").unwrap();
+    assert_eq!(tagged.year, Some(2017));
+    assert!(tagged.explicit);
+    assert_eq!(parse_track(&track("Plain", "Track"), "st").unwrap().year, None);
 
     // Saying nothing is 0, not a guess.
     assert_eq!(parse_track(&track("Quiet", "Track"), "st").unwrap().bitrate, 0);

@@ -54,6 +54,41 @@ impl App {
         self.stations_cursor.min(self.stations.len().saturating_sub(1))
     }
 
+    /// My Stations rows, after sort and the `/` filter. Shuffle stays first when sorting.
+    pub fn station_order(&self) -> Vec<usize> {
+        let mut ix: Vec<usize> = (0..self.stations.len()).collect();
+        let sort = self.config.ui.station_sort.as_str();
+        if matches!(sort, "name" | "recent" | "thumbs") {
+            ix.sort_by(|&a, &b| {
+                let (sa, sb) = (&self.stations[a], &self.stations[b]);
+                match (sa.is_shuffle, sb.is_shuffle) {
+                    (true, false) => return std::cmp::Ordering::Less,
+                    (false, true) => return std::cmp::Ordering::Greater,
+                    _ => {}
+                }
+                let name = sa.name.to_lowercase().cmp(&sb.name.to_lowercase());
+                match sort {
+                    "name" => name,
+                    "recent" => self.recent_rank(&sa.id).cmp(&self.recent_rank(&sb.id)).then(name),
+                    _ => self.thumb_count(&sb.id).cmp(&self.thumb_count(&sa.id)).then(name),
+                }
+            });
+        }
+        let q = self.list_filter.trim().to_lowercase();
+        if !q.is_empty() {
+            ix.retain(|&i| self.stations[i].name.to_lowercase().contains(&q));
+        }
+        ix
+    }
+
+    fn recent_rank(&self, id: &str) -> usize {
+        self.recent.iter().position(|r| r.id == id).unwrap_or(usize::MAX)
+    }
+
+    fn thumb_count(&self, id: &str) -> usize {
+        self.history.iter().filter(|s| s.station_id == id && s.rating != crate::pandora::Rating::None).count()
+    }
+
     pub fn is_favorite(&self, id: &str) -> bool {
         self.config.ui.favorites.iter().any(|f| f.id == id)
     }

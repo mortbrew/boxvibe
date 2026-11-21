@@ -308,6 +308,12 @@ pub struct UiConfig {
     pub art_tint: ArtTint,
     /// Stations starred with `f`, in the order starred: the menu's FAVORITES.
     pub favorites: Vec<Favorite>,
+    /// Last page (`player`, `stations`, `browse`, `settings`, …). Empty keeps the default.
+    pub last_view: String,
+    /// Last Now Playing pane (`now`, `next`, `history`). Empty keeps the default.
+    pub last_pane: String,
+    /// My Stations order: empty (Pandora's order), `name`, `recent`, or `thumbs`.
+    pub station_sort: String,
 }
 
 /// A favorite station: its id to play it, its name to show before the
@@ -386,6 +392,9 @@ impl Default for UiConfig {
             retro_mode: RetroMode::Hd,
             art_tint: ArtTint::Off,
             favorites: Vec::new(),
+            last_view: String::new(),
+            last_pane: String::new(),
+            station_sort: String::new(),
         }
     }
 }
@@ -794,6 +803,9 @@ pub const LAYOUT: &[(&str, &str, &str)] = &[
     ("look", "tint_art_with_theme_colors", "ui"),
     ("look", "animations", "ui"),
     ("look", "boot_screen", "ui"),
+    ("look", "last_view", "ui"),
+    ("look", "last_pane", "ui"),
+    ("look", "station_sort", "ui"),
     ("browse", "artists_picked_for_you", "browse"),
     ("browse", "new_music", "browse"),
     ("browse", "browse_genres", "browse"),

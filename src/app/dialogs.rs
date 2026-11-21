@@ -14,6 +14,8 @@ use vibekit::dialog::{Ask, Confirm, Dialog, Help, Response};
 
 /// The quit question.
 pub struct Quit;
+/// Settings → Log out, after the question.
+pub struct LogOutAsk;
 /// The unpin question: which pin.
 #[derive(Clone, Copy)]
 pub struct Unpin(pub usize);
@@ -75,6 +77,20 @@ impl App {
         self.dialogs.has::<Ask<Quit>>()
     }
 
+    /// Settings → Log out asks first.
+    pub fn ask_logout(&mut self) {
+        if !self.dialogs.has::<Ask<LogOutAsk>>() {
+            let confirm = Confirm::new("logout", "Log out of Pandora on this computer?")
+                .title("Log out")
+                .labels("Log out", "Stay");
+            self.push_dialog(Ask { confirm, about: LogOutAsk });
+        }
+    }
+
+    pub fn logout_asked(&self) -> bool {
+        self.dialogs.has::<Ask<LogOutAsk>>()
+    }
+
     pub(super) fn ask_unpin(&mut self, at: usize) {
         let question = self
             .pins
@@ -126,7 +142,10 @@ impl App {
     pub fn open_help(&mut self) {
         if !self.dialogs.has::<Help>() {
             let help =
-                Help { title: "boxvibe Help".into(), ..Help::new(crate::ui::help_sections(self.config.ui.icons)) };
+                Help {
+                    title: "boxvibe Help".into(),
+                    ..Help::new(crate::ui::help_for_screen(self.config.ui.icons, &crate::ui::key_caps(self)))
+                };
             self.push_dialog(help);
         }
     }
@@ -199,6 +218,7 @@ impl App {
     /// A key for the open dialogs; false if none is open (the key is the app's).
     pub(super) fn dialog_key(&mut self, key: KeyEvent) -> bool {
         // What the top question is about: the stack drops it as it answers.
+        let logout = self.dialogs.top::<Ask<LogOutAsk>>().is_some();
         let unpin = self.dialogs.top::<Ask<Unpin>>().map(|a| a.about);
         let forget_recent = self.dialogs.top::<Ask<ForgetRecent>>().map(|a| a.about);
         let delete = self.dialogs.top::<Ask<StationRef>>().map(|a| a.about.clone());
@@ -250,6 +270,13 @@ impl App {
             && id == "quit"
         {
             self.quit = true;
+        }
+        if logout && closed {
+            if yes {
+                self.log_out();
+            } else {
+                self.status = "Staying logged in".into();
+            }
         }
         if let Some(open) = self.dialogs.top_mut::<SystemBox>()
             && std::mem::take(&mut open.look_again)

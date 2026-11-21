@@ -240,7 +240,25 @@ impl App {
                 rows.push(BrowseRow::Item(item));
             }
         }
-        rows
+        let q = self.list_filter.trim().to_lowercase();
+        if q.is_empty() {
+            return rows;
+        }
+        let mut out = Vec::new();
+        let mut header = None;
+        for row in rows {
+            match row {
+                BrowseRow::Header(_) => header = Some(row),
+                BrowseRow::Item(item) if item.name.to_lowercase().contains(&q) => {
+                    if let Some(h) = header.take() {
+                        out.push(h);
+                    }
+                    out.push(row);
+                }
+                BrowseRow::Item(_) => {}
+            }
+        }
+        out
     }
 
     pub fn browse_index(&self) -> usize {

@@ -158,6 +158,14 @@ impl Audio {
         self.device_error.lock().ok()?.take()
     }
 
+    /// Tests: the next [`Audio::take_device_error`] reports this, as a device callback would.
+    #[cfg(test)]
+    pub fn inject_device_error(&mut self, msg: &str) {
+        if let Ok(mut slot) = self.device_error.lock() {
+            *slot = Some(msg.into());
+        }
+    }
+
     /// Whether the stream has stopped moving (the device went away).
     ///
     /// A reported device error is handled by the caller; this is only the

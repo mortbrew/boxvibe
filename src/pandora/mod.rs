@@ -244,6 +244,10 @@ pub struct Song {
     /// The `feedbackId` of this song's thumb, once Pandora has said it
     /// (addFeedback's answer, or the track's own): what clearing it takes.
     pub feedback_id: String,
+    /// Album year when Pandora sends one (`albumYear` and the same idea under other names).
+    pub year: Option<u16>,
+    /// Explicit tag when Pandora sends one.
+    pub explicit: bool,
 }
 
 /// `[pandora] audio_quality`.
@@ -765,6 +769,8 @@ pub fn parse_track(v: &Value, station_id: &str) -> Option<Song> {
         detail_url: str_of(v, "songDetailURL"),
         artist_music_id: str_of(v, "artistMusicId"),
         length: v.get("trackLength").and_then(Value::as_u64).unwrap_or(0) as u32,
+        year: track_year(v),
+        explicit: track_explicit(v),
         gain: v
             .get("fileGain")
             .and_then(|g| g.as_str().and_then(|s| s.trim().parse().ok()).or(g.as_f64()))
@@ -876,8 +882,30 @@ pub fn parse_episode(v: &Value, asked: &str) -> Option<EpisodePlayback> {
                 .unwrap_or(0.0) as f32,
             rating: Rating::None,
             feedback_id: String::new(),
+            year: track_year(item),
+            explicit: track_explicit(item),
         },
     })
+}
+
+/// Album year from the names Pandora has used. Missing or out of range stays unset.
+fn track_year(v: &Value) -> Option<u16> {
+    for key in ["albumYear", "releaseYear", "albumReleaseYear", "trackYear"] {
+        let Some(raw) = v.get(key) else { continue };
+        let n = raw.as_u64().or_else(|| raw.as_str().and_then(|s| s.trim().parse().ok()));
+        if let Some(n) = n
+            && (1000..3000).contains(&n)
+        {
+            return u16::try_from(n).ok();
+        }
+    }
+    None
+}
+
+fn track_explicit(v: &Value) -> bool {
+    v.get("explicit").and_then(Value::as_bool).unwrap_or(false)
+        || v.get("isExplicit").and_then(Value::as_bool).unwrap_or(false)
+        || str_of(v, "explicitness").eq_ignore_ascii_case("EXPLICIT")
 }
 
 /// The url the player should open: `audioUrl`, else the best entry in `audioUrlMap`.
@@ -1597,6 +1625,9 @@ pub fn with_retries<T>(
             }
             Err(Error::Http(_)) if http_retries < HTTP_RETRIES => {
                 http_retries += 1;
+                // A short pause so a blip is not three requests in the same instant.
+                // Auth and stream-violation retries do not wait.
+                std::thread::sleep(std::time::Duration::from_millis(200));
             }
             other => return other,
         }

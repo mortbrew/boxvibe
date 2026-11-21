@@ -397,6 +397,17 @@ fn is_pua(c: char) -> bool {
     matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD)
 }
 
+fn album_line(song: &crate::pandora::Song) -> String {
+    let mut line = song.album.clone();
+    if let Some(year) = song.year {
+        line = if line.is_empty() { year.to_string() } else { format!("{line} ({year})") };
+    }
+    if song.explicit {
+        line = if line.is_empty() { "explicit".into() } else { format!("{line} · explicit") };
+    }
+    line
+}
+
 fn rating_word<'a>(rating: Rating, p: &Palette, ic: &Icons) -> Span<'a> {
     match rating {
         Rating::Up => Span::styled(format!("{} liked", ic.up), Style::new().fg(p.green).bold()),
@@ -411,7 +422,14 @@ fn rating_word<'a>(rating: Rating, p: &Palette, ic: &Icons) -> Span<'a> {
 /// and "Logged In As: <email>" at its far right.
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette;
-    let color = if app.status.starts_with('⚠') { p.yellow } else { p.fg };
+    let mut shown = app.status.clone();
+    if app.audio_fetch.buffering.is_some() && !shown.to_lowercase().contains("buffering") {
+        shown = if shown.is_empty() { "buffering".into() } else { format!("buffering · {shown}") };
+    }
+    if app.now.is_some() && !app.audio.has_device() && !shown.contains("playing silently") {
+        shown = if shown.is_empty() { "playing silently".into() } else { format!("playing silently · {shown}") };
+    }
+    let color = if shown.starts_with('⚠') || shown.starts_with("buffering") { p.yellow } else { p.fg };
     frame.render_widget(Block::new().bg(p.highlight), area);
     // The right side (sleep timer, look, stream, account) gets at most half
     // the bar, and never less than the status.
@@ -447,7 +465,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     } as u16;
     let right_w = want.min(area.width / 2);
     let [left, right] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(right_w)]).areas(area);
-    let status = fit(&format!(" {}", app.status), left.width.saturating_sub(1) as usize);
+    let status = fit(&format!(" {shown}"), left.width.saturating_sub(1) as usize);
     frame.render_widget(Paragraph::new(Span::styled(status, Style::new().fg(color))), left);
     if right.width <= 2 {
         return;
@@ -921,8 +939,9 @@ fn draw_stations(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let add_row =
         ListItem::new(Line::from(format!(" {} {} Add station…", " ".repeat(c_play), cell(Some("+"), c_kind))))
             .style(Style::new().fg(p.orange).bold());
+    let order = app.station_order();
     let items: Vec<ListItem> = std::iter::once(add_row)
-        .chain(app.stations.iter().map(|s| {
+        .chain(order.iter().filter_map(|&i| app.stations.get(i)).map(|s| {
             let playing = app.current_station.as_deref() == Some(s.id.as_str());
             let icon = if s.is_shuffle {
                 ic.shuffle
@@ -948,7 +967,11 @@ fn draw_stations(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         }))
         .collect();
     let list = List::new(items).highlight_style(selection(&p, focused));
-    let at = if app.on_add_row { 0 } else { app.stations_index() + 1 };
+    let at = if app.on_add_row {
+        0
+    } else {
+        order.iter().position(|&i| i == app.stations_index()).map(|p| p + 1).unwrap_or(0)
+    };
     let mut state = ListState::default().with_selected(Some(at));
     frame.render_stateful_widget(list, inner, &mut state);
 }
@@ -1686,7 +1709,7 @@ fn draw_now_playing(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
             label(if episode { "show" } else { "artist" }),
             Span::styled(fit(&song.artist, w.saturating_sub(9)), Style::new().fg(p.cyan).bold()),
         ]),
-        Line::from(vec![label("album"), Span::styled(fit(&song.album, w.saturating_sub(9)), Style::new().fg(p.fg))]),
+        Line::from(vec![label("album"), Span::styled(fit(&album_line(song), w.saturating_sub(9)), Style::new().fg(p.fg))]),
         Line::from(vec![label("rating"), rating_word(song.rating, &p, ic)]),
         Line::from(vec![label("state"), state]),
     ];
@@ -2020,6 +2043,9 @@ fn draw_settings(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let mut selected_item = 0;
     let mut group = "";
     for (i, (g, setting)) in Setting::ALL.iter().enumerate() {
+        if !app.list_filter.trim().is_empty() && !app.setting_visible(*setting) {
+            continue;
+        }
         if *g != group {
             if !group.is_empty() {
                 items.push(ListItem::new(""));
@@ -2387,6 +2413,9 @@ fn popup_key_caps(app: &App) -> Option<Vec<(&'static str, &'static str)>> {
     if app.quit_asked() {
         return Some(vec![("Q y", "Yes, Quit"), ("n Esc", "No"), ("← → Enter", "Choose")]);
     }
+    if app.logout_asked() {
+        return Some(vec![("y", "Log out"), ("n Esc", "Stay"), ("← → Enter", "Choose")]);
+    }
     if app.details().is_some() {
         return Some(vec![("Esc", "Close")]);
     }
@@ -2398,6 +2427,9 @@ fn popup_key_caps(app: &App) -> Option<Vec<(&'static str, &'static str)>> {
 
 /// The key bar for the page on screen: what the focused pane offers.
 fn page_key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
+    if app.filter_edit {
+        return vec![("type", "Filter"), ("Enter", "Keep"), ("Esc", "Clear"), ("Ctrl+c", "Quit")];
+    }
     let pause = if app.audio.is_paused() { "Play" } else { "Pause" };
     // A key is hinted only where it does something: what each one acts on
     // (a station row, a song row, the playing song) has to be there.
@@ -2568,6 +2600,12 @@ fn page_key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if song_menu_here {
         keys.push((".", "Song Menu"));
     }
+    if app.focus == Focus::Content && matches!(app.view, View::Stations | View::Browse | View::Settings) {
+        keys.push(("/", "Filter"));
+    }
+    if app.focus == Focus::Content && app.view == View::Stations {
+        keys.push(("o", "Sort"));
+    }
     keys.extend([("⇧←→", "Volume"), ("?", "Help"), ("Q", "Quit")]);
     keys
 }
@@ -2691,6 +2729,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("", "Seeds: the artists, songs and genres it plays music like; a adds one, x removes one (one stays)"),
             ("", "Thumbs Up / Down: songs you rated and the day you thumbed each, one list each; x takes one back"),
             ("j k ↑ ↓", "move in the list"),
+            ("/ o", "filter this list (Stations, Browse, Settings) · sort My Stations by name, recent, or thumbs"),
             ("Enter", "play the station · open Settings / About"),
         ],
     ),
@@ -2731,6 +2770,45 @@ pub fn help_sections(icon_set: crate::config::IconSet) -> Vec<Section> {
             (ic.own_station, "a station you made: you can rename, edit and delete it"),
         ],
     ));
+    sections.push(Section::new("MORE", &[("Shift+O", HELP_FOOTER.trim())]));
+    sections
+}
+
+/// Help for the screen that is open: pane keys that do nothing here move to
+/// NOT ON THIS SCREEN. Vibekit paints every key the same, so the section is
+/// how a dead key is set apart.
+pub fn help_for_screen(icon_set: crate::config::IconSet, live: &[(&str, &str)]) -> Vec<Section> {
+    let blob = live.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(" ");
+    let pane = ["a", "e", "r", "x", "v", "m", "f", "l", "b", "/", "o"];
+    let mut sections = Vec::new();
+    let mut dead = Vec::new();
+    for (name, keys) in HELP {
+        let mut keep = Vec::new();
+        for (k, d) in *keys {
+            let tokens: Vec<&str> = k.split_whitespace().filter(|t| !t.is_empty()).collect();
+            let only_pane = !tokens.is_empty() && tokens.iter().all(|t| pane.contains(t));
+            let shown = tokens.iter().any(|t| blob.contains(t));
+            if only_pane && !shown {
+                dead.push(((*k).to_owned(), format!("not on this screen — {d}")));
+            } else {
+                keep.push(((*k).to_owned(), (*d).to_owned()));
+            }
+        }
+        if !keep.is_empty() {
+            sections.push(Section { title: (*name).to_owned(), keys: keep });
+        }
+    }
+    let ic = icons(icon_set);
+    sections.push(Section::new(
+        "STATION ICONS (right after the star)",
+        &[
+            (ic.genre_station, "genre station: made by Pandora, so it can't be renamed or edited (it can be deleted)"),
+            (ic.own_station, "a station you made: you can rename, edit and delete it"),
+        ],
+    ));
+    if !dead.is_empty() {
+        sections.push(Section { title: "NOT ON THIS SCREEN".into(), keys: dead });
+    }
     sections.push(Section::new("MORE", &[("Shift+O", HELP_FOOTER.trim())]));
     sections
 }

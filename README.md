@@ -185,6 +185,8 @@ The bottom bar shows what works right now, and `?` lists everything.
 | `j` `k` `↑` `↓` · `Tab` · `Esc` | move · next pane · back to the menu |
 | `P` `S` `G` `O` `A` `F` | Now Playing, My Stations, Genres, Settings, About, Favorites |
 | `a` `e` `r` `x` `v` `m` | add, edit, rename, delete, details, mode for a station |
+| `/` | filter My Stations, Browse, or Settings (type, Enter keeps it, Esc clears) |
+| `o` | sort My Stations by name, recently played, or thumbs in History (saved) |
 | `f` · `I` · `X` | favorite a station · pin a song · Shuffle |
 | `C` `R` `H` | album art (picture / off) · Retro level · tint |
 | `B` | sleep timer |
@@ -242,6 +244,9 @@ retro_mode = "hd"              # hd | 64bit | 32bit | 16bit | 8bit | 4bit | 2bit
 tint_art_with_theme_colors = "off"   # Settings → Tint art with theme colors: off | duotone | palette: recolour the cover with the theme's colours
 animations = true              # false: no motion (the 2 second boot screen is skipped); Settings → LOOK → Animations
 boot_screen = true             # Settings → Boot screen: the 2 second boxvibe boot screen (any key skips it)
+last_view = ""                 # the page you left: player, stations, browse, pinned, recent, settings, notifications, about
+last_pane = ""                 # Now Playing pane: now, next, history
+station_sort = ""              # My Stations: empty keeps Pandora's order; name | recent | thumbs (`o` cycles the three)
 ```
 
 The 0.1–0.3 files had `[pandora]`, `[player]` and `[ui]` tables. They still

@@ -235,19 +235,25 @@ impl App {
         if why.is_none() && !stalled {
             return;
         }
+        let playing = self.audio.is_active();
         if let Some(why) = why {
             crate::log::log!("device: {why}");
             self.status = format!("⚠ The sound device stopped ({why})");
-        } else {
-            crate::log::log!("device: the stream stopped moving: skipping");
-            self.status = "⚠ The sound device stopped: skipping".into();
         }
-        let playing = self.audio.is_active();
+        if stalled {
+            crate::log::log!("device: the stream stopped moving: skipping");
+            if self.status.is_empty() {
+                self.status = "⚠ The sound device stopped: skipping".into();
+            } else if !self.status.contains("skipping") {
+                self.status = format!("{} · skipping", self.status);
+            }
+        }
         self.audio.recover();
         if !self.audio.has_device() && !self.status.contains("playing silently") {
             self.status = format!("{} · playing silently", self.status);
         }
-        if playing {
+        // A device error reopens the device. The song is skipped only when it had actually stalled.
+        if stalled && playing {
             self.advance();
         }
     }
@@ -288,17 +294,30 @@ impl App {
 
     pub(super) fn notify(&self, song: &Song) {
         // Tests make non-demo apps that play songs: without this they would
-        // put a real notification on the screen for every one.
-        if self.demo || cfg!(test) || !self.config.ui.notifications {
+        // put a real notification on the screen for every one. Ads are never announced.
+        if self.demo || cfg!(test) || !self.config.ui.notifications || matches!(self.ad, AdPhase::Playing(_)) {
             return;
         }
-        let mut command = std::process::Command::new("notify-send");
-        command
-            .args(["-a", "boxvibe", "-t", "4000", &song.title, &format!("{} — {}", song.artist, song.album)])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        let _ = crate::proc::detached(command);
+        let title = song.title.clone();
+        let body = format!("{} — {}", song.artist, song.album);
+        let icon = crate::art::cache_dir().and_then(|dir| {
+            let path = crate::art::cache_path(&dir, &song.cover_art_url);
+            path.is_file().then_some(path)
+        });
+        let _ = std::thread::Builder::new().name("notify".into()).spawn(move || {
+            let mut command = std::process::Command::new("notify-send");
+            command.args(["-a", "boxvibe", "-t", "4000"]);
+            if let Some(path) = &icon {
+                command.arg("-i").arg(path);
+            }
+            command
+                .arg(&title)
+                .arg(&body)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            let _ = command.status();
+        });
     }
 
     // --- Up Next and History ---

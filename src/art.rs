@@ -360,6 +360,8 @@ impl Art {
             return Some(hit);
         }
         if !self.pending.iter().any(|p| p.url == url && p.key == key) {
+            // A newer look for this cover replaces one still in flight.
+            self.pending.retain(|p| p.url != url);
             let (tx, rx) = mpsc::channel();
             let job = PrepJob {
                 image: Arc::clone(image),
@@ -371,8 +373,10 @@ impl Art {
             if prep_sender().send(job).is_err() {
                 let ready = Arc::new(tint(&pixelate(image, look.pixelation), look.tint, &look.palette));
                 self.store(url.into(), key, ready);
+                self.dirty = true;
             } else {
                 self.pending.push(Pending { url: url.into(), key, rx });
+                self.dirty = true;
             }
         }
         self.poll();

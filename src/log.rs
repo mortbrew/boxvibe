@@ -16,6 +16,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 
 /// Past this the log moves to `.old` and starts again.
@@ -46,10 +47,25 @@ pub fn note(args: std::fmt::Arguments<'_>) {
     enqueue(path, CAP, &format!("{} {args}", crate::time::iso_utc(std::time::SystemTime::now())));
 }
 
-/// Hands a line to the log thread. A full queue drops the line: the UI thread
-/// does not wait on disk.
+/// Lines `try_send` could not take. The next line that does fit also writes how many were lost.
+static DROPPED: AtomicU64 = AtomicU64::new(0);
+
+/// Hands a line to the log thread. A full queue drops the line and counts it:
+/// the UI thread does not wait on disk. When a later line fits, one note says
+/// how many were dropped while the queue was full.
 pub fn enqueue(path: &Path, cap: u64, line: &str) {
-    let _ = writer().try_send((path.to_path_buf(), cap, line.to_owned()));
+    let tx = writer();
+    if tx.try_send((path.to_path_buf(), cap, line.to_owned())).is_err() {
+        DROPPED.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    let n = DROPPED.swap(0, Ordering::Relaxed);
+    if n > 0 {
+        let note = format!("dropped {n} log lines while the log was busy");
+        if tx.try_send((path.to_path_buf(), cap, note)).is_err() {
+            DROPPED.fetch_add(n.saturating_add(1), Ordering::Relaxed);
+        }
+    }
 }
 
 fn writer() -> &'static mpsc::SyncSender<(PathBuf, u64, String)> {

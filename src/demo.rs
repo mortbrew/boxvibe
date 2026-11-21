@@ -29,6 +29,8 @@ pub fn episode(source_id: &str, name: &str) -> EpisodePlayback {
             gain: 0.0,
             rating: Rating::None,
             feedback_id: String::new(),
+            year: None,
+            explicit: false,
         },
     }
 }
@@ -121,6 +123,8 @@ pub fn playlist(station_id: &str, round: usize) -> Vec<Song> {
                 gain: 0.0,
                 rating: if n == 0 { Rating::Up } else { Rating::None },
                 feedback_id: if n == 0 { format!("demo-fb-{round}-{i}") } else { String::new() },
+                year: None,
+                explicit: false,
             }
         })
         .collect()

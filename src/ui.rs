@@ -16,7 +16,8 @@ use ratatui::widgets::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
-    App, BrowseRow, BrowseState, Details, Editor, EditorTab, FeedState, Focus, Loaded, MenuItem, Pane, Prompt, Rename,
+    App, BrowseRow, BrowseState, Details, Editor, EditorTab, FeedState, Focus, Loaded, MenuItem, OncePassword, Pane,
+    Prompt, Rename,
     SearchMode, Session, Setting, SongAction, StationSearch, View,
 };
 use crate::art::Cover;
@@ -2237,6 +2238,7 @@ fn draw_prompt(frame: &mut Frame, app: &App, prompt: Prompt, area: Rect) {
     let (label, mask) = match prompt {
         Prompt::Email => ("Pandora email", false),
         Prompt::Password => ("Password · Enter logs in", true),
+        Prompt::Once(_) => ("Password", true),
     };
     let (shown, column) = app.query.window(usize::from(area.width.saturating_sub(3)), mask, safe_char_width);
     let block = framed()

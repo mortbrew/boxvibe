@@ -550,11 +550,13 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
     let mut editing = demo::Editing::default();
     for request in requests {
         let reply = match request {
-            Request::Login { .. } => Reply::LoggedIn {
-                hifi: true,
-                daily_skip_limit: None,
-                station_skip_limit: None,
-                explicit_filter: None,
+            Request::Login { .. } => {
+                Reply::LoggedIn {
+                    hifi: true,
+                    daily_skip_limit: None,
+                    station_skip_limit: None,
+                    explicit_filter: None,
+                }
             },
             Request::SetExplicitFilter { enable, .. } => Reply::ExplicitFilter(Some(enable)),
             Request::LogoutOtherDevices { .. } => Reply::OtherDevicesLoggedOut,

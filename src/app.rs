@@ -135,7 +135,6 @@ pub struct GenreNotice {
     pub dont_show: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// A password typed for one Pandora account call. It is not the saved login password.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OncePassword {
@@ -292,7 +291,12 @@ impl Setting {
             Self::RetroMode => Some(("look", "retro_mode")),
             Self::ArtTint => Some(("look", "tint_art_with_theme_colors")),
             Self::Animations => Some(("look", "animations")),
-            Self::Password | Self::LogIn | Self::LogOut | Self::ExplicitFilter | Self::LogOutOthers | Self::EditFile
+            Self::Password
+            | Self::LogIn
+            | Self::LogOut
+            | Self::ExplicitFilter
+            | Self::LogOutOthers
+            | Self::EditFile
             | Self::MenuEntry => None,
         }
     }

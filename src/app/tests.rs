@@ -1161,6 +1161,7 @@ fn skips_stop_at_the_daily_limit_and_a_free_skip_does_not_count() {
     assert!(app.spend_skip(), "a free skip is not counted");
 }
 
+#[test]
 fn log_out_asks_before_it_happens() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent};
     let mut app = demo();

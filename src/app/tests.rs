@@ -753,13 +753,8 @@ fn f_stars_stations_into_a_favorites_section_that_plays_them() {
     let third = app.stations[2].clone();
     assert!(app.is_favorite(&third.id));
     // The demo's recently played answer lands during `settle`, above Pinned.
-    let mut want = vec![
-        MenuItem::Stations,
-        MenuItem::RecentlyPlayed,
-        MenuItem::Followed,
-        MenuItem::Thumbs,
-        MenuItem::Pinned,
-    ];
+    let mut want =
+        vec![MenuItem::Stations, MenuItem::RecentlyPlayed, MenuItem::Followed, MenuItem::Thumbs, MenuItem::Pinned];
     want.extend((0..config::BROWSE_SECTIONS.len()).map(MenuItem::BrowsePin));
     want.extend([MenuItem::Favorite(0), MenuItem::Settings, MenuItem::Notifications, MenuItem::About, MenuItem::Quit]);
     assert_eq!(app.menu_items(), want);

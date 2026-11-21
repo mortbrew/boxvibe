@@ -335,11 +335,7 @@ impl App {
                     if let Some(source_id) = self.episode_source.clone() {
                         let elapsed = self.audio.position().as_secs();
                         self.last_progress = Some(std::time::Instant::now());
-                        self.backend.send(Request::EpisodeStarted {
-                            source_id,
-                            index: self.episode_index,
-                            elapsed,
-                        });
+                        self.backend.send(Request::EpisodeStarted { source_id, index: self.episode_index, elapsed });
                     }
                 } else if let Some(song) = &self.now {
                     self.backend.send(Request::Started { track_token: song.track_token.clone() });

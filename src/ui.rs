@@ -1062,7 +1062,7 @@ fn draw_followed(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_thumbs(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette;
     let focused = app.focus == Focus::Content;
-    let block = panel(title("My Thumbs", &p), &p, focused);
+    let block = panel(title("My Thumbs".into(), &p), &p, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if app.thumbs.is_empty() {
@@ -1081,7 +1081,8 @@ fn draw_thumbs(frame: &mut Frame, app: &App, area: Rect) {
                 }
                 Some(tracks) => {
                     for track in tracks {
-                        let who = if track.artist.is_empty() { String::new() } else { format!(" — {}", track.artist) };
+                        let who =
+                            if track.artist.is_empty() { String::new() } else { format!(" — {}", track.artist) };
                         lines.push(Line::from(format!("    {}{who}", track.name)).style(Style::new().fg(p.fg)));
                     }
                 }
@@ -2833,6 +2834,14 @@ fn page_key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
                 }
                 keys.push(("x", "Unpin"));
             }
+            keys.push(("Esc", "Menu"));
+        }
+        (Focus::Content, View::Followed) => {
+            keys.push(("Enter", "Open"));
+            keys.push(("Esc", "Menu"));
+        }
+        (Focus::Content, View::Thumbs) => {
+            keys.push(("Enter", "Show songs"));
             keys.push(("Esc", "Menu"));
         }
         (Focus::Content, View::Recent) => {

@@ -309,10 +309,8 @@ pub fn episode_progress(v: &Value) -> std::collections::HashMap<String, (u64, bo
     map.iter()
         .filter(|(key, _)| key.starts_with("PE:"))
         .map(|(key, val)| {
-            let elapsed = val
-                .get("elapsedTime")
-                .and_then(|n| n.as_u64().or_else(|| n.as_f64().map(|f| f as u64)))
-                .unwrap_or(0);
+            let elapsed =
+                val.get("elapsedTime").and_then(|n| n.as_u64().or_else(|| n.as_f64().map(|f| f as u64))).unwrap_or(0);
             let finished = val.get("isFinished").and_then(Value::as_bool).unwrap_or(false);
             (key.clone(), (elapsed, finished))
         })

@@ -1,6 +1,6 @@
 //! Followed podcasts and the per-station thumbs list (view only).
 
-use crate::backend::{Reply, Request};
+use crate::backend::Request;
 
 use super::App;
 
@@ -59,17 +59,12 @@ impl App {
             if !self.followed.iter().any(|show| show.id == id) {
                 let name = match &self.browse {
                     super::BrowseState::Loaded(sections) => {
-                        sections
-                            .first()
-                            .map(|section| section.title.clone())
-                            .unwrap_or_else(|| "Podcast".into())
+                        sections.first().map(|section| section.title.clone()).unwrap_or_else(|| "Podcast".into())
                     }
                     _ => "Podcast".into(),
                 };
-                self.followed.insert(
-                    0,
-                    crate::pandora::FollowedShow { id: id.clone(), name, publisher: String::new() },
-                );
+                self.followed
+                    .insert(0, crate::pandora::FollowedShow { id: id.clone(), name, publisher: String::new() });
             }
             self.status = "Following".into();
         } else {
@@ -124,9 +119,8 @@ impl App {
         if !self.on_episode || self.audio.is_paused() || !self.audio.is_active() {
             return;
         }
-        let due = self
-            .last_progress
-            .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(self.progress_every));
+        let due =
+            self.last_progress.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(self.progress_every));
         if !due {
             return;
         }

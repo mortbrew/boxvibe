@@ -35,8 +35,8 @@ mod ad;
 mod audio_cache;
 mod audio_fetch;
 mod browse;
-mod collect;
 mod browse_pages;
+mod collect;
 mod dialogs;
 mod editor;
 mod in_flight;
@@ -99,11 +99,11 @@ pub enum Focus {
 }
 
 /// One station's thumbs, tracks filled in when the row is opened.
-struct ThumbGroup {
-    id: String,
-    name: String,
-    total: u32,
-    tracks: Option<Vec<pandora::ThumbTrack>>,
+pub(crate) struct ThumbGroup {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) total: u32,
+    pub(crate) tracks: Option<Vec<crate::pandora::ThumbTrack>>,
 }
 
 /// The menu's entries.
@@ -1314,17 +1314,14 @@ pub struct App {
     show_episodes: Vec<(String, String)>,
     /// `PE:` → (elapsed seconds, finished) from the last show page.
     episode_progress: std::collections::HashMap<String, (u64, bool)>,
-    /// Seconds already heard when this episode started. Added to the player clock.
-    episode_base: u64,
     episode_id: String,
-    episode_index: u64,
     progress_every: u64,
     last_progress: Option<std::time::Instant>,
-    followed: Vec<pandora::FollowedShow>,
-    followed_cursor: usize,
-    badges: std::collections::HashMap<String, String>,
-    thumbs: Vec<ThumbGroup>,
-    thumbs_cursor: usize,
+    pub(crate) followed: Vec<crate::pandora::FollowedShow>,
+    pub(crate) followed_cursor: usize,
+    pub(crate) badges: std::collections::HashMap<String, String>,
+    pub(crate) thumbs: Vec<ThumbGroup>,
+    pub(crate) thumbs_cursor: usize,
 
     /// Station id the skip line was built for, and a stamp of the skip book.
     pub(crate) skip_for: String,
@@ -1471,9 +1468,7 @@ impl App {
             account_edit: None,
             show_episodes: Vec::new(),
             episode_progress: std::collections::HashMap::new(),
-            episode_base: 0,
             episode_id: String::new(),
-            episode_index: 0,
             progress_every: 60,
             last_progress: None,
             followed: Vec::new(),

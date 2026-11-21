@@ -3390,11 +3390,11 @@ impl App {
 
     /// Write any volume still waiting. Quit calls this on this thread after the worker finishes.
     pub(crate) fn flush_volume(&mut self) {
-        if let Some(job) = self.volume_job.take() {
-            if let Ok(Err(error)) = job.join() {
-                self.config_error = Some(error);
-                self.stick_config_warning();
-            }
+        if let Some(job) = self.volume_job.take()
+            && let Ok(Err(error)) = job.join()
+        {
+            self.config_error = Some(error);
+            self.stick_config_warning();
         }
         let Some(volume) = self.pending_volume.take() else {
             self.volume_due = None;

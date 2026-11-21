@@ -2779,34 +2779,37 @@ pub fn help_for_screen(icon_set: crate::config::IconSet, live: &[(&str, &str)], 
     let pane = ["a", "e", "r", "x", "v", "m", "f", "l", "b", "/", "o"];
     let mut sections = Vec::new();
     let mut dead = Vec::new();
-    for (name, keys) in HELP {
+    let mut more = None;
+    for s in help_sections(icon_set) {
+        if s.title == "MORE" {
+            more = Some(s);
+            continue;
+        }
+        if s.title.starts_with("STATION") {
+            sections.push(s);
+            continue;
+        }
         let mut keep = Vec::new();
-        for (k, d) in keys.iter() {
+        for (k, d) in s.keys {
             let tokens: Vec<&str> = k.split_whitespace().filter(|t| !t.is_empty()).collect();
             let only_pane = !tokens.is_empty() && tokens.iter().all(|t| pane.contains(t));
             let shown = tokens.iter().any(|t| blob.contains(t));
             if only_pane && !shown {
-                dead.push(((*k).to_owned(), format!("not on this screen — {d}")));
+                dead.push((k, format!("not on this screen — {d}")));
             } else {
-                keep.push(((*k).to_owned(), (*d).to_owned()));
+                keep.push((k, d));
             }
         }
         if !keep.is_empty() {
-            sections.push(Section { title: (*name).to_owned(), keys: keep });
+            sections.push(Section { title: s.title, keys: keep });
         }
     }
-    let ic = icons(icon_set);
-    sections.push(Section::new(
-        "STATION ICONS (right after the star)",
-        &[
-            (ic.genre_station, "genre station: made by Pandora, so it can't be renamed or edited (it can be deleted)"),
-            (ic.own_station, "a station you made: you can rename, edit and delete it"),
-        ],
-    ));
     if !dead.is_empty() {
         sections.push(Section { title: "NOT ON THIS SCREEN".into(), keys: dead });
     }
-    sections.push(Section::new("MORE", &[("Shift+O", HELP_FOOTER.trim())]));
+    if let Some(more) = more {
+        sections.push(more);
+    }
     sections
 }
 

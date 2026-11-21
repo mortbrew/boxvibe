@@ -599,7 +599,7 @@ fn paint_status(frame: &mut Frame, p: Palette, area: Rect, parts: &StatusParts) 
         return;
     }
     let mut spans = Vec::new();
-    for label in &extra {
+    for label in extra {
         // The look and stream labels share the account's colour; the sleep
         // timer stays yellow.
         let color = if label.starts_with('☾') { p.yellow } else { p.blue };

@@ -77,14 +77,14 @@ impl App {
         self.status = "Type your password. It is used once and not saved.".into();
     }
 
-    fn profile_value(&self, pick: impl FnOnce(&crate::pandora::ListenerProfile) -> Option<String>) -> String {
+    pub(super) fn profile_value(&self, pick: impl FnOnce(&crate::pandora::ListenerProfile) -> Option<String>) -> String {
         if self.session != Session::LoggedIn {
             return "not logged in".into();
         }
         pick(&self.profile).filter(|s| !s.is_empty()).unwrap_or_else(|| "not set".into())
     }
 
-    fn open_profile(&mut self, field: ProfileField) {
+    pub(super) fn open_profile(&mut self, field: ProfileField) {
         if self.session != Session::LoggedIn {
             self.status = "Log in before changing the account".into();
             return;
@@ -93,7 +93,7 @@ impl App {
         self.status = "Type the new value. Your password is asked next and not saved.".into();
     }
 
-    fn open_new_password(&mut self) {
+    pub(super) fn open_new_password(&mut self) {
         if self.session != Session::LoggedIn {
             self.status = "Log in before changing the password".into();
             return;
@@ -103,7 +103,7 @@ impl App {
         self.status = "Type the new password. It is not saved.".into();
     }
 
-    fn took_profile_value(&mut self, field: ProfileField, text: String) {
+    pub(super) fn took_profile_value(&mut self, field: ProfileField, text: String) {
         let text = text.trim().to_owned();
         let edit = match field {
             ProfileField::Zip if text.is_empty() => {
@@ -129,7 +129,7 @@ impl App {
         self.status = "Type your current password. It is used once and not saved.".into();
     }
 
-    fn confirm_new_password(&mut self, again: String) {
+    pub(super) fn confirm_new_password(&mut self, again: String) {
         let Some(first) = self.pending_new_password.take() else {
             self.status = "Type the new password".into();
             return;
@@ -147,7 +147,7 @@ impl App {
         self.status = "Type your current password. It is used once and not saved.".into();
     }
 
-    fn send_account_edit(&mut self, current: Secret) {
+    pub(super) fn send_account_edit(&mut self, current: Secret) {
         let Some(edit) = self.account_edit.take() else {
             self.status = "Nothing to change".into();
             return;

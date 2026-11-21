@@ -259,23 +259,23 @@ fn the_explicit_filter_is_sent_once_and_other_devices_log_out_with_a_password() 
     assert_eq!(c.set_explicit_filter("me@example.com", "once", false).unwrap(), Some(false));
     c.logout_other_devices("once").unwrap();
     {
-    let seen = seen.lock().unwrap();
-    assert_eq!(
-        seen[2].body,
-        json!({
-            "currentUsername": "me@example.com",
-            "currentPassword": "once",
-            "newUsername": "me@example.com",
-            "enableExplicitContentFilter": false,
-            "newZipCode": "94105",
-            "newGender": "Female",
-            "newBirthYear": 1990,
-            "newBirthMonth": 2,
-            "newBirthDay": 3
-        })
-    );
-    assert_eq!(seen[3].path, "/api/v1/auth/logoutAll");
-    assert_eq!(seen[3].body, json!({ "password": "once" }));
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            seen[2].body,
+            json!({
+                "currentUsername": "me@example.com",
+                "currentPassword": "once",
+                "newUsername": "me@example.com",
+                "enableExplicitContentFilter": false,
+                "newZipCode": "94105",
+                "newGender": "Female",
+                "newBirthYear": 1990,
+                "newBirthMonth": 2,
+                "newBirthDay": 3
+            })
+        );
+        assert_eq!(seen[3].path, "/api/v1/auth/logoutAll");
+        assert_eq!(seen[3].body, json!({ "password": "once" }));
     }
     c.update_account(
         "me@example.com",

@@ -596,7 +596,9 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
                         birth_year: Some(year),
                         ..crate::pandora::ListenerProfile::default()
                     },
-                    AccountChange::Password(_) | AccountChange::Explicit(_) => crate::pandora::ListenerProfile::default(),
+                    AccountChange::Password(_) | AccountChange::Explicit(_) => {
+                        crate::pandora::ListenerProfile::default()
+                    }
                 };
                 Reply::AccountSaved { profile, password }
             }
@@ -790,10 +792,8 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
             Request::UpdateAccount { username, password, change } => {
                 let password_change = matches!(change, AccountChange::Password(_));
                 let reply = account_once(&mut client, login.as_ref(), |c| {
-                    c.update_account(&username, password.expose(), &change).map(|(profile, _)| Reply::AccountSaved {
-                        profile,
-                        password: password_change,
-                    })
+                    c.update_account(&username, password.expose(), &change)
+                        .map(|(profile, _)| Reply::AccountSaved { profile, password: password_change })
                 });
                 drop(password);
                 reply

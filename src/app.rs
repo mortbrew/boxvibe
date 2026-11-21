@@ -2355,7 +2355,13 @@ impl App {
             || self.editor.is_some()
             || matches!(
                 self.prompt,
-                Some(Prompt::Password | Prompt::Once(_) | Prompt::Profile(_) | Prompt::NewPassword | Prompt::NewPasswordAgain)
+                Some(
+                    Prompt::Password
+                        | Prompt::Once(_)
+                        | Prompt::Profile(_)
+                        | Prompt::NewPassword
+                        | Prompt::NewPasswordAgain
+                )
             )
     }
 
@@ -2504,7 +2510,11 @@ impl App {
             Setting::Gender => self.profile_value(|p| p.gender.clone()),
             Setting::BirthYear => self.profile_value(|p| p.birth_year.map(|y| y.to_string())),
             Setting::ChangePassword => {
-                if self.session == Session::LoggedIn { "Enter sets a new one".into() } else { "not logged in".into() }
+                if self.session == Session::LoggedIn {
+                    "Enter sets a new one".into()
+                } else {
+                    "not logged in".into()
+                }
             }
             Setting::NextEpisode => on(self.config.player.autoplay_next_episode),
             Setting::Quality => self.quality_label(),

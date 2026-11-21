@@ -426,7 +426,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     if app.audio_fetch.buffering.is_some() && !shown.to_lowercase().contains("buffering") {
         shown = if shown.is_empty() { "buffering".into() } else { format!("buffering · {shown}") };
     }
-    if app.now.is_some() && !app.audio.has_device() && !shown.contains("playing silently") {
+    if app.now.is_some() && app.audio.playing_silently() && !shown.contains("playing silently") {
         shown = if shown.is_empty() { "playing silently".into() } else { format!("playing silently · {shown}") };
     }
     let color = if shown.starts_with('⚠') || shown.starts_with("buffering") { p.yellow } else { p.fg };
@@ -2603,12 +2603,6 @@ fn page_key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if song_menu_here {
         keys.push((".", "Song Menu"));
     }
-    if app.focus == Focus::Content && matches!(app.view, View::Stations | View::Browse | View::Settings) {
-        keys.push(("/", "Filter"));
-    }
-    if app.focus == Focus::Content && app.view == View::Stations {
-        keys.push(("o", "Sort"));
-    }
     keys.extend([("⇧←→", "Volume"), ("?", "Help"), ("Q", "Quit")]);
     keys
 }
@@ -2780,8 +2774,8 @@ pub fn help_sections(icon_set: crate::config::IconSet) -> Vec<Section> {
 /// Help for the screen that is open: pane keys that do nothing here move to
 /// NOT ON THIS SCREEN. Vibekit paints every key the same, so the section is
 /// how a dead key is set apart.
-pub fn help_for_screen(icon_set: crate::config::IconSet, live: &[(&str, &str)]) -> Vec<Section> {
-    let blob = live.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(" ");
+pub fn help_for_screen(icon_set: crate::config::IconSet, live: &[(&str, &str)], also: &str) -> Vec<Section> {
+    let blob = format!("{} {also}", live.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(" "));
     let pane = ["a", "e", "r", "x", "v", "m", "f", "l", "b", "/", "o"];
     let mut sections = Vec::new();
     let mut dead = Vec::new();

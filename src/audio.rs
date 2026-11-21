@@ -149,6 +149,11 @@ impl Audio {
         self.device.is_some()
     }
 
+    /// A real device was wanted and is gone (demo never wanted one).
+    pub fn playing_silently(&self) -> bool {
+        self.want_device && self.device.is_none()
+    }
+
     /// The sound device's last error, once (the stream died under us).
     ///
     /// rodio's default callback prints to stderr, which the interface owns:

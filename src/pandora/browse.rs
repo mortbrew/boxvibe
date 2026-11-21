@@ -82,7 +82,7 @@ impl Client {
         &mut self,
         pandora_id: &str,
         title: &str,
-    ) -> Result<(Vec<BrowseSection>, std::collections::HashMap<String, (u64, bool)>), Error> {
+    ) -> Result<(Vec<BrowseSection>, EpisodeProgress), Error> {
         let listener = self.account.listener_id.clone();
         let v = self.post(
             "/api/v1/aesop/getDetails",
@@ -301,8 +301,11 @@ fn field_text(v: Option<&Value>) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+/// `PE:` → elapsed seconds, and whether the episode is finished.
+pub type EpisodeProgress = std::collections::HashMap<String, (u64, bool)>;
+
 /// `progress` on `aesop/getDetails`: elapsed seconds and whether the episode is finished.
-pub fn episode_progress(v: &Value) -> std::collections::HashMap<String, (u64, bool)> {
+pub fn episode_progress(v: &Value) -> EpisodeProgress {
     let Some(map) = v.get("progress").and_then(Value::as_object) else {
         return std::collections::HashMap::new();
     };

@@ -2990,15 +2990,15 @@ impl App {
             Cmd::Pause => {
                 let was = self.audio.is_paused();
                 self.audio.toggle_pause();
-                if self.on_episode && !was && self.audio.is_paused() {
-                    if let Some(source_id) = self.episode_source.clone() {
-                        self.backend.send(Request::EpisodePause {
-                            source_id,
-                            episode_id: self.episode_id.clone(),
-                            index: self.episode_index,
-                            elapsed: self.audio.position().as_secs(),
-                        });
-                    }
+                if self.on_episode && !was && self.audio.is_paused()
+                    && let Some(source_id) = self.episode_source.clone()
+                {
+                    self.backend.send(Request::EpisodePause {
+                        source_id,
+                        episode_id: self.episode_id.clone(),
+                        index: self.episode_index,
+                        elapsed: self.audio.position().as_secs(),
+                    });
                 }
             }
             Cmd::Skip => self.skip(),

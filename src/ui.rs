@@ -455,9 +455,6 @@ struct StatusParts {
     shown: String,
     warn: bool,
     account: Option<String>,
-    sleep: Option<String>,
-    looks: Vec<String>,
-    stream_label: Option<String>,
     /// Labels that fit this width, already trimmed.
     extra: Vec<String>,
 }
@@ -505,7 +502,7 @@ fn build_status(app: &App, width: u16) -> StatusParts {
     let sleep = sleep_label(app);
     let looks = look_labels(app);
     let stream_label = stream_label(app);
-    let extra = trim_status(room, &account, sleep.clone(), looks.clone(), stream_label.clone());
+    let extra = trim_status(room, &account, sleep, looks, stream_label);
     let (sleep_secs, end_of_song) = match app.sleep {
         Some(crate::app::Sleep::Minutes(..)) => (app.sleep_left().map(|d| d.as_secs()), false),
         Some(crate::app::Sleep::EndOfSong) => (None, true),
@@ -530,9 +527,6 @@ fn build_status(app: &App, width: u16) -> StatusParts {
         shown,
         warn,
         account,
-        sleep,
-        looks,
-        stream_label,
         extra,
     }
 }

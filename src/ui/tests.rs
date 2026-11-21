@@ -616,7 +616,7 @@ fn the_genre_popup_explains_the_problem_and_both_icons() {
         assert!(text.contains("Genre station ─") && text.contains("[ ] Don't show"), "{cols}x{rows}:\n{text}");
         // The hint line is the first to go on a very short screen; the key bar always has the keys.
         assert!(rows < 18 || text.contains("Esc = close"), "{cols}x{rows}:\n{text}");
-        assert!(lines[rows as usize - 1].contains("Esc"), "{cols}x{rows}:\n{text}");
+        assert!(lines[rows as usize - 1].contains("Quit"), "{cols}x{rows}:\n{text}");
     }
 }
 
@@ -772,7 +772,8 @@ fn turning_good_vibes_only_off_asks_first_in_a_risk_popup_that_fits_small_termin
     assert_eq!(app.confirm_good_vibes, Some(GoodVibes::Muted));
     let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("Mute Pandora's ads?") && text.contains("Enter = mute them anyway"), "{text}");
-    assert!(text.contains("gray area") && text.contains("Mute Anyway"), "{text}");
+    assert!(text.contains("gray area"), "{text}");
+    assert!(text.contains(".  Actions") && text.contains("Q  Quit"), "{text}");
     app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.config.player.good_vibes_only, GoodVibes::Muted);
     // Muted → Off asks too.
@@ -782,7 +783,7 @@ fn turning_good_vibes_only_off_asks_first_in_a_risk_popup_that_fits_small_termin
     let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("Turn off Good Vibes Only?") && text.contains("Enter = turn it off anyway"), "{text}");
     assert!(text.contains("Esc = keep it as it was") && !text.contains("http"), "{text}");
-    assert!(text.contains("Turn Off Anyway") && text.contains("Keep As Is"), "the key bar: {text}");
+    assert!(text.contains(".  Actions") && text.contains("Q  Quit"), "the key bar: {text}");
     // The whole risk notice is there, at any size that has room for it.
     for (cols, rows) in [(120u16, 40u16), (80, 24), (60, 20), (50, 16), (40, 16), (40, 14)] {
         let words = good_vibes_popup_words(&mut app, cols, rows).unwrap_or_default();

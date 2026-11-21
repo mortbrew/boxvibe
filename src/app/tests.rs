@@ -190,7 +190,7 @@ fn the_recently_played_row_joins_the_collection_once_pandora_answers() {
     let items = app.menu_items();
     let pinned = items.iter().position(|m| *m == MenuItem::Pinned).expect("Pinned");
     let recent = items.iter().position(|m| *m == MenuItem::RecentlyPlayed).expect("Recently Played");
-    assert_eq!(recent + 1, pinned, "above Pinned, inside MY COLLECTION: {items:?}");
+    assert!(recent < pinned, "above Pinned, inside MY COLLECTION: {items:?}");
     // Nothing asked for yet, or an empty history: no row at all, the way
     // FAVORITES hides.
     let fresh = App::new(Config::default(), None, &[], true);
@@ -655,13 +655,15 @@ fn menu_has_stations_then_settings_about_quit() {
     assert_eq!(items[0], MenuItem::NowPlaying, "a station plays: NOW PLAYING on top");
     assert_eq!(items[1], MenuItem::Stations);
     assert_eq!(items[2], MenuItem::RecentlyPlayed, "Recently Played takes Pinned's old place");
-    assert_eq!(items[3], MenuItem::Pinned);
+    assert_eq!(items[3], MenuItem::Followed);
+    assert_eq!(items[4], MenuItem::Thumbs);
+    assert_eq!(items[5], MenuItem::Pinned);
     let pins = config::BROWSE_SECTIONS.len();
-    assert_eq!(&items[4..4 + pins], &(0..pins).map(MenuItem::BrowsePin).collect::<Vec<_>>()[..]);
+    assert_eq!(&items[6..6 + pins], &(0..pins).map(MenuItem::BrowsePin).collect::<Vec<_>>()[..]);
     assert_eq!(
         items.len(),
-        2 + 1 + 1 + pins + 4,
-        "NOW PLAYING, My Stations, Pinned, Recently Played, all section pins, no favorites"
+        2 + 1 + 2 + 1 + pins + 4,
+        "NOW PLAYING, My Stations, Recently Played, Followed, Thumbs, Pinned, section pins, no favorites"
     );
     assert_eq!(
         &items[items.len() - 4..],
@@ -751,7 +753,13 @@ fn f_stars_stations_into_a_favorites_section_that_plays_them() {
     let third = app.stations[2].clone();
     assert!(app.is_favorite(&third.id));
     // The demo's recently played answer lands during `settle`, above Pinned.
-    let mut want = vec![MenuItem::Stations, MenuItem::RecentlyPlayed, MenuItem::Pinned];
+    let mut want = vec![
+        MenuItem::Stations,
+        MenuItem::RecentlyPlayed,
+        MenuItem::Followed,
+        MenuItem::Thumbs,
+        MenuItem::Pinned,
+    ];
     want.extend((0..config::BROWSE_SECTIONS.len()).map(MenuItem::BrowsePin));
     want.extend([MenuItem::Favorite(0), MenuItem::Settings, MenuItem::Notifications, MenuItem::About, MenuItem::Quit]);
     assert_eq!(app.menu_items(), want);
@@ -3413,8 +3421,10 @@ fn browse_follows_stations_in_the_menu_and_g_opens_browse_genres() {
     let items = app.menu_items();
     let at = items.iter().position(|m| *m == MenuItem::Stations).unwrap();
     assert_eq!(items[at + 1], MenuItem::RecentlyPlayed, "Recently Played sits above Pinned");
-    assert_eq!(items[at + 2], MenuItem::Pinned, "Pinned stays above the Browse sections");
-    assert_eq!(items[at + 3], MenuItem::BrowsePin(0), "section pins follow MY COLLECTION");
+    assert_eq!(items[at + 2], MenuItem::Followed);
+    assert_eq!(items[at + 3], MenuItem::Thumbs);
+    assert_eq!(items[at + 4], MenuItem::Pinned, "Pinned stays above the Browse sections");
+    assert_eq!(items[at + 5], MenuItem::BrowsePin(0), "section pins follow MY COLLECTION");
     assert_eq!(
         items.iter().filter(|m| matches!(m, MenuItem::BrowsePin(_))).count(),
         config::BROWSE_SECTIONS.len(),

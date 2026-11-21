@@ -35,6 +35,7 @@ mod ad;
 mod audio_cache;
 mod audio_fetch;
 mod browse;
+mod collect;
 mod browse_pages;
 mod dialogs;
 mod editor;
@@ -80,6 +81,10 @@ pub enum View {
     /// The account's recently played sources, newest first: MY COLLECTION's
     /// last row, from Pandora's GraphQL API.
     Recent,
+    /// Followed podcasts.
+    Followed,
+    /// Thumbs up, grouped by station. View only.
+    Thumbs,
     Settings,
     /// What the bottom bar said, newest first.
     Notifications,
@@ -91,6 +96,14 @@ pub enum View {
 pub enum Focus {
     Menu,
     Content,
+}
+
+/// One station's thumbs, tracks filled in when the row is opened.
+struct ThumbGroup {
+    id: String,
+    name: String,
+    total: u32,
+    tracks: Option<Vec<pandora::ThumbTrack>>,
 }
 
 /// The menu's entries.
@@ -107,6 +120,8 @@ pub enum MenuItem {
     /// The recently played list. Drawn only once Pandora sent something, so
     /// it hides while empty the way FAVORITES does.
     RecentlyPlayed,
+    Followed,
+    Thumbs,
     /// A starred station, by its index in `[playback] favorites`.
     Favorite(usize),
     Settings,
@@ -1297,6 +1312,20 @@ pub struct App {
     account_edit: Option<AccountEdit>,
     /// Episodes of the show page the current episode came from, in list order.
     show_episodes: Vec<(String, String)>,
+    /// `PE:` → (elapsed seconds, finished) from the last show page.
+    episode_progress: std::collections::HashMap<String, (u64, bool)>,
+    /// Seconds already heard when this episode started. Added to the player clock.
+    episode_base: u64,
+    episode_id: String,
+    episode_index: u64,
+    progress_every: u64,
+    last_progress: Option<std::time::Instant>,
+    followed: Vec<pandora::FollowedShow>,
+    followed_cursor: usize,
+    badges: std::collections::HashMap<String, String>,
+    thumbs: Vec<ThumbGroup>,
+    thumbs_cursor: usize,
+
     /// Station id the skip line was built for, and a stamp of the skip book.
     pub(crate) skip_for: String,
     pub(crate) skip_stamp: u64,
@@ -1441,6 +1470,17 @@ impl App {
             pending_new_password: None,
             account_edit: None,
             show_episodes: Vec::new(),
+            episode_progress: std::collections::HashMap::new(),
+            episode_base: 0,
+            episode_id: String::new(),
+            episode_index: 0,
+            progress_every: 60,
+            last_progress: None,
+            followed: Vec::new(),
+            followed_cursor: 0,
+            badges: std::collections::HashMap::new(),
+            thumbs: Vec::new(),
+            thumbs_cursor: 0,
             skip_for: String::new(),
             skip_stamp: 0,
             stream: None,
@@ -1666,6 +1706,8 @@ impl App {
             View::Browse => "browse",
             View::Pinned => "pinned",
             View::Recent => "recent",
+            View::Followed => "followed",
+            View::Thumbs => "thumbs",
             View::Settings => "settings",
             View::Notifications => "notifications",
             View::About => "about",
@@ -1735,6 +1777,7 @@ impl App {
             // Recently Played sits where Pinned used to, above Pinned. An empty
             // list keeps the row absent. Pinned stays above the Browse sections.
             .chain(recent.then_some(MenuItem::RecentlyPlayed))
+            .chain([MenuItem::Followed, MenuItem::Thumbs])
             .chain(pinned.then_some(MenuItem::Pinned))
             .chain((0..pin_count).map(MenuItem::BrowsePin))
             .chain((0..favs).map(MenuItem::Favorite))
@@ -1782,6 +1825,8 @@ impl App {
             MenuItem::BrowsePin(i) => self.show_browse_pin(i),
             MenuItem::Pinned => self.show_page(View::Pinned),
             MenuItem::RecentlyPlayed => self.show_recently_played(),
+            MenuItem::Followed => self.open_followed(),
+            MenuItem::Thumbs => self.open_thumbs(),
             MenuItem::Favorite(i) => {
                 let Some(fav) = self.config.ui.favorites.get(i).cloned() else { return };
                 match self.stations.iter().position(|s| s.id == fav.id) {
@@ -2167,6 +2212,8 @@ impl App {
             },
             View::Pinned => Some(MenuItem::Pinned),
             View::Recent => Some(MenuItem::RecentlyPlayed),
+            View::Followed => Some(MenuItem::Followed),
+            View::Thumbs => Some(MenuItem::Thumbs),
             View::Player if self.has_now_playing() => Some(MenuItem::NowPlaying),
             View::Player => None,
         };
@@ -2193,6 +2240,7 @@ impl App {
             self.splash = None;
         }
         self.note_status();
+        self.episode_heartbeat();
         while let Ok(reply) = self.backend.replies.try_recv() {
             self.on_reply(reply);
         }
@@ -2944,7 +2992,20 @@ impl App {
             // Only Shift+Q quits, so a stray lowercase q can't end playback.
             Cmd::Quit => self.ask_quit(),
             Cmd::Help => self.open_help(),
-            Cmd::Pause => self.audio.toggle_pause(),
+            Cmd::Pause => {
+                let was = self.audio.is_paused();
+                self.audio.toggle_pause();
+                if self.on_episode && !was && self.audio.is_paused() {
+                    if let Some(source_id) = self.episode_source.clone() {
+                        self.backend.send(Request::EpisodePause {
+                            source_id,
+                            episode_id: self.episode_id.clone(),
+                            index: self.episode_index,
+                            elapsed: self.audio.position().as_secs(),
+                        });
+                    }
+                }
+            }
             Cmd::Skip => self.skip(),
             Cmd::NowPlaying => self.show_now_playing(),
             Cmd::Stations => self.show_stations(),
@@ -3268,6 +3329,11 @@ impl App {
             (Focus::Content, View::Browse) => self.activate_browse_row(),
             (Focus::Content, View::Pinned) => self.open_pin(),
             (Focus::Content, View::Recent) => self.play_recent(),
+            (Focus::Content, View::Followed) => self.open_followed_row(),
+            (Focus::Content, View::Thumbs) => {
+                self.load_thumb_row();
+                self.status = "Thumbs are view only. Playing a song on demand needs Pandora Premium.".into();
+            }
             (Focus::Content, View::Notifications) => {}
             (Focus::Content, View::Player) => {}
         }
@@ -3328,6 +3394,13 @@ impl App {
             }
             (Focus::Content, View::Pinned) => self.pinned_cursor = clamp(self.pinned_cursor, self.pins.len().max(1)),
             (Focus::Content, View::Recent) => self.recent_cursor = clamp(self.recent_cursor, self.recent.len().max(1)),
+            (Focus::Content, View::Followed) => {
+                self.followed_cursor = clamp(self.followed_cursor, self.followed.len().max(1))
+            }
+            (Focus::Content, View::Thumbs) => {
+                self.thumbs_cursor = clamp(self.thumbs_cursor, self.thumbs.len().max(1));
+                self.load_thumb_row();
+            }
         }
     }
 

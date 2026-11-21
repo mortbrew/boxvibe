@@ -78,7 +78,11 @@ impl Client {
     /// `v1/aesop/getDetails`: the episodes of a podcast program (`PC:`).
     ///
     /// The related shelf is `TG:13`, fetched once per login.
-    pub fn podcast_episodes(&mut self, pandora_id: &str, title: &str) -> Result<Vec<BrowseSection>, Error> {
+    pub fn podcast_episodes(
+        &mut self,
+        pandora_id: &str,
+        title: &str,
+    ) -> Result<(Vec<BrowseSection>, std::collections::HashMap<String, (u64, bool)>), Error> {
         let listener = self.account.listener_id.clone();
         let v = self.post(
             "/api/v1/aesop/getDetails",
@@ -102,7 +106,7 @@ impl Client {
             }
         };
         sections.extend(related);
-        Ok(sections)
+        Ok((sections, episode_progress(&v)))
     }
 
     /// `v1/feed/getDirectory` by `directoryId` (the podcast related shelf is `TG:13`).
@@ -295,6 +299,24 @@ fn field_text(v: Option<&Value>) -> Option<String> {
         _ => return None,
     };
     (!text.is_empty()).then_some(text)
+}
+
+/// `progress` on `aesop/getDetails`: elapsed seconds and whether the episode is finished.
+pub fn episode_progress(v: &Value) -> std::collections::HashMap<String, (u64, bool)> {
+    let Some(map) = v.get("progress").and_then(Value::as_object) else {
+        return std::collections::HashMap::new();
+    };
+    map.iter()
+        .filter(|(key, _)| key.starts_with("PE:"))
+        .map(|(key, val)| {
+            let elapsed = val
+                .get("elapsedTime")
+                .and_then(|n| n.as_u64().or_else(|| n.as_f64().map(|f| f as u64)))
+                .unwrap_or(0);
+            let finished = val.get("isFinished").and_then(Value::as_bool).unwrap_or(false);
+            (key.clone(), (elapsed, finished))
+        })
+        .collect()
 }
 
 /// A show from `v1/aesop/getDetails`: header, continue-listening, episodes newest first.

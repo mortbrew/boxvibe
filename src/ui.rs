@@ -106,6 +106,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         View::Browse => draw_browse(frame, app, ic, right),
         View::Pinned => draw_pinned(frame, app, ic, right),
         View::Recent => draw_recent(frame, app, ic, right),
+        View::Followed => draw_followed(frame, app, right),
+        View::Thumbs => draw_thumbs(frame, app, right),
         View::Settings => draw_settings(frame, app, ic, right),
         View::About => draw_about(frame, app, ic, right),
         View::Notifications => draw_notes(frame, app, ic, right),
@@ -715,7 +717,8 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     // and headed like FAVORITES. The pinned Browse sections follow under
     // their own "BROWSE (n)" heading.
     let recent_n = u16::from(app.recent_row());
-    let personal_n = 1 + u16::from(pinned) + recent_n;
+    // Stations, optional recent, followed, thumbs, optional pinned.
+    let personal_n = 1 + recent_n + 2 + u16::from(pinned);
     // Hidden while it has nothing of its own, the way FAVORITES hides.
     let collection_head = !app.stations.is_empty() || (pinned && !app.pins.is_empty()) || app.recent_row();
     // The only rule above MY COLLECTION is the one under NOW PLAYING, so it
@@ -786,6 +789,8 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     if app.recent_row() {
         top.push((MenuItem::RecentlyPlayed, ic.recent, format!("Recently Played ({})", app.recent.len())));
     }
+    top.push((MenuItem::Followed, ic.recent, format!("Followed Podcasts ({})", app.followed.len())));
+    top.push((MenuItem::Thumbs, ic.up, format!("My Thumbs ({})", app.thumbs.len())));
     if pinned {
         let n = if app.pins.is_empty() { String::new() } else { format!(" ({})", app.pins.len()) };
         top.push((MenuItem::Pinned, ic.pin, format!("Pinned{n}")));
@@ -1027,6 +1032,65 @@ fn draw_recent(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     frame.render_stateful_widget(list, inner, &mut state);
 }
 
+fn draw_followed(frame: &mut Frame, app: &App, area: Rect) {
+    let p = app.palette;
+    let focused = app.focus == Focus::Content;
+    let block = panel(title(format!("Followed Podcasts ({})", app.followed.len()), &p), &p, focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if app.followed.is_empty() {
+        frame.render_widget(Paragraph::new(" No followed podcasts. Open a show and press f.").fg(p.muted), inner);
+        return;
+    }
+    let items: Vec<ListItem> = app
+        .followed
+        .iter()
+        .map(|show| {
+            let line = if show.publisher.is_empty() {
+                show.name.clone()
+            } else {
+                format!("{} · {}", show.name, show.publisher)
+            };
+            ListItem::new(Line::from(format!(" {line}"))).style(Style::new().fg(p.fg))
+        })
+        .collect();
+    let list = List::new(items).highlight_style(selection(&p, focused));
+    let mut state = ListState::default().with_selected(Some(app.followed_cursor.min(app.followed.len() - 1)));
+    frame.render_stateful_widget(list, inner, &mut state);
+}
+
+fn draw_thumbs(frame: &mut Frame, app: &App, area: Rect) {
+    let p = app.palette;
+    let focused = app.focus == Focus::Content;
+    let block = panel(title("My Thumbs", &p), &p, focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if app.thumbs.is_empty() {
+        frame.render_widget(Paragraph::new(" No station thumbs yet.").fg(p.muted), inner);
+        return;
+    }
+    let mut lines = Vec::new();
+    for (i, group) in app.thumbs.iter().enumerate() {
+        let mark = if i == app.thumbs_cursor { ">" } else { " " };
+        lines.push(Line::from(format!("{mark} {} ({})", group.name, group.total)).style(Style::new().fg(p.fg).bold()));
+        if i == app.thumbs_cursor {
+            match &group.tracks {
+                None => lines.push(Line::from("    Loading songs…").style(Style::new().fg(p.muted))),
+                Some(tracks) if tracks.is_empty() => {
+                    lines.push(Line::from("    No songs in this list.").style(Style::new().fg(p.muted)))
+                }
+                Some(tracks) => {
+                    for track in tracks {
+                        let who = if track.artist.is_empty() { String::new() } else { format!(" — {}", track.artist) };
+                        lines.push(Line::from(format!("    {}{who}", track.name)).style(Style::new().fg(p.fg)));
+                    }
+                }
+            }
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 // --- Stations ---
 
 /// The icon after a station's star: the boxvibe logo for one of Pandora's
@@ -1157,6 +1221,11 @@ fn draw_browse(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
                 let mark = if item.create_id().is_some() { "▶" } else { "·" };
                 let head = format!("   {mark} ");
                 let name = clean(&item.name);
+                let name = if app.badges.values().any(|id| id == &item.pandora_id) {
+                    format!("New · {name}")
+                } else {
+                    name.to_string()
+                };
                 let mut line = vec![Span::styled(format!("{head}{name}"), Style::new().fg(p.fg))];
                 if !item.detail.is_empty() {
                     let used = safe_width(&head) + safe_width(&name) + 3;

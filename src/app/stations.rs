@@ -96,6 +96,10 @@ impl App {
     /// `f`: stars or unstars the station under the cursor (the list, a
     /// favorite in the menu) or else the one playing; saved as `[playback] favorites`.
     pub(super) fn toggle_favorite(&mut self) {
+        if self.on_podcast() {
+            self.toggle_follow();
+            return;
+        }
         let (id, name) = match (self.focus, self.view, self.menu_selected()) {
             (Focus::Content, View::Stations, _) if self.on_add_row => {
                 self.status = "f stars a station: move onto one".into();

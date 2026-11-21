@@ -51,6 +51,10 @@ impl App {
         self.on_episode = true;
         self.episode_source = Some(played.source_id);
         self.episode_index = played.index;
+        self.episode_id = played.episode_id.clone();
+        self.progress_every = played.progress_every.max(1);
+        self.last_progress = Some(std::time::Instant::now());
+        self.audio.prepare_skip(self.resume_seconds(&played.episode_id));
         if let Some(song) = self.now.take() {
             self.push_history(song);
         }
@@ -320,13 +324,22 @@ impl App {
                 data.as_ref().map_or(0, Vec::len)
             );
         }
+        if !self.on_episode {
+            self.audio.prepare_skip(0);
+        }
         match self.audio.start(data, self.now.as_ref().map_or(0.0, |s| s.gain), false) {
             Ok(()) => {
                 // Pandora counts plays (and skips) from this report, like the website.
                 // An episode uses `event/started`, not the station's `trackStarted`.
                 if self.on_episode {
                     if let Some(source_id) = self.episode_source.clone() {
-                        self.backend.send(Request::EpisodeStarted { source_id, index: self.episode_index });
+                        let elapsed = self.audio.position().as_secs();
+                        self.last_progress = Some(std::time::Instant::now());
+                        self.backend.send(Request::EpisodeStarted {
+                            source_id,
+                            index: self.episode_index,
+                            elapsed,
+                        });
                     }
                 } else if let Some(song) = &self.now {
                     self.backend.send(Request::Started { track_token: song.track_token.clone() });

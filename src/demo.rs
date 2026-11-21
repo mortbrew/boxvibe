@@ -13,6 +13,8 @@ pub fn episode(source_id: &str, name: &str) -> EpisodePlayback {
     EpisodePlayback {
         source_id: "PC:demo".into(),
         index: 0,
+        episode_id: source_id.into(),
+        progress_every: 60,
         song: Song {
             title: name.into(),
             artist: "Crime Junkie".into(),

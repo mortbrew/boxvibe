@@ -62,6 +62,19 @@ impl App {
             Reply::Shuffle(station) => self.shuffle_arrived(station),
             Reply::StationModes { station_id, modes, set } => self.modes_loaded(&station_id, modes, set),
             Reply::Browse { path, sections } => self.browse_loaded(path, sections),
+            Reply::PodcastPage { path, sections, progress } => {
+                self.episode_progress = progress;
+                let show = path.as_deref().and_then(|p| p.strip_prefix("podcast:")).map(str::to_owned);
+                self.browse_loaded(path, sections);
+                if let Some(id) = show {
+                    self.backend.send(Request::Badges { ids: vec![id] });
+                }
+            }
+            Reply::Followed(shows) => self.show_followed(shows),
+            Reply::FollowSet { id, on, message } => self.follow_set(id, on, message),
+            Reply::Badges(badges) => self.show_badges(badges),
+            Reply::Thumbs(lists) => self.show_thumbs(lists),
+            Reply::ThumbTracks { playlist_id, tracks } => self.show_thumb_tracks(playlist_id, tracks),
             Reply::BrowseFailed { path, message } => {
                 let index = path.is_none();
                 self.note_browse_failure(path, message.clone());

@@ -77,7 +77,10 @@ impl App {
         self.status = "Type your password. It is used once and not saved.".into();
     }
 
-    pub(super) fn profile_value(&self, pick: impl FnOnce(&crate::pandora::ListenerProfile) -> Option<String>) -> String {
+    pub(super) fn profile_value(
+        &self,
+        pick: impl FnOnce(&crate::pandora::ListenerProfile) -> Option<String>,
+    ) -> String {
         if self.session != Session::LoggedIn {
             return "not logged in".into();
         }

@@ -99,6 +99,8 @@ pub struct Audio {
     stall: Stall,
     /// `open(false)`: try again after the device dies. Demo stays silent.
     want_device: bool,
+    /// Seconds already heard. Added to the clock, and skipped in the decoder.
+    skip_secs: u64,
     /// Tests: the next `start` calls fail as a zero-sample decode.
     #[cfg(test)]
     pub fail_starts: u32,
@@ -137,6 +139,7 @@ impl Audio {
             problem,
             device_error,
             stall: Stall::default(),
+            skip_secs: 0,
             want_device: !silent,
             #[cfg(test)]
             fail_starts: 0,
@@ -237,7 +240,7 @@ impl Audio {
         self.clock.resume();
         self.stall.reset();
         let (Some(device), Some(data)) = (&self.device, data) else { return Ok(()) };
-        let decoder = with_samples(decoder(data)?)?;
+        let decoder = skip_source(with_samples(decoder(data)?)?, self.skip_secs);
         let player = rodio::Player::connect_new(device.mixer());
         player.set_volume(self.level());
         match self.rate {
@@ -321,11 +324,17 @@ impl Audio {
         self.active
     }
 
+    /// The next `start` begins this far in. Silent playback reports it on the clock.
+    pub fn prepare_skip(&mut self, seconds: u64) {
+        self.skip_secs = seconds;
+    }
+
     pub fn position(&self) -> Duration {
-        match &self.player {
+        let at = match &self.player {
             Some(p) => p.get_pos(),
             None => self.clock.position(),
-        }
+        };
+        at + Duration::from_secs(self.skip_secs)
     }
 
     /// The song played to its end (`length`: what Pandora says it lasts).
@@ -335,7 +344,10 @@ impl Audio {
         }
         match &self.player {
             Some(p) => p.empty(),
-            None => length > 0 && self.clock.position() >= Duration::from_secs(u64::from(length)),
+            None => {
+                let heard = self.clock.position() + Duration::from_secs(self.skip_secs);
+                length > 0 && heard >= Duration::from_secs(u64::from(length))
+            }
         }
     }
 
@@ -812,6 +824,44 @@ fn open_device(device_error: Arc<Mutex<Option<String>>>) -> Result<rodio::MixerD
                 .map(|b| b.with_error_callback(on_error))
                 .and_then(|b| b.open_stream())
         })
+}
+
+/// Drops the first `left` samples so playback starts later. The audio thread does the work.
+struct Skip<S> {
+    left: u64,
+    inner: S,
+}
+
+fn skip_source<S: rodio::Source>(source: S, seconds: u64) -> Skip<S> {
+    let rate = u64::from(source.sample_rate().get());
+    let channels = u64::from(source.channels().get());
+    Skip { left: rate.saturating_mul(channels).saturating_mul(seconds), inner: source }
+}
+
+impl<S: Iterator<Item = rodio::Sample>> Iterator for Skip<S> {
+    type Item = rodio::Sample;
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.left > 0 {
+            self.inner.next()?;
+            self.left -= 1;
+        }
+        self.inner.next()
+    }
+}
+
+impl<S: rodio::Source> rodio::Source for Skip<S> {
+    fn current_span_len(&self) -> Option<usize> {
+        self.inner.current_span_len()
+    }
+    fn channels(&self) -> rodio::ChannelCount {
+        self.inner.channels()
+    }
+    fn sample_rate(&self) -> rodio::SampleRate {
+        self.inner.sample_rate()
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
+    }
 }
 
 /// A source with every sample kept inside ±1.0.

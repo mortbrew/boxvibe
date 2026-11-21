@@ -756,6 +756,10 @@ pub struct EpisodePlayback {
     /// `source.pandoraId` (`PC:…`), else the id that was asked for.
     pub source_id: String,
     pub index: u64,
+    /// `item.pandoraId` (`PE:…`).
+    pub episode_id: String,
+    /// How often to send `event/progress`, from `progressFrequency` (seconds).
+    pub progress_every: u64,
 }
 
 /// One fragment track; `None` for ads, artist and curator messages and
@@ -813,6 +817,127 @@ pub fn parse_track(v: &Value, station_id: &str) -> Option<Song> {
         },
         feedback_id: id_of(v, "feedbackId"),
     })
+}
+
+fn event_body(source_id: &str, index: u64, elapsed: u64, episode_id: Option<&str>) -> Value {
+    let id = device_uuid();
+    let mut body = json!({
+        "deviceUuid": id,
+        "elapsedTime": elapsed,
+        "index": index,
+        "sourceId": source_id,
+        "deviceProperties": {
+            "app_version": AD_APP_VERSION,
+            "device_uuid": id,
+            "device_os": "Linux",
+        },
+    });
+    if let Some(episode) = episode_id {
+        body["pandoraId"] = json!(episode);
+    }
+    body
+}
+
+/// A followed podcast from `collections/getSortedByTypes`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowedShow {
+    pub id: String,
+    pub name: String,
+    pub publisher: String,
+}
+
+/// A station's Thumbs Up playlist. Playing a track is Premium.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThumbList {
+    pub id: String,
+    pub name: String,
+    pub station_id: String,
+    pub total: u32,
+}
+
+/// One thumbed track, for display.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThumbTrack {
+    pub name: String,
+    pub artist: String,
+}
+
+fn parse_followed(v: &Value) -> Vec<FollowedShow> {
+    let notes = v.get("annotations");
+    v.get("items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let id = str_of(item, "pandoraId");
+            if !id.starts_with("PC:") {
+                return None;
+            }
+            let note = notes.and_then(|n| n.get(&id));
+            let name = note.map(|n| str_of(n, "name")).unwrap_or_default();
+            let name = if name.is_empty() { str_of(item, "name") } else { name };
+            if name.is_empty() {
+                return None;
+            }
+            Some(FollowedShow { publisher: note.map(|n| str_of(n, "publisherName")).unwrap_or_default(), id, name })
+        })
+        .collect()
+}
+
+fn parse_badges(v: &Value) -> std::collections::HashMap<String, String> {
+    let Some(map) = v.get("newEpisodeBadge").and_then(Value::as_object) else {
+        return std::collections::HashMap::new();
+    };
+    map.iter()
+        .filter_map(|(id, badge)| {
+            if !badge.get("showBadge").and_then(Value::as_bool).unwrap_or(false) {
+                return None;
+            }
+            let episode = str_of(badge, "podcastEpisodeId");
+            (!episode.is_empty()).then_some((id.clone(), episode))
+        })
+        .collect()
+}
+
+fn parse_thumb_lists(v: &Value) -> Vec<ThumbList> {
+    let Some(notes) = v.get("annotations").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (id, note) in notes {
+        if str_of(note, "linkedType") != "StationThumbs" {
+            continue;
+        }
+        let name = str_of(note, "name");
+        if name.is_empty() {
+            continue;
+        }
+        out.push(ThumbList {
+            id: id.clone(),
+            name,
+            station_id: str_of(note, "linkedSourceId"),
+            total: note.get("totalTracks").and_then(Value::as_u64).unwrap_or(0) as u32,
+        });
+    }
+    out
+}
+
+fn parse_thumb_tracks(v: &Value) -> Vec<ThumbTrack> {
+    let notes = v.get("annotations");
+    v.get("tracks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|track| {
+            let id = str_of(track, "pandoraId");
+            let note = notes.and_then(|n| n.get(&id))?;
+            let name = str_of(note, "name");
+            if name.is_empty() {
+                return None;
+            }
+            Some(ThumbTrack { name, artist: str_of(note, "artistName") })
+        })
+        .collect()
 }
 
 fn playback_body(source_id: &str, device: Option<&str>) -> Value {
@@ -894,6 +1019,8 @@ pub fn parse_episode(v: &Value, asked: &str) -> Option<EpisodePlayback> {
     Some(EpisodePlayback {
         source_id: if source.is_empty() { asked.to_owned() } else { source },
         index: item.get("index").and_then(Value::as_u64).unwrap_or(0),
+        episode_id: if pandora_id.is_empty() { asked.to_owned() } else { pandora_id.clone() },
+        progress_every: item.get("progressFrequency").and_then(Value::as_u64).filter(|n| *n > 0).unwrap_or(60),
         song: Song {
             title,
             artist,
@@ -1609,10 +1736,96 @@ impl Client {
         parse_episode(&v, source_id).ok_or(Error::InvalidResponse)
     }
 
-    /// `v1/event/started`: the episode began, the way `trackStarted` reports a song.
-    pub fn episode_started(&mut self, source_id: &str, index: u64) -> Result<(), Error> {
-        self.post("/api/v1/event/started", &json!({ "sourceId": source_id, "index": index, "elapsedTime": 0 }))
-            .map(|_| ())
+    /// `v1/event/started`: the episode began, at `elapsed` seconds.
+    pub fn episode_started(&mut self, source_id: &str, index: u64, elapsed: u64) -> Result<(), Error> {
+        self.post("/api/v1/event/started", &event_body(source_id, index, elapsed, None)).map(|_| ())
+    }
+
+    /// `v1/event/progress`: a heartbeat while the episode plays.
+    pub fn episode_progress(&mut self, source_id: &str, index: u64, elapsed: u64) -> Result<(), Error> {
+        self.post("/api/v1/event/progress", &event_body(source_id, index, elapsed, None)).map(|_| ())
+    }
+
+    /// `v1/action/pause`: the episode was paused at `elapsed` seconds.
+    pub fn episode_pause(&mut self, source_id: &str, episode_id: &str, index: u64, elapsed: u64) -> Result<(), Error> {
+        self.post("/api/v1/action/pause", &event_body(source_id, index, elapsed, Some(episode_id))).map(|_| ())
+    }
+
+    /// `v6/collections/addItem`: follow a podcast (`PC:`).
+    pub fn follow_show(&mut self, pandora_id: &str) -> Result<(), Error> {
+        self.post("/api/v6/collections/addItem", &json!({ "request": { "pandoraId": pandora_id } })).map(|_| ())
+    }
+
+    /// `v6/collections/removeItem`: unfollow a podcast.
+    pub fn unfollow_show(&mut self, pandora_id: &str) -> Result<(), Error> {
+        self.post("/api/v6/collections/removeItem", &json!({ "request": { "pandoraId": pandora_id } })).map(|_| ())
+    }
+
+    /// `v6/collections/getSortedByTypes` for followed podcasts (`PC`).
+    pub fn followed_shows(&mut self) -> Result<Vec<FollowedShow>, Error> {
+        let v = self.post(
+            "/api/v6/collections/getSortedByTypes",
+            &json!({ "request": {
+                "sortOrder": "MOST_RECENT_ADDED",
+                "offset": 0,
+                "limit": 40,
+                "annotationLimit": 40,
+                "typePrefixes": ["PC"]
+            }}),
+        )?;
+        Ok(parse_followed(&v))
+    }
+
+    /// `v1/aesop/annotateObjects`: optional new-episode badges. Failure is empty.
+    pub fn episode_badges(
+        &mut self,
+        pandora_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, String>, Error> {
+        if pandora_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let v = self.post(
+            "/api/v1/aesop/annotateObjects",
+            &json!({
+                "pandoraIds": pandora_ids,
+                "listenerId": self.account.listener_id,
+                "withProgress": true,
+                "catalogVersion": 4,
+            }),
+        )?;
+        Ok(parse_badges(&v))
+    }
+
+    /// Station thumbs playlists (`PL:` with `linkedType` StationThumbs).
+    pub fn thumb_playlists(&mut self) -> Result<Vec<ThumbList>, Error> {
+        let v = self.post(
+            "/api/v6/collections/getSortedByTypes",
+            &json!({ "request": {
+                "sortOrder": "MOST_RECENT_ADDED",
+                "offset": 0,
+                "limit": 40,
+                "annotationLimit": 40,
+                "typePrefixes": ["ALL"]
+            }}),
+        )?;
+        Ok(parse_thumb_lists(&v))
+    }
+
+    /// One page of a thumbs playlist. View only.
+    pub fn thumb_tracks(&mut self, pandora_id: &str, offset: u32) -> Result<Vec<ThumbTrack>, Error> {
+        let v = self.post(
+            "/api/v7/playlists/getTracks",
+            &json!({ "request": {
+                "pandoraId": pandora_id,
+                "playlistVersion": 0,
+                "offset": offset,
+                "limit": 20,
+                "annotationLimit": 20,
+                "allowedTypes": ["TR", "AM"],
+                "bypassPrivacyRules": true
+            }}),
+        )?;
+        Ok(parse_thumb_tracks(&v))
     }
 
     /// `v1/playlist/getFragment`: the next few songs of `station_id`.

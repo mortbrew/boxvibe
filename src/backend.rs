@@ -208,6 +208,37 @@ pub enum Request {
     EpisodeStarted {
         source_id: String,
         index: u64,
+        elapsed: u64,
+    },
+    /// `event/progress` while an episode plays.
+    EpisodeBeat {
+        source_id: String,
+        index: u64,
+        elapsed: u64,
+    },
+    /// `action/pause` when an episode is paused.
+    EpisodePause {
+        source_id: String,
+        episode_id: String,
+        index: u64,
+        elapsed: u64,
+    },
+    /// Follow (`on`) or unfollow a podcast.
+    Follow {
+        pandora_id: String,
+        on: bool,
+    },
+    /// Followed podcasts (`typePrefixes` `PC`).
+    Followed,
+    /// Optional new-episode badges. An error answers with an empty map.
+    Badges {
+        ids: Vec<String>,
+    },
+    /// Station thumbs playlists (`linkedType` StationThumbs).
+    Thumbs,
+    /// One page of a thumbs playlist. View only.
+    ThumbTracks {
+        playlist_id: String,
     },
     Rate {
         track_token: String,
@@ -390,6 +421,26 @@ pub enum Reply {
     PodcastEmpty {
         pandora_id: String,
         name: String,
+    },
+    /// A show page plus resume positions (`PE:` → elapsed seconds, finished).
+    PodcastPage {
+        path: Option<String>,
+        sections: Vec<BrowseSection>,
+        progress: std::collections::HashMap<String, (u64, bool)>,
+    },
+    Followed(Vec<pandora::FollowedShow>),
+    /// `message` is set when the follow or unfollow call failed.
+    FollowSet {
+        id: String,
+        on: bool,
+        message: Option<String>,
+    },
+    /// `show` → episode id that should wear a New badge.
+    Badges(std::collections::HashMap<String, String>),
+    Thumbs(Vec<pandora::ThumbList>),
+    ThumbTracks {
+        playlist_id: String,
+        tracks: Vec<pandora::ThumbTrack>,
     },
     Rated {
         track_token: String,
@@ -718,11 +769,30 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
                 ads_asked += 1;
                 Reply::AdList { ads: demo::ads(ads_asked), station_id: ask.station_id }
             }
+            Request::Follow { pandora_id, on } => Reply::FollowSet { id: pandora_id, on, message: None },
+            Request::Followed => Reply::Followed(vec![pandora::FollowedShow {
+                id: "PC:demo-junkie".into(),
+                name: "Crime Junkie".into(),
+                publisher: "audiochuck".into(),
+            }]),
+            Request::Badges { .. } => Reply::Badges(std::collections::HashMap::new()),
+            Request::Thumbs => Reply::Thumbs(vec![pandora::ThumbList {
+                id: "PL:demo:1".into(),
+                name: "Thumbs Up".into(),
+                station_id: "0".into(),
+                total: 1,
+            }]),
+            Request::ThumbTracks { playlist_id } => Reply::ThumbTracks {
+                playlist_id,
+                tracks: vec![pandora::ThumbTrack { name: "Demo Track".into(), artist: "Demo Artist".into() }],
+            },
             Request::Audio { .. }
             | Request::Art { .. }
             | Request::Quality(_)
             | Request::Started { .. }
             | Request::EpisodeStarted { .. }
+            | Request::EpisodeBeat { .. }
+            | Request::EpisodePause { .. }
             | Request::AdImpression { .. }
             | Request::Logout => continue,
         };
@@ -928,8 +998,8 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                     c.podcast_episodes(&pandora_id, &name)
                 });
                 match outcome {
-                    Ok(sections) if !sections.iter().all(|section| section.items.is_empty()) => {
-                        Reply::Browse { path, sections }
+                    Ok((sections, progress)) if !sections.iter().all(|section| section.items.is_empty()) => {
+                        Reply::PodcastPage { path, sections, progress }
                     }
                     // No list, or the details call failed: the program id itself plays
                     // its latest episode.
@@ -976,14 +1046,71 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                 }
                 Reply::TookOver
             }
-            Request::EpisodeStarted { source_id, index } => {
+            Request::EpisodeStarted { source_id, index, elapsed } => {
                 let _ = pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| {
-                    c.episode_started(&source_id, index)
+                    c.episode_started(&source_id, index, elapsed)
                 });
                 if !took_over {
                     continue;
                 }
                 Reply::TookOver
+            }
+            Request::EpisodeBeat { source_id, index, elapsed } => {
+                let _ = pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| {
+                    c.episode_progress(&source_id, index, elapsed)
+                });
+                if !took_over {
+                    continue;
+                }
+                Reply::TookOver
+            }
+            Request::EpisodePause { source_id, episode_id, index, elapsed } => {
+                let _ = pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| {
+                    c.episode_pause(&source_id, &episode_id, index, elapsed)
+                });
+                if !took_over {
+                    continue;
+                }
+                Reply::TookOver
+            }
+            Request::Follow { pandora_id, on } => {
+                let outcome = pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| {
+                    if on { c.follow_show(&pandora_id) } else { c.unfollow_show(&pandora_id) }
+                });
+                Reply::FollowSet { id: pandora_id, on, message: outcome.err().map(|e| e.to_string()) }
+            }
+            Request::Followed => {
+                let outcome =
+                    pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| c.followed_shows());
+                match outcome {
+                    Ok(shows) => Reply::Followed(shows),
+                    Err(e) => Reply::BrowseFailed { path: Some("followed".into()), message: e.to_string() },
+                }
+            }
+            Request::Badges { ids } => {
+                let badges =
+                    pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| c.episode_badges(&ids))
+                        .unwrap_or_default();
+                Reply::Badges(badges)
+            }
+            Request::Thumbs => {
+                let outcome =
+                    pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| c.thumb_playlists());
+                match outcome {
+                    Ok(lists) => Reply::Thumbs(lists),
+                    Err(e) => Reply::BrowseFailed { path: Some("thumbs".into()), message: e.to_string() },
+                }
+            }
+            Request::ThumbTracks { playlist_id } => {
+                let outcome = pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| {
+                    c.thumb_tracks(&playlist_id, 0)
+                });
+                match outcome {
+                    Ok(tracks) => Reply::ThumbTracks { playlist_id, tracks },
+                    Err(e) => {
+                        Reply::BrowseFailed { path: Some(format!("thumbs:{playlist_id}")), message: e.to_string() }
+                    }
+                }
             }
             Request::Quality(quality) => {
                 client.set_quality(quality);

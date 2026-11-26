@@ -4,13 +4,14 @@ Short and scannable; the git history has the details.
 
 ## Unreleased
 
-### Changed
-- **The login is dressed as the browser that gets through.** boxvibe sends a current Microsoft Edge agent with the client hints and `Sec-Fetch-*` headers that agree with it, and keeps every cookie pandora.com sets — `csrftoken` plus whatever the bot check adds — sending them all back on the next call, the way a browser's jar does.
+## 0.6.6 (2026-11-25)
+
+### Fixed
+- **Pandora's bot check no longer blocks the login.** The request now looks like the browser that gets through: a current Microsoft Edge agent with the client hints and `Sec-Fetch-*` headers that agree with it, and every cookie pandora.com sets — `csrftoken` plus whatever the check adds — kept and sent back, where only `csrftoken` used to go. `[account] user_agent` still overrides the agent, and a Firefox string then sends no Chromium hints.
 - **A site that sends no `csrftoken` cookie stops the login** with a clear message instead of sending one boxvibe made up. Media and cover requests carry the session's cookies too.
-- `[account] user_agent` still overrides the agent, and the hints follow it: a Firefox string sends no Chromium hints.
 
 ### Internal
-- A failed Pandora call writes its endpoint, HTTP status and kind of failure to the log, and a login says whether it worked, so "Pandora's bot check blocked the login" can be told apart from a wrong password afterwards. The request and the answer stay out of the log. A `csrf:` line says whether the site handed out its cookie.
+- A failed Pandora call writes its endpoint, HTTP status and kind of failure to the log, and a login says whether it worked, so a blocked login can be told apart from a wrong password afterwards. The request and the answer stay out of the log. A `csrf:` line says whether the site handed out its cookie.
 
 ## 0.6.5 (2026-11-25)
 

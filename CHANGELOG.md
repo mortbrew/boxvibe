@@ -4,6 +4,32 @@ Short and scannable; the git history has the details.
 
 ## Unreleased
 
+## 0.6.5 (2026-11-25)
+
+### Added
+- **Podcasts you follow have a list of their own.** `f` follows or unfollows the open show, MY COLLECTION lists Followed Podcasts with a count, and a row opens the show. An episode resumes where it stopped and the next one plays on its own, and `o` on a show page flips its episode order.
+- **MY COLLECTION lists My Thumbs**, the songs you thumbed up on the station that is playing.
+- **Skip limits from login are counted on this computer** — the daily limit and the per-station hourly limit — and drawn on Now Playing.
+- **The account is editable from Settings.** Zip code, gender, birth year and the password, each asking for your current password once and never saving it.
+- **The explicit content filter shows what Pandora says and can be turned on or off.** It asks for a one-time password, and so does Log out of all other devices.
+- **A new release says what it adds and fixes before you install it**, read from the changelog at its tag.
+- **`/` filters the list you are in** — My Stations, Browse or Settings — and `o` sorts My Stations by name, recently played or thumbs and remembers the choice.
+
+### Changed
+- **The bottom bar is `.` Actions, `?` Help and `Q` Quit**, and `Q` asks before it quits. `?` groups keys and moves the ones that do nothing here into NOT ON THIS SCREEN.
+- **The last view, pane and volume come back on the next start**, and a short terminal keeps a row for Up Next and History.
+- The song card shows a year and an explicit tag when Pandora sends them, and the status bar says when audio is buffering or playing silently.
+
+### Fixed
+- **A sound device that goes away no longer freezes the player.** The device is reopened, the stream only counts as stalled once it has genuinely stopped moving, and the status line says when the song is playing silently.
+- **A failed config save stays on screen** until a save works, so a read-only config file cannot look saved.
+- Media fetches stay on HTTPS, and a transient HTTP error is retried after a short pause.
+
+### Internal
+- The playback log, cover tint, clipboard, notifications, volume writes and the retry pause run off the UI thread, and a token refresh no longer resets playback.
+- Config writes go through one serialized writer.
+- clap 4.6.9, zeroize 1.9.2, syn 3.0.10.
+
 ## 0.6.4 (2026-11-20)
 
 ### Added

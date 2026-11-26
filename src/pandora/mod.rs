@@ -359,6 +359,30 @@ impl Error {
     pub fn is_auth_expired(&self) -> bool {
         matches!(self, Self::Api { status: 401, .. } | Self::Api { code: Some(1001), .. })
     }
+
+    /// A short name for the log. Never the message: it can carry the account
+    /// name, or what Pandora said about the password.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Http(_) => "network",
+            Self::InvalidResponse => "unreadable-answer",
+            Self::WrongLogin => "wrong-login",
+            Self::BotCheck(_) => "bot-check",
+            Self::StreamViolation => "stream-violation",
+            Self::Country => "country",
+            Self::Api { .. } => "api",
+        }
+    }
+}
+
+/// What a failed call writes to the log: where it went, what came back, and the
+/// kind of failure. The body stays out, and so does the request: a block page
+/// carries the account name, and the login body carries the password.
+pub fn failure_line(path: &str, status: Option<u16>, error: &Error) -> String {
+    match status {
+        Some(status) => format!("api: {path} answered HTTP {status}: {}", error.kind()),
+        None => format!("api: {path} failed: {}", error.kind()),
+    }
 }
 
 /// Reads a failed answer: HTTP `status` and its body.
@@ -1292,7 +1316,14 @@ impl Client {
         if let Some(name) = client_name {
             request = request.header("apollographql-client-name", name);
         }
-        let mut response = request.send(body.to_string()).map_err(|e| Error::Http(e.to_string()))?;
+        let mut response = match request.send(body.to_string()) {
+            Ok(response) => response,
+            Err(e) => {
+                let error = Error::Http(e.to_string());
+                crate::log::log!("{}", failure_line(path, None, &error));
+                return Err(error);
+            }
+        };
         let status = response.status().as_u16();
         // Capped like `fetch`: a broken or hostile answer must not fill memory.
         let text = response
@@ -1302,16 +1333,27 @@ impl Client {
             .read_to_string()
             .map_err(|e| Error::Http(e.to_string()))?;
         if status != 200 {
-            return Err(classify(status, &text));
+            let error = classify(status, &text);
+            crate::log::log!("{}", failure_line(path, Some(status), &error));
+            return Err(error);
         }
         // Some calls (removing a station) may answer 200 with nothing in the body.
         if text.trim().is_empty() {
             return Ok(json!({}));
         }
-        let v: Value = serde_json::from_str(&text).map_err(|_| Error::InvalidResponse)?;
+        let v: Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(_) => {
+                let error = Error::InvalidResponse;
+                crate::log::log!("{}", failure_line(path, Some(status), &error));
+                return Err(error);
+            }
+        };
         // Some failures come back as 200 with an error body.
         if v.get("errorCode").is_some() && v.get("errorString").is_some() {
-            return Err(classify(status, &text));
+            let error = classify(status, &text);
+            crate::log::log!("{}", failure_line(path, Some(status), &error));
+            return Err(error);
         }
         Ok(v)
     }
@@ -1327,7 +1369,18 @@ impl Client {
             "keepLoggedIn": true,
             "existingAuthToken": null,
         });
-        let v = self.post("/api/v1/auth/login", &body)?;
+        let v = match self.post("/api/v1/auth/login", &body) {
+            Ok(v) => {
+                crate::log::log!("login: ok");
+                v
+            }
+            Err(error) => {
+                // The line above names the status; this one says it was the login,
+                // so a blocked start is obvious in the log.
+                crate::log::log!("login: failed: {}", error.kind());
+                return Err(error);
+            }
+        };
         let token = str_of(&v, "authToken");
         if token.is_empty() {
             return Err(Error::InvalidResponse);

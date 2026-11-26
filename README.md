@@ -65,8 +65,13 @@ Covers download in the background and are cached in `~/.cache/boxvibe/art`
 Playback writes `~/.cache/boxvibe/boxvibe.log`: each song as it starts (what
 Pandora sent, what it decoded to, whether it was resampled), each as it ends
 (how far it got against how long it should have been), and every reason a song
-was skipped. It is capped at 512 KB and rolls over to `.old`, so it can be left
-on. `BOXVIBE_LOG=off` silences it; `BOXVIBE_LOG=<file>` writes somewhere else.
+was skipped. A failed Pandora call adds its endpoint, HTTP status and kind of
+failure, and a login says whether it worked, so "Pandora's bot check blocked the
+login" can be told apart from a wrong password afterwards. The request and the
+answer are never written: the login body holds the password, and a block page
+holds the account name. It is capped at 512 KB and rolls over to `.old`, so it
+can be left on. `BOXVIBE_LOG=off` silences it; `BOXVIBE_LOG=<file>` writes
+somewhere else.
 
 ## Make and shape stations
 

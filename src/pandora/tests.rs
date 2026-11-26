@@ -118,6 +118,7 @@ fn errors_are_classified() {
     );
     assert_eq!(blocked, Error::BotCheck(403));
     assert!(!blocked.is_auth_expired());
+    assert_eq!(blocked.kind(), "bot-check");
     // From the docs and other clients.
     let wrong = r#"{"message":"Invalid username and/or password","errorCode":0,"errorString":"AUTH_INVALID_USERNAME_PASSWORD"}"#;
     assert_eq!(classify(400, wrong), Error::WrongLogin);
@@ -125,6 +126,44 @@ fn errors_are_classified() {
     assert_eq!(classify(400, r#"{"errorString":"COUNTRY_CODE_INVALID","errorCode":1028}"#), Error::Country);
     let other = classify(500, "<html>oops</html>");
     assert_eq!(other.to_string(), "Pandora answered HTTP 500");
+    // The log gets a short name per failure, never the message: it can carry the
+    // account name.
+    let kinds = [
+        expired.kind(),
+        blocked.kind(),
+        Error::WrongLogin.kind(),
+        Error::StreamViolation.kind(),
+        Error::Country.kind(),
+        other.kind(),
+        Error::InvalidResponse.kind(),
+        Error::Http("boom".into()).kind(),
+    ];
+    assert_eq!(
+        kinds,
+        ["api", "bot-check", "wrong-login", "stream-violation", "country", "api", "unreadable-answer", "network"]
+    );
+}
+
+#[test]
+fn a_failed_call_is_logged_without_its_body_or_request() {
+    // What the line says, and what it leaves out.
+    let blocked = classify(
+        403,
+        r#"{"message":"Invalid request for me@example.com","errorCode":1215,"errorString":"s2s_high_score","appId":"PXabc","blockScript":"/x/captcha"}"#,
+    );
+    let line = failure_line("/api/v1/auth/login", Some(403), &blocked);
+    assert_eq!(line, "api: /api/v1/auth/login answered HTTP 403: bot-check");
+    assert!(!line.contains("me@example.com"), "the body stays out of the log");
+    let api = Error::Api { status: 500, code: None, kind: String::new(), message: "oops".into() };
+    assert_eq!(
+        failure_line("/api/v1/station/getStations", Some(500), &api),
+        "api: /api/v1/station/getStations answered HTTP 500: api"
+    );
+    assert_eq!(
+        failure_line("/api/v1/station/getStations", None, &Error::Http("Connection refused".into())),
+        "api: /api/v1/station/getStations failed: network",
+        "a dropped connection has no status to name"
+    );
 }
 
 #[test]
@@ -438,6 +477,13 @@ fn a_blocked_login_says_so() {
     let err = c.login("me", "pw").unwrap_err();
     assert_eq!(err, Error::BotCheck(403));
     assert!(err.to_string().contains("bot check"));
+    // The two log lines a blocked start leaves behind: the call, then the login.
+    assert_eq!(
+        failure_line("/api/v1/auth/login", Some(403), &err),
+        "api: /api/v1/auth/login answered HTTP 403: bot-check"
+    );
+    assert_eq!(err.kind(), "bot-check", "so the login line can say why, not just that it failed");
+    assert!(!failure_line("/api/v1/auth/login", Some(403), &err).contains("me@"), "no account name");
 }
 
 #[test]

@@ -4,6 +4,9 @@ Short and scannable; the git history has the details.
 
 ## Unreleased
 
+### Internal
+- A failed Pandora call writes its endpoint, HTTP status and kind of failure to the log, and a login says whether it worked, so "Pandora's bot check blocked the login" can be told apart from a wrong password afterwards. The request and the answer stay out of the log.
+
 ## 0.6.5 (2026-11-25)
 
 ### Added

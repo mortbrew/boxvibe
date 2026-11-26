@@ -21,9 +21,10 @@ use std::time::{Duration, Instant};
 
 use crate::log::log;
 
-/// A stream that has not moved for this long has lost its device (unplugged,
-/// or PipeWire restarted): no samples are being pulled any more.
-const STALL_AFTER: Duration = Duration::from_secs(3);
+/// A stream that has not moved for this long, and that has not reported a
+/// device error, is treated as device loss. Short gaps (a Bluetooth hiccup,
+/// a buffer underrun) stay under this.
+const STALL_AFTER: Duration = Duration::from_secs(12);
 
 /// Spots a stream that stopped moving.
 ///
@@ -96,6 +97,16 @@ pub struct Audio {
     device_error: Arc<Mutex<Option<String>>>,
     /// Spots a stream that stopped moving (see [`Stall`]).
     stall: Stall,
+    /// `open(false)`: try again after the device dies. Demo stays silent.
+    want_device: bool,
+    /// Seconds already heard. Added to the clock, and skipped in the decoder.
+    skip_secs: u64,
+    /// Tests: the next `start` calls fail as a zero-sample decode.
+    #[cfg(test)]
+    pub fail_starts: u32,
+    /// Tests: `stalled` reports device loss without a real stream.
+    #[cfg(test)]
+    pub force_stall: bool,
 }
 
 impl Audio {
@@ -128,11 +139,22 @@ impl Audio {
             problem,
             device_error,
             stall: Stall::default(),
+            skip_secs: 0,
+            want_device: !silent,
+            #[cfg(test)]
+            fail_starts: 0,
+            #[cfg(test)]
+            force_stall: false,
         }
     }
 
     pub fn has_device(&self) -> bool {
         self.device.is_some()
+    }
+
+    /// A real device was wanted and is gone (demo never wanted one).
+    pub fn playing_silently(&self) -> bool {
+        self.want_device && self.device.is_none()
     }
 
     /// The sound device's last error, once (the stream died under us).
@@ -144,8 +166,23 @@ impl Audio {
         self.device_error.lock().ok()?.take()
     }
 
+    /// Tests: the next [`Audio::take_device_error`] reports this, as a device callback would.
+    #[cfg(test)]
+    pub fn inject_device_error(&mut self, msg: &str) {
+        if let Ok(mut slot) = self.device_error.lock() {
+            *slot = Some(msg.into());
+        }
+    }
+
     /// Whether the stream has stopped moving (the device went away).
+    ///
+    /// A reported device error is handled by the caller; this is only the
+    /// long stall. A pause does not count: the position stands still on purpose.
     pub fn stalled(&mut self) -> bool {
+        #[cfg(test)]
+        if self.force_stall {
+            return self.active && !self.paused;
+        }
         if self.player.is_none() || self.paused {
             return false;
         }
@@ -153,9 +190,47 @@ impl Audio {
         self.stall.stuck(pos, Instant::now())
     }
 
+    /// The device died. Drop the stream and open the default device again.
+    /// If that fails, later songs use the silent clock instead of a dead sink.
+    pub fn recover(&mut self) {
+        if let Some(player) = self.player.take() {
+            player.stop();
+        }
+        self.stall.reset();
+        #[cfg(test)]
+        {
+            self.force_stall = false;
+        }
+        if !self.want_device {
+            return;
+        }
+        self.device = None;
+        self.rate = None;
+        match open_device(Arc::clone(&self.device_error)) {
+            Ok(mut device) => {
+                device.log_on_drop(false);
+                self.rate = Some(device.config().sample_rate().get());
+                self.device = Some(device);
+                self.problem = None;
+            }
+            Err(e) => {
+                self.problem = Some(format!("no sound device ({e}): playing silently"));
+            }
+        }
+        // Dropping the old stream can report an error. It is already handled.
+        if let Ok(mut slot) = self.device_error.lock() {
+            slot.take();
+        }
+    }
+
     /// Starts a song from its downloaded bytes (`None`: the silent clock
     /// only), `gain_db` louder (Pandora's `fileGain`), or silent when `muted`.
     pub fn start(&mut self, data: Option<Vec<u8>>, gain_db: f32, muted: bool) -> Result<(), String> {
+        #[cfg(test)]
+        if self.fail_starts > 0 {
+            self.fail_starts -= 1;
+            return Err("can't decode this song: no samples".into());
+        }
         self.stop();
         self.gain_db = if gain_db.is_finite() { gain_db } else { 0.0 };
         self.muted = muted;
@@ -165,7 +240,7 @@ impl Audio {
         self.clock.resume();
         self.stall.reset();
         let (Some(device), Some(data)) = (&self.device, data) else { return Ok(()) };
-        let decoder = decoder(data)?;
+        let decoder = skip_source(with_samples(decoder(data)?)?, self.skip_secs);
         let player = rodio::Player::connect_new(device.mixer());
         player.set_volume(self.level());
         match self.rate {
@@ -249,11 +324,17 @@ impl Audio {
         self.active
     }
 
+    /// The next `start` begins this far in. Silent playback reports it on the clock.
+    pub fn prepare_skip(&mut self, seconds: u64) {
+        self.skip_secs = seconds;
+    }
+
     pub fn position(&self) -> Duration {
-        match &self.player {
+        let at = match &self.player {
             Some(p) => p.get_pos(),
             None => self.clock.position(),
-        }
+        };
+        at + Duration::from_secs(self.skip_secs)
     }
 
     /// The song played to its end (`length`: what Pandora says it lasts).
@@ -263,7 +344,10 @@ impl Audio {
         }
         match &self.player {
             Some(p) => p.empty(),
-            None => length > 0 && self.clock.position() >= Duration::from_secs(u64::from(length)),
+            None => {
+                let heard = self.clock.position() + Duration::from_secs(self.skip_secs);
+                length > 0 && heard >= Duration::from_secs(u64::from(length))
+            }
         }
     }
 
@@ -277,6 +361,43 @@ impl Audio {
         if self.player.is_none() {
             self.clock.before = at;
         }
+    }
+}
+
+/// One sample already pulled, so a decoder that ends immediately is an error
+/// before it is handed to the device.
+struct Lead<S> {
+    first: Option<rodio::Sample>,
+    inner: S,
+}
+
+impl<S: Iterator<Item = rodio::Sample>> Iterator for Lead<S> {
+    type Item = rodio::Sample;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.first.take().or_else(|| self.inner.next())
+    }
+}
+
+impl<S: rodio::Source> rodio::Source for Lead<S> {
+    fn current_span_len(&self) -> Option<usize> {
+        self.inner.current_span_len()
+    }
+    fn channels(&self) -> rodio::ChannelCount {
+        self.inner.channels()
+    }
+    fn sample_rate(&self) -> rodio::SampleRate {
+        self.inner.sample_rate()
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
+    }
+}
+
+/// A decoder that yields nothing is a failed song, not a track that "ended".
+fn with_samples(mut source: Box<dyn rodio::Source + Send>) -> Result<Box<dyn rodio::Source + Send>, String> {
+    match source.next() {
+        Some(sample) => Ok(Box::new(Lead { first: Some(sample), inner: source })),
+        None => Err("can't decode this song: no samples".into()),
     }
 }
 
@@ -703,6 +824,44 @@ fn open_device(device_error: Arc<Mutex<Option<String>>>) -> Result<rodio::MixerD
                 .map(|b| b.with_error_callback(on_error))
                 .and_then(|b| b.open_stream())
         })
+}
+
+/// Drops the first `left` samples so playback starts later. The audio thread does the work.
+struct Skip<S> {
+    left: u64,
+    inner: S,
+}
+
+fn skip_source<S: rodio::Source>(source: S, seconds: u64) -> Skip<S> {
+    let rate = u64::from(source.sample_rate().get());
+    let channels = u64::from(source.channels().get());
+    Skip { left: rate.saturating_mul(channels).saturating_mul(seconds), inner: source }
+}
+
+impl<S: Iterator<Item = rodio::Sample>> Iterator for Skip<S> {
+    type Item = rodio::Sample;
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.left > 0 {
+            self.inner.next()?;
+            self.left -= 1;
+        }
+        self.inner.next()
+    }
+}
+
+impl<S: rodio::Source> rodio::Source for Skip<S> {
+    fn current_span_len(&self) -> Option<usize> {
+        self.inner.current_span_len()
+    }
+    fn channels(&self) -> rodio::ChannelCount {
+        self.inner.channels()
+    }
+    fn sample_rate(&self) -> rodio::SampleRate {
+        self.inner.sample_rate()
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
+    }
 }
 
 /// A source with every sample kept inside ±1.0.

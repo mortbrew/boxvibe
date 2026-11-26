@@ -10,6 +10,13 @@ fn dates_are_written_in_utc() {
 }
 
 #[test]
+fn a_unix_day_is_the_utc_date() {
+    assert_eq!(date_of_unix(0), "1970-01-01");
+    assert_eq!(date_of_unix(951_782_400), "2000-02-29");
+    assert_eq!(date_of_unix(-86_400), "1969-12-31");
+}
+
+#[test]
 fn today_is_the_first_ten_characters_of_now() {
     let today = today();
     assert_eq!(today.len(), 10, "{today}");

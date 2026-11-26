@@ -96,6 +96,7 @@ fn main() -> anyhow::Result<()> {
     // What the system lacks (a Nerd Font...) is looked at in the background and listed when it is known.
     app.start_system_check();
     let result = run(&mut terminal, &mut app);
+    app.flush_volume();
     let restart = app.restart && result.is_ok();
     // Stop the sound and the backend before the new version takes over.
     drop(app);

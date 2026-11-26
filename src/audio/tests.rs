@@ -362,7 +362,7 @@ fn a_stream_that_stops_moving_is_noticed() {
     let mut stall = Stall::default();
     let t0 = Instant::now();
     assert!(!stall.stuck(Duration::from_secs(5), t0), "first sighting is not a stall");
-    assert!(!stall.stuck(Duration::from_secs(5), t0 + Duration::from_secs(1)), "still within the grace");
+    assert!(!stall.stuck(Duration::from_secs(5), t0 + Duration::from_secs(3)), "a short gap is not device loss");
     assert!(stall.stuck(Duration::from_secs(5), t0 + STALL_AFTER), "no movement for the whole grace");
 }
 
@@ -385,6 +385,44 @@ fn a_stall_is_forgotten_when_the_song_changes() {
     assert!(stall.stuck(Duration::from_secs(5), t0 + STALL_AFTER));
     stall.reset();
     assert!(!stall.stuck(Duration::from_secs(5), t0 + STALL_AFTER), "a new song gets its own grace");
+}
+
+#[test]
+fn a_source_with_no_samples_is_a_decode_error() {
+    struct Empty;
+    impl Iterator for Empty {
+        type Item = f32;
+        fn next(&mut self) -> Option<f32> {
+            None
+        }
+    }
+    impl rodio::Source for Empty {
+        fn current_span_len(&self) -> Option<usize> {
+            Some(0)
+        }
+        fn channels(&self) -> rodio::ChannelCount {
+            rodio::nz!(2)
+        }
+        fn sample_rate(&self) -> rodio::SampleRate {
+            rodio::SampleRate::new(44_100).unwrap()
+        }
+        fn total_duration(&self) -> Option<Duration> {
+            Some(Duration::ZERO)
+        }
+    }
+    let err = match super::with_samples(Box::new(Empty)) {
+        Ok(_) => panic!("an empty source decoded"),
+        Err(err) => err,
+    };
+    assert!(err.contains("no samples"), "{err}");
+}
+
+#[test]
+fn recovering_a_silent_player_stays_on_the_clock() {
+    let mut a = Audio::open(true, 40);
+    a.start(None, 0.0, false).unwrap();
+    a.recover();
+    assert!(!a.has_device(), "demo never opens a device");
 }
 
 #[test]

@@ -63,6 +63,109 @@ impl App {
         self.status = "Type your password".into();
     }
 
+    /// Settings → Explicit content filter. The password is for this one call.
+    pub(super) fn ask_explicit_filter(&mut self) {
+        if self.session != Session::LoggedIn {
+            self.status = "Log in before changing the explicit filter".into();
+            return;
+        }
+        let Some(now) = self.explicit_filter else {
+            self.status = "Pandora did not say whether the explicit filter is on".into();
+            return;
+        };
+        self.open_prompt(Prompt::Once(OncePassword::Explicit(!now)));
+        self.status = "Type your password. It is used once and not saved.".into();
+    }
+
+    pub(super) fn profile_value(
+        &self,
+        pick: impl FnOnce(&crate::pandora::ListenerProfile) -> Option<String>,
+    ) -> String {
+        if self.session != Session::LoggedIn {
+            return "not logged in".into();
+        }
+        pick(&self.profile).filter(|s| !s.is_empty()).unwrap_or_else(|| "not set".into())
+    }
+
+    pub(super) fn open_profile(&mut self, field: ProfileField) {
+        if self.session != Session::LoggedIn {
+            self.status = "Log in before changing the account".into();
+            return;
+        }
+        self.open_prompt(Prompt::Profile(field));
+        self.status = "Type the new value. Your password is asked next and not saved.".into();
+    }
+
+    pub(super) fn open_new_password(&mut self) {
+        if self.session != Session::LoggedIn {
+            self.status = "Log in before changing the password".into();
+            return;
+        }
+        self.pending_new_password = None;
+        self.open_prompt(Prompt::NewPassword);
+        self.status = "Type the new password. It is not saved.".into();
+    }
+
+    pub(super) fn took_profile_value(&mut self, field: ProfileField, text: String) {
+        let text = text.trim().to_owned();
+        let edit = match field {
+            ProfileField::Zip if text.is_empty() => {
+                self.status = "Zip code needed".into();
+                return;
+            }
+            ProfileField::Zip => AccountEdit::Zip(text),
+            ProfileField::Gender if text.is_empty() => {
+                self.status = "Gender needed".into();
+                return;
+            }
+            ProfileField::Gender => AccountEdit::Gender(text),
+            ProfileField::BirthYear => match text.parse::<i64>() {
+                Ok(year) if (1900..=2100).contains(&year) => AccountEdit::BirthYear(year),
+                _ => {
+                    self.status = "Birth year should be a year, like 1990".into();
+                    return;
+                }
+            },
+        };
+        self.account_edit = Some(edit);
+        self.open_prompt(Prompt::Once(OncePassword::Account));
+        self.status = "Type your current password. It is used once and not saved.".into();
+    }
+
+    pub(super) fn confirm_new_password(&mut self, again: String) {
+        let Some(first) = self.pending_new_password.take() else {
+            self.status = "Type the new password".into();
+            return;
+        };
+        if first.expose() != again {
+            self.status = "The two new passwords don't match".into();
+            return;
+        }
+        if first.is_empty() {
+            self.status = "Type the new password".into();
+            return;
+        }
+        self.account_edit = Some(AccountEdit::Password(first));
+        self.open_prompt(Prompt::Once(OncePassword::Account));
+        self.status = "Type your current password. It is used once and not saved.".into();
+    }
+
+    pub(super) fn send_account_edit(&mut self, current: Secret) {
+        let Some(edit) = self.account_edit.take() else {
+            self.status = "Nothing to change".into();
+            return;
+        };
+        let username = self.config.pandora.username.trim().to_owned();
+        let (change, note) = match edit {
+            AccountEdit::Zip(zip) => (AccountChange::Zip(zip), "Updating zip code…"),
+            AccountEdit::Gender(gender) => (AccountChange::Gender(gender), "Updating gender…"),
+            AccountEdit::BirthYear(year) => (AccountChange::BirthYear(year), "Updating birth year…"),
+            AccountEdit::Password(new_password) => (AccountChange::Password(new_password), "Changing password…"),
+        };
+        self.backend.send(Request::UpdateAccount { username, password: current, change });
+        self.status = note.into();
+    }
+
     /// The password popup with `typed` already in it (the snapshot screens).
     pub(crate) fn ask_password_for_snapshot(&mut self, typed: &str) {
         self.ask_password();
@@ -180,6 +283,10 @@ impl App {
         self.menu_cursor = 0;
         self.view = View::Settings;
         self.session = Session::LoggedOut;
+        self.explicit_filter = None;
+        self.profile = crate::pandora::ListenerProfile::default();
+        self.pending_new_password = None;
+        self.account_edit = None;
         self.refresh_menu_cache();
         self.forget_saved_password(false);
         self.config.pandora.password.clear();
@@ -193,7 +300,19 @@ impl App {
         };
     }
 
-    pub(super) fn reply_logged_in(&mut self, hifi: bool) {
+    pub(super) fn reply_logged_in(
+        &mut self,
+        hifi: bool,
+        daily_skip_limit: Option<u32>,
+        station_skip_limit: Option<u32>,
+        explicit_filter: Option<bool>,
+        tz_offset: Option<i32>,
+        profile: crate::pandora::ListenerProfile,
+    ) {
+        self.skip_book.set_limits(daily_skip_limit, station_skip_limit);
+        self.skip_book.set_zone(tz_offset);
+        self.explicit_filter = explicit_filter;
+        self.profile = profile;
         self.hifi = Some(hifi);
         let first = self.session != Session::LoggedIn;
         self.session = Session::LoggedIn;

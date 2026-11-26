@@ -413,6 +413,10 @@ impl App {
     fn add_selected_seed(&mut self) {
         let Some(ed) = self.editor.as_mut() else { return };
         let Some(hit) = ed.add.as_ref().and_then(|a| a.search.selected().cloned()) else { return };
+        if hit.kind == crate::pandora::HitKind::Show || hit.id.starts_with("PC:") {
+            self.status = format!("“{}” is a podcast. Open it from My Stations search, not as a seed.", hit.name);
+            return;
+        }
         if ed.seed_list().iter().any(|s| s.id == hit.id) {
             self.status = format!("“{}” is already a seed of this station", hit.name);
             return;

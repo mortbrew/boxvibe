@@ -10,16 +10,16 @@
 //! Domain helpers live beside this file (`account`, `stations`, `playback`,
 //! `reply`, …) as more `impl App` blocks — one `App`, split for reading.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::ads;
 use crate::audio::Audio;
-use crate::backend::{Backend, Failed, KeychainJob, KeychainReply, Reply, Request};
+use crate::backend::{AccountChange, Backend, Failed, KeychainJob, KeychainReply, Reply, Request};
 use crate::config::{self, AlbumArt, Config, ConfigWarning, GoodVibes, Secret};
 use crate::input::TextInput;
 use crate::keychain::{self, Keychain, NO_KEYCHAIN};
@@ -36,6 +36,7 @@ mod audio_cache;
 mod audio_fetch;
 mod browse;
 mod browse_pages;
+mod collect;
 mod dialogs;
 mod editor;
 mod in_flight;
@@ -80,6 +81,10 @@ pub enum View {
     /// The account's recently played sources, newest first: MY COLLECTION's
     /// last row, from Pandora's GraphQL API.
     Recent,
+    /// Followed podcasts.
+    Followed,
+    /// Thumbs up, grouped by station. View only.
+    Thumbs,
     Settings,
     /// What the bottom bar said, newest first.
     Notifications,
@@ -91,6 +96,14 @@ pub enum View {
 pub enum Focus {
     Menu,
     Content,
+}
+
+/// One station's thumbs, tracks filled in when the row is opened.
+pub(crate) struct ThumbGroup {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) total: u32,
+    pub(crate) tracks: Option<Vec<crate::pandora::ThumbTrack>>,
 }
 
 /// The menu's entries.
@@ -107,6 +120,8 @@ pub enum MenuItem {
     /// The recently played list. Drawn only once Pandora sent something, so
     /// it hides while empty the way FAVORITES does.
     RecentlyPlayed,
+    Followed,
+    Thumbs,
     /// A starred station, by its index in `[playback] favorites`.
     Favorite(usize),
     Settings,
@@ -135,10 +150,42 @@ pub struct GenreNotice {
     pub dont_show: bool,
 }
 
+/// A password typed for one Pandora account call. It is not the saved login password.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OncePassword {
+    /// The filter should become this (`true` blocks explicit tracks).
+    Explicit(bool),
+    /// Log out every other device.
+    OtherDevices,
+    /// The current password for a profile or password change already chosen.
+    Account,
+}
+
+/// A listener field waiting for the current password. The new password is a `Secret`.
+enum AccountEdit {
+    Zip(String),
+    Gender(String),
+    BirthYear(i64),
+    Password(Secret),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Prompt {
     Email,
     Password,
+    Once(OncePassword),
+    /// A new zip, gender, or birth year.
+    Profile(ProfileField),
+    /// The new password, then again.
+    NewPassword,
+    NewPasswordAgain,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileField {
+    Zip,
+    Gender,
+    BirthYear,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,9 +194,16 @@ pub enum Setting {
     Password,
     LogIn,
     LogOut,
+    ExplicitFilter,
+    LogOutOthers,
+    ZipCode,
+    Gender,
+    BirthYear,
+    ChangePassword,
     Quality,
     Volume,
     Autoplay,
+    NextEpisode,
     Notify,
     GoodVibesOnly,
     ThemeAutoMode,
@@ -174,11 +228,17 @@ pub enum Setting {
 
 impl Setting {
     /// In screen order, each with its group.
-    pub const ALL: [(&'static str, Self); 35] = [
+    pub const ALL: [(&'static str, Self); 42] = [
         ("ACCOUNT", Self::Email),
         ("ACCOUNT", Self::Password),
         ("ACCOUNT", Self::LogIn),
         ("ACCOUNT", Self::LogOut),
+        ("ACCOUNT", Self::ExplicitFilter),
+        ("ACCOUNT", Self::LogOutOthers),
+        ("ACCOUNT", Self::ZipCode),
+        ("ACCOUNT", Self::Gender),
+        ("ACCOUNT", Self::BirthYear),
+        ("ACCOUNT", Self::ChangePassword),
         ("BOXVIBE", Self::CheckUpdates),
         ("BOXVIBE", Self::GenrePopup),
         ("BOXVIBE", Self::EditFile),
@@ -186,6 +246,7 @@ impl Setting {
         ("PLAYBACK", Self::Quality),
         ("PLAYBACK", Self::Volume),
         ("PLAYBACK", Self::Autoplay),
+        ("PLAYBACK", Self::NextEpisode),
         ("PLAYBACK", Self::Notify),
         ("PLAYBACK", Self::GoodVibesOnly),
         ("LOOK", Self::ThemeAutoMode),
@@ -223,6 +284,13 @@ impl Setting {
             Self::Password => "Saved password",
             Self::LogIn => "Log in",
             Self::LogOut => "Log out",
+            Self::ExplicitFilter => "Explicit content filter",
+            Self::LogOutOthers => "Log out of all other devices",
+            Self::ZipCode => "Zip code",
+            Self::Gender => "Gender",
+            Self::BirthYear => "Birth year",
+            Self::ChangePassword => "Change password",
+            Self::NextEpisode => "Autoplay next episode",
             Self::Quality => "Audio quality",
             Self::Volume => "Volume",
             Self::Autoplay => "Autoplay last station on open",
@@ -262,6 +330,7 @@ impl Setting {
             Self::Quality => Some(("playback", "audio_quality")),
             Self::Volume => Some(("playback", "volume")),
             Self::Autoplay => Some(("playback", "autoplay_last_station")),
+            Self::NextEpisode => Some(("playback", "autoplay_next_episode")),
             Self::Notify => Some(("playback", "song_change_notifications")),
             Self::GoodVibesOnly => Some(("playback", "good_vibes_only")),
             Self::ThemeAutoMode => Some(("look", "theme_auto_mode")),
@@ -275,7 +344,17 @@ impl Setting {
             Self::RetroMode => Some(("look", "retro_mode")),
             Self::ArtTint => Some(("look", "tint_art_with_theme_colors")),
             Self::Animations => Some(("look", "animations")),
-            Self::Password | Self::LogIn | Self::LogOut | Self::EditFile | Self::MenuEntry => None,
+            Self::Password
+            | Self::LogIn
+            | Self::LogOut
+            | Self::ExplicitFilter
+            | Self::LogOutOthers
+            | Self::ZipCode
+            | Self::Gender
+            | Self::BirthYear
+            | Self::ChangePassword
+            | Self::EditFile
+            | Self::MenuEntry => None,
         }
     }
 
@@ -291,6 +370,27 @@ impl Setting {
                 "Logs in to Pandora with the email above, and the password from your keychain or typed here."
             }
             Self::LogOut => "Stops the music and removes the saved password from your keychain.",
+            Self::ExplicitFilter => {
+                "On blocks explicit tracks (Pandora's explicitContentFilterEnabled). Enter asks for your password and flips it. The password is not saved."
+            }
+            Self::LogOutOthers => {
+                "Asks, then your password, then logs every other device out of this Pandora account. This computer stays logged in. The password is not saved."
+            }
+            Self::ZipCode => {
+                "The zip code on this Pandora account. Enter types a new one, then your password. The password is not saved, and the other account fields are sent back unchanged."
+            }
+            Self::Gender => {
+                "Gender on this Pandora account, as Pandora stores it. Enter types it, then your password. The password is not saved."
+            }
+            Self::BirthYear => {
+                "Birth year on this Pandora account. Enter types the year, then your password. Month and day are sent back unchanged. The password is not saved."
+            }
+            Self::ChangePassword => {
+                "Enter types the new password twice, then the current one. Nothing is saved or written to the log. The other account fields are sent back unchanged."
+            }
+            Self::NextEpisode => {
+                "On: when a podcast episode ends, the next one on the show page starts. Off: playback stops at the end of the episode. Saved as [playback] autoplay_next_episode."
+            }
             Self::Quality => {
                 "high asks for 192 kbps MP3 where your plan has it (Plus, Premium), else 128 kbps MP3; standard asks for 128. A free plan gets 64 kbps HE-AAC whatever you pick, so this is greyed out there and the row says what is really playing. Saved as [playback] audio_quality."
             }
@@ -380,6 +480,116 @@ pub const SLEEP_STEPS: [u64; 4] = [15, 30, 60, 90];
 /// The sleep timer turns the sound down over this long before it pauses.
 pub const SLEEP_FADE: Duration = Duration::from_secs(10);
 
+/// Skips boxvibe has counted. Pandora sends the limits, not how many are left.
+#[derive(Debug, Default)]
+pub struct SkipBook {
+    daily_limit: Option<u32>,
+    station_limit: Option<u32>,
+    /// Day `daily_used` belongs to (`YYYY-MM-DD`), in the account zone or local time.
+    day: String,
+    daily_used: u32,
+    /// `Some`: seconds east of UTC from login. `None`: the computer's timezone.
+    tz_offset: Option<i32>,
+    /// Station id and the wall-clock time of each counted skip.
+    stations: HashMap<String, Vec<SystemTime>>,
+}
+
+impl SkipBook {
+    pub fn set_limits(&mut self, daily: Option<u32>, station: Option<u32>) {
+        self.daily_limit = daily;
+        self.station_limit = station;
+    }
+
+    pub fn set_zone(&mut self, tz_offset: Option<i32>) {
+        self.tz_offset = tz_offset;
+    }
+
+    fn today(&self) -> String {
+        match self.tz_offset {
+            Some(offset) => crate::time::day_at_offset(offset),
+            None => crate::time::local_day(),
+        }
+    }
+
+    fn roll_day(&mut self) {
+        let today = self.today();
+        if self.day != today {
+            self.day = today;
+            self.daily_used = 0;
+        }
+    }
+
+    /// Drop skips older than an hour, and stations with none left.
+    pub fn prune(&mut self) {
+        let now = SystemTime::now();
+        let hour = Duration::from_secs(3600);
+        self.stations.retain(|_, at| {
+            at.retain(|t| now.duration_since(*t).unwrap_or_default() < hour);
+            !at.is_empty()
+        });
+    }
+
+    fn hour_used(&self, station_id: &str) -> u32 {
+        let now = SystemTime::now();
+        let hour = Duration::from_secs(3600);
+        self.stations
+            .get(station_id)
+            .map(|at| at.iter().filter(|t| now.duration_since(**t).unwrap_or_default() < hour).count() as u32)
+            .unwrap_or(0)
+    }
+
+    /// Changes when the numbers the skip line shows would change.
+    pub fn stamp(&self) -> u64 {
+        let mut n = u64::from(self.daily_used) ^ (self.day.len() as u64).wrapping_mul(0x9E37);
+        n ^= u64::from(self.daily_limit.unwrap_or(0)) ^ u64::from(self.station_limit.unwrap_or(0));
+        for times in self.stations.values() {
+            n = n.wrapping_add(times.len() as u64);
+        }
+        n
+    }
+
+    /// `None` until a login reported a limit.
+    pub fn label(&self, station_id: &str) -> Option<String> {
+        let daily_used = if self.day == self.today() { self.daily_used } else { 0 };
+        let daily = self.daily_limit.map(|n| n.saturating_sub(daily_used));
+        let station =
+            self.station_limit.filter(|_| !station_id.is_empty()).map(|n| n.saturating_sub(self.hour_used(station_id)));
+        match (daily, station) {
+            (None, None) => None,
+            (Some(d), None) => Some(format!("{d} skips left today")),
+            (None, Some(s)) => Some(format!("{s} skips left this hour")),
+            (Some(d), Some(s)) => Some(format!("{s} skips left this hour · {d} today")),
+        }
+    }
+
+    /// `Ok(())` records a counted skip, or a free one. `Err` refuses it.
+    pub fn spend(&mut self, station_id: &str, free: bool) -> Result<(), String> {
+        self.roll_day();
+        self.prune();
+        if free {
+            return Ok(());
+        }
+        if let Some(limit) = self.daily_limit
+            && self.daily_used >= limit
+        {
+            return Err("No skips left today".into());
+        }
+        if let Some(limit) = self.station_limit
+            && !station_id.is_empty()
+            && self.hour_used(station_id) >= limit
+        {
+            return Err("No skips left on this station for an hour".into());
+        }
+        if self.daily_limit.is_some() {
+            self.daily_used = self.daily_used.saturating_add(1);
+        }
+        if self.station_limit.is_some() && !station_id.is_empty() {
+            self.stations.entry(station_id.to_owned()).or_default().push(SystemTime::now());
+        }
+        Ok(())
+    }
+}
+
 /// A sleep timer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sleep {
@@ -449,6 +659,10 @@ pub enum Cmd {
     SongMenu,
     Mode,
     Shuffle,
+    /// `/` on My Stations, Browse, or Settings.
+    Filter,
+    /// `o` on My Stations: name, recent, thumbs.
+    Sort,
 }
 
 /// One key and what it does. Shift+letters are the capital letters;
@@ -504,6 +718,8 @@ pub const KEYMAP: &[Binding] = &[
     bind(KeyCode::Char('v'), Cmd::Details),
     bind(KeyCode::Char('e'), Cmd::Edit),
     bind(KeyCode::Char('m'), Cmd::Mode),
+    bind(KeyCode::Char('/'), Cmd::Filter),
+    bind(KeyCode::Char('o'), Cmd::Sort),
     bind(KeyCode::Char('X'), Cmd::Shuffle),
     bind(KeyCode::Char('j'), Cmd::Down),
     bind(KeyCode::Down, Cmd::Down),
@@ -898,6 +1114,27 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// wl-copy, else xclip. The caller is a background thread. `osc52\n` means both failed.
+fn copy_link(link: &str) -> String {
+    let tools: [(&str, &[&str]); 2] = [("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])];
+    for (tool, args) in tools {
+        let child = std::process::Command::new(tool)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        if let Ok(mut child) = child {
+            use std::io::Write;
+            let wrote = child.stdin.take().is_some_and(|mut i| i.write_all(link.as_bytes()).is_ok());
+            if wrote && child.wait().is_ok_and(|s| s.success()) {
+                return format!("Copied: {link}");
+            }
+        }
+    }
+    format!("osc52\n{link}")
+}
+
 pub struct App {
     /// Media keys and the desktop's player widget (`None` until main starts it).
     pub mpris: Option<crate::mpris::Mpris>,
@@ -911,6 +1148,10 @@ pub struct App {
     pub theme_picker: Option<ThemePicker>,
     pub config: Config,
     pub config_path: Option<PathBuf>,
+    /// Volume waiting to be written, and when the keys have been quiet long enough.
+    pending_volume: Option<u8>,
+    volume_due: Option<Instant>,
+    volume_job: Option<std::thread::JoinHandle<Result<(), String>>>,
     pub demo: bool,
     pub session: Session,
     pub view: View,
@@ -945,6 +1186,8 @@ pub struct App {
     episode_wait: bool,
     pub queue: VecDeque<Song>,
     pub now: Option<Song>,
+    /// Track token from the previous tick, so the next tick can compare without copying.
+    seen_token: String,
     /// Played songs, newest first.
     pub history: Vec<Song>,
     pub status: String,
@@ -1024,6 +1267,22 @@ pub struct App {
     /// The covers.
     pub art: crate::art::Art,
     pub audio: Audio,
+    /// Decode failures still allowed before the rest wait for the next tick.
+    skips_left: u8,
+    /// `next_song` stopped because the skip budget ran out.
+    resume_skips: bool,
+    /// Skips left today and per station this hour, counted here. Pandora does not send a remaining count.
+    pub skip_book: SkipBook,
+    /// Skip line for this frame, filled in [`crate::ui::draw`] so the status bar and Now Playing share it.
+    pub skip_caption: Option<String>,
+    /// `config.toml` could not be written. Shown until a later save works.
+    config_error: Option<String>,
+    /// `/` on Stations, Browse, or Settings: the text those lists keep.
+    pub list_filter: String,
+    /// Letters go into [`App::list_filter`] until Enter or Esc.
+    pub filter_edit: bool,
+    /// Clipboard copy started off the UI thread; the next tick reads the result.
+    clipboard: Option<std::sync::mpsc::Receiver<String>>,
     backend: Backend,
     /// Where the Pandora password is kept (see [`crate::keychain`]).
     keychain: Arc<dyn Keychain>,
@@ -1034,6 +1293,8 @@ pub struct App {
     pending_password: pending_password::PendingPassword,
     /// A newer release (About shows it).
     pub update: Option<Update>,
+    /// Changelog lines for [`Self::update`]: what the new version adds or fixes.
+    pub update_notes: Vec<String>,
     /// GitHub confirmed this is the latest release.
     pub up_to_date: bool,
     pub self_update: Progress,
@@ -1041,6 +1302,30 @@ pub struct App {
     pub edit_config: bool,
     /// After a login: whether the plan streams 192 kbps MP3.
     pub hifi: Option<bool>,
+    /// From login: `Some(true)` means the explicit filter is on. Not written to config.
+    pub explicit_filter: Option<bool>,
+    /// Listener fields from login, echoed on `updateAccount`.
+    profile: crate::pandora::ListenerProfile,
+    /// New password typed once, held only until the second box matches.
+    pending_new_password: Option<Secret>,
+    /// Profile or password change waiting for the current password.
+    account_edit: Option<AccountEdit>,
+    /// Episodes of the show page the current episode came from, in list order.
+    show_episodes: Vec<(String, String)>,
+    /// `PE:` → (elapsed seconds, finished) from the last show page.
+    episode_progress: std::collections::HashMap<String, (u64, bool)>,
+    episode_id: String,
+    progress_every: u64,
+    last_progress: Option<std::time::Instant>,
+    pub(crate) followed: Vec<crate::pandora::FollowedShow>,
+    pub(crate) followed_cursor: usize,
+    pub(crate) badges: std::collections::HashMap<String, String>,
+    pub(crate) thumbs: Vec<ThumbGroup>,
+    pub(crate) thumbs_cursor: usize,
+
+    /// Station id the skip line was built for, and a stamp of the skip book.
+    pub(crate) skip_for: String,
+    pub(crate) skip_stamp: u64,
     /// What Pandora actually sent for the song now playing: its format and
     /// bitrate. `None` until a song plays. The plan's flag says what it
     /// *should* send; this says what it did, which is not always the same.
@@ -1073,6 +1358,8 @@ const MAX_PROMPT: usize = 256;
 pub const SPLASH: Duration = Duration::from_millis(2000);
 /// A song's audio gets this long to download before it is given up on.
 const BUFFER_TIMEOUT: Duration = Duration::from_secs(30);
+/// Songs that will not decode, per tick, before the rest wait.
+const MAX_SKIPS_PER_TICK: u8 = 3;
 
 impl App {
     pub fn new(config: Config, config_path: Option<PathBuf>, warnings: &[ConfigWarning], demo: bool) -> Self {
@@ -1119,8 +1406,17 @@ impl App {
             episode_wait: false,
             queue: VecDeque::new(),
             now: None,
+            seen_token: String::new(),
             history: Vec::new(),
             status: String::new(),
+            skips_left: MAX_SKIPS_PER_TICK,
+            resume_skips: false,
+            skip_book: SkipBook::default(),
+            skip_caption: None,
+            config_error: None,
+            list_filter: String::new(),
+            filter_edit: false,
+            clipboard: None,
             sleep: None,
             sleep_pause_next: false,
             splash: None,
@@ -1161,10 +1457,27 @@ impl App {
             keychain_state: KeychainState::Unknown,
             pending_password: pending_password::PendingPassword::default(),
             update: None,
+            update_notes: Vec::new(),
             up_to_date: false,
             self_update: Progress::Idle,
             edit_config: false,
             hifi: None,
+            explicit_filter: None,
+            profile: crate::pandora::ListenerProfile::default(),
+            pending_new_password: None,
+            account_edit: None,
+            show_episodes: Vec::new(),
+            episode_progress: std::collections::HashMap::new(),
+            episode_id: String::new(),
+            progress_every: 60,
+            last_progress: None,
+            followed: Vec::new(),
+            followed_cursor: 0,
+            badges: std::collections::HashMap::new(),
+            thumbs: Vec::new(),
+            thumbs_cursor: 0,
+            skip_for: String::new(),
+            skip_stamp: 0,
             stream: None,
             restart: false,
             art: crate::art::Art::default(),
@@ -1174,6 +1487,9 @@ impl App {
             menu: menu::MenuModel::default(),
             config,
             config_path,
+            pending_volume: None,
+            volume_due: None,
+            volume_job: None,
             user_themes: if demo {
                 Vec::new()
             } else {
@@ -1185,6 +1501,9 @@ impl App {
             mpris: None,
             demo,
         };
+        if !demo {
+            app.restore_place();
+        }
         app.apply_theme();
         app.refresh_menu_cache();
         app.status = ConfigWarning::summary(warnings)
@@ -1323,9 +1642,82 @@ impl App {
             return;
         }
         let Some(path) = &self.config_path else { return };
-        if let Err(e) = config::set_values(path, values) {
-            self.status = format!("⚠ {e}");
+        match config::set_values(path, values) {
+            Ok(()) => self.config_error = None,
+            Err(e) => {
+                self.config_error = Some(e.to_string());
+                self.stick_config_warning();
+            }
         }
+    }
+
+    /// Put the failed-save warning back as a suffix. A newer status stays; the
+    /// warning is added until a save succeeds.
+    fn stick_config_warning(&mut self) {
+        if self.config_error.is_none() || self.status.contains("settings not saved") {
+            return;
+        }
+        let Some(err) = self.config_error.clone() else { return };
+        let suffix = format!("settings not saved: {err}");
+        if self.status.contains("settings not saved") {
+            return;
+        }
+        if self.status.is_empty() {
+            self.status = format!("⚠ {suffix}");
+        } else {
+            self.status = format!("{} · {suffix}", self.status);
+        }
+    }
+
+    /// Last view and pane from config, when the names are ones this version knows.
+    fn restore_place(&mut self) {
+        self.view = match self.config.ui.last_view.as_str() {
+            "stations" => View::Stations,
+            "browse" => View::Browse,
+            "pinned" => View::Pinned,
+            "recent" => View::Recent,
+            "settings" => View::Settings,
+            "notifications" => View::Notifications,
+            "about" => View::About,
+            "player" => View::Player,
+            _ => self.view,
+        };
+        self.pane = match self.config.ui.last_pane.as_str() {
+            "now" => Pane::NowPlaying,
+            "next" => Pane::UpNext,
+            "history" => Pane::History,
+            _ => self.pane,
+        };
+    }
+
+    /// Remember the page and pane. Volume is saved where it changes.
+    fn remember_place(&mut self) {
+        if self.demo || self.config_path.is_none() {
+            return;
+        }
+        let view = match self.view {
+            View::Player => "player",
+            View::Stations => "stations",
+            View::Browse => "browse",
+            View::Pinned => "pinned",
+            View::Recent => "recent",
+            View::Followed => "followed",
+            View::Thumbs => "thumbs",
+            View::Settings => "settings",
+            View::Notifications => "notifications",
+            View::About => "about",
+        };
+        let pane = match self.pane {
+            Pane::NowPlaying => "now",
+            Pane::UpNext => "next",
+            Pane::History => "history",
+        };
+        if self.config.ui.last_view == view && self.config.ui.last_pane == pane {
+            return;
+        }
+        self.config.ui.last_view = view.into();
+        self.config.ui.last_pane = pane.into();
+        self.save(&[("look", "last_view", view.into()), ("look", "last_pane", pane.into())]);
     }
 
     // --- The menu ---
@@ -1380,6 +1772,7 @@ impl App {
             // Recently Played sits where Pinned used to, above Pinned. An empty
             // list keeps the row absent. Pinned stays above the Browse sections.
             .chain(recent.then_some(MenuItem::RecentlyPlayed))
+            .chain([MenuItem::Followed, MenuItem::Thumbs])
             .chain(pinned.then_some(MenuItem::Pinned))
             .chain((0..pin_count).map(MenuItem::BrowsePin))
             .chain((0..favs).map(MenuItem::Favorite))
@@ -1427,6 +1820,8 @@ impl App {
             MenuItem::BrowsePin(i) => self.show_browse_pin(i),
             MenuItem::Pinned => self.show_page(View::Pinned),
             MenuItem::RecentlyPlayed => self.show_recently_played(),
+            MenuItem::Followed => self.open_followed(),
+            MenuItem::Thumbs => self.open_thumbs(),
             MenuItem::Favorite(i) => {
                 let Some(fav) = self.config.ui.favorites.get(i).cloned() else { return };
                 match self.stations.iter().position(|s| s.id == fav.id) {
@@ -1481,6 +1876,10 @@ impl App {
     /// Settings or About (menu entry, `O` or `A`): the page, with the keys
     /// on it and its menu entry selected.
     fn show_page(&mut self, view: View) {
+        if self.view != view {
+            self.list_filter.clear();
+            self.filter_edit = false;
+        }
         self.view = view;
         self.point_menu_at_view();
         self.focus = Focus::Content;
@@ -1488,6 +1887,10 @@ impl App {
 
     /// My Stations (menu entry or `S`): the list, with the keys on it.
     fn show_stations(&mut self) {
+        if self.view != View::Stations {
+            self.list_filter.clear();
+            self.filter_edit = false;
+        }
         self.view = View::Stations;
         self.focus = Focus::Content;
         self.on_add_row = false;
@@ -1559,6 +1962,11 @@ impl App {
     fn make_selected_station(&mut self) {
         let Some(hit) = self.add_station.as_ref().and_then(|s| s.selected().cloned()) else { return };
         self.add_station = None;
+        if hit.kind == crate::pandora::HitKind::Show || hit.id.starts_with("PC:") {
+            self.show_page(View::Browse);
+            self.open_podcast(&hit.id, &hit.name);
+            return;
+        }
         self.create_station(&hit.id, &hit.name);
     }
 
@@ -1666,28 +2074,12 @@ impl App {
             self.status = format!("Demo: would copy {link}");
             return;
         }
-        let tools: [(&str, &[&str]); 2] = [("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])];
-        for (tool, args) in tools {
-            let child = std::process::Command::new(tool)
-                .args(args)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-            if let Ok(mut child) = child {
-                use std::io::Write;
-                let wrote = child.stdin.take().is_some_and(|mut i| i.write_all(link.as_bytes()).is_ok());
-                if wrote && child.wait().is_ok_and(|s| s.success()) {
-                    self.status = format!("Copied: {link}");
-                    return;
-                }
-            }
-        }
-        use std::io::Write;
-        let mut out = std::io::stdout();
-        let _ = write!(out, "\x1b]52;c;{}\x07", base64(link.as_bytes()));
-        let _ = out.flush();
-        self.status = format!("Copied (via the terminal): {link}");
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.clipboard = Some(rx);
+        self.status = "Copying…".into();
+        let _ = std::thread::Builder::new().name("clipboard".into()).spawn(move || {
+            let _ = tx.send(copy_link(&link));
+        });
     }
 
     fn show_song_details(&mut self, song: Song, why: bool) {
@@ -1815,6 +2207,8 @@ impl App {
             },
             View::Pinned => Some(MenuItem::Pinned),
             View::Recent => Some(MenuItem::RecentlyPlayed),
+            View::Followed => Some(MenuItem::Followed),
+            View::Thumbs => Some(MenuItem::Thumbs),
             View::Player if self.has_now_playing() => Some(MenuItem::NowPlaying),
             View::Player => None,
         };
@@ -1826,9 +2220,11 @@ impl App {
     // --- Every frame ---
 
     pub fn tick(&mut self) {
-        // One owned token for the dirty check; compared by &str after the
-        // mutating work so we don't hold a borrow across the tick body.
-        let before_token = self.now.as_ref().map(|s| s.track_token.clone());
+        self.skips_left = MAX_SKIPS_PER_TICK;
+        if self.resume_skips {
+            self.resume_skips = false;
+            self.next_song();
+        }
         let before = (
             self.splash.is_some(),
             self.audio_fetch.buffering.is_some(),
@@ -1839,6 +2235,7 @@ impl App {
             self.splash = None;
         }
         self.note_status();
+        self.episode_heartbeat();
         while let Ok(reply) = self.backend.replies.try_recv() {
             self.on_reply(reply);
         }
@@ -1849,6 +2246,8 @@ impl App {
         }
         self.sleep_tick();
         self.device_tick();
+        self.skip_book.prune();
+        self.pump_volume_save();
         if self.now.as_ref().is_some_and(|s| self.audio.finished(s.length)) {
             if let Some(song) = &self.now {
                 crate::log::log!(
@@ -1891,10 +2290,35 @@ impl App {
             self.audio.is_paused(),
             std::mem::discriminant(&self.ad),
         );
-        let token_changed = before_token.as_deref() != self.now.as_ref().map(|s| s.track_token.as_str());
+        let after_token = self.now.as_ref().map(|s| s.track_token.as_str()).unwrap_or("");
+        let token_changed = self.seen_token != after_token;
+        if token_changed {
+            self.seen_token.clear();
+            self.seen_token.push_str(after_token);
+        }
         if before != after || token_changed {
             self.mark_draw();
         }
+        self.art.poll();
+        if self.art.take_dirty() {
+            self.mark_draw();
+        }
+        if let Some(rx) = &self.clipboard
+            && let Ok(msg) = rx.try_recv()
+        {
+            self.clipboard = None;
+            if let Some(link) = msg.strip_prefix("osc52\n") {
+                use std::io::Write;
+                let mut out = std::io::stdout();
+                let ok = write!(out, "\x1b]52;c;{}\x07", base64(link.as_bytes())).is_ok() && out.flush().is_ok();
+                self.status =
+                    if ok { format!("Copied (via the terminal): {link}") } else { format!("Copy failed: {link}") };
+            } else {
+                self.status = msg;
+            }
+        }
+        self.remember_place();
+        self.stick_config_warning();
     }
 
     /// Media keys in, the playing song out.
@@ -1972,7 +2396,16 @@ impl App {
             || self.panel.is_some()
             || self.theme_picker.is_some()
             || self.editor.is_some()
-            || self.prompt == Some(Prompt::Password)
+            || matches!(
+                self.prompt,
+                Some(
+                    Prompt::Password
+                        | Prompt::Once(_)
+                        | Prompt::Profile(_)
+                        | Prompt::NewPassword
+                        | Prompt::NewPasswordAgain
+                )
+            )
     }
 
     pub fn in_songs(&self) -> bool {
@@ -1983,6 +2416,73 @@ impl App {
 
     pub fn setting(&self) -> Setting {
         Setting::ALL[self.settings_cursor.min(Setting::ALL.len() - 1)].1
+    }
+
+    /// Settings rows the filter keeps. An empty filter keeps every row.
+    pub fn setting_visible(&self, setting: Setting) -> bool {
+        let q = self.list_filter.trim();
+        q.is_empty() || setting.label().to_lowercase().contains(&q.to_lowercase())
+    }
+
+    fn begin_filter(&mut self) {
+        let here = self.focus == Focus::Content && matches!(self.view, View::Stations | View::Browse | View::Settings);
+        if !here {
+            self.status = "/ filters My Stations, Browse, and Settings".into();
+            return;
+        }
+        self.filter_edit = true;
+        self.status = "Type to filter · Enter keeps it · Esc clears".into();
+    }
+
+    fn filter_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.list_filter.clear();
+                self.filter_edit = false;
+                self.status = "Filter cleared".into();
+            }
+            KeyCode::Enter => {
+                self.filter_edit = false;
+                self.status = if self.list_filter.trim().is_empty() {
+                    "Filter cleared".into()
+                } else {
+                    format!("Filter: {}", self.list_filter)
+                };
+            }
+            KeyCode::Backspace => {
+                self.list_filter.pop();
+            }
+            KeyCode::Char(c)
+                if !key.modifiers.contains(KeyModifiers::CONTROL) && self.list_filter.chars().count() < 40 =>
+            {
+                self.list_filter.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn cycle_station_sort(&mut self) {
+        if self.focus == Focus::Content && self.view == View::Browse && self.on_podcast() {
+            self.flip_episode_order();
+            return;
+        }
+        if !(self.focus == Focus::Content && self.view == View::Stations) {
+            self.status = "o sorts My Stations".into();
+            return;
+        }
+        let next = match self.config.ui.station_sort.as_str() {
+            "name" => "recent",
+            "recent" => "thumbs",
+            _ => "name",
+        };
+        self.config.ui.station_sort = next.into();
+        self.save(&[("look", "station_sort", next.into())]);
+        let label = match next {
+            "name" => "name",
+            "recent" => "recently played",
+            _ => "thumbs in History",
+        };
+        self.status = format!("My Stations: {label}");
     }
 
     /// The Audio quality row: the choice, and what Pandora is really sending.
@@ -2042,6 +2542,24 @@ impl App {
                 Session::Failed(e) => e.clone(),
             },
             Setting::LogOut => String::new(),
+            Setting::ExplicitFilter => match self.explicit_filter {
+                Some(true) => "on · explicit blocked".into(),
+                Some(false) => "off".into(),
+                None if self.session == Session::LoggedIn => "not reported".into(),
+                None => "not logged in".into(),
+            },
+            Setting::LogOutOthers => String::new(),
+            Setting::ZipCode => self.profile_value(|p| p.zip.clone()),
+            Setting::Gender => self.profile_value(|p| p.gender.clone()),
+            Setting::BirthYear => self.profile_value(|p| p.birth_year.map(|y| y.to_string())),
+            Setting::ChangePassword => {
+                if self.session == Session::LoggedIn {
+                    "Enter sets a new one".into()
+                } else {
+                    "not logged in".into()
+                }
+            }
+            Setting::NextEpisode => on(self.config.player.autoplay_next_episode),
             Setting::Quality => self.quality_label(),
             Setting::Volume => format!("{}%", self.config.player.volume),
             Setting::Autoplay => on(self.config.ui.autoplay_last_station),
@@ -2088,9 +2606,13 @@ impl App {
     pub(crate) fn open_prompt(&mut self, prompt: Prompt) {
         self.query = match prompt {
             Prompt::Email => TextInput::new(&self.config.pandora.username),
-            Prompt::Password => TextInput::default(),
+            Prompt::Password | Prompt::Once(_) | Prompt::NewPassword | Prompt::NewPasswordAgain => TextInput::default(),
+            Prompt::Profile(_) => TextInput::default(),
         };
-        self.settings_cursor = Setting::at(if prompt == Prompt::Email { Setting::Email } else { Setting::Password });
+        if !matches!(prompt, Prompt::Once(_) | Prompt::Profile(_) | Prompt::NewPassword | Prompt::NewPasswordAgain) {
+            let row = if prompt == Prompt::Email { Setting::Email } else { Setting::Password };
+            self.settings_cursor = Setting::at(row);
+        }
         self.prompt = Some(prompt);
     }
 
@@ -2099,7 +2621,19 @@ impl App {
             Setting::Email => self.open_prompt(Prompt::Email),
             Setting::Password => self.forget_saved_password(true),
             Setting::LogIn => self.log_in(),
-            Setting::LogOut => self.log_out(),
+            Setting::LogOut => self.ask_logout(),
+            Setting::ExplicitFilter => self.ask_explicit_filter(),
+            Setting::LogOutOthers => self.ask_logout_others(),
+            Setting::ZipCode => self.open_profile(ProfileField::Zip),
+            Setting::Gender => self.open_profile(ProfileField::Gender),
+            Setting::BirthYear => self.open_profile(ProfileField::BirthYear),
+            Setting::ChangePassword => self.open_new_password(),
+            Setting::NextEpisode => {
+                let on = !self.config.player.autoplay_next_episode;
+                self.config.player.autoplay_next_episode = on;
+                self.save(&[("playback", "autoplay_next_episode", on.into())]);
+                self.status = format!("Autoplay next episode: {}", if on { "on" } else { "off" });
+            }
             Setting::Quality if self.quality_greyed() => {
                 self.status = "Audio quality is Pandora's on a free plan: 64 kbps HE-AAC".into();
             }
@@ -2283,6 +2817,8 @@ impl App {
             KeyCode::Esc => {
                 self.prompt = None;
                 self.query.clear();
+                self.pending_new_password = None;
+                self.account_edit = None;
             }
             KeyCode::Enter | KeyCode::Tab => {
                 let text = self.query.take();
@@ -2310,6 +2846,28 @@ impl App {
                         self.settings_cursor = Setting::at(Setting::LogIn);
                         self.log_in();
                     }
+                    Prompt::Once(_) if text.is_empty() => {
+                        self.status = "Password needed".into();
+                    }
+                    Prompt::Once(OncePassword::Explicit(enable)) => {
+                        let username = self.config.pandora.username.trim().to_owned();
+                        let password = Secret::new(text);
+                        self.backend.send(Request::SetExplicitFilter { username, password, enable });
+                        self.status = "Updating the explicit filter…".into();
+                    }
+                    Prompt::Once(OncePassword::OtherDevices) => {
+                        let password = Secret::new(text);
+                        self.backend.send(Request::LogoutOtherDevices { password });
+                        self.status = "Logging out other devices…".into();
+                    }
+                    Prompt::Once(OncePassword::Account) => self.send_account_edit(Secret::new(text)),
+                    Prompt::Profile(field) => self.took_profile_value(field, text),
+                    Prompt::NewPassword if text.is_empty() => self.status = "Type the new password".into(),
+                    Prompt::NewPassword => {
+                        self.pending_new_password = Some(Secret::new(text));
+                        self.open_prompt(Prompt::NewPasswordAgain);
+                    }
+                    Prompt::NewPasswordAgain => self.confirm_new_password(text),
                 }
             }
             _ => {
@@ -2321,6 +2879,7 @@ impl App {
     // --- Keys ---
 
     pub fn on_key(&mut self, key: KeyEvent) {
+        self.skips_left = MAX_SKIPS_PER_TICK;
         self.mark_draw();
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.quit = true;
@@ -2361,6 +2920,9 @@ impl App {
         }
         if self.song_menu.is_some() {
             return self.song_menu_key(key);
+        }
+        if self.filter_edit {
+            return self.filter_key(key);
         }
         // Settings rows follow vibekit STYLE: Space/←→/h/l flip toggles; Enter/→/l open pickers.
         if self.focus == Focus::Content && self.view == View::Settings && self.settings_row_key(key) {
@@ -2425,7 +2987,22 @@ impl App {
             // Only Shift+Q quits, so a stray lowercase q can't end playback.
             Cmd::Quit => self.ask_quit(),
             Cmd::Help => self.open_help(),
-            Cmd::Pause => self.audio.toggle_pause(),
+            Cmd::Pause => {
+                let was = self.audio.is_paused();
+                self.audio.toggle_pause();
+                if self.on_episode
+                    && !was
+                    && self.audio.is_paused()
+                    && let Some(source_id) = self.episode_source.clone()
+                {
+                    self.backend.send(Request::EpisodePause {
+                        source_id,
+                        episode_id: self.episode_id.clone(),
+                        index: self.episode_index,
+                        elapsed: self.audio.position().as_secs(),
+                    });
+                }
+            }
             Cmd::Skip => self.skip(),
             Cmd::NowPlaying => self.show_now_playing(),
             Cmd::Stations => self.show_stations(),
@@ -2475,12 +3052,17 @@ impl App {
                 self.open_modes(station)
             }
             Cmd::Shuffle => self.play_shuffle(),
+            Cmd::Filter => self.begin_filter(),
+            Cmd::Sort => self.cycle_station_sort(),
         }
     }
 
     /// `N`: on to the next song, from anywhere.
     fn skip(&mut self) {
         if self.now.is_some() {
+            if !self.spend_skip() {
+                return;
+            }
             self.status = "Skipped".into();
             self.end_song(End::Skipped);
         } else if matches!(self.ad, AdPhase::Playing(_)) {
@@ -2744,6 +3326,11 @@ impl App {
             (Focus::Content, View::Browse) => self.activate_browse_row(),
             (Focus::Content, View::Pinned) => self.open_pin(),
             (Focus::Content, View::Recent) => self.play_recent(),
+            (Focus::Content, View::Followed) => self.open_followed_row(),
+            (Focus::Content, View::Thumbs) => {
+                self.load_thumb_row();
+                self.status = "Thumbs are view only. Playing a song on demand needs Pandora Premium.".into();
+            }
             (Focus::Content, View::Notifications) => {}
             (Focus::Content, View::Player) => {}
         }
@@ -2753,15 +3340,33 @@ impl App {
         let clamp = |at: usize, len: usize| step(at, len, by);
         match (self.focus, self.view) {
             (Focus::Menu, _) => self.menu_cursor = clamp(self.menu_cursor, self.menu_items().len()),
-            (Focus::Content, View::Settings) => self.settings_cursor = clamp(self.settings_cursor, Setting::ALL.len()),
+            (Focus::Content, View::Settings) => {
+                let len = Setting::ALL.len();
+                if len == 0 {
+                    return;
+                }
+                let mut at = clamp(self.settings_cursor, len);
+                for _ in 0..len {
+                    if self.setting_visible(Setting::ALL[at].1) {
+                        break;
+                    }
+                    at = step(at, len, if by < 0 { -1 } else { 1 });
+                }
+                self.settings_cursor = at;
+            }
             (Focus::Content, View::Player) => self.move_song(by),
             (Focus::Content, View::Stations) => {
-                // The "Add station…" row is the list's first row.
-                let at = if self.on_add_row { 0 } else { self.stations_index() + 1 };
-                let to = clamp(at, self.stations.len() + 1);
+                // The "Add station…" row is the list's first row. Movement stays on the filtered order.
+                let order = self.station_order();
+                let at = if self.on_add_row {
+                    0
+                } else {
+                    order.iter().position(|&i| i == self.stations_index()).map(|p| p + 1).unwrap_or(0)
+                };
+                let to = clamp(at, order.len() + 1);
                 self.on_add_row = to == 0;
                 if to > 0 {
-                    self.stations_cursor = to - 1;
+                    self.stations_cursor = order[to - 1];
                 }
             }
             (Focus::Content, View::Browse) => {
@@ -2786,6 +3391,13 @@ impl App {
             }
             (Focus::Content, View::Pinned) => self.pinned_cursor = clamp(self.pinned_cursor, self.pins.len().max(1)),
             (Focus::Content, View::Recent) => self.recent_cursor = clamp(self.recent_cursor, self.recent.len().max(1)),
+            (Focus::Content, View::Followed) => {
+                self.followed_cursor = clamp(self.followed_cursor, self.followed.len().max(1))
+            }
+            (Focus::Content, View::Thumbs) => {
+                self.thumbs_cursor = clamp(self.thumbs_cursor, self.thumbs.len().max(1));
+                self.load_thumb_row();
+            }
         }
     }
 
@@ -2940,13 +3552,63 @@ impl App {
         let volume = (i16::from(self.config.player.volume) + by).clamp(0, 100) as u8;
         self.config.player.volume = volume;
         self.audio.set_volume(volume);
-        self.save(&[("playback", "volume", i64::from(volume).into())]);
+        // Written once the keys have been quiet, off this thread. Quit flushes it.
+        self.pending_volume = Some(volume);
+        self.volume_due = Some(Instant::now() + Duration::from_millis(500));
         self.status = format!("Volume {volume}%");
+    }
+
+    /// Start the volume write when the debounce has passed. A write still running waits.
+    fn pump_volume_save(&mut self) {
+        if self.volume_job.as_ref().is_some_and(|job| !job.is_finished()) {
+            return;
+        }
+        if let Some(job) = self.volume_job.take()
+            && let Ok(Err(error)) = job.join()
+        {
+            self.config_error = Some(error);
+            self.stick_config_warning();
+        }
+        if !self.volume_due.is_some_and(|due| Instant::now() >= due) {
+            return;
+        }
+        let Some(volume) = self.pending_volume.take() else {
+            self.volume_due = None;
+            return;
+        };
+        self.volume_due = None;
+        if self.demo {
+            return;
+        }
+        let Some(path) = self.config_path.clone() else { return };
+        self.volume_job = Some(std::thread::spawn(move || {
+            config::set_values(&path, &[("playback", "volume", i64::from(volume).into())]).map_err(|e| e.to_string())
+        }));
+    }
+
+    /// Write any volume still waiting. Quit calls this on this thread after the worker finishes.
+    pub(crate) fn flush_volume(&mut self) {
+        if let Some(job) = self.volume_job.take()
+            && let Ok(Err(error)) = job.join()
+        {
+            self.config_error = Some(error);
+            self.stick_config_warning();
+        }
+        let Some(volume) = self.pending_volume.take() else {
+            self.volume_due = None;
+            return;
+        };
+        self.volume_due = None;
+        self.save(&[("playback", "volume", i64::from(volume).into())]);
     }
 
     /// `U` / `D`: thumbs on the playing song, whatever has the keys.
     fn rate(&mut self, positive: bool) {
-        let Some(song) = self.now.as_mut() else {
+        let Some((token, missing, already)) = self.now.as_ref().map(|song| {
+            let wanted = if positive { Rating::Up } else { Rating::Down };
+            let missing = song.station_id.is_empty() || song.track_token.is_empty();
+            (song.track_token.clone(), missing, song.rating == wanted)
+        }) else {
             self.status = if matches!(self.ad, AdPhase::Playing(_)) {
                 "Ads can't be rated: thumbs are for your songs".into()
             } else {
@@ -2954,18 +3616,21 @@ impl App {
             };
             return;
         };
-        if song.station_id.is_empty() || song.track_token.is_empty() {
+        if missing {
             self.status = "Pandora can't rate this song (no track token)".into();
             return;
         }
-        if song.rating == (if positive { Rating::Up } else { Rating::Down }) {
-            let token = song.track_token.clone();
+        if already {
             return self.clear_thumb(&token);
         }
-        song.rating = if positive { Rating::Up } else { Rating::Down };
-        let request = Request::Rate { track_token: song.track_token.clone(), positive };
-        self.backend.send(request);
-        // Like Pandora: a thumbs down on the playing song skips it.
+        // A thumbs down skips the song. Check the skip budget before the thumb is sent.
+        if !positive && !self.spend_skip() {
+            return;
+        }
+        if let Some(song) = self.now.as_mut() {
+            song.rating = if positive { Rating::Up } else { Rating::Down };
+        }
+        self.backend.send(Request::Rate { track_token: token, positive });
         if !positive {
             self.end_song(End::Skipped);
         }
@@ -3039,8 +3704,11 @@ impl App {
     }
 
     fn tired(&mut self) {
-        let Some(song) = &self.now else { return };
-        self.backend.send(Request::Tired { track_token: song.track_token.clone() });
+        let Some(token) = self.now.as_ref().map(|s| s.track_token.clone()) else { return };
+        if !self.spend_skip() {
+            return;
+        }
+        self.backend.send(Request::Tired { track_token: token });
         self.end_song(End::Skipped);
     }
 

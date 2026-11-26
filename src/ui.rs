@@ -16,8 +16,8 @@ use ratatui::widgets::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
-    App, BrowseRow, BrowseState, Details, Editor, EditorTab, FeedState, Focus, Loaded, MenuItem, Pane, Prompt, Rename,
-    SearchMode, Session, Setting, SongAction, StationSearch, View,
+    App, BrowseRow, BrowseState, Details, Editor, EditorTab, FeedState, Focus, Loaded, MenuItem, OncePassword, Pane,
+    ProfileField, Prompt, Rename, SearchMode, Session, Setting, SongAction, StationSearch, View,
 };
 use crate::art::Cover;
 use crate::config::{AlbumArt, BorderStyle, GoodVibes};
@@ -85,6 +85,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         crate::splash::draw(frame, &p, progress, &version, "Pandora in your terminal");
         return;
     }
+    let station = app.now.as_ref().map(|s| s.station_id.as_str()).unwrap_or("");
+    let stamp = app.skip_book.stamp();
+    if app.skip_for != station || app.skip_stamp != stamp {
+        app.skip_for.clear();
+        app.skip_for.push_str(station);
+        app.skip_stamp = stamp;
+        app.skip_caption = app.skip_book.label(&app.skip_for);
+    }
     let ic = icons(app.config.ui.icons);
     let [body, status, keys] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1)]).areas(area);
@@ -98,12 +106,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         View::Browse => draw_browse(frame, app, ic, right),
         View::Pinned => draw_pinned(frame, app, ic, right),
         View::Recent => draw_recent(frame, app, ic, right),
+        View::Followed => draw_followed(frame, app, right),
+        View::Thumbs => draw_thumbs(frame, app, right),
         View::Settings => draw_settings(frame, app, ic, right),
         View::About => draw_about(frame, app, ic, right),
         View::Notifications => draw_notes(frame, app, ic, right),
     }
     draw_status(frame, app, status);
-    draw_keys(frame, &p, &key_caps(app), keys);
+    draw_keys(frame, &p, bar_keys(), keys);
     if app.overlay_open() {
         // Match vibekit dialog fade: desaturate then blend toward the theme background.
         let area = frame.area();
@@ -131,6 +141,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.dialogs.draw_dialogs(frame, &p);
     if app.prompt == Some(Prompt::Password) {
         draw_password_box(frame, app, ic, area);
+    }
+    if let Some(Prompt::Once(ask)) = app.prompt {
+        draw_once_password(frame, app, area, ask);
+    }
+    if let Some(prompt @ (Prompt::Profile(_) | Prompt::NewPassword | Prompt::NewPasswordAgain)) = app.prompt {
+        draw_account_line(frame, app, area, prompt);
     }
     if let Some(notice) = &app.genre_notice {
         draw_genre_notice(frame, &p, ic, area, notice);
@@ -397,6 +413,17 @@ fn is_pua(c: char) -> bool {
     matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD)
 }
 
+fn album_line(song: &crate::pandora::Song) -> String {
+    let mut line = song.album.clone();
+    if let Some(year) = song.year {
+        line = if line.is_empty() { year.to_string() } else { format!("{line} ({year})") };
+    }
+    if song.explicit {
+        line = if line.is_empty() { "explicit".into() } else { format!("{line} · explicit") };
+    }
+    line
+}
+
 fn rating_word<'a>(rating: Rating, p: &Palette, ic: &Icons) -> Span<'a> {
     match rating {
         Rating::Up => Span::styled(format!("{} liked", ic.up), Style::new().fg(p.green).bold()),
@@ -409,19 +436,108 @@ fn rating_word<'a>(rating: Rating, p: &Palette, ic: &Icons) -> Span<'a> {
 
 /// What is going on, on a shaded bar above the keys (where tubevibe has it),
 /// and "Logged In As: <email>" at its far right.
-fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
-    let p = app.palette;
-    let color = if app.status.starts_with('⚠') { p.yellow } else { p.fg };
-    frame.render_widget(Block::new().bg(p.highlight), area);
-    // The right side (sleep timer, look, stream, account) gets at most half
-    // the bar, and never less than the status.
-    let room = (area.width / 2).saturating_sub(3) as usize;
+struct StatusParts {
+    status: String,
+    skip: String,
+    buffering: bool,
+    silent: bool,
+    sleep_secs: Option<u64>,
+    end_of_song: bool,
+    stream: Option<(crate::pandora::AudioFormat, u32)>,
+    theme: String,
+    omarchy: String,
+    art: String,
+    retro: String,
+    tint: String,
+    user: String,
+    logged_in: bool,
+    width: u16,
+    shown: String,
+    warn: bool,
+    account: Option<String>,
+    /// Labels that fit this width, already trimmed.
+    extra: Vec<String>,
+}
+
+fn status_inputs_match(parts: &StatusParts, app: &App, width: u16) -> bool {
+    let (sleep_secs, end_of_song) = match app.sleep {
+        Some(crate::app::Sleep::Minutes(..)) => (app.sleep_left().map(|d| d.as_secs()), false),
+        Some(crate::app::Sleep::EndOfSong) => (None, true),
+        None => (None, false),
+    };
+    parts.width == width
+        && parts.status == app.status
+        && parts.skip.as_str() == app.skip_caption.as_deref().unwrap_or("")
+        && parts.buffering == app.audio_fetch.buffering.is_some()
+        && parts.silent == (app.now.is_some() && app.audio.playing_silently())
+        && parts.sleep_secs == sleep_secs
+        && parts.end_of_song == end_of_song
+        && parts.stream == app.stream
+        && parts.theme == app.config.ui.theme()
+        && parts.omarchy.as_str() == app.omarchy_theme.as_deref().unwrap_or("")
+        && parts.art == app.config.ui.album_art.label()
+        && parts.retro == app.config.ui.retro_mode.label()
+        && parts.tint == app.config.ui.art_tint.label()
+        && parts.user == app.config.pandora.username
+        && parts.logged_in == (app.session == Session::LoggedIn)
+}
+
+fn build_status(app: &App, width: u16) -> StatusParts {
+    let mut shown = app.status.clone();
+    let buffering = app.audio_fetch.buffering.is_some();
+    if buffering && !shown.to_lowercase().contains("buffering") {
+        shown = if shown.is_empty() { "buffering".into() } else { format!("buffering · {shown}") };
+    }
+    let skip = app.skip_caption.clone().unwrap_or_default();
+    if !skip.is_empty() && !shown.contains("skips left") {
+        shown = if shown.is_empty() { skip.clone() } else { format!("{skip} · {shown}") };
+    }
+    let silent = app.now.is_some() && app.audio.playing_silently();
+    if silent && !shown.contains("playing silently") {
+        shown = if shown.is_empty() { "playing silently".into() } else { format!("playing silently · {shown}") };
+    }
+    let warn = shown.starts_with('⚠') || shown.starts_with("buffering");
+    let room = (width / 2).saturating_sub(3) as usize;
     let account = account_label(app, room);
-    let mut sleep = sleep_label(app);
-    let mut looks = look_labels(app);
-    let mut stream = stream_label(app);
-    // What goes when the bar is narrow, first to last: the look labels (from
-    // the last), then the stream, then the timer. The account never goes.
+    let sleep = sleep_label(app);
+    let looks = look_labels(app);
+    let stream_label = stream_label(app);
+    let extra = trim_status(room, &account, sleep, looks, stream_label);
+    let (sleep_secs, end_of_song) = match app.sleep {
+        Some(crate::app::Sleep::Minutes(..)) => (app.sleep_left().map(|d| d.as_secs()), false),
+        Some(crate::app::Sleep::EndOfSong) => (None, true),
+        None => (None, false),
+    };
+    StatusParts {
+        status: app.status.clone(),
+        skip,
+        buffering,
+        silent,
+        sleep_secs,
+        end_of_song,
+        stream: app.stream,
+        theme: app.config.ui.theme().to_owned(),
+        omarchy: app.omarchy_theme.clone().unwrap_or_default(),
+        art: app.config.ui.album_art.label().to_owned(),
+        retro: app.config.ui.retro_mode.label().to_owned(),
+        tint: app.config.ui.art_tint.label().to_owned(),
+        user: app.config.pandora.username.clone(),
+        logged_in: app.session == Session::LoggedIn,
+        width,
+        shown,
+        warn,
+        account,
+        extra,
+    }
+}
+
+fn trim_status(
+    room: usize,
+    account: &Option<String>,
+    mut sleep: Option<String>,
+    mut looks: Vec<String>,
+    mut stream: Option<String>,
+) -> Vec<String> {
     let used = |sleep: &Option<String>, looks: &[String], stream: &Option<String>| -> usize {
         let parts = sleep.iter().chain(looks).chain(stream).map(|s| safe_width(s) + 3).sum::<usize>();
         parts + account.as_ref().map_or(0, |a| safe_width(a))
@@ -438,7 +554,33 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         }
         break;
     }
-    let extra: Vec<String> = sleep.into_iter().chain(looks).chain(stream).collect();
+    sleep.into_iter().chain(looks).chain(stream).collect()
+}
+
+fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+    thread_local! {
+        static CACHE: std::cell::RefCell<Option<StatusParts>> = const { std::cell::RefCell::new(None) };
+    }
+    let p = app.palette;
+    CACHE.with(|slot| {
+        let rebuild = slot.borrow().as_ref().is_none_or(|parts| !status_inputs_match(parts, app, area.width));
+        if rebuild {
+            *slot.borrow_mut() = Some(build_status(app, area.width));
+        }
+        let borrowed = slot.borrow();
+        let parts = borrowed.as_ref().expect("just filled");
+        paint_status(frame, p, area, parts);
+    });
+}
+
+fn paint_status(frame: &mut Frame, p: Palette, area: Rect, parts: &StatusParts) {
+    let shown = parts.shown.as_str();
+    let color = if parts.warn { p.yellow } else { p.fg };
+    frame.render_widget(Block::new().bg(p.highlight), area);
+    // The right side (sleep timer, look, stream, account) gets at most half
+    // the bar, and never less than the status.
+    let account = parts.account.as_deref();
+    let extra = &parts.extra;
     let extra_w = extra.iter().map(|s| safe_width(s) + 3).sum::<usize>();
     let want = match &account {
         Some(a) => extra_w + safe_width(a) + 3,
@@ -447,17 +589,17 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     } as u16;
     let right_w = want.min(area.width / 2);
     let [left, right] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(right_w)]).areas(area);
-    let status = fit(&format!(" {}", app.status), left.width.saturating_sub(1) as usize);
+    let status = fit(&format!(" {shown}"), left.width.saturating_sub(1) as usize);
     frame.render_widget(Paragraph::new(Span::styled(status, Style::new().fg(color))), left);
     if right.width <= 2 {
         return;
     }
     let mut spans = Vec::new();
-    for label in &extra {
+    for label in extra {
         // The look and stream labels share the account's colour; the sleep
         // timer stays yellow.
         let color = if label.starts_with('☾') { p.yellow } else { p.blue };
-        spans.push(Span::styled(label.clone(), Style::new().fg(color)));
+        spans.push(Span::styled(label.as_str(), Style::new().fg(color)));
         spans.push(Span::styled(" · ", Style::new().fg(p.muted)));
     }
     match &account {
@@ -569,7 +711,8 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     // and headed like FAVORITES. The pinned Browse sections follow under
     // their own "BROWSE (n)" heading.
     let recent_n = u16::from(app.recent_row());
-    let personal_n = 1 + u16::from(pinned) + recent_n;
+    // Stations, optional recent, followed, thumbs, optional pinned.
+    let personal_n = 1 + recent_n + 2 + u16::from(pinned);
     // Hidden while it has nothing of its own, the way FAVORITES hides.
     let collection_head = !app.stations.is_empty() || (pinned && !app.pins.is_empty()) || app.recent_row();
     // The only rule above MY COLLECTION is the one under NOW PLAYING, so it
@@ -640,6 +783,8 @@ fn draw_menu(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     if app.recent_row() {
         top.push((MenuItem::RecentlyPlayed, ic.recent, format!("Recently Played ({})", app.recent.len())));
     }
+    top.push((MenuItem::Followed, ic.recent, format!("Followed Podcasts ({})", app.followed.len())));
+    top.push((MenuItem::Thumbs, ic.up, format!("My Thumbs ({})", app.thumbs.len())));
     if pinned {
         let n = if app.pins.is_empty() { String::new() } else { format!(" ({})", app.pins.len()) };
         top.push((MenuItem::Pinned, ic.pin, format!("Pinned{n}")));
@@ -881,6 +1026,66 @@ fn draw_recent(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     frame.render_stateful_widget(list, inner, &mut state);
 }
 
+fn draw_followed(frame: &mut Frame, app: &App, area: Rect) {
+    let p = app.palette;
+    let focused = app.focus == Focus::Content;
+    let block = panel(title(format!("Followed Podcasts ({})", app.followed.len()), &p), &p, focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if app.followed.is_empty() {
+        frame.render_widget(Paragraph::new(" No followed podcasts. Open a show and press f.").fg(p.muted), inner);
+        return;
+    }
+    let items: Vec<ListItem> = app
+        .followed
+        .iter()
+        .map(|show| {
+            let line = if show.publisher.is_empty() {
+                show.name.clone()
+            } else {
+                format!("{} · {}", show.name, show.publisher)
+            };
+            ListItem::new(Line::from(format!(" {line}"))).style(Style::new().fg(p.fg))
+        })
+        .collect();
+    let list = List::new(items).highlight_style(selection(&p, focused));
+    let mut state = ListState::default().with_selected(Some(app.followed_cursor.min(app.followed.len() - 1)));
+    frame.render_stateful_widget(list, inner, &mut state);
+}
+
+fn draw_thumbs(frame: &mut Frame, app: &App, area: Rect) {
+    let p = app.palette;
+    let focused = app.focus == Focus::Content;
+    let block = panel(title("My Thumbs".into(), &p), &p, focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if app.thumbs.is_empty() {
+        frame.render_widget(Paragraph::new(" No station thumbs yet.").fg(p.muted), inner);
+        return;
+    }
+    let mut lines = Vec::new();
+    for (i, group) in app.thumbs.iter().enumerate() {
+        let mark = if i == app.thumbs_cursor { ">" } else { " " };
+        lines.push(Line::from(format!("{mark} {} ({})", group.name, group.total)).style(Style::new().fg(p.fg).bold()));
+        if i == app.thumbs_cursor {
+            match &group.tracks {
+                None => lines.push(Line::from("    Loading songs…").style(Style::new().fg(p.muted))),
+                Some(tracks) if tracks.is_empty() => {
+                    lines.push(Line::from("    No songs in this list.").style(Style::new().fg(p.muted)))
+                }
+                Some(tracks) => {
+                    for track in tracks {
+                        let who =
+                            if track.artist.is_empty() { String::new() } else { format!(" — {}", track.artist) };
+                        lines.push(Line::from(format!("    {}{who}", track.name)).style(Style::new().fg(p.fg)));
+                    }
+                }
+            }
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 // --- Stations ---
 
 /// The icon after a station's star: the boxvibe logo for one of Pandora's
@@ -921,8 +1126,9 @@ fn draw_stations(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let add_row =
         ListItem::new(Line::from(format!(" {} {} Add station…", " ".repeat(c_play), cell(Some("+"), c_kind))))
             .style(Style::new().fg(p.orange).bold());
+    let order = app.station_order();
     let items: Vec<ListItem> = std::iter::once(add_row)
-        .chain(app.stations.iter().map(|s| {
+        .chain(order.iter().filter_map(|&i| app.stations.get(i)).map(|s| {
             let playing = app.current_station.as_deref() == Some(s.id.as_str());
             let icon = if s.is_shuffle {
                 ic.shuffle
@@ -948,7 +1154,11 @@ fn draw_stations(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
         }))
         .collect();
     let list = List::new(items).highlight_style(selection(&p, focused));
-    let at = if app.on_add_row { 0 } else { app.stations_index() + 1 };
+    let at = if app.on_add_row {
+        0
+    } else {
+        order.iter().position(|&i| i == app.stations_index()).map(|p| p + 1).unwrap_or(0)
+    };
     let mut state = ListState::default().with_selected(Some(at));
     frame.render_stateful_widget(list, inner, &mut state);
 }
@@ -958,9 +1168,14 @@ fn draw_stations(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 fn draw_browse(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let p = &app.palette;
     let focused = app.focus == Focus::Content;
-    let heading = match &app.browse_filter {
-        Some(section) => format!("{} {section}", if section == "Browse Genres" { ic.genre } else { ic.browse }),
-        None => format!("{} Browse", ic.browse),
+    let show = app.on_podcast().then(|| match &app.browse {
+        BrowseState::Loaded(sections) => sections.first().map(|s| s.title.clone()),
+        _ => None,
+    });
+    let heading = match (show.flatten(), &app.browse_filter) {
+        (Some(title), _) => format!("{} {title}", ic.browse),
+        (_, Some(section)) => format!("{} {section}", if section == "Browse Genres" { ic.genre } else { ic.browse }),
+        _ => format!("{} Browse", ic.browse),
     };
     let block = panel(title(heading, p), p, focused);
     let inner = block.inner(area);
@@ -1001,6 +1216,11 @@ fn draw_browse(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
                 let mark = if item.create_id().is_some() { "▶" } else { "·" };
                 let head = format!("   {mark} ");
                 let name = clean(&item.name);
+                let name = if app.badges.values().any(|id| id == &item.pandora_id) {
+                    format!("New · {name}")
+                } else {
+                    name.to_string()
+                };
                 let mut line = vec![Span::styled(format!("{head}{name}"), Style::new().fg(p.fg))];
                 if !item.detail.is_empty() {
                     let used = safe_width(&head) + safe_width(&name) + 3;
@@ -1284,7 +1504,7 @@ fn draw_add_station(frame: &mut Frame, p: &Palette, screen: Rect, search: &Stati
 }
 
 /// The hints under the add boxes' results; they fit the 62 cells inside the box.
-pub const ADD_RESULTS_HINT: &str = "Enter make station · j/k move · / edit · Esc cancel";
+pub const ADD_RESULTS_HINT: &str = "Enter station or podcast · j/k move · / edit · Esc cancel";
 pub const SEED_RESULTS_HINT: &str = "Enter add seed · j/k move · / edit · Esc cancel";
 
 /// What differs between the add-station box and the editor's add-a-seed box.
@@ -1326,7 +1546,7 @@ fn draw_search_box(frame: &mut Frame, p: &Palette, screen: Rect, search: &Statio
     } else if let Some(error) = &search.error {
         search_error_text(error)
     } else if search.asked.is_some() && search.hits.is_empty() {
-        "No artists or songs found".to_owned()
+        "No artists, songs, or podcasts found".to_owned()
     } else if search.asked.is_none() && look.suggested {
         "Suggested for this station (or type to search)".to_owned()
     } else if search.asked.is_none() {
@@ -1580,7 +1800,10 @@ pub const NOW_PLAYING_STACKED_MIN: u16 = 22;
 pub fn now_playing_height(height: u16, stacked: bool) -> u16 {
     let songs = if stacked { 2 * SONG_PANE } else { SONG_PANE };
     let min = if stacked { NOW_PLAYING_STACKED_MIN } else { NOW_PLAYING_MIN };
-    height.saturating_sub(songs).max(min).min(height)
+    // Up Next and History each keep a row on a short terminal (two when stacked).
+    let lists = if stacked { 2 } else { 1 };
+    let card = height.saturating_sub(songs).max(min);
+    card.min(height.saturating_sub(lists))
 }
 
 fn draw_player(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
@@ -1678,12 +1901,15 @@ fn draw_now_playing(frame: &mut Frame, app: &mut App, ic: &Icons, area: Rect) {
     let w = info.width as usize;
     let lines = vec![
         Line::from(Span::styled(fit(&song.title, w), Style::new().fg(p.fg).bold())),
-        Line::raw(""),
+        Line::from(Span::styled(app.skip_caption.as_deref().unwrap_or(""), Style::new().fg(p.muted))),
         Line::from(vec![
             label(if episode { "show" } else { "artist" }),
             Span::styled(fit(&song.artist, w.saturating_sub(9)), Style::new().fg(p.cyan).bold()),
         ]),
-        Line::from(vec![label("album"), Span::styled(fit(&song.album, w.saturating_sub(9)), Style::new().fg(p.fg))]),
+        Line::from(vec![
+            label("album"),
+            Span::styled(fit(&album_line(song), w.saturating_sub(9)), Style::new().fg(p.fg)),
+        ]),
         Line::from(vec![label("rating"), rating_word(song.rating, &p, ic)]),
         Line::from(vec![label("state"), state]),
     ];
@@ -1829,7 +2055,16 @@ fn progress_bar(frame: &mut Frame, p: &Palette, position: u64, length: u64, coun
         (true, false) => format!(" {}", clock(length)),
         (false, _) => " --:--".into(),
     };
-    let bar = (area.width as usize).saturating_sub(left.len() + right.len());
+    let clocks = left.len() + right.len();
+    if usize::from(area.width) <= clocks {
+        let line = Line::from(vec![
+            Span::styled(left, Style::new().fg(p.yellow).bold()),
+            Span::styled(right, Style::new().fg(p.fg)),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
+    let bar = usize::from(area.width) - clocks;
     let ratio = if length > 0 { position as f64 / length as f64 } else { 0.0 };
     let done = ((bar as f64 * ratio) as usize).min(bar.saturating_sub(1));
     let line = Line::from(vec![
@@ -2008,6 +2243,9 @@ fn draw_settings(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let mut selected_item = 0;
     let mut group = "";
     for (i, (g, setting)) in Setting::ALL.iter().enumerate() {
+        if !app.list_filter.trim().is_empty() && !app.setting_visible(*setting) {
+            continue;
+        }
         if *g != group {
             if !group.is_empty() {
                 items.push(ListItem::new(""));
@@ -2141,7 +2379,7 @@ fn setting_line(app: &App, setting: Setting, selected: bool, width: usize, p: &P
                 Style::new().fg(p.muted)
             }
             (Setting::EditFile, _) => Style::new().fg(p.cyan),
-            (Setting::LogOut, _) => Style::new().fg(p.muted),
+            (Setting::LogOut | Setting::LogOutOthers, _) => Style::new().fg(p.muted),
             _ => Style::new().fg(p.accent),
         };
         return settings_row(setting.label(), &value, value_style, width, selected, p);
@@ -2149,11 +2387,69 @@ fn setting_line(app: &App, setting: Setting, selected: bool, width: usize, p: &P
     settings_row(setting.label(), &format!("{value} ›"), Style::new().fg(p.accent), width, selected, p)
 }
 
+fn draw_once_password(frame: &mut Frame, app: &App, screen: Rect, ask: OncePassword) {
+    let p = app.palette;
+    let title = match ask {
+        OncePassword::Explicit(true) => "Turn the explicit filter on",
+        OncePassword::Explicit(false) => "Turn the explicit filter off",
+        OncePassword::OtherDevices => "Log out of all other devices",
+        OncePassword::Account => "Current password",
+    };
+    let width = 62.min(screen.width.saturating_sub(4));
+    let area = dialog::centered(screen, width, 8.min(screen.height));
+    let block = framed()
+        .border_style(Style::new().fg(p.cyan))
+        .title(Span::styled(format!(" {title} "), Style::new().fg(p.cyan).bold()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let (shown, column) = app.query.window(usize::from(inner.width.saturating_sub(2)), true, safe_char_width);
+    let lines = vec![
+        Line::from(Span::styled("  Password is used once and not saved.", Style::new().fg(p.yellow))),
+        Line::raw(""),
+        Line::from(Span::styled(format!("  {shown}"), Style::new().fg(p.fg).bold())),
+        Line::from(Span::styled("  Enter sends it · Esc cancels", Style::new().fg(p.muted))),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+    let x = inner.x + 2 + column as u16;
+    frame.set_cursor_position(Position::new(x.min(area.right().saturating_sub(2)), inner.y + 2));
+}
+
+fn draw_account_line(frame: &mut Frame, app: &App, screen: Rect, prompt: Prompt) {
+    let p = app.palette;
+    let (title, mask, note) = match prompt {
+        Prompt::Profile(ProfileField::Zip) => ("Zip code", false, "The new zip code"),
+        Prompt::Profile(ProfileField::Gender) => ("Gender", false, "Gender, as Pandora stores it"),
+        Prompt::Profile(ProfileField::BirthYear) => ("Birth year", false, "A year, like 1990"),
+        Prompt::NewPassword => ("New password", true, "Type the new password. It is not saved."),
+        Prompt::NewPasswordAgain => ("New password again", true, "Type the same new password again."),
+        _ => return,
+    };
+    let width = 62.min(screen.width.saturating_sub(4));
+    let area = dialog::centered(screen, width, 8.min(screen.height));
+    let block = framed()
+        .border_style(Style::new().fg(p.cyan))
+        .title(Span::styled(format!(" {title} "), Style::new().fg(p.cyan).bold()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let (shown, column) = app.query.window(usize::from(inner.width.saturating_sub(2)), mask, safe_char_width);
+    let lines = vec![
+        Line::from(Span::styled(format!("  {note}"), Style::new().fg(p.yellow))),
+        Line::raw(""),
+        Line::from(Span::styled(format!("  {shown}"), Style::new().fg(p.fg).bold())),
+        Line::from(Span::styled("  Enter continues · Esc cancels", Style::new().fg(p.muted))),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+    let x = inner.x + 2 + column as u16;
+    frame.set_cursor_position(Position::new(x.min(area.right().saturating_sub(2)), inner.y + 2));
+}
+
 fn draw_prompt(frame: &mut Frame, app: &App, prompt: Prompt, area: Rect) {
     let p = app.palette;
     let (label, mask) = match prompt {
         Prompt::Email => ("Pandora email", false),
         Prompt::Password => ("Password · Enter logs in", true),
+        Prompt::Once(_) => ("Password", true),
+        Prompt::Profile(_) | Prompt::NewPassword | Prompt::NewPasswordAgain => ("Account", true),
     };
     let (shown, column) = app.query.window(usize::from(area.width.saturating_sub(3)), mask, safe_char_width);
     let block = framed()
@@ -2202,6 +2498,12 @@ fn draw_about(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
                     Style::new().fg(p.green).bold(),
                 ),
             ]));
+            if !app.update_notes.is_empty() {
+                lines.push(Line::raw(""));
+                for note in &app.update_notes {
+                    lines.push(Line::from(Span::styled(format!("   • {note}"), Style::new().fg(p.fg))));
+                }
+            }
             lines.push(Line::raw(""));
             // The Update Now button: focused with Tab, pressed with Enter; once
             // the new version is in, it is Restart Now. A package manager owns
@@ -2270,7 +2572,13 @@ fn draw_about(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
 
 // --- Keys ---
 
-/// The keys that work right now: (keys, what they do). The last two (help, quit) always fit.
+/// The bottom bar on every screen: Actions, Help, Quit. The other keys stay in `?` and `.`.
+fn bar_keys() -> &'static [(&'static str, &'static str)] {
+    &[(".", "Actions"), ("?", "Help"), ("Q", "Quit")]
+}
+
+/// The keys that work right now: (keys, what they do). Help uses this to grey
+/// keys that do nothing on this screen. The bottom bar does not.
 pub fn key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.splash.is_some() {
         return Vec::new();
@@ -2369,6 +2677,9 @@ fn popup_key_caps(app: &App) -> Option<Vec<(&'static str, &'static str)>> {
     if app.quit_asked() {
         return Some(vec![("Q y", "Yes, Quit"), ("n Esc", "No"), ("← → Enter", "Choose")]);
     }
+    if app.logout_asked() {
+        return Some(vec![("y", "Log out"), ("n Esc", "Stay"), ("← → Enter", "Choose")]);
+    }
     if app.details().is_some() {
         return Some(vec![("Esc", "Close")]);
     }
@@ -2380,6 +2691,9 @@ fn popup_key_caps(app: &App) -> Option<Vec<(&'static str, &'static str)>> {
 
 /// The key bar for the page on screen: what the focused pane offers.
 fn page_key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
+    if app.filter_edit {
+        return vec![("type", "Filter"), ("Enter", "Keep"), ("Esc", "Clear"), ("Ctrl+c", "Quit")];
+    }
     let pause = if app.audio.is_paused() { "Play" } else { "Pause" };
     // A key is hinted only where it does something: what each one acts on
     // (a station row, a song row, the playing song) has to be there.
@@ -2516,6 +2830,14 @@ fn page_key_caps(app: &App) -> Vec<(&'static str, &'static str)> {
             }
             keys.push(("Esc", "Menu"));
         }
+        (Focus::Content, View::Followed) => {
+            keys.push(("Enter", "Open"));
+            keys.push(("Esc", "Menu"));
+        }
+        (Focus::Content, View::Thumbs) => {
+            keys.push(("Enter", "Show songs"));
+            keys.push(("Esc", "Menu"));
+        }
         (Focus::Content, View::Recent) => {
             if !app.recent.is_empty() {
                 keys.push(("x", "Remove"));
@@ -2647,7 +2969,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("B", "sleep timer: 15, 30, 60, 90 min, end of this song, off (fades out, then pauses)"),
             (
                 ".",
-                "song menu: station from artist / song, tired, share, why, pin, thumbs, artist bio & similar artists…",
+                "Actions: the . menu (station from artist / song, tired, share, why, pin, thumbs, artist bio & similar artists…)",
             ),
             (
                 "m X",
@@ -2673,6 +2995,7 @@ pub const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("", "Seeds: the artists, songs and genres it plays music like; a adds one, x removes one (one stays)"),
             ("", "Thumbs Up / Down: songs you rated and the day you thumbed each, one list each; x takes one back"),
             ("j k ↑ ↓", "move in the list"),
+            ("/ o", "filter this list (Stations, Browse, Settings) · sort My Stations by name, recent, or thumbs"),
             ("Enter", "play the station · open Settings / About"),
         ],
     ),
@@ -2714,6 +3037,48 @@ pub fn help_sections(icon_set: crate::config::IconSet) -> Vec<Section> {
         ],
     ));
     sections.push(Section::new("MORE", &[("Shift+O", HELP_FOOTER.trim())]));
+    sections
+}
+
+/// Help for the screen that is open: pane keys that do nothing here move to
+/// NOT ON THIS SCREEN. Vibekit paints every key the same, so the section is
+/// how a dead key is set apart.
+pub fn help_for_screen(icon_set: crate::config::IconSet, live: &[(&str, &str)], also: &str) -> Vec<Section> {
+    let blob = format!("{} {also}", live.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(" "));
+    let pane = ["a", "e", "r", "x", "v", "m", "f", "l", "b", "/", "o"];
+    let mut sections = Vec::new();
+    let mut dead = Vec::new();
+    let mut more = None;
+    for s in help_sections(icon_set) {
+        if s.title == "MORE" {
+            more = Some(s);
+            continue;
+        }
+        if s.title.starts_with("STATION") {
+            sections.push(s);
+            continue;
+        }
+        let mut keep = Vec::new();
+        for (k, d) in s.keys {
+            let tokens: Vec<&str> = k.split_whitespace().filter(|t| !t.is_empty()).collect();
+            let only_pane = !tokens.is_empty() && tokens.iter().all(|t| pane.contains(t));
+            let shown = tokens.iter().any(|t| blob.contains(t));
+            if only_pane && !shown {
+                dead.push((k, format!("not on this screen — {d}")));
+            } else {
+                keep.push((k, d));
+            }
+        }
+        if !keep.is_empty() {
+            sections.push(Section { title: s.title, keys: keep });
+        }
+    }
+    if !dead.is_empty() {
+        sections.push(Section { title: "NOT ON THIS SCREEN".into(), keys: dead });
+    }
+    if let Some(more) = more {
+        sections.push(more);
+    }
     sections
 }
 

@@ -16,11 +16,30 @@ impl App {
         self.backend.send(Request::Audio { track_token, url, generation });
     }
 
+    /// A counted skip, or a free one. `false`: Pandora or the limit said no.
+    pub(super) fn spend_skip(&mut self) -> bool {
+        let Some(song) = self.now.as_ref() else { return false };
+        if song.allow_skip == Some(false) {
+            self.status = "Pandora won't let this song be skipped".into();
+            return false;
+        }
+        let free = song.allow_skip_without_limit;
+        let station_id = song.station_id.clone();
+        match self.skip_book.spend(&station_id, free) {
+            Ok(()) => true,
+            Err(why) => {
+                self.status = why;
+                false
+            }
+        }
+    }
+
     /// Ask Pandora for the podcast `source_id` (`PE:` episode or `PC:` program) and play it.
     pub(super) fn play_episode(&mut self, source_id: &str, name: &str) {
         if self.episode_wait {
             return;
         }
+        self.capture_show_list();
         self.episode_wait = true;
         self.status = format!("Getting “{name}”…");
         self.backend.send(Request::Episode { source_id: source_id.to_owned(), name: name.to_owned() });
@@ -32,6 +51,10 @@ impl App {
         self.on_episode = true;
         self.episode_source = Some(played.source_id);
         self.episode_index = played.index;
+        self.episode_id = played.episode_id.clone();
+        self.progress_every = played.progress_every.max(1);
+        self.last_progress = Some(std::time::Instant::now());
+        self.audio.prepare_skip(self.resume_seconds(&played.episode_id));
         if let Some(song) = self.now.take() {
             self.push_history(song);
         }
@@ -48,6 +71,33 @@ impl App {
         self.next_song();
         self.show_now_playing();
         self.status = format!("Playing {title} — {show}");
+    }
+
+    /// The show page's episodes, in the order on screen, so the next one can start.
+    fn capture_show_list(&mut self) {
+        let crate::app::BrowseState::Loaded(sections) = &self.browse else { return };
+        if !self.on_podcast() {
+            return;
+        }
+        let Some(section) = sections.first() else { return };
+        self.show_episodes = section
+            .items
+            .iter()
+            .filter(|item| item.pandora_id.starts_with("PE:"))
+            .map(|item| (item.pandora_id.clone(), item.name.clone()))
+            .collect();
+    }
+
+    /// The episode after the one that just finished, from the loaded show list.
+    fn play_next_episode(&mut self) -> bool {
+        let current = self.episode_source.clone().unwrap_or_default();
+        let Some(at) = self.show_episodes.iter().position(|(id, _)| id == &current) else { return false };
+        let Some((id, name)) = self.show_episodes.iter().skip(at + 1).find(|(id, _)| id != &current).cloned() else {
+            return false;
+        };
+        let name = name.trim_start_matches("Continue · ").to_owned();
+        self.play_episode(&id, &name);
+        true
     }
 
     pub(super) fn tune(&mut self, index: usize) {
@@ -129,8 +179,14 @@ impl App {
             self.push_history(song);
         }
         loop {
+            if self.skips_left == 0 {
+                // A run of songs that will not decode waits for the next tick.
+                self.resume_skips = true;
+                return;
+            }
             let Some(song) = self.queue.pop_front() else {
                 self.request_more();
+                self.resume_skips = false;
                 return;
             };
             let token = song.track_token.clone();
@@ -150,12 +206,15 @@ impl App {
                 if self.audio_fetch.requested.insert(token.clone()) {
                     self.send_audio(token, url);
                 }
+                self.resume_skips = false;
                 break;
             };
             if self.play_now(data) {
+                self.resume_skips = false;
                 break;
             }
             // The audio would not start: this song is done, so try the next one.
+            self.skips_left = self.skips_left.saturating_sub(1);
             if let Some(song) = self.now.take() {
                 self.push_history(song);
             }
@@ -171,6 +230,9 @@ impl App {
     pub(super) fn request_more(&mut self) {
         if self.on_episode {
             if self.now.is_none() && self.queue.is_empty() {
+                if self.config.player.autoplay_next_episode && self.play_next_episode() {
+                    return;
+                }
                 self.status = "That episode is finished".into();
             }
             return;
@@ -217,20 +279,36 @@ impl App {
     /// Every frame: a sound device that went away is noticed, so the player
     /// does not sit on a frozen progress bar for ever.
     ///
-    /// A dead stream reports nothing through [`Audio::finished`]: its queue
-    /// still holds the song, so it never looks empty, and its position stops
-    /// advancing because nothing is pulling samples. Both are checked here.
+    /// Device loss is a reported device error, or a stall longer than
+    /// [`crate::audio`] allows. The device is opened again first (or dropped,
+    /// so later songs use the silent clock) and only then is the stuck song skipped.
     pub(super) fn device_tick(&mut self) {
-        if let Some(why) = self.audio.take_device_error() {
+        let why = self.audio.take_device_error();
+        let stalled = self.audio.stalled();
+        if why.is_none() && !stalled {
+            return;
+        }
+        let playing = self.audio.is_active();
+        if let Some(why) = why {
             crate::log::log!("device: {why}");
             self.status = format!("⚠ The sound device stopped ({why})");
         }
-        if !self.audio.stalled() {
-            return;
+        if stalled {
+            crate::log::log!("device: the stream stopped moving: skipping");
+            if self.status.is_empty() {
+                self.status = "⚠ The sound device stopped: skipping".into();
+            } else if !self.status.contains("skipping") {
+                self.status = format!("{} · skipping", self.status);
+            }
         }
-        crate::log::log!("device: the stream stopped moving: skipping");
-        self.status = "⚠ The sound device stopped: skipping".into();
-        self.advance();
+        self.audio.recover();
+        if !self.audio.has_device() && !self.status.contains("playing silently") {
+            self.status = format!("{} · playing silently", self.status);
+        }
+        // A device error reopens the device. The song is skipped only when it had actually stalled.
+        if stalled && playing {
+            self.advance();
+        }
     }
 
     /// Starts the audio for `now`. `false`: it would not start, so the caller
@@ -246,13 +324,18 @@ impl App {
                 data.as_ref().map_or(0, Vec::len)
             );
         }
+        if !self.on_episode {
+            self.audio.prepare_skip(0);
+        }
         match self.audio.start(data, self.now.as_ref().map_or(0.0, |s| s.gain), false) {
             Ok(()) => {
                 // Pandora counts plays (and skips) from this report, like the website.
                 // An episode uses `event/started`, not the station's `trackStarted`.
                 if self.on_episode {
                     if let Some(source_id) = self.episode_source.clone() {
-                        self.backend.send(Request::EpisodeStarted { source_id, index: self.episode_index });
+                        let elapsed = self.audio.position().as_secs();
+                        self.last_progress = Some(std::time::Instant::now());
+                        self.backend.send(Request::EpisodeStarted { source_id, index: self.episode_index, elapsed });
                     }
                 } else if let Some(song) = &self.now {
                     self.backend.send(Request::Started { track_token: song.track_token.clone() });
@@ -269,17 +352,30 @@ impl App {
 
     pub(super) fn notify(&self, song: &Song) {
         // Tests make non-demo apps that play songs: without this they would
-        // put a real notification on the screen for every one.
-        if self.demo || cfg!(test) || !self.config.ui.notifications {
+        // put a real notification on the screen for every one. Ads are never announced.
+        if self.demo || cfg!(test) || !self.config.ui.notifications || matches!(self.ad, AdPhase::Playing(_)) {
             return;
         }
-        let mut command = std::process::Command::new("notify-send");
-        command
-            .args(["-a", "boxvibe", "-t", "4000", &song.title, &format!("{} — {}", song.artist, song.album)])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        let _ = crate::proc::detached(command);
+        let title = song.title.clone();
+        let body = format!("{} — {}", song.artist, song.album);
+        let icon = crate::art::cache_dir().and_then(|dir| {
+            let path = crate::art::cache_path(&dir, &song.cover_art_url);
+            path.is_file().then_some(path)
+        });
+        let _ = std::thread::Builder::new().name("notify".into()).spawn(move || {
+            let mut command = std::process::Command::new("notify-send");
+            command.args(["-a", "boxvibe", "-t", "4000"]);
+            if let Some(path) = &icon {
+                command.arg("-i").arg(path);
+            }
+            command
+                .arg(&title)
+                .arg(&body)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            let _ = command.status();
+        });
     }
 
     // --- Up Next and History ---
@@ -374,6 +470,7 @@ impl App {
 
     pub(super) fn reply_audio(&mut self, track_token: String, data: Vec<u8>, generation: u64) {
         if generation != self.audio_fetch.generation {
+            self.note_late_download(&track_token);
             return;
         }
         let Some(data) = self.ad_audio_arrived(&track_token, data) else { return };
@@ -393,6 +490,7 @@ impl App {
 
     pub(super) fn reply_audio_failed(&mut self, track_token: String, message: String, generation: u64) {
         if generation != self.audio_fetch.generation {
+            self.note_late_download(&track_token);
             return;
         }
         if self.ad_audio_failed(&track_token, &message) {
@@ -405,5 +503,20 @@ impl App {
             self.status = format!("⚠ {message}: skipping");
             self.advance();
         }
+    }
+
+    /// A download that arrived after its generation was abandoned. Quiet when
+    /// a newer song is already playing; otherwise say the bytes were dropped.
+    fn note_late_download(&mut self, track_token: &str) {
+        let moved_on = self.now.as_ref().is_some_and(|song| song.track_token != track_token);
+        if moved_on {
+            return;
+        }
+        let title = self
+            .find_song(track_token)
+            .map(|song| song.title.clone())
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| track_token.to_owned());
+        self.status = format!("⚠ Dropped a late download for {title}");
     }
 }

@@ -190,7 +190,7 @@ fn the_recently_played_row_joins_the_collection_once_pandora_answers() {
     let items = app.menu_items();
     let pinned = items.iter().position(|m| *m == MenuItem::Pinned).expect("Pinned");
     let recent = items.iter().position(|m| *m == MenuItem::RecentlyPlayed).expect("Recently Played");
-    assert_eq!(recent + 1, pinned, "above Pinned, inside MY COLLECTION: {items:?}");
+    assert!(recent < pinned, "above Pinned, inside MY COLLECTION: {items:?}");
     // Nothing asked for yet, or an empty history: no row at all, the way
     // FAVORITES hides.
     let fresh = App::new(Config::default(), None, &[], true);
@@ -655,13 +655,15 @@ fn menu_has_stations_then_settings_about_quit() {
     assert_eq!(items[0], MenuItem::NowPlaying, "a station plays: NOW PLAYING on top");
     assert_eq!(items[1], MenuItem::Stations);
     assert_eq!(items[2], MenuItem::RecentlyPlayed, "Recently Played takes Pinned's old place");
-    assert_eq!(items[3], MenuItem::Pinned);
+    assert_eq!(items[3], MenuItem::Followed);
+    assert_eq!(items[4], MenuItem::Thumbs);
+    assert_eq!(items[5], MenuItem::Pinned);
     let pins = config::BROWSE_SECTIONS.len();
-    assert_eq!(&items[4..4 + pins], &(0..pins).map(MenuItem::BrowsePin).collect::<Vec<_>>()[..]);
+    assert_eq!(&items[6..6 + pins], &(0..pins).map(MenuItem::BrowsePin).collect::<Vec<_>>()[..]);
     assert_eq!(
         items.len(),
-        2 + 1 + 1 + pins + 4,
-        "NOW PLAYING, My Stations, Pinned, Recently Played, all section pins, no favorites"
+        2 + 1 + 2 + 1 + pins + 4,
+        "NOW PLAYING, My Stations, Recently Played, Followed, Thumbs, Pinned, section pins, no favorites"
     );
     assert_eq!(
         &items[items.len() - 4..],
@@ -751,7 +753,8 @@ fn f_stars_stations_into_a_favorites_section_that_plays_them() {
     let third = app.stations[2].clone();
     assert!(app.is_favorite(&third.id));
     // The demo's recently played answer lands during `settle`, above Pinned.
-    let mut want = vec![MenuItem::Stations, MenuItem::RecentlyPlayed, MenuItem::Pinned];
+    let mut want =
+        vec![MenuItem::Stations, MenuItem::RecentlyPlayed, MenuItem::Followed, MenuItem::Thumbs, MenuItem::Pinned];
     want.extend((0..config::BROWSE_SECTIONS.len()).map(MenuItem::BrowsePin));
     want.extend([MenuItem::Favorite(0), MenuItem::Settings, MenuItem::Notifications, MenuItem::About, MenuItem::Quit]);
     assert_eq!(app.menu_items(), want);
@@ -1100,6 +1103,176 @@ fn a_successful_download_leaves_requested_so_it_can_be_asked_again() {
     });
     assert!(!app.audio_fetch.requested.contains(&token));
     assert!(app.audio_fetch.cache.contains(&token), "bytes for an Up Next song are kept");
+}
+
+#[test]
+fn a_dead_device_is_dropped_before_the_song_is_skipped() {
+    let mut app = demo();
+    let token = app.now.as_ref().unwrap().track_token.clone();
+    app.audio.force_stall = true;
+    app.device_tick();
+    assert_ne!(app.now.as_ref().map(|s| s.track_token.clone()).as_deref(), Some(token.as_str()));
+    assert!(!app.audio.has_device());
+    assert!(!app.audio.force_stall, "recover clears the stall so the next tick does not skip again");
+    assert!(app.status.contains("playing silently"), "{}", app.status);
+}
+
+#[test]
+fn a_device_error_does_not_skip_a_song_that_is_still_moving() {
+    let mut app = demo();
+    let token = app.now.as_ref().unwrap().track_token.clone();
+    app.audio.inject_device_error("gone");
+    app.device_tick();
+    assert_eq!(app.now.as_ref().map(|s| s.track_token.clone()).as_deref(), Some(token.as_str()));
+    assert!(app.status.contains("sound device"), "{}", app.status);
+}
+
+#[test]
+fn slash_filters_my_stations_and_o_sorts_by_name() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let mut app = demo();
+    app.view = View::Stations;
+    app.focus = Focus::Content;
+    app.on_key(KeyEvent::from(KeyCode::Char('/')));
+    for c in ['M', '8', '3'] {
+        app.on_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    let names: Vec<_> = app.station_order().iter().map(|&i| app.stations[i].name.as_str()).collect();
+    assert!(names.iter().all(|n| n.to_lowercase().contains("m83")), "{names:?}");
+    app.on_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.list_filter.is_empty());
+    app.on_key(KeyEvent::from(KeyCode::Char('o')));
+    assert_eq!(app.config.ui.station_sort, "name");
+    let order = app.station_order();
+    assert!(app.stations[order[0]].is_shuffle);
+}
+
+#[test]
+fn skips_stop_at_the_daily_limit_and_a_free_skip_does_not_count() {
+    let mut app = demo();
+    app.skip_book.set_limits(Some(1), Some(6));
+    let station = app.now.as_ref().unwrap().station_id.clone();
+    assert!(app.spend_skip());
+    app.end_song(End::Skipped);
+    app.settle(std::time::Duration::from_millis(200));
+    assert!(app.now.is_some());
+    assert!(!app.spend_skip());
+    assert!(app.status.contains("today"), "{}", app.status);
+    let label = app.skip_book.label(&station).unwrap();
+    assert!(label.contains("0") && label.contains("today"), "{label}");
+    app.now.as_mut().unwrap().allow_skip_without_limit = true;
+    assert!(app.spend_skip(), "a free skip is not counted");
+}
+
+#[test]
+fn the_explicit_filter_asks_for_a_password_that_is_not_kept() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let mut app = demo();
+    app.view = View::Settings;
+    app.focus = Focus::Content;
+    app.explicit_filter = Some(true);
+    app.settings_cursor = Setting::at(Setting::ExplicitFilter);
+    assert_eq!(app.setting_value(Setting::ExplicitFilter), "on · explicit blocked");
+    app.on_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.prompt, Some(Prompt::Once(OncePassword::Explicit(false))));
+    for c in "s3cret".chars() {
+        app.on_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    app.on_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.prompt.is_none());
+    assert!(app.config.pandora.password.is_empty());
+    assert!(!app.status.contains("s3cret"), "{}", app.status);
+    app.settle(std::time::Duration::from_millis(300));
+    assert_eq!(app.explicit_filter, Some(false));
+    assert!(app.status.contains("off"), "{}", app.status);
+
+    app.settings_cursor = Setting::at(Setting::LogOutOthers);
+    app.on_key(KeyEvent::from(KeyCode::Enter));
+    app.on_key(KeyEvent::from(KeyCode::Char('y')));
+    assert_eq!(app.prompt, Some(Prompt::Once(OncePassword::OtherDevices)));
+    for c in "s3cret".chars() {
+        app.on_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    app.on_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.config.pandora.password.is_empty());
+    assert!(!app.status.contains("s3cret"), "{}", app.status);
+    app.settle(std::time::Duration::from_millis(300));
+    assert!(app.status.contains("logged out"), "{}", app.status);
+}
+
+#[test]
+fn log_out_asks_before_it_happens() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let mut app = demo();
+    app.view = View::Settings;
+    app.focus = Focus::Content;
+    app.settings_cursor = Setting::at(Setting::LogOut);
+    app.on_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.logout_asked());
+    assert!(matches!(app.session, Session::LoggedIn));
+    app.on_key(KeyEvent::from(KeyCode::Char('n')));
+    assert!(!app.logout_asked());
+    assert!(matches!(app.session, Session::LoggedIn));
+    assert!(app.status.contains("Staying logged in"), "{}", app.status);
+}
+
+#[test]
+fn a_late_download_is_reported_unless_a_newer_song_is_playing() {
+    let mut app = demo();
+    let current = app.now.as_ref().unwrap().track_token.clone();
+    let stale = app.audio_fetch.generation;
+    app.bump_audio_generation();
+    app.on_reply(Reply::Audio { track_token: current, data: vec![1], generation: stale });
+    assert!(app.status.contains("late download"), "{}", app.status);
+
+    let mut app = demo();
+    let older = app.queue.front().unwrap().track_token.clone();
+    let stale = app.audio_fetch.generation;
+    app.bump_audio_generation();
+    app.status.clear();
+    app.on_reply(Reply::Audio { track_token: older, data: vec![1], generation: stale });
+    assert!(!app.status.contains("late download"), "{}", app.status);
+}
+
+#[test]
+fn songs_that_will_not_decode_skip_only_a_few_per_tick() {
+    let mut app = demo();
+    while app.queue.len() < 6 {
+        let mut song = app.now.clone().unwrap();
+        song.track_token = format!("extra-{}", app.queue.len());
+        app.queue.push_back(song);
+    }
+    app.audio.fail_starts = 30;
+    let queued = app.queue.len();
+    app.skips_left = 3;
+    app.next_song();
+    assert_eq!(app.queue.len(), queued - 3, "three failures, then the rest wait");
+    assert!(app.resume_skips);
+    app.tick();
+    assert_eq!(app.queue.len(), queued - 6, "the next tick spends a fresh budget");
+}
+
+#[test]
+fn a_failed_config_save_stays_until_a_save_works() {
+    let dir = crate::config::scratch_dir(&format!("cfg-save-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let blocked = dir.join("config.toml");
+    std::fs::create_dir_all(&blocked).unwrap();
+    let mut app = demo();
+    app.demo = false;
+    app.config_path = Some(blocked);
+    app.save(&[("playback", "volume", 40_i64.into())]);
+    assert!(app.status.contains("not saved"), "{}", app.status);
+    app.status = "Playing".into();
+    app.tick();
+    assert!(app.status.contains("Playing") && app.status.contains("not saved"), "a suffix: {}", app.status);
+    let file = dir.join("real.toml");
+    app.config_path = Some(file.clone());
+    app.save(&[("playback", "volume", 41_i64.into())]);
+    assert!(app.config_error.is_none());
+    assert!(std::fs::read_to_string(&file).unwrap().contains("volume"));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2300,6 +2473,9 @@ fn what_a_setting_says_about_where_it_is_saved_is_true() {
     // Volume: Shift+→ anywhere.
     let mut app = saving_app("saved-volume");
     app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+    std::thread::sleep(Duration::from_millis(520));
+    app.tick();
+    app.flush_volume();
     assert!(saved(&app).contains("[playback]") && saved(&app).contains("volume ="), "{}", saved(&app));
 }
 
@@ -2975,6 +3151,7 @@ fn a_podcast_show_on_the_website_lists_episodes_then_plays_one() {
         id: "BR:38".into(),
         title: "True Crime".into(),
         view_all_path: None,
+        art_url: String::new(),
         items: vec![BrowseItem {
             name: "Crime Junkie".into(),
             detail: String::new(),
@@ -3239,8 +3416,10 @@ fn browse_follows_stations_in_the_menu_and_g_opens_browse_genres() {
     let items = app.menu_items();
     let at = items.iter().position(|m| *m == MenuItem::Stations).unwrap();
     assert_eq!(items[at + 1], MenuItem::RecentlyPlayed, "Recently Played sits above Pinned");
-    assert_eq!(items[at + 2], MenuItem::Pinned, "Pinned stays above the Browse sections");
-    assert_eq!(items[at + 3], MenuItem::BrowsePin(0), "section pins follow MY COLLECTION");
+    assert_eq!(items[at + 2], MenuItem::Followed);
+    assert_eq!(items[at + 3], MenuItem::Thumbs);
+    assert_eq!(items[at + 4], MenuItem::Pinned, "Pinned stays above the Browse sections");
+    assert_eq!(items[at + 5], MenuItem::BrowsePin(0), "section pins follow MY COLLECTION");
     assert_eq!(
         items.iter().filter(|m| matches!(m, MenuItem::BrowsePin(_))).count(),
         config::BROWSE_SECTIONS.len(),

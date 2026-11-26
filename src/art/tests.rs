@@ -49,7 +49,7 @@ fn a_cached_cover_is_the_same_pixels_as_an_uncached_one() {
             let want = tint(&pixelate(&image, pixelation), art_tint, &palette).to_rgb8();
             // Twice: the second is the cache hit, and must match the first.
             for pass in 0..2 {
-                let got = art.prepared("u", &image, look).to_rgb8();
+                let got = art.prepare_wait("u", &image, look).to_rgb8();
                 let differing = want.pixels().zip(got.pixels()).filter(|(a, b)| a != b).count();
                 assert_eq!(differing, 0, "{pixelation:?} {art_tint:?} pass {pass}: {differing} differ");
             }
@@ -107,8 +107,8 @@ fn tint_uses_only_the_themes_colours() {
 
 #[test]
 fn the_palette_snaps_to_the_nearest_colour_by_the_weighted_distance() {
-    // The distance is integer arithmetic now (it runs per pixel on the UI
-    // thread), so this pins the choice it makes: green counts most, blue least.
+    // The distance is integer arithmetic (the art thread runs it per pixel),
+    // so this pins the choice it makes: green counts most, blue least.
     let p = crate::theme::BUILT_IN.iter().find(|t| t.0 == "gruvbox").unwrap().2;
     let rgb = |c| rgb_of(c).unwrap();
     let theme = [

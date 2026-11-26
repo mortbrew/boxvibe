@@ -268,8 +268,8 @@ fn the_key_bar_has_no_menu_size_hint_and_shows_e_where_the_editor_opens() {
             let mut app = playing_demo("M83 Radio", menu);
             let bar = key_bar_line(&mut app, cols);
             assert!(!bar.contains("Menu Size") && !bar.contains("{/}"), "{cols}: {bar}");
-            assert!(bar.contains("r  Rename") && bar.contains("e  Edit"), "{cols} menu={menu}: {bar}");
-            assert!(bar.contains("?  Help") && bar.contains("Q  Quit"), "{cols}: {bar}");
+            assert!(!bar.contains("Rename") && !bar.contains("Edit"), "{cols} menu={menu}: {bar}");
+            assert!(bar.contains(".  Actions") && bar.contains("?  Help") && bar.contains("Q  Quit"), "{cols}: {bar}");
         }
         // A favorite in the menu.
         let mut app = playing_demo("M83 Radio", true);
@@ -277,8 +277,8 @@ fn the_key_bar_has_no_menu_size_hint_and_shows_e_where_the_editor_opens() {
         app.config.ui.favorites = vec![Favorite { id, name: "Lo-Fi Beats".into() }];
         app.menu_cursor = app.menu_items().iter().position(|m| matches!(m, MenuItem::Favorite(_))).unwrap();
         let bar = key_bar_line(&mut app, cols);
-        assert!(!bar.contains("Menu Size") && bar.contains("?  Help") && bar.contains("Q  Quit"), "{cols}: {bar}");
-        assert!(bar.contains("r  Rename") && bar.contains("e  Edit"), "{cols} favorite: {bar}");
+        assert!(!bar.contains("Menu Size") && bar.contains(".  Actions") && bar.contains("Q  Quit"), "{cols}: {bar}");
+        assert!(!bar.contains("Rename") && !bar.contains("Edit"), "{cols} favorite: {bar}");
         // Never for a station Pandora won't let you change, nor on the plain Stations entry.
         let mut genre = playing_demo("Today's Hits", false);
         assert!(!key_bar_line(&mut genre, cols).contains("Edit"), "genre station");
@@ -288,7 +288,7 @@ fn the_key_bar_has_no_menu_size_hint_and_shows_e_where_the_editor_opens() {
         app.focus = crate::app::Focus::Content;
         app.stations_cursor = 2;
         let bar = key_bar_line(&mut app, cols);
-        assert!(bar.contains("r  Rename") && bar.contains("e  Edit") && !bar.contains("Menu Size"), "{bar}");
+        assert!(bar.contains(".  Actions") && !bar.contains("Rename") && !bar.contains("Menu Size"), "{bar}");
         app.focus = crate::app::Focus::Menu;
         app.menu_cursor = app.menu_items().iter().position(|m| *m == MenuItem::Stations).unwrap();
         let bar = key_bar_line(&mut app, cols);
@@ -408,7 +408,7 @@ fn a_genre_station_editor_shows_only_the_two_thumbs_tabs() {
     let row = editor_tab_row(&mut app, 120, 40);
     assert!(!row.contains("Seeds") && row.contains("Thumbs Up") && row.contains("Thumbs Down"), "{row}");
     let bar = key_bar_line(&mut app, 120);
-    assert!(bar.contains("Tab  Thumbs Up") && !bar.contains("Add Seed"), "{bar}");
+    assert!(bar.contains(".  Actions") && bar.contains("?  Help") && bar.contains("Q  Quit"), "{bar}");
     let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("x = take back · Tab = Thumbs Up"), "{text}");
 }
@@ -436,18 +436,18 @@ fn the_editor_has_three_tabs_with_the_thumb_icons_and_counts_in_their_titles() {
     );
     // The hints name the tab Tab goes to, and `t` is gone from them.
     let bar = key_bar_line(&mut app, 120);
-    assert!(bar.contains("Tab  Thumbs Up") && bar.contains("a  Add Seed"), "{bar}");
+    assert!(bar.contains(".  Actions") && !bar.contains("Add Seed"), "{bar}");
     let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("Tab = Thumbs Up") && !text.contains("t = up/down"), "{text}");
     press(&mut app, KeyCode::Tab);
     let bar = key_bar_line(&mut app, 120);
-    assert!(bar.contains("Tab  Thumbs Down") && bar.contains("x  Take Back"), "{bar}");
+    assert!(bar.contains(".  Actions") && !bar.contains("Take Back"), "{bar}");
     assert!(!bar.contains("Show Down") && !bar.contains("t  "), "{bar}");
     let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("x = take back · Tab = Thumbs Down") && !text.contains("t = up/down"), "{text}");
     press(&mut app, KeyCode::Tab);
     let bar = key_bar_line(&mut app, 120);
-    assert!(bar.contains("Tab  Seeds") && bar.contains("x  Take Back"), "{bar}");
+    assert!(bar.contains(".  Actions") && !bar.contains("Take Back"), "{bar}");
     let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("x = take back · Tab = Seeds"), "{text}");
     // Once a list is loaded its total is the count in the title.
@@ -549,7 +549,7 @@ fn favorites_in_the_menu_line_up_and_the_add_row_sits_over_the_radio_icons() {
             app.config.ui.favorites.push(Favorite { id: st.id.clone(), name: st.name.clone() });
         }
         app.config.ui.favorites.push(Favorite { id: "gone".into(), name: "Quiet Storm".into() });
-        let buffer = screen(&mut app, 120, 34).1;
+        let buffer = screen(&mut app, 120, 40).1;
         let at: Vec<_> = ["Today's Hits", "M83 Radio", "Shuffle", "Quiet Storm"]
             .iter()
             .map(|n| (*n, name_column(&buffer, n, 1, 29)))
@@ -602,11 +602,7 @@ fn the_genre_popup_explains_the_problem_and_both_icons() {
         assert!(o.contains(ic.own_station) && o[..o.find("Your own station").unwrap()].contains(ic.own_station));
         // The bar at the bottom still has the error, and its keys.
         assert!(lines[32].contains("Pandora doesn't let you rename “Today's Hits”"), "{}", lines[32]);
-        assert!(
-            lines[33].contains("Space") && lines[33].contains("Enter") && lines[33].contains("Esc"),
-            "{}",
-            lines[33]
-        );
+        assert!(lines[33].contains(".  Actions") && lines[33].contains("Q  Quit"), "{}", lines[33]);
         // The box ticks with Space.
         app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         let text = screen(&mut app, 110, 34).0.join("\n");
@@ -620,7 +616,7 @@ fn the_genre_popup_explains_the_problem_and_both_icons() {
         assert!(text.contains("Genre station ─") && text.contains("[ ] Don't show"), "{cols}x{rows}:\n{text}");
         // The hint line is the first to go on a very short screen; the key bar always has the keys.
         assert!(rows < 18 || text.contains("Esc = close"), "{cols}x{rows}:\n{text}");
-        assert!(lines[rows as usize - 1].contains("Esc"), "{cols}x{rows}:\n{text}");
+        assert!(lines[rows as usize - 1].contains("Quit"), "{cols}x{rows}:\n{text}");
     }
 }
 
@@ -776,7 +772,8 @@ fn turning_good_vibes_only_off_asks_first_in_a_risk_popup_that_fits_small_termin
     assert_eq!(app.confirm_good_vibes, Some(GoodVibes::Muted));
     let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("Mute Pandora's ads?") && text.contains("Enter = mute them anyway"), "{text}");
-    assert!(text.contains("gray area") && text.contains("Mute Anyway"), "{text}");
+    assert!(text.contains("gray area"), "{text}");
+    assert!(text.contains(".  Actions") && text.contains("Q  Quit"), "{text}");
     app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.config.player.good_vibes_only, GoodVibes::Muted);
     // Muted → Off asks too.
@@ -786,7 +783,7 @@ fn turning_good_vibes_only_off_asks_first_in_a_risk_popup_that_fits_small_termin
     let text = screen(&mut app, 120, 40).0.join("\n");
     assert!(text.contains("Turn off Good Vibes Only?") && text.contains("Enter = turn it off anyway"), "{text}");
     assert!(text.contains("Esc = keep it as it was") && !text.contains("http"), "{text}");
-    assert!(text.contains("Turn Off Anyway") && text.contains("Keep As Is"), "the key bar: {text}");
+    assert!(text.contains(".  Actions") && text.contains("Q  Quit"), "the key bar: {text}");
     // The whole risk notice is there, at any size that has room for it.
     for (cols, rows) in [(120u16, 40u16), (80, 24), (60, 20), (50, 16), (40, 16), (40, 14)] {
         let words = good_vibes_popup_words(&mut app, cols, rows).unwrap_or_default();
@@ -1414,6 +1411,25 @@ fn shift_q_shows_the_quit_box_and_says_q_again_quits() {
 }
 
 #[test]
+fn about_shows_what_changed_before_the_update_button() {
+    let mut app = demo();
+    app.view = View::About;
+    app.focus = Focus::Content;
+    app.update = Some(crate::update::Update {
+        version: "0.6.4".into(),
+        how: String::new(),
+        replace: crate::update::Replace::Ready(String::new()),
+    });
+    app.update_notes = vec!["A podcast episode plays.".into(), "Settings values sit beside their labels.".into()];
+    app.self_update = crate::update::Progress::Done("0.6.4".into());
+    let all = screen(&mut app, 100, 40).0.join("\n");
+    let notes = all.find("A podcast episode plays").expect(&all);
+    let button = all.find("Restart Now").expect(&all);
+    assert!(notes < button, "{all}");
+    assert!(all.contains("Settings values sit beside their labels"), "{all}");
+}
+
+#[test]
 fn the_logo_and_version_sit_on_the_menus_top_border() {
     let mut app = demo();
     app.config.ui.icons = crate::config::IconSet::Unicode;
@@ -1496,7 +1512,7 @@ fn now_playing_heads_the_menu_with_an_inset_rule() {
         let _ = std::fs::write("/opt/cursor/artifacts/genres.txt", page.join("\n"));
     }
     assert!(lines[4].contains("My Stations ("), "{}", lines[4]);
-    assert!(lines[35].contains(" P  Now Playing"), "key bar: {}", lines[35]);
+    assert!(lines[35].contains(".  Actions") && lines[35].contains("Q  Quit"), "key bar: {}", lines[35]);
 }
 
 #[test]
@@ -1512,7 +1528,15 @@ fn song_panes_fit_ten_rows_and_now_playing_takes_the_rest() {
     // Stacked: two song panes of 13 each.
     assert_eq!(now_playing_height(48, true), 22);
     assert_eq!(now_playing_height(30, true), NOW_PLAYING_STACKED_MIN, "short: the stacked card keeps its minimum");
-    assert_eq!(now_playing_height(5, true), 5, "never more than the screen");
+    assert_eq!(now_playing_height(5, true), 3, "two rows stay for the stacked lists");
+    assert_eq!(now_playing_height(8, false), 7, "one row stays for the song panes");
+    let backend = TestBackend::new(8, 1);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let palette = crate::theme::TOKYO_NIGHT;
+    terminal.draw(|frame| progress_bar(frame, &palette, 12, 180, false, frame.area())).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let text: String = (0..8).map(|x| buffer[(x, 0)].symbol()).collect();
+    assert!(!text.chars().any(|c| c == '━' || c == '●' || c == '─'), "no bar glyphs: {text}");
     // A full History (10 songs) fits exactly: last row right above the bottom border.
     for i in 0..12 {
         let mut s = app.now.clone().unwrap();
@@ -1560,7 +1584,7 @@ fn stations_page_and_favorites_section() {
         "starred on the page: {lines:#?}"
     );
     assert!(lines[0].contains("My Stations ("), "the page: {}", lines[0]);
-    assert!(lines[35].contains(" f  Favorite"), "key bar: {}", lines[35]);
+    assert!(lines[35].contains(".  Actions") && !lines[35].contains("Favorite"), "key bar: {}", lines[35]);
 }
 
 #[test]

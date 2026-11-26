@@ -240,7 +240,25 @@ impl App {
                 rows.push(BrowseRow::Item(item));
             }
         }
-        rows
+        let q = self.list_filter.trim().to_lowercase();
+        if q.is_empty() {
+            return rows;
+        }
+        let mut out = Vec::new();
+        let mut header = None;
+        for row in rows {
+            match row {
+                BrowseRow::Header(_) => header = Some(row),
+                BrowseRow::Item(item) if item.name.to_lowercase().contains(&q) => {
+                    if let Some(h) = header.take() {
+                        out.push(h);
+                    }
+                    out.push(row);
+                }
+                BrowseRow::Item(_) => {}
+            }
+        }
+        out
     }
 
     pub fn browse_index(&self) -> usize {
@@ -299,7 +317,7 @@ impl App {
     ///
     /// A `/browse/…` link still opens that directory (the demo show page). A
     /// website `/podcast/…` path is not a directory, so it is not fetched.
-    fn open_podcast(&mut self, pandora_id: &str, name: &str) {
+    pub(super) fn open_podcast(&mut self, pandora_id: &str, name: &str) {
         let path = format!("podcast:{pandora_id}");
         if self.pages.is_on(&path) {
             return;
@@ -356,6 +374,19 @@ impl App {
         self.browse = state;
         self.browse_cursor = cursor;
         true
+    }
+
+    pub(crate) fn on_podcast(&self) -> bool {
+        self.pages.path().is_some_and(|path| path.starts_with("podcast:"))
+    }
+
+    /// `o` on a show: newest first or oldest first. Continue-listening stays on top.
+    pub(super) fn flip_episode_order(&mut self) {
+        let crate::app::BrowseState::Loaded(sections) = &mut self.browse else { return };
+        let Some(section) = sections.first_mut() else { return };
+        let keep = if section.items.first().is_some_and(|item| item.name.starts_with("Continue")) { 1 } else { 0 };
+        section.items[keep..].reverse();
+        self.status = "Episode order flipped".into();
     }
 
     pub fn browse_can_go_back(&self) -> bool {

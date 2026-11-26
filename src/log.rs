@@ -16,6 +16,8 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
 
 /// Past this the log moves to `.old` and starts again.
 const CAP: u64 = 512 * 1024;
@@ -42,7 +44,41 @@ fn path() -> Option<&'static PathBuf> {
 /// Errors writing it are ignored: a log is not worth a crash or a message.
 pub fn note(args: std::fmt::Arguments<'_>) {
     let Some(path) = path() else { return };
-    append(path, CAP, &format!("{} {args}", crate::time::iso_utc(std::time::SystemTime::now())));
+    enqueue(path, CAP, &format!("{} {args}", crate::time::iso_utc(std::time::SystemTime::now())));
+}
+
+/// Lines `try_send` could not take. The next line that does fit also writes how many were lost.
+static DROPPED: AtomicU64 = AtomicU64::new(0);
+
+/// Hands a line to the log thread. A full queue drops the line and counts it:
+/// the UI thread does not wait on disk. When a later line fits, one note says
+/// how many were dropped while the queue was full.
+pub fn enqueue(path: &Path, cap: u64, line: &str) {
+    let tx = writer();
+    if tx.try_send((path.to_path_buf(), cap, line.to_owned())).is_err() {
+        DROPPED.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    let n = DROPPED.swap(0, Ordering::Relaxed);
+    if n > 0 {
+        let note = format!("dropped {n} log lines while the log was busy");
+        if tx.try_send((path.to_path_buf(), cap, note)).is_err() {
+            DROPPED.fetch_add(n.saturating_add(1), Ordering::Relaxed);
+        }
+    }
+}
+
+fn writer() -> &'static mpsc::SyncSender<(PathBuf, u64, String)> {
+    static TX: OnceLock<mpsc::SyncSender<(PathBuf, u64, String)>> = OnceLock::new();
+    TX.get_or_init(|| {
+        let (tx, rx) = mpsc::sync_channel::<(PathBuf, u64, String)>(64);
+        let _ = std::thread::Builder::new().name("log".into()).spawn(move || {
+            while let Ok((path, cap, line)) = rx.recv() {
+                append(&path, cap, &line);
+            }
+        });
+        tx
+    })
 }
 
 /// Adds one line to the log at `path`, moving it to `.old` first when it has

@@ -158,6 +158,8 @@ pub struct RecentSource {
 pub enum HitKind {
     Artist,
     Song,
+    /// A podcast program (`PC:`). Enter opens the show, it does not seed a station.
+    Show,
 }
 
 impl HitKind {
@@ -165,6 +167,7 @@ impl HitKind {
         match self {
             Self::Artist => "Artist",
             Self::Song => "Song",
+            Self::Show => "Podcast",
         }
     }
 }
@@ -244,6 +247,14 @@ pub struct Song {
     /// The `feedbackId` of this song's thumb, once Pandora has said it
     /// (addFeedback's answer, or the track's own): what clearing it takes.
     pub feedback_id: String,
+    /// Album year when Pandora sends one (`albumYear` and the same idea under other names).
+    pub year: Option<u16>,
+    /// Explicit tag when Pandora sends one.
+    pub explicit: bool,
+    /// `allowSkip` on the fragment. `None` (missing) means the song can be skipped.
+    pub allow_skip: Option<bool>,
+    /// `allowSkipTrackWithoutLimit`: a skip that does not use the daily or hourly budget.
+    pub allow_skip_without_limit: bool,
 }
 
 /// `[pandora] audio_quality`.
@@ -293,6 +304,27 @@ pub struct Account {
     /// `config.branding`: `Pandora`, `PandoraPlus`, `PandoraPremium`.
     pub branding: String,
     pub flags: Vec<String>,
+    /// `config.dailySkipLimit`. `None` when the login did not say.
+    pub daily_skip_limit: Option<u32>,
+    /// `config.stationSkipLimit`: skips of one station in a rolling hour.
+    pub station_skip_limit: Option<u32>,
+    /// `explicitContentFilterEnabled`: `true` blocks explicit tracks. `None` if the login omitted it.
+    pub explicit_filter: Option<bool>,
+    /// Seconds east of UTC, when login named a fixed offset. `None`: use local time.
+    pub tz_offset: Option<i32>,
+    /// Fields `updateAccount` must send back unchanged. Empty means login omitted them.
+    pub profile: ListenerProfile,
+}
+
+/// Listener facts the web client's `updateAccount` body echoes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ListenerProfile {
+    pub zip: Option<String>,
+    pub gender: Option<String>,
+    pub birth_year: Option<i64>,
+    pub birth_month: Option<i64>,
+    pub birth_day: Option<i64>,
+    pub explicit_pin: Option<String>,
 }
 
 impl Account {
@@ -709,6 +741,7 @@ pub fn parse_search(v: &Value) -> Vec<SearchHit> {
                     let by = str_of(note, "artistName").trim().to_owned();
                     Some(SearchHit { id: pandora_id, kind: HitKind::Song, name, by })
                 }
+                "PC" => Some(SearchHit { id: pandora_id, kind: HitKind::Show, name, by: String::new() }),
                 _ => None,
             }
         })
@@ -723,6 +756,10 @@ pub struct EpisodePlayback {
     /// `source.pandoraId` (`PC:…`), else the id that was asked for.
     pub source_id: String,
     pub index: u64,
+    /// `item.pandoraId` (`PE:…`).
+    pub episode_id: String,
+    /// How often to send `event/progress`, from `progressFrequency` (seconds).
+    pub progress_every: u64,
 }
 
 /// One fragment track; `None` for ads, artist and curator messages and
@@ -765,6 +802,10 @@ pub fn parse_track(v: &Value, station_id: &str) -> Option<Song> {
         detail_url: str_of(v, "songDetailURL"),
         artist_music_id: str_of(v, "artistMusicId"),
         length: v.get("trackLength").and_then(Value::as_u64).unwrap_or(0) as u32,
+        year: track_year(v),
+        explicit: track_explicit(v),
+        allow_skip: v.get("allowSkip").and_then(Value::as_bool),
+        allow_skip_without_limit: v.get("allowSkipTrackWithoutLimit").and_then(Value::as_bool).unwrap_or(false),
         gain: v
             .get("fileGain")
             .and_then(|g| g.as_str().and_then(|s| s.trim().parse().ok()).or(g.as_f64()))
@@ -776,6 +817,127 @@ pub fn parse_track(v: &Value, station_id: &str) -> Option<Song> {
         },
         feedback_id: id_of(v, "feedbackId"),
     })
+}
+
+fn event_body(source_id: &str, index: u64, elapsed: u64, episode_id: Option<&str>) -> Value {
+    let id = device_uuid();
+    let mut body = json!({
+        "deviceUuid": id,
+        "elapsedTime": elapsed,
+        "index": index,
+        "sourceId": source_id,
+        "deviceProperties": {
+            "app_version": AD_APP_VERSION,
+            "device_uuid": id,
+            "device_os": "Linux",
+        },
+    });
+    if let Some(episode) = episode_id {
+        body["pandoraId"] = json!(episode);
+    }
+    body
+}
+
+/// A followed podcast from `collections/getSortedByTypes`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowedShow {
+    pub id: String,
+    pub name: String,
+    pub publisher: String,
+}
+
+/// A station's Thumbs Up playlist. Playing a track is Premium.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThumbList {
+    pub id: String,
+    pub name: String,
+    pub station_id: String,
+    pub total: u32,
+}
+
+/// One thumbed track, for display.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThumbTrack {
+    pub name: String,
+    pub artist: String,
+}
+
+fn parse_followed(v: &Value) -> Vec<FollowedShow> {
+    let notes = v.get("annotations");
+    v.get("items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let id = str_of(item, "pandoraId");
+            if !id.starts_with("PC:") {
+                return None;
+            }
+            let note = notes.and_then(|n| n.get(&id));
+            let name = note.map(|n| str_of(n, "name")).unwrap_or_default();
+            let name = if name.is_empty() { str_of(item, "name") } else { name };
+            if name.is_empty() {
+                return None;
+            }
+            Some(FollowedShow { publisher: note.map(|n| str_of(n, "publisherName")).unwrap_or_default(), id, name })
+        })
+        .collect()
+}
+
+fn parse_badges(v: &Value) -> std::collections::HashMap<String, String> {
+    let Some(map) = v.get("newEpisodeBadge").and_then(Value::as_object) else {
+        return std::collections::HashMap::new();
+    };
+    map.iter()
+        .filter_map(|(id, badge)| {
+            if !badge.get("showBadge").and_then(Value::as_bool).unwrap_or(false) {
+                return None;
+            }
+            let episode = str_of(badge, "podcastEpisodeId");
+            (!episode.is_empty()).then_some((id.clone(), episode))
+        })
+        .collect()
+}
+
+fn parse_thumb_lists(v: &Value) -> Vec<ThumbList> {
+    let Some(notes) = v.get("annotations").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (id, note) in notes {
+        if str_of(note, "linkedType") != "StationThumbs" {
+            continue;
+        }
+        let name = str_of(note, "name");
+        if name.is_empty() {
+            continue;
+        }
+        out.push(ThumbList {
+            id: id.clone(),
+            name,
+            station_id: str_of(note, "linkedSourceId"),
+            total: note.get("totalTracks").and_then(Value::as_u64).unwrap_or(0) as u32,
+        });
+    }
+    out
+}
+
+fn parse_thumb_tracks(v: &Value) -> Vec<ThumbTrack> {
+    let notes = v.get("annotations");
+    v.get("tracks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|track| {
+            let id = str_of(track, "pandoraId");
+            let note = notes.and_then(|n| n.get(&id))?;
+            let name = str_of(note, "name");
+            if name.is_empty() {
+                return None;
+            }
+            Some(ThumbTrack { name, artist: str_of(note, "artistName") })
+        })
+        .collect()
 }
 
 fn playback_body(source_id: &str, device: Option<&str>) -> Value {
@@ -857,6 +1019,8 @@ pub fn parse_episode(v: &Value, asked: &str) -> Option<EpisodePlayback> {
     Some(EpisodePlayback {
         source_id: if source.is_empty() { asked.to_owned() } else { source },
         index: item.get("index").and_then(Value::as_u64).unwrap_or(0),
+        episode_id: if pandora_id.is_empty() { asked.to_owned() } else { pandora_id.clone() },
+        progress_every: item.get("progressFrequency").and_then(Value::as_u64).filter(|n| *n > 0).unwrap_or(60),
         song: Song {
             title,
             artist,
@@ -876,8 +1040,109 @@ pub fn parse_episode(v: &Value, asked: &str) -> Option<EpisodePlayback> {
                 .unwrap_or(0.0) as f32,
             rating: Rating::None,
             feedback_id: String::new(),
+            year: track_year(item),
+            explicit: track_explicit(item),
+            allow_skip: None,
+            allow_skip_without_limit: false,
         },
     })
+}
+
+/// Album year from the names Pandora has used. Missing or out of range stays unset.
+fn track_year(v: &Value) -> Option<u16> {
+    for key in ["albumYear", "releaseYear", "albumReleaseYear", "trackYear"] {
+        let Some(raw) = v.get(key) else { continue };
+        let n = raw.as_u64().or_else(|| raw.as_str().and_then(|s| s.trim().parse().ok()));
+        if let Some(n) = n
+            && (1000..3000).contains(&n)
+        {
+            return u16::try_from(n).ok();
+        }
+    }
+    None
+}
+
+fn look_value<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
+    v.get(key)
+        .or_else(|| v.get("config").and_then(|c| c.get(key)))
+        .or_else(|| v.get("listener").and_then(|c| c.get(key)))
+}
+
+fn look_str(v: &Value, key: &str) -> Option<String> {
+    let raw = look_value(v, key)?;
+    let text = raw.as_str().map(str::trim).filter(|s| !s.is_empty())?;
+    Some(text.to_owned())
+}
+
+fn look_i64(v: &Value, key: &str) -> Option<i64> {
+    let raw = look_value(v, key)?;
+    raw.as_i64().or_else(|| raw.as_str().and_then(|s| s.trim().parse().ok()))
+}
+
+fn listener_profile(v: &Value) -> ListenerProfile {
+    ListenerProfile {
+        zip: look_str(v, "zipCode"),
+        gender: look_str(v, "gender"),
+        birth_year: look_i64(v, "birthYear"),
+        birth_month: look_i64(v, "birthMonth"),
+        birth_day: look_i64(v, "birthDay"),
+        explicit_pin: look_str(v, "explicitPIN"),
+    }
+}
+
+/// A fixed offset from login. `±HH:MM` or a number (minutes when it fits in a
+/// zone offset, otherwise seconds). An IANA name is ignored: no zone database.
+fn tz_offset_secs(v: &Value) -> Option<i32> {
+    for key in ["timeZoneOffset", "timezoneOffset", "utcOffset", "tzOffset"] {
+        if let Some(n) = look_i64(v, key) {
+            return Some(normalize_offset(n));
+        }
+    }
+    for key in ["timeZone", "timezone"] {
+        if let Some(text) = look_str(v, key)
+            && let Some(off) = parse_hhmm(&text)
+        {
+            return Some(off);
+        }
+    }
+    None
+}
+
+fn normalize_offset(n: i64) -> i32 {
+    let n = n.clamp(-86_400, 86_400);
+    if n.abs() <= 14 * 60 { (n * 60) as i32 } else { n as i32 }
+}
+
+fn parse_hhmm(text: &str) -> Option<i32> {
+    let (sign, rest) = match text.as_bytes().first()? {
+        b'+' => (1, &text[1..]),
+        b'-' => (-1, &text[1..]),
+        _ => return None,
+    };
+    let (h, m) = rest.split_once(':')?;
+    let hours: i32 = h.parse().ok()?;
+    let mins: i32 = m.parse().ok()?;
+    if !(0..24).contains(&hours) || !(0..60).contains(&mins) {
+        return None;
+    }
+    Some(sign * (hours * 3600 + mins * 60))
+}
+
+/// `explicitContentFilterEnabled` on the login body, `config`, or a nested `listener`.
+fn explicit_filter_flag(v: &Value) -> Option<bool> {
+    look_value(v, "explicitContentFilterEnabled").and_then(Value::as_bool)
+}
+
+fn u32_field(v: &Value, key: &str) -> Option<u32> {
+    let raw = v.get(key)?;
+    let n = raw.as_u64().or_else(|| raw.as_str().and_then(|s| s.trim().parse().ok()))?;
+    u32::try_from(n).ok()
+}
+
+fn track_explicit(v: &Value) -> bool {
+    v.get("explicit").and_then(Value::as_bool).unwrap_or(false)
+        || v.get("isExplicit").and_then(Value::as_bool).unwrap_or(false)
+        || str_of(v, "explicitness").eq_ignore_ascii_case("EXPLICIT")
 }
 
 /// The url the player should open: `audioUrl`, else the best entry in `audioUrlMap`.
@@ -927,6 +1192,8 @@ fn made_up_csrf() -> String {
 /// A web session: the `csrftoken` and, once logged in, the auth token.
 pub struct Client {
     agent: ureq::Agent,
+    /// `false` only for the test server on `http://`.
+    https_only: bool,
     base: String,
     user_agent: String,
     csrf: Option<String>,
@@ -937,6 +1204,8 @@ pub struct Client {
     started: HashSet<String>,
     /// Pandora refused `mp3`: ask for `aacplus` from then on.
     aac_only: bool,
+    /// `TG:13`, the podcast related shelf. One fetch per login.
+    podcast_related: Option<Vec<browse::BrowseSection>>,
 }
 
 /// The site's own `GetRecentlyPlayedSources` document, copied from its bundle
@@ -952,14 +1221,17 @@ impl Client {
 
     /// A client for another address (tests run a fake Pandora on localhost).
     pub fn with_base(base: &str, user_agent: &str) -> Self {
+        let https_only = !base.starts_with("http://");
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
+            .https_only(https_only)
             .http_status_as_error(false)
             .build()
             .into();
         let user_agent = if user_agent.trim().is_empty() { DEFAULT_USER_AGENT } else { user_agent.trim() };
         Self {
             agent,
+            https_only,
             base: base.trim_end_matches('/').to_owned(),
             user_agent: user_agent.to_owned(),
             csrf: None,
@@ -968,6 +1240,7 @@ impl Client {
             quality: Quality::High,
             started: HashSet::new(),
             aac_only: false,
+            podcast_related: None,
         }
     }
 
@@ -1069,10 +1342,106 @@ impl Client {
                 .and_then(Value::as_array)
                 .map(|f| f.iter().filter_map(Value::as_str).map(str::to_owned).collect())
                 .unwrap_or_default(),
+            daily_skip_limit: config.and_then(|c| u32_field(c, "dailySkipLimit")),
+            station_skip_limit: config.and_then(|c| u32_field(c, "stationSkipLimit")),
+            explicit_filter: explicit_filter_flag(&v),
+            tz_offset: tz_offset_secs(&v),
+            profile: listener_profile(&v),
         };
         self.auth = Some(token);
-        // Every station starts over with a new login.
+        // A new login starts every station over. A token refresh keeps them.
+        self.podcast_related = None;
         self.started.clear();
+        Ok(())
+    }
+
+    /// Log in again after a 401 without dropping station-start flags or the related shelf.
+    pub fn refresh_auth(&mut self, username: &str, password: &str) -> Result<(), Error> {
+        let started = std::mem::take(&mut self.started);
+        let related = self.podcast_related.take();
+        let result = self.login(username, password);
+        self.started = started;
+        self.podcast_related = related;
+        result
+    }
+
+    /// `v1/listener/updateAccount`. The password is only the argument; the caller drops it.
+    ///
+    /// The body mirrors the web client: current username and password, the same
+    /// username as `newUsername`, and every listener field login gave us
+    /// (zip, gender, birth, PIN). Missing fields are left out, not sent as null.
+    /// `Ok(None)`: Pandora answered 200 without `explicitContentFilterEnabled`.
+    pub fn set_explicit_filter(&mut self, username: &str, password: &str, enable: bool) -> Result<Option<bool>, Error> {
+        Ok(self.update_account(username, password, &crate::backend::AccountChange::Explicit(enable))?.1)
+    }
+
+    /// `v1/listener/updateAccount`. Passwords are only arguments. Other listener
+    /// fields login gave us are sent back unchanged. Missing fields are left out.
+    pub fn update_account(
+        &mut self,
+        username: &str,
+        password: &str,
+        change: &crate::backend::AccountChange,
+    ) -> Result<(ListenerProfile, Option<bool>), Error> {
+        let mut profile = self.account.profile.clone();
+        let mut explicit = self.account.explicit_filter;
+        let mut new_password = None;
+        match change {
+            crate::backend::AccountChange::Explicit(on) => explicit = Some(*on),
+            crate::backend::AccountChange::Zip(zip) => profile.zip = Some(zip.clone()),
+            crate::backend::AccountChange::Gender(gender) => profile.gender = Some(gender.clone()),
+            crate::backend::AccountChange::BirthYear(year) => profile.birth_year = Some(*year),
+            crate::backend::AccountChange::Password(next) => new_password = Some(next.expose()),
+        }
+        let mut body = json!({
+            "currentUsername": username,
+            "currentPassword": password,
+            "newUsername": username,
+        });
+        let Some(map) = body.as_object_mut() else {
+            return Err(Error::InvalidResponse);
+        };
+        if let Some(on) = explicit {
+            map.insert("enableExplicitContentFilter".into(), json!(on));
+        }
+        if let Some(zip) = &profile.zip {
+            map.insert("newZipCode".into(), json!(zip));
+        }
+        if let Some(gender) = &profile.gender {
+            map.insert("newGender".into(), json!(gender));
+        }
+        if let Some(year) = profile.birth_year {
+            map.insert("newBirthYear".into(), json!(year));
+        }
+        if let Some(month) = profile.birth_month {
+            map.insert("newBirthMonth".into(), json!(month));
+        }
+        if let Some(day) = profile.birth_day {
+            map.insert("newBirthDay".into(), json!(day));
+        }
+        if let Some(pin) = &profile.explicit_pin {
+            map.insert("explicitPIN".into(), json!(pin));
+        }
+        if let Some(next) = new_password {
+            map.insert("newPassword".into(), json!(next));
+        }
+        let v = self.post("/api/v1/listener/updateAccount", &body)?;
+        let reported = explicit_filter_flag(&v);
+        if reported.is_some() {
+            self.account.explicit_filter = reported;
+        }
+        let fresh = listener_profile(&v);
+        if fresh != ListenerProfile::default() {
+            self.account.profile = fresh;
+        } else {
+            self.account.profile = profile;
+        }
+        Ok((self.account.profile.clone(), reported))
+    }
+
+    /// `v1/auth/logoutAll` from the web client: `{password}` logs out every other device.
+    pub fn logout_other_devices(&mut self, password: &str) -> Result<(), Error> {
+        self.post("/api/v1/auth/logoutAll", &json!({ "password": password }))?;
         Ok(())
     }
 
@@ -1336,11 +1705,11 @@ impl Client {
         Ok(parse_recently_played(&v))
     }
 
-    /// `v3/sod/search`: artists and songs matching `query`.
+    /// `v3/sod/search`: artists, songs, and podcasts matching `query`.
     pub fn search(&mut self, query: &str) -> Result<Vec<SearchHit>, Error> {
         let v = self.post(
             "/api/v3/sod/search",
-            &json!({ "query": query, "start": 0, "count": 20, "annotate": true, "types": ["AR", "CO", "TR"] }),
+            &json!({ "query": query, "start": 0, "count": 20, "annotate": true, "types": ["AR", "CO", "TR", "PC"] }),
         )?;
         Ok(parse_search(&v))
     }
@@ -1367,10 +1736,96 @@ impl Client {
         parse_episode(&v, source_id).ok_or(Error::InvalidResponse)
     }
 
-    /// `v1/event/started`: the episode began, the way `trackStarted` reports a song.
-    pub fn episode_started(&mut self, source_id: &str, index: u64) -> Result<(), Error> {
-        self.post("/api/v1/event/started", &json!({ "sourceId": source_id, "index": index, "elapsedTime": 0 }))
-            .map(|_| ())
+    /// `v1/event/started`: the episode began, at `elapsed` seconds.
+    pub fn episode_started(&mut self, source_id: &str, index: u64, elapsed: u64) -> Result<(), Error> {
+        self.post("/api/v1/event/started", &event_body(source_id, index, elapsed, None)).map(|_| ())
+    }
+
+    /// `v1/event/progress`: a heartbeat while the episode plays.
+    pub fn episode_progress(&mut self, source_id: &str, index: u64, elapsed: u64) -> Result<(), Error> {
+        self.post("/api/v1/event/progress", &event_body(source_id, index, elapsed, None)).map(|_| ())
+    }
+
+    /// `v1/action/pause`: the episode was paused at `elapsed` seconds.
+    pub fn episode_pause(&mut self, source_id: &str, episode_id: &str, index: u64, elapsed: u64) -> Result<(), Error> {
+        self.post("/api/v1/action/pause", &event_body(source_id, index, elapsed, Some(episode_id))).map(|_| ())
+    }
+
+    /// `v6/collections/addItem`: follow a podcast (`PC:`).
+    pub fn follow_show(&mut self, pandora_id: &str) -> Result<(), Error> {
+        self.post("/api/v6/collections/addItem", &json!({ "request": { "pandoraId": pandora_id } })).map(|_| ())
+    }
+
+    /// `v6/collections/removeItem`: unfollow a podcast.
+    pub fn unfollow_show(&mut self, pandora_id: &str) -> Result<(), Error> {
+        self.post("/api/v6/collections/removeItem", &json!({ "request": { "pandoraId": pandora_id } })).map(|_| ())
+    }
+
+    /// `v6/collections/getSortedByTypes` for followed podcasts (`PC`).
+    pub fn followed_shows(&mut self) -> Result<Vec<FollowedShow>, Error> {
+        let v = self.post(
+            "/api/v6/collections/getSortedByTypes",
+            &json!({ "request": {
+                "sortOrder": "MOST_RECENT_ADDED",
+                "offset": 0,
+                "limit": 40,
+                "annotationLimit": 40,
+                "typePrefixes": ["PC"]
+            }}),
+        )?;
+        Ok(parse_followed(&v))
+    }
+
+    /// `v1/aesop/annotateObjects`: optional new-episode badges. Failure is empty.
+    pub fn episode_badges(
+        &mut self,
+        pandora_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, String>, Error> {
+        if pandora_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let v = self.post(
+            "/api/v1/aesop/annotateObjects",
+            &json!({
+                "pandoraIds": pandora_ids,
+                "listenerId": self.account.listener_id,
+                "withProgress": true,
+                "catalogVersion": 4,
+            }),
+        )?;
+        Ok(parse_badges(&v))
+    }
+
+    /// Station thumbs playlists (`PL:` with `linkedType` StationThumbs).
+    pub fn thumb_playlists(&mut self) -> Result<Vec<ThumbList>, Error> {
+        let v = self.post(
+            "/api/v6/collections/getSortedByTypes",
+            &json!({ "request": {
+                "sortOrder": "MOST_RECENT_ADDED",
+                "offset": 0,
+                "limit": 40,
+                "annotationLimit": 40,
+                "typePrefixes": ["ALL"]
+            }}),
+        )?;
+        Ok(parse_thumb_lists(&v))
+    }
+
+    /// One page of a thumbs playlist. View only.
+    pub fn thumb_tracks(&mut self, pandora_id: &str, offset: u32) -> Result<Vec<ThumbTrack>, Error> {
+        let v = self.post(
+            "/api/v7/playlists/getTracks",
+            &json!({ "request": {
+                "pandoraId": pandora_id,
+                "playlistVersion": 0,
+                "offset": offset,
+                "limit": 20,
+                "annotationLimit": 20,
+                "allowedTypes": ["TR", "AM"],
+                "bypassPrivacyRules": true
+            }}),
+        )?;
+        Ok(parse_thumb_tracks(&v))
     }
 
     /// `v1/playlist/getFragment`: the next few songs of `station_id`.
@@ -1519,6 +1974,12 @@ impl Client {
         if cancel() {
             return Ok(None);
         }
+        if self.https_only && !url.starts_with("https://") {
+            return Err(Error::Http(format!("{what}: refusing a non-HTTPS URL")));
+        }
+        if !url.starts_with("https://") && !url.starts_with("http://") {
+            return Err(Error::Http(format!("{what}: refusing a non-HTTP URL")));
+        }
         let mut response = self
             .agent
             .get(url)
@@ -1550,15 +2011,20 @@ impl Client {
         self.csrf = None;
         self.auth = None;
         self.account = Account::default();
+        self.podcast_related = None;
         self.started.clear();
         self.aac_only = false;
     }
 }
 
+/// Extra attempts after the first, for a dropped connection (`Error::Http`).
+const HTTP_RETRIES: u8 = 2;
+
 /// Runs `call` the way every Pandora call should run: when the login expired
 /// (401), log in again with the saved password and try once more; when another
 /// device is streaming (429 `STREAM_VIOLATION`), take the stream over and try
-/// once more. `took_over` says the second happened.
+/// once more; a transient network error is tried [`HTTP_RETRIES`] more times.
+/// `took_over` says the stream was taken over.
 pub fn with_retries<T>(
     client: &mut Client,
     login: Option<&(String, crate::config::Secret)>,
@@ -1567,6 +2033,7 @@ pub fn with_retries<T>(
 ) -> Result<T, Error> {
     let mut relogged = false;
     let mut retook = false;
+    let mut http_retries = 0u8;
     loop {
         match call(client) {
             Err(e) if e.is_auth_expired() && !relogged => {
@@ -1578,6 +2045,12 @@ pub fn with_retries<T>(
                 retook = true;
                 client.take_over()?;
                 *took_over = true;
+            }
+            Err(Error::Http(_)) if http_retries < HTTP_RETRIES => {
+                http_retries += 1;
+                // A short pause so a blip is not three requests in the same instant.
+                // Auth and stream-violation retries do not wait.
+                std::thread::sleep(std::time::Duration::from_millis(200));
             }
             other => return other,
         }

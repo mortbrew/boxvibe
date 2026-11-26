@@ -10,7 +10,46 @@ impl App {
             return;
         }
         match reply {
-            Reply::LoggedIn { hifi } => self.reply_logged_in(hifi),
+            Reply::LoggedIn { hifi, daily_skip_limit, station_skip_limit, explicit_filter, tz_offset, profile } => {
+                self.reply_logged_in(hifi, daily_skip_limit, station_skip_limit, explicit_filter, tz_offset, profile)
+            }
+            Reply::AccountSaved { profile, password } => {
+                if profile.zip.is_some() {
+                    self.profile.zip = profile.zip;
+                }
+                if profile.gender.is_some() {
+                    self.profile.gender = profile.gender;
+                }
+                if profile.birth_year.is_some() {
+                    self.profile.birth_year = profile.birth_year;
+                }
+                if profile.birth_month.is_some() {
+                    self.profile.birth_month = profile.birth_month;
+                }
+                if profile.birth_day.is_some() {
+                    self.profile.birth_day = profile.birth_day;
+                }
+                if profile.explicit_pin.is_some() {
+                    self.profile.explicit_pin = profile.explicit_pin;
+                }
+                self.status = if password { "Password changed".into() } else { "Account updated".into() };
+            }
+            Reply::ExplicitFilter(on) => {
+                if let Some(on) = on {
+                    self.explicit_filter = Some(on);
+                }
+                self.status = match on {
+                    Some(true) => "Explicit filter on: explicit tracks are blocked".into(),
+                    Some(false) => "Explicit filter off".into(),
+                    None => "Pandora did not say whether the explicit filter is on".into(),
+                };
+            }
+            Reply::OtherDevicesLoggedOut => {
+                self.status = "Other devices were logged out. This one stays logged in.".into();
+            }
+            Reply::AccountActionFailed { message } => {
+                self.status = format!("⚠ {message}");
+            }
             Reply::LoginFailed { message, wrong_password } => self.reply_login_failed(message, wrong_password),
             Reply::Keychain(reply) => self.on_keychain(reply),
             Reply::Stations(stations) => self.reply_stations(stations),
@@ -23,6 +62,19 @@ impl App {
             Reply::Shuffle(station) => self.shuffle_arrived(station),
             Reply::StationModes { station_id, modes, set } => self.modes_loaded(&station_id, modes, set),
             Reply::Browse { path, sections } => self.browse_loaded(path, sections),
+            Reply::PodcastPage { path, sections, progress } => {
+                self.episode_progress = progress;
+                let show = path.as_deref().and_then(|p| p.strip_prefix("podcast:")).map(str::to_owned);
+                self.browse_loaded(path, sections);
+                if let Some(id) = show {
+                    self.backend.send(Request::Badges { ids: vec![id] });
+                }
+            }
+            Reply::Followed(shows) => self.show_followed(shows),
+            Reply::FollowSet { id, on, message } => self.follow_set(id, on, message),
+            Reply::Badges(badges) => self.show_badges(badges),
+            Reply::Thumbs(lists) => self.show_thumbs(lists),
+            Reply::ThumbTracks { playlist_id, tracks } => self.show_thumb_tracks(playlist_id, tracks),
             Reply::BrowseFailed { path, message } => {
                 let index = path.is_none();
                 self.note_browse_failure(path, message.clone());
@@ -53,7 +105,7 @@ impl App {
             Reply::Recent { generation, sources } => self.reply_recent(generation, sources),
             Reply::RecentFailed { generation, message } => self.reply_recent_failed(generation, message),
             Reply::Failed { what, message } => self.reply_failed(what, message),
-            Reply::UpdateFound(update) => self.reply_update_found(update),
+            Reply::UpdateFound(update, notes) => self.reply_update_found(update, notes),
             Reply::UpToDate => self.up_to_date = self.update.is_none(),
             Reply::UpdateProgress(percent) => self.reply_update_progress(percent),
             Reply::SelfUpdated(Ok(version)) => {
@@ -108,13 +160,14 @@ impl App {
         self.status = format!("⚠ {}: {message}", what.what());
     }
 
-    fn reply_update_found(&mut self, update: Update) {
+    fn reply_update_found(&mut self, update: Update, notes: Vec<String>) {
         self.status = format!(
             "{} boxvibe {} available · see About",
             crate::icons::icons(self.config.ui.icons).update,
             update.version
         );
         self.update = Some(update);
+        self.update_notes = notes;
     }
 
     fn reply_update_progress(&mut self, percent: u8) {

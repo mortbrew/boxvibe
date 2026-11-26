@@ -174,6 +174,25 @@ fn podcast_details_list_episode_ids_and_objects() {
             }
         }
     });
+    let show = json!({
+        "continueListeningEpisode": "PE:2",
+        "details": { "annotations": {
+            "PC:9": { "name": "Crime Junkie", "publisherName": "audiochuck", "episodeCount": 400,
+                      "icon": { "artUrl": "https://example.test/cj.jpg" } },
+            "PE:1": { "name": "Older", "ordering": 1, "type": "PE" },
+            "PE:2": { "name": "Newer", "ordering": 9, "type": "PE", "releaseDate": "2024-03-02T00:00:00Z",
+                      "description": "A long\nstory." }
+        }}
+    });
+    let show = parse_show_page(&show, "PC:9", "Crime Junkie");
+    assert!(show[0].title.contains("Crime Junkie"), "{}", show[0].title);
+    assert!(show[0].title.contains("audiochuck") && show[0].title.contains("400"), "{}", show[0].title);
+    assert_eq!(show[0].art_url, "https://example.test/cj.jpg");
+    assert_eq!(show[0].items[0].pandora_id, "PE:2");
+    assert!(show[0].items[0].name.starts_with("Continue"));
+    assert_eq!(show[0].items[1].pandora_id, "PE:1");
+    assert!(show[0].items[0].detail.contains("2024-03-02"), "{}", show[0].items[0].detail);
+    assert!(show[0].items[0].detail.contains("A long story"), "{}", show[0].items[0].detail);
     let sections = parse_podcast_details(&v, "PC:9", "Crime Junkie");
     assert_eq!(sections.len(), 1);
     assert_eq!(sections[0].title, "Crime Junkie");

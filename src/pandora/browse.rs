@@ -20,6 +20,8 @@ pub struct BrowseSection {
     /// `viewAll.webUrl` on the main teaser (`/browse/music/new-music`, …).
     /// `None`: this section has no View-all page (Artists Picked For You).
     pub view_all_path: Option<String>,
+    /// Show `icon.artUrl` when this section is a podcast header. Empty otherwise.
+    pub art_url: String,
 }
 
 /// One row under a Browse section.
@@ -73,13 +75,47 @@ impl Client {
         Ok(parse_directory(&v))
     }
 
-    /// `v4/catalog/getDetails`: the episodes of a podcast program (`PC:`).
+    /// `v1/aesop/getDetails`: the episodes of a podcast program (`PC:`).
     ///
-    /// `recentEpisodes` is a list of `PE:` ids, named from `annotations`.
-    /// A show's `/podcast/…` path is not a directory page.
-    pub fn podcast_episodes(&mut self, pandora_id: &str, title: &str) -> Result<Vec<BrowseSection>, Error> {
-        let v = self.post("/api/v4/catalog/getDetails", &json!({ "pandoraId": pandora_id }))?;
-        Ok(parse_podcast_details(&v, pandora_id, title))
+    /// The related shelf is `TG:13`, fetched once per login.
+    pub fn podcast_episodes(
+        &mut self,
+        pandora_id: &str,
+        title: &str,
+    ) -> Result<(Vec<BrowseSection>, EpisodeProgress), Error> {
+        let listener = self.account.listener_id.clone();
+        let v = self.post(
+            "/api/v1/aesop/getDetails",
+            &json!({
+                "pandoraId": pandora_id,
+                "listenerId": listener,
+                "sortingOrder": null,
+                "catalogVersion": 4,
+            }),
+        )?;
+        let mut sections = parse_show_page(&v, pandora_id, title);
+        let related = if let Some(cached) = &self.podcast_related {
+            cached.clone()
+        } else {
+            match self.directory_by_id("TG:13") {
+                Ok(sections) => {
+                    self.podcast_related = Some(sections.clone());
+                    sections
+                }
+                Err(_) => Vec::new(),
+            }
+        };
+        sections.extend(related);
+        Ok((sections, episode_progress(&v)))
+    }
+
+    /// `v1/feed/getDirectory` by `directoryId` (the podcast related shelf is `TG:13`).
+    pub fn directory_by_id(&mut self, directory_id: &str) -> Result<Vec<BrowseSection>, Error> {
+        let v = self.post(
+            "/api/v1/feed/getDirectory",
+            &json!({ "deviceType": "web", "directoryId": directory_id, "feedType": "browse" }),
+        )?;
+        Ok(parse_directory(&v))
     }
 }
 
@@ -111,7 +147,7 @@ fn parse_section(s: &Value, anns: Option<&serde_json::Map<String, Value>>) -> Op
             collect_items(list, anns, &mut items);
         }
     }
-    Some(BrowseSection { id, title, items, view_all_path: section_view_all_path(s) })
+    Some(BrowseSection { id, title, items, view_all_path: section_view_all_path(s), art_url: String::new() })
 }
 
 /// A row, plus any rows nested inside it. A container with no id of its own
@@ -265,7 +301,93 @@ fn field_text(v: Option<&Value>) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// Episodes from `v4/catalog/getDetails`. Names come from the episode or its annotation.
+/// `PE:` → elapsed seconds, and whether the episode is finished.
+pub type EpisodeProgress = std::collections::HashMap<String, (u64, bool)>;
+
+/// `progress` on `aesop/getDetails`: elapsed seconds and whether the episode is finished.
+pub fn episode_progress(v: &Value) -> EpisodeProgress {
+    let Some(map) = v.get("progress").and_then(Value::as_object) else {
+        return std::collections::HashMap::new();
+    };
+    map.iter()
+        .filter(|(key, _)| key.starts_with("PE:"))
+        .map(|(key, val)| {
+            let elapsed =
+                val.get("elapsedTime").and_then(|n| n.as_u64().or_else(|| n.as_f64().map(|f| f as u64))).unwrap_or(0);
+            let finished = val.get("isFinished").and_then(Value::as_bool).unwrap_or(false);
+            (key.clone(), (elapsed, finished))
+        })
+        .collect()
+}
+
+/// A show from `v1/aesop/getDetails`: header, continue-listening, episodes newest first.
+///
+/// A body that is not that shape falls back to [`parse_podcast_details`].
+pub fn parse_show_page(v: &Value, program_id: &str, fallback_title: &str) -> Vec<BrowseSection> {
+    let anns = v.pointer("/details/annotations").or_else(|| v.get("annotations")).and_then(Value::as_object);
+    let Some(anns) = anns else {
+        return parse_podcast_details(v, program_id, fallback_title);
+    };
+    let program = anns.get(program_id);
+    let name = program.and_then(|p| field_text(p.get("name"))).unwrap_or_else(|| fallback_title.to_owned());
+    let publisher = program.and_then(|p| field_text(p.get("publisherName"))).unwrap_or_default();
+    let count = program
+        .and_then(|p| p.get("episodeCount"))
+        .and_then(|n| n.as_u64().or_else(|| n.as_str().and_then(|s| s.parse().ok())));
+    let art_url = program.and_then(|p| p.pointer("/icon/artUrl")).and_then(Value::as_str).unwrap_or("").to_owned();
+    let mut title = if name.is_empty() { program_id.to_owned() } else { name };
+    if !publisher.is_empty() {
+        title = format!("{title} · {publisher}");
+    }
+    if let Some(count) = count {
+        title = format!("{title} · {count} episodes");
+    }
+    let mut episodes: Vec<(i64, BrowseItem)> = anns
+        .iter()
+        .filter(|(key, _)| key.starts_with("PE:"))
+        .map(|(key, ann)| {
+            let order = ann
+                .get("ordering")
+                .and_then(|n| n.as_i64().or_else(|| n.as_str().and_then(|s| s.parse().ok())))
+                .unwrap_or(0);
+            let item = BrowseItem {
+                name: field_text(ann.get("name")).unwrap_or_else(|| key.clone()),
+                detail: episode_blurb(ann),
+                pandora_id: key.clone(),
+                station_factory: String::new(),
+                link: None,
+            };
+            (order, item)
+        })
+        .collect();
+    episodes.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
+    let mut items: Vec<BrowseItem> = episodes.into_iter().map(|(_, item)| item).collect();
+    if let Some(cont) = v.get("continueListeningEpisode") {
+        let id = cont.as_str().map(str::to_owned).or_else(|| field_text(cont.get("pandoraId"))).unwrap_or_default();
+        if id.starts_with("PE:") {
+            let name = anns.get(&id).and_then(|a| field_text(a.get("name"))).unwrap_or_else(|| id.clone());
+            items.retain(|item| item.pandora_id != id);
+            let detail = anns.get(&id).map(episode_blurb).unwrap_or_default();
+            let detail = if detail.is_empty() { "Continue".into() } else { format!("Continue · {detail}") };
+            items.insert(
+                0,
+                BrowseItem {
+                    name: format!("Continue · {name}"),
+                    detail,
+                    pandora_id: id,
+                    station_factory: String::new(),
+                    link: None,
+                },
+            );
+        }
+    }
+    if items.is_empty() {
+        return parse_podcast_details(v, program_id, fallback_title);
+    }
+    vec![BrowseSection { id: program_id.to_owned(), title, items, view_all_path: None, art_url }]
+}
+
+/// Episodes from the older `v4/catalog/getDetails` shape. Names come from the episode or its annotation.
 ///
 /// `recentEpisodes` is a list of `PE:` ids, episode objects, or both. A program
 /// with no list still contributes annotation episodes. Rows have no site link:
@@ -291,7 +413,7 @@ pub fn parse_podcast_details(v: &Value, program_id: &str, title: &str) -> Vec<Br
         }
     }
     let title = if title.is_empty() { program_id.to_owned() } else { title.to_owned() };
-    vec![BrowseSection { id: program_id.to_owned(), title, items, view_all_path: None }]
+    vec![BrowseSection { id: program_id.to_owned(), title, items, view_all_path: None, art_url: String::new() }]
 }
 
 fn walk_episode_lists(
@@ -377,6 +499,31 @@ fn push_episode_node(
         station_factory: String::new(),
         link: None,
     });
+}
+
+/// Date, length, and description when `aesop/getDetails` sent them.
+fn episode_blurb(ann: &Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(date) = field_text(ann.get("releaseDate"))
+        .or_else(|| field_text(ann.get("publishDate")))
+        .or_else(|| field_text(ann.get("date")))
+    {
+        let date = date.trim();
+        let date = if date.len() >= 10 && date.as_bytes().get(4) == Some(&b'-') { &date[..10] } else { date };
+        if !date.is_empty() {
+            parts.push(date.to_owned());
+        }
+    }
+    if let Some(len) = episode_length(ann) {
+        parts.push(len);
+    }
+    if let Some(desc) = field_text(ann.get("description")).or_else(|| field_text(ann.get("summary"))) {
+        let one = desc.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !one.is_empty() {
+            parts.push(one);
+        }
+    }
+    parts.join(" · ")
 }
 
 fn episode_length(node: &Value) -> Option<String> {

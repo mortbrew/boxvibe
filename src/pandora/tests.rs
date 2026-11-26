@@ -60,6 +60,20 @@ fn the_bitrate_pandora_reports_is_kept() {
     let mut text = track("Text", "Track");
     text["bitrate"] = json!("192");
     assert_eq!(parse_track(&text, "st").unwrap().bitrate, 192);
+    let mut tagged = track("Tagged", "Track");
+    tagged["albumYear"] = json!(2017);
+    tagged["explicit"] = json!(true);
+    let tagged = parse_track(&tagged, "st").unwrap();
+    assert_eq!(tagged.year, Some(2017));
+    assert!(tagged.explicit);
+    assert_eq!(parse_track(&track("Plain", "Track"), "st").unwrap().year, None);
+    let mut limited = track("Limited", "Track");
+    limited["allowSkip"] = json!(false);
+    limited["allowSkipTrackWithoutLimit"] = json!(true);
+    let limited = parse_track(&limited, "st").unwrap();
+    assert_eq!(limited.allow_skip, Some(false));
+    assert!(limited.allow_skip_without_limit);
+    assert_eq!(parse_track(&track("Open", "Track"), "st").unwrap().allow_skip, None);
 
     // Saying nothing is 0, not a guess.
     assert_eq!(parse_track(&track("Quiet", "Track"), "st").unwrap().bitrate, 0);
@@ -194,7 +208,11 @@ fn fake_pandora(mut handler: Handler) -> (String, Arc<Mutex<Vec<Seen>>>) {
 
 fn login_ok(token: &str) -> (u16, String) {
     let v = json!({ "authToken": token, "listenerId": "1", "webname": "me",
-                    "config": { "branding": "PandoraPlus", "flags": ["noAds", HIFI_FLAG] } });
+                    "config": { "branding": "PandoraPlus", "flags": ["noAds", HIFI_FLAG],
+                                "dailySkipLimit": 48, "stationSkipLimit": 6,
+                                "explicitContentFilterEnabled": true },
+                    "zipCode": "94105", "gender": "Female", "birthYear": 1990,
+                    "birthMonth": 2, "birthDay": 3, "timeZoneOffset": -28800 });
     (200, v.to_string())
 }
 
@@ -208,6 +226,10 @@ fn login_sends_the_site_headers_and_reads_the_flags() {
     c.login("me@example.com", "pw").unwrap();
     assert!(c.account.hifi());
     assert_eq!(c.account.branding, "PandoraPlus");
+    assert_eq!((c.account.daily_skip_limit, c.account.station_skip_limit), (Some(48), Some(6)));
+    assert_eq!(c.account.explicit_filter, Some(true));
+    assert_eq!(c.account.tz_offset, Some(-28800));
+    assert_eq!(c.account.profile.zip.as_deref(), Some("94105"));
     let seen = seen.lock().unwrap();
     assert_eq!(seen[0].method, "HEAD", "csrftoken first");
     let login = &seen[1];
@@ -220,6 +242,51 @@ fn login_sends_the_site_headers_and_reads_the_flags() {
         login.body,
         json!({ "username": "me@example.com", "password": "pw", "keepLoggedIn": true, "existingAuthToken": null })
     );
+}
+
+#[test]
+fn the_explicit_filter_is_sent_once_and_other_devices_log_out_with_a_password() {
+    let (base, seen) = fake_pandora(Box::new(|r| match r.path.as_str() {
+        "/api/v1/auth/login" => login_ok("tok"),
+        "/api/v1/listener/updateAccount" => {
+            (200, json!({ "explicitContentFilterEnabled": false, "listenerId": "1" }).to_string())
+        }
+        "/api/v1/auth/logoutAll" => (200, "{}".into()),
+        _ => (500, "no".into()),
+    }));
+    let mut c = Client::with_base(&base, "");
+    c.login("me@example.com", "pw").unwrap();
+    assert_eq!(c.set_explicit_filter("me@example.com", "once", false).unwrap(), Some(false));
+    c.logout_other_devices("once").unwrap();
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            seen[2].body,
+            json!({
+                "currentUsername": "me@example.com",
+                "currentPassword": "once",
+                "newUsername": "me@example.com",
+                "enableExplicitContentFilter": false,
+                "newZipCode": "94105",
+                "newGender": "Female",
+                "newBirthYear": 1990,
+                "newBirthMonth": 2,
+                "newBirthDay": 3
+            })
+        );
+        assert_eq!(seen[3].path, "/api/v1/auth/logoutAll");
+        assert_eq!(seen[3].body, json!({ "password": "once" }));
+    }
+    c.update_account(
+        "me@example.com",
+        "once",
+        &crate::backend::AccountChange::Password(crate::config::Secret::new("next-one")),
+    )
+    .unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[4].body["newPassword"], "next-one");
+    assert_eq!(seen[4].body["newZipCode"], "94105");
+    assert!(seen[4].body.get("currentPassword").is_some());
 }
 
 #[test]
@@ -438,14 +505,15 @@ fn renaming_removing_and_details_send_what_the_site_expects() {
 
 fn search_answer() -> Value {
     json!({
-        "results": ["AR:1", "TR:2", "AL:3", "CO:4", "PL:5", "AR:gone", "TR:6"],
+        "results": ["AR:1", "TR:2", "AL:3", "CO:4", "PL:5", "AR:gone", "TR:6", "PC:9"],
         "annotations": {
             "AR:1": { "name": " Tee Grizzley ", "pandoraId": "AR:1", "trackCount": 9, "icon": {} },
             "TR:2": { "name": "Slow Hands", "artistName": "Niall Horan", "pandoraId": "TR:2" },
             "AL:3": { "name": "An album", "pandoraId": "AL:3" },
             "CO:4": { "name": "A Composer", "pandoraId": "CO:4" },
             "PL:5": { "name": "A playlist", "pandoraId": "PL:5" },
-            "TR:6": { "name": "", "pandoraId": "TR:6" }
+            "TR:6": { "name": "", "pandoraId": "TR:6" },
+            "PC:9": { "name": "Crime Junkie", "pandoraId": "PC:9" }
         }
     })
 }
@@ -461,6 +529,7 @@ fn search_keeps_artists_and_songs_in_order_and_ignores_the_rest() {
             (HitKind::Artist, "AR:1", "Tee Grizzley", ""),
             (HitKind::Song, "TR:2", "Slow Hands", "Niall Horan"),
             (HitKind::Artist, "CO:4", "A Composer", ""),
+            (HitKind::Show, "PC:9", "Crime Junkie", ""),
         ]
     );
     assert!(parse_search(&json!({})).is_empty());
@@ -483,14 +552,14 @@ fn searching_and_creating_send_what_the_site_expects() {
     }));
     let mut c = Client::with_base(&base, "");
     c.login("me", "pw").unwrap();
-    assert_eq!(c.search("tee").unwrap().len(), 3);
+    assert_eq!(c.search("tee").unwrap().len(), 4);
     let made = c.create_station("AR:1").unwrap();
     assert_eq!((made.id.as_str(), made.name.as_str()), ("3815", "Tee Grizzley Radio"));
     let seen = seen.lock().unwrap();
     let body = |end: &str| seen.iter().find(|s| s.path.ends_with(end)).unwrap().body.clone();
     assert_eq!(
         body("sod/search"),
-        json!({ "query": "tee", "start": 0, "count": 20, "annotate": true, "types": ["AR", "CO", "TR"] })
+        json!({ "query": "tee", "start": 0, "count": 20, "annotate": true, "types": ["AR", "CO", "TR", "PC"] })
     );
     assert_eq!(body("createStation"), json!({ "pandoraId": "AR:1", "stationName": "" }));
 }
@@ -1066,4 +1135,34 @@ fn playback_source_asks_for_the_episode_and_reads_its_mp3() {
     assert_eq!(body["sourceId"], "PE:9");
     assert_eq!(body["includeItem"], true);
     assert!(parse_episode(&json!({ "item": { "episodeName": "No file" } }), "PE:1").is_none());
+}
+
+#[test]
+fn a_transient_http_error_is_tried_again_then_given_up() {
+    let mut n = 0;
+    let mut took = false;
+    let mut client = Client::with_base("http://127.0.0.1:9", "");
+    let ok = with_retries(&mut client, None, &mut took, |_| {
+        n += 1;
+        if n < 3 { Err(Error::Http("reset".into())) } else { Ok(1) }
+    })
+    .unwrap();
+    assert_eq!((ok, n), (1, 3));
+    n = 0;
+    let err = with_retries(&mut client, None, &mut took, |_| {
+        n += 1;
+        Err::<(), _>(Error::Http("reset".into()))
+    })
+    .unwrap_err();
+    assert!(matches!(err, Error::Http(_)), "{err:?}");
+    assert_eq!(n, 3, "first try plus two retries");
+}
+
+#[test]
+fn the_pandora_client_refuses_a_non_https_download() {
+    let client = Client::new("");
+    let err = client.fetch_art("http://cdn.example/a.jpg").unwrap_err();
+    assert!(err.to_string().contains("non-HTTPS"), "{err}");
+    let err = client.fetch_audio("file:///tmp/song.mp3", || false).unwrap_err();
+    assert!(err.to_string().contains("non-HTTPS"), "{err}");
 }

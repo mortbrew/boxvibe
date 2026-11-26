@@ -208,6 +208,37 @@ pub enum Request {
     EpisodeStarted {
         source_id: String,
         index: u64,
+        elapsed: u64,
+    },
+    /// `event/progress` while an episode plays.
+    EpisodeBeat {
+        source_id: String,
+        index: u64,
+        elapsed: u64,
+    },
+    /// `action/pause` when an episode is paused.
+    EpisodePause {
+        source_id: String,
+        episode_id: String,
+        index: u64,
+        elapsed: u64,
+    },
+    /// Follow (`on`) or unfollow a podcast.
+    Follow {
+        pandora_id: String,
+        on: bool,
+    },
+    /// Followed podcasts (`typePrefixes` `PC`).
+    Followed,
+    /// Optional new-episode badges. An error answers with an empty map.
+    Badges {
+        ids: Vec<String>,
+    },
+    /// Station thumbs playlists (`linkedType` StationThumbs).
+    Thumbs,
+    /// One page of a thumbs playlist. View only.
+    ThumbTracks {
+        playlist_id: String,
     },
     Rate {
         track_token: String,
@@ -244,16 +275,60 @@ pub enum Request {
         generation: u64,
     },
     Quality(Quality),
+    /// Turn Pandora's explicit filter on or off. The password is not kept.
+    SetExplicitFilter {
+        username: String,
+        password: Secret,
+        enable: bool,
+    },
+    /// `v1/auth/logoutAll`: other devices, not this one.
+    LogoutOtherDevices {
+        password: Secret,
+    },
+    /// Zip, gender, birth year, or a new password. Passwords are not kept.
+    UpdateAccount {
+        username: String,
+        password: Secret,
+        change: AccountChange,
+    },
     /// An album cover for Now Playing (its own thread: never waits on audio).
     Art {
         url: String,
     },
 }
 
+/// One listener field `updateAccount` should change. The new password is wiped on drop.
+pub enum AccountChange {
+    Zip(String),
+    Gender(String),
+    BirthYear(i64),
+    Password(Secret),
+    /// The explicit filter. Not a Settings row of its own here; `set_explicit_filter` uses it.
+    Explicit(bool),
+}
+
 pub enum Reply {
     /// `hifi`: the plan streams 192 kbps MP3.
     LoggedIn {
         hifi: bool,
+        daily_skip_limit: Option<u32>,
+        station_skip_limit: Option<u32>,
+        explicit_filter: Option<bool>,
+        /// Seconds east of UTC, when login named one.
+        tz_offset: Option<i32>,
+        profile: crate::pandora::ListenerProfile,
+    },
+    /// `updateAccount` accepted the change. `password` is true when that was a new password.
+    AccountSaved {
+        profile: crate::pandora::ListenerProfile,
+        password: bool,
+    },
+    /// The explicit filter after a successful `updateAccount`.
+    ExplicitFilter(Option<bool>),
+    OtherDevicesLoggedOut,
+    /// A passworded account action failed. The message has no password in it.
+    AccountActionFailed {
+        message: String,
     },
     /// `wrong_password`: Pandora said the email or password is wrong.
     LoginFailed {
@@ -347,6 +422,26 @@ pub enum Reply {
         pandora_id: String,
         name: String,
     },
+    /// A show page plus resume positions (`PE:` → elapsed seconds, finished).
+    PodcastPage {
+        path: Option<String>,
+        sections: Vec<BrowseSection>,
+        progress: std::collections::HashMap<String, (u64, bool)>,
+    },
+    Followed(Vec<pandora::FollowedShow>),
+    /// `message` is set when the follow or unfollow call failed.
+    FollowSet {
+        id: String,
+        on: bool,
+        message: Option<String>,
+    },
+    /// `show` → episode id that should wear a New badge.
+    Badges(std::collections::HashMap<String, String>),
+    Thumbs(Vec<pandora::ThumbList>),
+    ThumbTracks {
+        playlist_id: String,
+        tracks: Vec<pandora::ThumbTrack>,
+    },
     Rated {
         track_token: String,
         positive: bool,
@@ -386,7 +481,8 @@ pub enum Reply {
     },
     /// An answer from the keychain (see [`Backend::keychain`]).
     Keychain(KeychainReply),
-    UpdateFound(Update),
+    /// A newer release, and the changelog lines to show before updating.
+    UpdateFound(Update, Vec<String>),
     UpToDate,
     UpdateProgress(u8),
     SelfUpdated(Result<String, String>),
@@ -498,7 +594,7 @@ impl Backend {
         let tx = self.tx.clone();
         thread::spawn(move || {
             let reply = match update::check() {
-                Checked::Newer(update) => Reply::UpdateFound(update),
+                Checked::Newer(update) => Reply::UpdateFound(update.clone(), update::release_notes(&update.version)),
                 Checked::Latest => Reply::UpToDate,
                 Checked::Unknown => return,
             };
@@ -529,7 +625,36 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
     let mut editing = demo::Editing::default();
     for request in requests {
         let reply = match request {
-            Request::Login { .. } => Reply::LoggedIn { hifi: true },
+            Request::Login { .. } => Reply::LoggedIn {
+                hifi: true,
+                daily_skip_limit: None,
+                station_skip_limit: None,
+                explicit_filter: None,
+                tz_offset: None,
+                profile: crate::pandora::ListenerProfile::default(),
+            },
+            Request::UpdateAccount { change, .. } => {
+                let password = matches!(change, AccountChange::Password(_));
+                let profile = match change {
+                    AccountChange::Zip(zip) => {
+                        crate::pandora::ListenerProfile { zip: Some(zip), ..crate::pandora::ListenerProfile::default() }
+                    }
+                    AccountChange::Gender(gender) => crate::pandora::ListenerProfile {
+                        gender: Some(gender),
+                        ..crate::pandora::ListenerProfile::default()
+                    },
+                    AccountChange::BirthYear(year) => crate::pandora::ListenerProfile {
+                        birth_year: Some(year),
+                        ..crate::pandora::ListenerProfile::default()
+                    },
+                    AccountChange::Password(_) | AccountChange::Explicit(_) => {
+                        crate::pandora::ListenerProfile::default()
+                    }
+                };
+                Reply::AccountSaved { profile, password }
+            }
+            Request::SetExplicitFilter { enable, .. } => Reply::ExplicitFilter(Some(enable)),
+            Request::LogoutOtherDevices { .. } => Reply::OtherDevicesLoggedOut,
             Request::Stations => Reply::Stations(stations.clone()),
             Request::RenameStation { station_id, name } => {
                 match stations.iter_mut().find(|s| s.id == station_id && s.allow_rename) {
@@ -644,17 +769,65 @@ fn demo_worker(requests: Receiver<Request>, replies: Sender<Reply>) {
                 ads_asked += 1;
                 Reply::AdList { ads: demo::ads(ads_asked), station_id: ask.station_id }
             }
+            Request::Follow { pandora_id, on } => Reply::FollowSet { id: pandora_id, on, message: None },
+            Request::Followed => Reply::Followed(vec![pandora::FollowedShow {
+                id: "PC:demo-junkie".into(),
+                name: "Crime Junkie".into(),
+                publisher: "audiochuck".into(),
+            }]),
+            Request::Badges { .. } => Reply::Badges(std::collections::HashMap::new()),
+            Request::Thumbs => Reply::Thumbs(vec![pandora::ThumbList {
+                id: "PL:demo:1".into(),
+                name: "Thumbs Up".into(),
+                station_id: "0".into(),
+                total: 1,
+            }]),
+            Request::ThumbTracks { playlist_id } => Reply::ThumbTracks {
+                playlist_id,
+                tracks: vec![pandora::ThumbTrack { name: "Demo Track".into(), artist: "Demo Artist".into() }],
+            },
             Request::Audio { .. }
             | Request::Art { .. }
             | Request::Quality(_)
             | Request::Started { .. }
             | Request::EpisodeStarted { .. }
+            | Request::EpisodeBeat { .. }
+            | Request::EpisodePause { .. }
             | Request::AdImpression { .. }
             | Request::Logout => continue,
         };
         if replies.send(reply).is_err() {
             break;
         }
+    }
+}
+
+/// One retry for a passworded account call: 401 logs in again, a dropped connection waits and tries once.
+/// The password stays in the `Secret` the caller still holds. Nothing here logs it.
+fn account_once(
+    client: &mut Client,
+    saved: Option<&(String, crate::config::Secret)>,
+    mut call: impl FnMut(&mut Client) -> Result<Reply, Error>,
+) -> Reply {
+    let failed = match call(client) {
+        Err(e) if e.is_auth_expired() => {
+            let Some((user, pass)) = saved else {
+                return Reply::AccountActionFailed { message: e.to_string() };
+            };
+            if let Err(err) = client.refresh_auth(user, pass.expose()) {
+                return Reply::AccountActionFailed { message: err.to_string() };
+            }
+            call(client)
+        }
+        Err(Error::Http(_)) => {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            call(client)
+        }
+        other => other,
+    };
+    match failed {
+        Ok(reply) => reply,
+        Err(e) => Reply::AccountActionFailed { message: e.to_string() },
     }
 }
 
@@ -668,10 +841,40 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
             Request::Login { username, password } => match client.login(&username, password.expose()) {
                 Ok(()) => {
                     login = Some((username, password));
-                    Reply::LoggedIn { hifi: client.account.hifi() }
+                    Reply::LoggedIn {
+                        hifi: client.account.hifi(),
+                        daily_skip_limit: client.account.daily_skip_limit,
+                        station_skip_limit: client.account.station_skip_limit,
+                        explicit_filter: client.account.explicit_filter,
+                        tz_offset: client.account.tz_offset,
+                        profile: client.account.profile.clone(),
+                    }
                 }
                 Err(e) => Reply::LoginFailed { wrong_password: e == Error::WrongLogin, message: e.to_string() },
             },
+            Request::SetExplicitFilter { username, password, enable } => {
+                let reply = account_once(&mut client, login.as_ref(), |c| {
+                    c.set_explicit_filter(&username, password.expose(), enable).map(Reply::ExplicitFilter)
+                });
+                drop(password);
+                reply
+            }
+            Request::UpdateAccount { username, password, change } => {
+                let password_change = matches!(change, AccountChange::Password(_));
+                let reply = account_once(&mut client, login.as_ref(), |c| {
+                    c.update_account(&username, password.expose(), &change)
+                        .map(|(profile, _)| Reply::AccountSaved { profile, password: password_change })
+                });
+                drop(password);
+                reply
+            }
+            Request::LogoutOtherDevices { password } => {
+                let reply = account_once(&mut client, login.as_ref(), |c| {
+                    c.logout_other_devices(password.expose()).map(|()| Reply::OtherDevicesLoggedOut)
+                });
+                drop(password);
+                reply
+            }
             Request::Logout => {
                 if let Some((_, pass)) = login.take() {
                     drop(pass); // ZeroizeOnDrop
@@ -795,8 +998,8 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                     c.podcast_episodes(&pandora_id, &name)
                 });
                 match outcome {
-                    Ok(sections) if !sections.iter().all(|section| section.items.is_empty()) => {
-                        Reply::Browse { path, sections }
+                    Ok((sections, progress)) if !sections.iter().all(|section| section.items.is_empty()) => {
+                        Reply::PodcastPage { path, sections, progress }
                     }
                     // No list, or the details call failed: the program id itself plays
                     // its latest episode.
@@ -843,14 +1046,71 @@ fn api_worker(requests: Receiver<Request>, replies: Sender<Reply>, quality: Qual
                 }
                 Reply::TookOver
             }
-            Request::EpisodeStarted { source_id, index } => {
+            Request::EpisodeStarted { source_id, index, elapsed } => {
                 let _ = pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| {
-                    c.episode_started(&source_id, index)
+                    c.episode_started(&source_id, index, elapsed)
                 });
                 if !took_over {
                     continue;
                 }
                 Reply::TookOver
+            }
+            Request::EpisodeBeat { source_id, index, elapsed } => {
+                let _ = pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| {
+                    c.episode_progress(&source_id, index, elapsed)
+                });
+                if !took_over {
+                    continue;
+                }
+                Reply::TookOver
+            }
+            Request::EpisodePause { source_id, episode_id, index, elapsed } => {
+                let _ = pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| {
+                    c.episode_pause(&source_id, &episode_id, index, elapsed)
+                });
+                if !took_over {
+                    continue;
+                }
+                Reply::TookOver
+            }
+            Request::Follow { pandora_id, on } => {
+                let outcome = pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| {
+                    if on { c.follow_show(&pandora_id) } else { c.unfollow_show(&pandora_id) }
+                });
+                Reply::FollowSet { id: pandora_id, on, message: outcome.err().map(|e| e.to_string()) }
+            }
+            Request::Followed => {
+                let outcome =
+                    pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| c.followed_shows());
+                match outcome {
+                    Ok(shows) => Reply::Followed(shows),
+                    Err(e) => Reply::BrowseFailed { path: Some("followed".into()), message: e.to_string() },
+                }
+            }
+            Request::Badges { ids } => {
+                let badges =
+                    pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| c.episode_badges(&ids))
+                        .unwrap_or_default();
+                Reply::Badges(badges)
+            }
+            Request::Thumbs => {
+                let outcome =
+                    pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| c.thumb_playlists());
+                match outcome {
+                    Ok(lists) => Reply::Thumbs(lists),
+                    Err(e) => Reply::BrowseFailed { path: Some("thumbs".into()), message: e.to_string() },
+                }
+            }
+            Request::ThumbTracks { playlist_id } => {
+                let outcome = pandora::with_retries(&mut client, login.as_ref(), &mut took_over, |c| {
+                    c.thumb_tracks(&playlist_id, 0)
+                });
+                match outcome {
+                    Ok(tracks) => Reply::ThumbTracks { playlist_id, tracks },
+                    Err(e) => {
+                        Reply::BrowseFailed { path: Some(format!("thumbs:{playlist_id}")), message: e.to_string() }
+                    }
+                }
             }
             Request::Quality(quality) => {
                 client.set_quality(quality);

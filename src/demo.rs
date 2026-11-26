@@ -13,6 +13,8 @@ pub fn episode(source_id: &str, name: &str) -> EpisodePlayback {
     EpisodePlayback {
         source_id: "PC:demo".into(),
         index: 0,
+        episode_id: source_id.into(),
+        progress_every: 60,
         song: Song {
             title: name.into(),
             artist: "Crime Junkie".into(),
@@ -29,6 +31,10 @@ pub fn episode(source_id: &str, name: &str) -> EpisodePlayback {
             gain: 0.0,
             rating: Rating::None,
             feedback_id: String::new(),
+            year: None,
+            explicit: false,
+            allow_skip: None,
+            allow_skip_without_limit: false,
         },
     }
 }
@@ -121,6 +127,10 @@ pub fn playlist(station_id: &str, round: usize) -> Vec<Song> {
                 gain: 0.0,
                 rating: if n == 0 { Rating::Up } else { Rating::None },
                 feedback_id: if n == 0 { format!("demo-fb-{round}-{i}") } else { String::new() },
+                year: None,
+                explicit: false,
+                allow_skip: None,
+                allow_skip_without_limit: false,
             }
         })
         .collect()
@@ -194,6 +204,7 @@ impl Editing {
         let (kind, label) = match kind {
             HitKind::Artist => ("Artist", (*name).to_owned()),
             HitKind::Song => ("Song", format!("{name} by {by}")),
+            HitKind::Show => ("Podcast", (*name).to_owned()),
         };
         // Like Pandora: the new seed comes first.
         seeds.insert(0, seed(kind, &label, pandora_id, &pandora_id.replace("AR:", "R-")));
@@ -266,7 +277,7 @@ impl Editing {
 }
 
 /// The made-up catalogue the demo search looks in: (id, kind, name, artist).
-const CATALOGUE: [(&str, HitKind, &str, &str); 14] = [
+const CATALOGUE: [(&str, HitKind, &str, &str); 15] = [
     ("AR:demo-m83", HitKind::Artist, "M83", ""),
     ("AR:demo-mgmt", HitKind::Artist, "MGMT", ""),
     ("AR:demo-daft", HitKind::Artist, "Daft Punk", ""),
@@ -281,6 +292,7 @@ const CATALOGUE: [(&str, HitKind, &str, &str); 14] = [
     ("TR:demo-1901", HitKind::Song, "1901", "Phoenix"),
     ("TR:demo-dreams", HitKind::Song, "Dreams", "Fleetwood Mac"),
     ("TR:demo-nightcall", HitKind::Song, "Nightcall", "Kavinsky"),
+    ("PC:demo-junkie", HitKind::Show, "Crime Junkie", "audiochuck"),
 ];
 
 /// Artists and songs whose name or artist has `query` in it.
@@ -334,7 +346,13 @@ fn linked_shelf(name: &str, pandora_id: &str, path: &str) -> BrowseItem {
 }
 
 fn browse_section(id: &str, title: &str, view_all_path: Option<&str>, items: Vec<BrowseItem>) -> BrowseSection {
-    BrowseSection { id: id.into(), title: title.into(), items, view_all_path: view_all_path.map(str::to_owned) }
+    BrowseSection {
+        id: id.into(),
+        title: title.into(),
+        items,
+        view_all_path: view_all_path.map(str::to_owned),
+        art_url: String::new(),
+    }
 }
 
 /// A small Browse directory for the demo (same section titles as live Pandora).

@@ -54,6 +54,41 @@ impl App {
         self.stations_cursor.min(self.stations.len().saturating_sub(1))
     }
 
+    /// My Stations rows, after sort and the `/` filter. Shuffle stays first when sorting.
+    pub fn station_order(&self) -> Vec<usize> {
+        let mut ix: Vec<usize> = (0..self.stations.len()).collect();
+        let sort = self.config.ui.station_sort.as_str();
+        if matches!(sort, "name" | "recent" | "thumbs") {
+            ix.sort_by(|&a, &b| {
+                let (sa, sb) = (&self.stations[a], &self.stations[b]);
+                match (sa.is_shuffle, sb.is_shuffle) {
+                    (true, false) => return std::cmp::Ordering::Less,
+                    (false, true) => return std::cmp::Ordering::Greater,
+                    _ => {}
+                }
+                let name = sa.name.to_lowercase().cmp(&sb.name.to_lowercase());
+                match sort {
+                    "name" => name,
+                    "recent" => self.recent_rank(&sa.id).cmp(&self.recent_rank(&sb.id)).then(name),
+                    _ => self.thumb_count(&sb.id).cmp(&self.thumb_count(&sa.id)).then(name),
+                }
+            });
+        }
+        let q = self.list_filter.trim().to_lowercase();
+        if !q.is_empty() {
+            ix.retain(|&i| self.stations[i].name.to_lowercase().contains(&q));
+        }
+        ix
+    }
+
+    fn recent_rank(&self, id: &str) -> usize {
+        self.recent.iter().position(|r| r.id == id).unwrap_or(usize::MAX)
+    }
+
+    fn thumb_count(&self, id: &str) -> usize {
+        self.history.iter().filter(|s| s.station_id == id && s.rating != crate::pandora::Rating::None).count()
+    }
+
     pub fn is_favorite(&self, id: &str) -> bool {
         self.config.ui.favorites.iter().any(|f| f.id == id)
     }
@@ -61,6 +96,10 @@ impl App {
     /// `f`: stars or unstars the station under the cursor (the list, a
     /// favorite in the menu) or else the one playing; saved as `[playback] favorites`.
     pub(super) fn toggle_favorite(&mut self) {
+        if self.on_podcast() {
+            self.toggle_follow();
+            return;
+        }
         let (id, name) = match (self.focus, self.view, self.menu_selected()) {
             (Focus::Content, View::Stations, _) if self.on_add_row => {
                 self.status = "f stars a station: move onto one".into();
@@ -95,7 +134,7 @@ impl App {
         if let Some(i) = self.menu_items().iter().position(|m| *m == selected) {
             self.menu_cursor = i;
         }
-        self.menu_cursor = self.menu_cursor.min(self.menu_items().len() - 1);
+        self.menu_cursor = self.menu_cursor.min(self.menu_items().len().saturating_sub(1));
         self.save_favorites();
     }
 
@@ -136,7 +175,8 @@ impl App {
         self.refresh_menu_cache();
         self.stations_cursor = self.stations_cursor.min(self.stations.len().saturating_sub(1));
         let items = self.menu_items();
-        self.menu_cursor = items.iter().position(|m| *m == selected).unwrap_or(self.menu_cursor).min(items.len() - 1);
+        let at = items.iter().position(|m| *m == selected).unwrap_or(self.menu_cursor);
+        self.menu_cursor = at.min(items.len().saturating_sub(1));
         self.status = format!("Deleted “{name}” from your Pandora account");
     }
 

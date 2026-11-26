@@ -1326,12 +1326,14 @@ impl Client {
         };
         let status = response.status().as_u16();
         // Capped like `fetch`: a broken or hostile answer must not fill memory.
-        let text = response
-            .body_mut()
-            .with_config()
-            .limit(MAX_JSON)
-            .read_to_string()
-            .map_err(|e| Error::Http(e.to_string()))?;
+        let text = match response.body_mut().with_config().limit(MAX_JSON).read_to_string() {
+            Ok(text) => text,
+            Err(e) => {
+                let error = Error::Http(e.to_string());
+                crate::log::log!("{}", failure_line(path, Some(status), &error));
+                return Err(error);
+            }
+        };
         if status != 200 {
             let error = classify(status, &text);
             crate::log::log!("{}", failure_line(path, Some(status), &error));
@@ -1370,21 +1372,20 @@ impl Client {
             "existingAuthToken": null,
         });
         let v = match self.post("/api/v1/auth/login", &body) {
-            Ok(v) => {
-                crate::log::log!("login: ok");
-                v
-            }
+            Ok(v) => v,
             Err(error) => {
-                // The line above names the status; this one says it was the login,
-                // so a blocked start is obvious in the log.
+                // The api line above names the status; this one says it was the
+                // login, so a blocked start is obvious in the log.
                 crate::log::log!("login: failed: {}", error.kind());
                 return Err(error);
             }
         };
         let token = str_of(&v, "authToken");
         if token.is_empty() {
+            crate::log::log!("login: failed: {}", Error::InvalidResponse.kind());
             return Err(Error::InvalidResponse);
         }
+        crate::log::log!("login: ok");
         let config = v.get("config").filter(|c| c.is_object());
         self.account = Account {
             listener_id: str_of(&v, "listenerId"),

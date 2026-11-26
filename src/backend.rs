@@ -482,7 +482,7 @@ pub enum Reply {
     /// An answer from the keychain (see [`Backend::keychain`]).
     Keychain(KeychainReply),
     /// A newer release, and the changelog lines to show before updating.
-    UpdateFound(Update, Vec<String>),
+    UpdateFound(Update, Vec<crate::update::Note>),
     UpToDate,
     UpdateProgress(u8),
     SelfUpdated(Result<String, String>),

@@ -160,7 +160,7 @@ impl App {
         self.status = format!("⚠ {}: {message}", what.what());
     }
 
-    fn reply_update_found(&mut self, update: Update, notes: Vec<String>) {
+    fn reply_update_found(&mut self, update: Update, notes: Vec<crate::update::Note>) {
         self.status = format!(
             "{} boxvibe {} available · see About",
             crate::icons::icons(self.config.ui.icons).update,

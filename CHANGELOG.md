@@ -1,8 +1,14 @@
 # Changelog
 
-Short and scannable; the git history has the details.
+Short and scannable; the git history has the details. Every Added, Changed and
+Fixed bullet opens with its point in bold and runs one sentence, two at most:
+About shows those bullets under UPDATES, where a paragraph overflows the panel.
+Internal bullets are for maintainers and never reach the screen.
 
 ## Unreleased
+
+### Changed
+- **What's new in About reads as a headline with its detail under it.** The bold opening sentence is drawn as the headline, every wrapped row hangs at the note's own column instead of the panel margin, and the changelog's code markers no longer print. A note too long for the panel is cut with an ellipsis, so Update Now keeps its place.
 
 ## 0.6.6 (2026-11-25)
 

@@ -1294,7 +1294,7 @@ pub struct App {
     /// A newer release (About shows it).
     pub update: Option<Update>,
     /// Changelog lines for [`Self::update`]: what the new version adds or fixes.
-    pub update_notes: Vec<String>,
+    pub update_notes: Vec<crate::update::Note>,
     /// GitHub confirmed this is the latest release.
     pub up_to_date: bool,
     pub self_update: Progress,

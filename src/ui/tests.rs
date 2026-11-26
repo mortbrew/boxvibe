@@ -1420,13 +1420,33 @@ fn about_shows_what_changed_before_the_update_button() {
         how: String::new(),
         replace: crate::update::Replace::Ready(String::new()),
     });
-    app.update_notes = vec!["A podcast episode plays.".into(), "Settings values sit beside their labels.".into()];
+    app.update_notes = vec![
+        crate::update::Note { lead: "A podcast episode plays.".into(), detail: String::new() },
+        crate::update::Note {
+            lead: "Settings values sit beside their labels.".into(),
+            detail: "The rest hangs under the bullet, never at the margin, so a wrapped row keeps its shape \
+                     even in a narrow panel."
+                .into(),
+        },
+    ];
     app.self_update = crate::update::Progress::Done("0.6.4".into());
-    let all = screen(&mut app, 100, 40).0.join("\n");
+    let lines = screen(&mut app, 100, 40).0;
+    let all = lines.join("\n");
     let notes = all.find("A podcast episode plays").expect(&all);
     let button = all.find("Restart Now").expect(&all);
     assert!(notes < button, "{all}");
     assert!(all.contains("Settings values sit beside their labels"), "{all}");
+    // Every note row is laid out from the panel's own left edge: the bullet sits two
+    // cells in, its text two more, and a hung row starts at the text's own column.
+    let inner = |line: &str| line.rfind("│ ").map_or(0, |i| i + "│ ".len());
+    let bullet = lines.iter().find(|l| l.contains('•') && l.contains("Settings values")).expect(&all);
+    assert!(bullet[inner(bullet)..].starts_with("  • "), "the bullet sits two cells in:\n{bullet:?}");
+    for line in
+        lines.iter().filter(|l| l.contains("The rest") || l.contains("wrapped row keeps") || l.contains("panel."))
+    {
+        assert!(line[inner(line)..].starts_with("    "), "hung under the text, not the margin:\n{line:?}");
+    }
+    assert!(!all.contains('`'), "no backticks reach the screen:\n{all}");
 }
 
 #[test]

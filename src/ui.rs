@@ -2462,6 +2462,51 @@ fn draw_prompt(frame: &mut Frame, app: &App, prompt: Prompt, area: Rect) {
 
 // --- About ---
 
+/// How many rows one note's headline and its detail may take. A changelog line
+/// can be a paragraph; the Update Now button still has to fit under it.
+const LEAD_ROWS: usize = 2;
+const DETAIL_ROWS: usize = 3;
+
+/// Breaks `text` into rows no wider than `width`, on spaces, keeping words whole.
+/// Past `max` rows the last one ends in an ellipsis. Empty text gives no rows.
+fn wrap_rows(text: &str, width: usize, max: usize) -> Vec<String> {
+    let mut rows: Vec<String> = Vec::new();
+    let mut row = String::new();
+    for word in text.split_whitespace() {
+        if !row.is_empty() && row.width() + 1 + word.width() > width {
+            rows.push(std::mem::take(&mut row));
+        }
+        if !row.is_empty() {
+            row.push(' ');
+        }
+        row.push_str(word);
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+    if rows.len() > max {
+        rows.truncate(max);
+        if let Some(last) = rows.last_mut() {
+            last.push('…');
+        }
+    }
+    rows
+}
+
+/// Adds one wrapped run of text: a bullet on the first row when `bullet` is set,
+/// and every row after it hung at the bullet's width, so a wrapped row still lines
+/// up under the text instead of running back to the margin.
+fn push_note_rows(lines: &mut Vec<Line<'static>>, rows: &[String], fg: Color, bold: bool, bullet: bool) {
+    for (i, row) in rows.iter().enumerate() {
+        let prefix = if i == 0 && bullet { "   • " } else { "     " };
+        let mut style = Style::new().fg(fg);
+        if bold {
+            style = style.bold();
+        }
+        lines.push(Line::from(Span::styled(format!("{prefix}{row}"), style)));
+    }
+}
+
 fn draw_about(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
     let p = app.palette;
     let block = panel(title(format!("{} About", ic.about), &p), &p, app.focus == Focus::Content);
@@ -2500,8 +2545,22 @@ fn draw_about(frame: &mut Frame, app: &App, ic: &Icons, area: Rect) {
             ]));
             if !app.update_notes.is_empty() {
                 lines.push(Line::raw(""));
+                // A note is a bold headline with its detail hung under it. Both are
+                // wrapped here rather than by the panel: a paragraph that wraps its
+                // own rows puts them back at the margin, which is what made these
+                // unreadable. The width leaves out the borders, the three-space
+                // margin every About row has, and the bullet.
+                let width = usize::from(area.width.saturating_sub(2 + 5)).max(20);
                 for note in &app.update_notes {
-                    lines.push(Line::from(Span::styled(format!("   • {note}"), Style::new().fg(p.fg))));
+                    let lead = wrap_rows(&note.lead, width, LEAD_ROWS);
+                    let detail = wrap_rows(&note.detail, width, DETAIL_ROWS);
+                    if lead.is_empty() {
+                        // No bold in the changelog line: the old plain look, hung properly.
+                        push_note_rows(&mut lines, &detail, p.fg, false, true);
+                        continue;
+                    }
+                    push_note_rows(&mut lines, &lead, p.fg, true, true);
+                    push_note_rows(&mut lines, &detail, p.muted, false, false);
                 }
             }
             lines.push(Line::raw(""));

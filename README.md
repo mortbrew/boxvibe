@@ -216,7 +216,7 @@ boxvibe from starting: one that is not valid TOML is moved to
 # key is the Settings row's label in lower case, with underscores.
 [account]
 email_or_username = "you@example.com"   # Settings → Email or username
-user_agent = ""                # empty: boxvibe's default (a desktop Firefox); see below
+user_agent = ""                # empty: boxvibe's default (a desktop Microsoft Edge, with the headers to match); see below
 
 [boxvibe]
 look_for_new_versions_on_startup = true   # Settings → Look for new versions on startup: ask GitHub for a new release

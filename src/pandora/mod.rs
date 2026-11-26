@@ -50,10 +50,12 @@ pub struct AdAsk {
     /// The listener skipped (or thumbed down) rather than the song ending.
     pub user_initiated: bool,
 }
-/// A current desktop Firefox on Linux. Pandora's bot check answered Chrome-like
-/// agents with 403s in Music Assistant's testing; Firefox ones got through.
-/// `[pandora] user_agent` in config.toml overrides it.
-pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:150.0) Gecko/20100101 Firefox/150.0";
+/// A current Microsoft Edge on Linux. Pandora's bot check scores the whole
+/// request, not just the name: a Chromium agent with no client hints, no
+/// `Sec-Fetch-*` headers and one cookie contradicts itself, and the login comes
+/// back as a block page. The headers below follow whichever agent is set, and
+/// `[pandora] user_agent` in config.toml overrides the name.
+pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0";
 /// The account flag that unlocks `mp3-hifi` (192 kbps MP3: Plus and Premium).
 pub const HIFI_FLAG: &str = "highQualityStreamingAvailable";
 
@@ -348,6 +350,8 @@ pub enum Error {
     BotCheck(u16),
     #[error("Pandora is playing on another device with this account")]
     StreamViolation,
+    #[error("pandora.com sent no csrftoken cookie, so the login was stopped rather than sent without one")]
+    NoCsrf,
     #[error("Pandora only works in the US")]
     Country,
     #[error("{message}")]
@@ -358,6 +362,31 @@ impl Error {
     /// The login token expired: log in again and retry.
     pub fn is_auth_expired(&self) -> bool {
         matches!(self, Self::Api { status: 401, .. } | Self::Api { code: Some(1001), .. })
+    }
+
+    /// A short name for the log. Never the message: it can carry the account
+    /// name, or what Pandora said about the password.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Http(_) => "network",
+            Self::InvalidResponse => "unreadable-answer",
+            Self::WrongLogin => "wrong-login",
+            Self::BotCheck(_) => "bot-check",
+            Self::StreamViolation => "stream-violation",
+            Self::NoCsrf => "no-csrf",
+            Self::Country => "country",
+            Self::Api { .. } => "api",
+        }
+    }
+}
+
+/// What a failed call writes to the log: where it went, what came back, and the
+/// kind of failure. The body stays out, and so does the request: a block page
+/// carries the account name, and the login body carries the password.
+pub fn failure_line(path: &str, status: Option<u16>, error: &Error) -> String {
+    match status {
+        Some(status) => format!("api: {path} answered HTTP {status}: {}", error.kind()),
+        None => format!("api: {path} failed: {}", error.kind()),
     }
 }
 
@@ -1174,29 +1203,53 @@ fn id_of(v: &Value, key: &str) -> String {
     }
 }
 
-/// The `csrftoken` value in a `Set-Cookie` header, if it is that cookie.
-pub fn csrf_from_cookie(header: &str) -> Option<String> {
-    let first = header.split(';').next()?.trim();
-    let value = first.strip_prefix("csrftoken=")?;
-    (!value.is_empty()).then(|| value.to_owned())
+/// The `name=value` pair at the front of a `Set-Cookie` header. The attributes
+/// after it (`Path`, `Secure`, `HttpOnly`, …) are dropped.
+pub fn cookie_from_header(header: &str) -> Option<(String, String)> {
+    let pair = header.split(';').next()?.trim();
+    let (name, value) = pair.split_once('=')?;
+    let (name, value) = (name.trim(), value.trim());
+    (!name.is_empty()).then(|| (name.to_owned(), value.to_owned()))
 }
 
-/// A made-up token, for when the site sends none: the API only checks that
-/// the header and the cookie match.
-fn made_up_csrf() -> String {
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-    let mixed = (nanos as u64) ^ (u64::from(std::process::id()) << 32) ^ 0x9e37_79b9_7f4a_7c15;
-    format!("{:016x}", mixed.wrapping_mul(0xbf58_476d_1ce4_e5b9))
+/// The `Set-Cookie` headers of an answer, owned, so the caller can read the body next.
+fn set_cookie_headers(headers: &ureq::http::HeaderMap) -> Vec<String> {
+    headers.get_all("set-cookie").iter().filter_map(|h| h.to_str().ok().map(str::to_owned)).collect()
 }
 
-/// A web session: the `csrftoken` and, once logged in, the auth token.
+/// The client hints that have to agree with `agent`: the brands and the platform,
+/// or `None` when the agent is not Chromium-shaped and sends none.
+pub fn chromium_hints(agent: &str) -> Option<(String, &'static str)> {
+    let major = agent.split_once("Chrome/")?.1.split('.').next()?;
+    if major.is_empty() || !major.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let brands = if agent.contains("Edg/") {
+        format!("\"Microsoft Edge\";v=\"{major}\", \"Chromium\";v=\"{major}\", \"Not_A Brand\";v=\"24\"")
+    } else {
+        format!("\"Chromium\";v=\"{major}\", \"Not_A Brand\";v=\"24\"")
+    };
+    let platform = if agent.contains("Windows") {
+        "Windows"
+    } else if agent.contains("Macintosh") || agent.contains("Mac OS X") {
+        "macOS"
+    } else {
+        "Linux"
+    };
+    Some((brands, platform))
+}
+
+/// A web session: the cookies the site set (the `csrftoken` among them) and,
+/// once logged in, the auth token.
 pub struct Client {
     agent: ureq::Agent,
     /// `false` only for the test server on `http://`.
     https_only: bool,
     base: String,
     user_agent: String,
-    csrf: Option<String>,
+    /// Every cookie pandora.com set, in the order it set them. A browser sends
+    /// them all back; the bot check notices when only one comes back.
+    cookies: Vec<(String, String)>,
     auth: Option<String>,
     pub account: Account,
     pub quality: Quality,
@@ -1234,7 +1287,7 @@ impl Client {
             https_only,
             base: base.trim_end_matches('/').to_owned(),
             user_agent: user_agent.to_owned(),
-            csrf: None,
+            cookies: Vec::new(),
             auth: None,
             account: Account::default(),
             quality: Quality::High,
@@ -1244,23 +1297,84 @@ impl Client {
         }
     }
 
-    /// `HEAD /` hands out the `csrftoken` cookie.
-    fn fetch_csrf(&mut self) -> String {
-        let token = self.site_csrf().unwrap_or_else(made_up_csrf);
-        self.csrf = Some(token.clone());
-        token
+    /// The headers a browser adds that a bare client does not, so the request
+    /// agrees with its agent: the `Sec-Fetch-*` set every browser sends, and
+    /// client hints when the agent is Chromium-shaped. `mode` and `dest` are the
+    /// call's own: a page load is `navigate`/`document`, an XHR is `cors`/`empty`.
+    fn browser_headers(&self, mode: &str, dest: &str) -> Vec<(&'static str, String)> {
+        let mut headers = vec![
+            ("Sec-Fetch-Site", "same-origin".to_owned()),
+            ("Sec-Fetch-Mode", mode.to_owned()),
+            ("Sec-Fetch-Dest", dest.to_owned()),
+        ];
+        if mode == "navigate" {
+            headers.push(("Sec-Fetch-User", "?1".to_owned()));
+        }
+        if let Some((brands, platform)) = chromium_hints(&self.user_agent) {
+            headers.push(("sec-ch-ua", brands));
+            headers.push(("sec-ch-ua-mobile", "?0".to_owned()));
+            headers.push(("sec-ch-ua-platform", format!("\"{platform}\"")));
+        }
+        headers
     }
 
-    /// The `csrftoken` the site set, if it set one.
-    fn site_csrf(&self) -> Option<String> {
-        self.agent
+    /// A cookie the site set, by name.
+    fn cookie(&self, name: &str) -> Option<&str> {
+        self.cookies.iter().find(|(seen, _)| seen == name).map(|(_, value)| value.as_str())
+    }
+
+    /// What goes in the `Cookie` header: every cookie the site set.
+    fn cookie_header(&self) -> String {
+        self.cookies.iter().map(|(name, value)| format!("{name}={value}")).collect::<Vec<_>>().join("; ")
+    }
+
+    /// Keeps what the site set. A cookie sent again replaces its value, as a
+    /// browser's jar does, so a rotated token does not leave two behind.
+    fn keep_cookies(&mut self, set_cookies: &[String]) {
+        for header in set_cookies {
+            let Some((name, value)) = cookie_from_header(header) else { continue };
+            match self.cookies.iter_mut().find(|(seen, _)| *seen == name) {
+                Some(slot) => slot.1 = value,
+                None => self.cookies.push((name, value)),
+            }
+        }
+    }
+
+    /// `HEAD /` the way the site's own page load asks for it, keeping the cookies
+    /// it hands out.
+    fn site_cookies(&mut self) {
+        let mut request = self
+            .agent
             .head(format!("{}/", self.base))
             .header("User-Agent", &self.user_agent)
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
             .header("Accept-Language", "en-US,en;q=0.9")
-            .call()
-            .ok()
-            .and_then(|r| r.headers().get_all("set-cookie").iter().find_map(|h| csrf_from_cookie(h.to_str().ok()?)))
+            .header("Upgrade-Insecure-Requests", "1");
+        for (name, value) in self.browser_headers("navigate", "document") {
+            request = request.header(name, value);
+        }
+        let Ok(response) = request.call() else {
+            crate::log::log!("csrf: the site did not answer");
+            return;
+        };
+        let set = set_cookie_headers(response.headers());
+        self.keep_cookies(&set);
+    }
+
+    /// A `csrftoken` for the calls. A made-up one used to stand in when the site
+    /// sent none; that only made the login look forged, so it is refused now.
+    fn fetch_csrf(&mut self) -> Result<String, Error> {
+        self.site_cookies();
+        match self.cookie("csrftoken").map(str::to_owned) {
+            Some(token) => {
+                crate::log::log!("csrf: the site's cookie, {} cookies kept", self.cookies.len());
+                Ok(token)
+            }
+            None => {
+                crate::log::log!("csrf: the site sent none, so the login is not sent");
+                Err(Error::NoCsrf)
+            }
+        }
     }
 
     /// POSTs `body` as JSON to `path` (`/api/v1/...`) with the site's headers.
@@ -1271,10 +1385,11 @@ impl Client {
     /// `post`, plus the Apollo client name the site's GraphQL calls carry. Only
     /// the GraphQL calls are seen sending it, so it is opt-in, not global.
     fn post_with(&mut self, path: &str, body: &Value, client_name: Option<&str>) -> Result<Value, Error> {
-        let csrf = match &self.csrf {
-            Some(c) => c.clone(),
-            None => self.fetch_csrf(),
+        let csrf = match self.cookie("csrftoken").map(str::to_owned) {
+            Some(token) => token,
+            None => self.fetch_csrf()?,
         };
+        let cookie = self.cookie_header();
         let mut request = self
             .agent
             .post(format!("{}{path}", self.base))
@@ -1285,33 +1400,59 @@ impl Client {
             .header("Origin", SITE)
             .header("Referer", format!("{SITE}/"))
             .header("X-CsrfToken", &csrf)
-            .header("Cookie", format!("csrftoken={csrf}"));
+            .header("Cookie", cookie);
+        for (name, value) in self.browser_headers("cors", "empty") {
+            request = request.header(name, value);
+        }
         if let Some(auth) = &self.auth {
             request = request.header("X-AuthToken", auth);
         }
         if let Some(name) = client_name {
             request = request.header("apollographql-client-name", name);
         }
-        let mut response = request.send(body.to_string()).map_err(|e| Error::Http(e.to_string()))?;
+        let mut response = match request.send(body.to_string()) {
+            Ok(response) => response,
+            Err(e) => {
+                let error = Error::Http(e.to_string());
+                crate::log::log!("{}", failure_line(path, None, &error));
+                return Err(error);
+            }
+        };
+        // The site rotates cookies on its answers, so keep whatever it just set.
+        let set = set_cookie_headers(response.headers());
+        self.keep_cookies(&set);
         let status = response.status().as_u16();
         // Capped like `fetch`: a broken or hostile answer must not fill memory.
-        let text = response
-            .body_mut()
-            .with_config()
-            .limit(MAX_JSON)
-            .read_to_string()
-            .map_err(|e| Error::Http(e.to_string()))?;
+        let text = match response.body_mut().with_config().limit(MAX_JSON).read_to_string() {
+            Ok(text) => text,
+            Err(e) => {
+                let error = Error::Http(e.to_string());
+                crate::log::log!("{}", failure_line(path, Some(status), &error));
+                return Err(error);
+            }
+        };
         if status != 200 {
-            return Err(classify(status, &text));
+            let error = classify(status, &text);
+            crate::log::log!("{}", failure_line(path, Some(status), &error));
+            return Err(error);
         }
         // Some calls (removing a station) may answer 200 with nothing in the body.
         if text.trim().is_empty() {
             return Ok(json!({}));
         }
-        let v: Value = serde_json::from_str(&text).map_err(|_| Error::InvalidResponse)?;
+        let v: Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(_) => {
+                let error = Error::InvalidResponse;
+                crate::log::log!("{}", failure_line(path, Some(status), &error));
+                return Err(error);
+            }
+        };
         // Some failures come back as 200 with an error body.
         if v.get("errorCode").is_some() && v.get("errorString").is_some() {
-            return Err(classify(status, &text));
+            let error = classify(status, &text);
+            crate::log::log!("{}", failure_line(path, Some(status), &error));
+            return Err(error);
         }
         Ok(v)
     }
@@ -1320,18 +1461,28 @@ impl Client {
     pub fn login(&mut self, username: &str, password: &str) -> Result<(), Error> {
         self.auth = None;
         // A fresh csrftoken for each login, as the site gets one per page load.
-        self.fetch_csrf();
+        self.fetch_csrf()?;
         let body = json!({
             "username": username,
             "password": password,
             "keepLoggedIn": true,
             "existingAuthToken": null,
         });
-        let v = self.post("/api/v1/auth/login", &body)?;
+        let v = match self.post("/api/v1/auth/login", &body) {
+            Ok(v) => v,
+            Err(error) => {
+                // The api line above names the status; this one says it was the
+                // login, so a blocked start is obvious in the log.
+                crate::log::log!("login: failed: {}", error.kind());
+                return Err(error);
+            }
+        };
         let token = str_of(&v, "authToken");
         if token.is_empty() {
+            crate::log::log!("login: failed: {}", Error::InvalidResponse.kind());
             return Err(Error::InvalidResponse);
         }
+        crate::log::log!("login: ok");
         let config = v.get("config").filter(|c| c.is_object());
         self.account = Account {
             listener_id: str_of(&v, "listenerId"),
@@ -1980,13 +2131,20 @@ impl Client {
         if !url.starts_with("https://") && !url.starts_with("http://") {
             return Err(Error::Http(format!("{what}: refusing a non-HTTP URL")));
         }
-        let mut response = self
+        let mut request = self
             .agent
             .get(url)
             .header("User-Agent", &self.user_agent)
             .header("Referer", format!("{SITE}/"))
-            .call()
-            .map_err(|e| Error::Http(e.to_string()))?;
+            .header("Sec-Fetch-Site", "cross-site")
+            .header("Sec-Fetch-Mode", "no-cors")
+            .header("Sec-Fetch-Dest", if what == "audio" { "audio" } else { "image" });
+        // The CDN sees the same session a browser's media request would: a song
+        // asked for with no cookies looks like a hotlink and comes back 403.
+        if !self.cookies.is_empty() {
+            request = request.header("Cookie", self.cookie_header());
+        }
+        let mut response = request.call().map_err(|e| Error::Http(e.to_string()))?;
         if !response.status().is_success() {
             return Err(Error::Http(format!("{what}: HTTP {}", response.status())));
         }
@@ -2006,9 +2164,9 @@ impl Client {
         Ok(Some(out))
     }
 
-    /// Drops auth tokens and account facts so a logged-out worker cannot re-auth.
+    /// Drops auth tokens, cookies and account facts so a logged-out worker cannot re-auth.
     pub fn clear_session(&mut self) {
-        self.csrf = None;
+        self.cookies.clear();
         self.auth = None;
         self.account = Account::default();
         self.podcast_related = None;

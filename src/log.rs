@@ -1,4 +1,5 @@
-//! A log of what playback did, for working out why a song skipped.
+//! A log of what playback and the Pandora calls did, for working out why a song
+//! skipped or a login was refused.
 //!
 //! Written to `~/.cache/boxvibe/boxvibe.log` (XDG), never to the terminal: the
 //! interface owns the screen. Past [`CAP`] the log moves to `.old` and starts
@@ -11,7 +12,11 @@
 //! decoded to, whether it was resampled), each song as it ends (how far it got
 //! against how long it should have been), and every reason a song was skipped.
 //! A skip with no error message is the interesting case: it means the decoder
-//! produced a source that ended at once, so the bytes are logged too.
+//! produced a source that ended at once, so the bytes are logged too. A failed
+//! Pandora call adds its endpoint, HTTP status and kind of failure, and a login
+//! says whether it worked, so a bot check can be told apart from a bad password
+//! after the fact. Neither the request nor the answer is written: the login body
+//! carries the password and a block page carries the account name.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

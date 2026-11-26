@@ -143,7 +143,9 @@ pub struct PandoraConfig {
     /// A free plan gets 64 kbps HE-AAC whichever is chosen.
     pub audio_quality: String,
     /// The User-Agent sent to pandora.com; empty is boxvibe's default (a
-    /// desktop Firefox). Only for when Pandora's bot check starts refusing it.
+    /// desktop Microsoft Edge). Only for when Pandora's bot check starts
+    /// refusing it. The client hints and `Sec-Fetch-*` headers follow whichever
+    /// agent is set, so a Firefox agent sends no Chromium hints.
     pub user_agent: String,
     /// The station playing when boxvibe closed (`stationId`), tuned on start.
     pub last_station: String,

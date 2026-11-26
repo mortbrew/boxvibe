@@ -118,6 +118,7 @@ fn errors_are_classified() {
     );
     assert_eq!(blocked, Error::BotCheck(403));
     assert!(!blocked.is_auth_expired());
+    assert_eq!(blocked.kind(), "bot-check");
     // From the docs and other clients.
     let wrong = r#"{"message":"Invalid username and/or password","errorCode":0,"errorString":"AUTH_INVALID_USERNAME_PASSWORD"}"#;
     assert_eq!(classify(400, wrong), Error::WrongLogin);
@@ -125,16 +126,111 @@ fn errors_are_classified() {
     assert_eq!(classify(400, r#"{"errorString":"COUNTRY_CODE_INVALID","errorCode":1028}"#), Error::Country);
     let other = classify(500, "<html>oops</html>");
     assert_eq!(other.to_string(), "Pandora answered HTTP 500");
+    // The log gets a short name per failure, never the message: it can carry the
+    // account name.
+    let kinds = [
+        expired.kind(),
+        blocked.kind(),
+        Error::WrongLogin.kind(),
+        Error::StreamViolation.kind(),
+        Error::Country.kind(),
+        other.kind(),
+        Error::InvalidResponse.kind(),
+        Error::Http("boom".into()).kind(),
+    ];
+    assert_eq!(
+        kinds,
+        ["api", "bot-check", "wrong-login", "stream-violation", "country", "api", "unreadable-answer", "network"]
+    );
 }
 
 #[test]
-fn csrf_cookie_is_found() {
-    assert_eq!(
-        csrf_from_cookie("csrftoken=dded938ac0c6091b;Path=/;Domain=.pandora.com;Secure").as_deref(),
-        Some("dded938ac0c6091b")
+fn a_failed_call_is_logged_without_its_body_or_request() {
+    // What the line says, and what it leaves out.
+    let blocked = classify(
+        403,
+        r#"{"message":"Invalid request for me@example.com","errorCode":1215,"errorString":"s2s_high_score","appId":"PXabc","blockScript":"/x/captcha"}"#,
     );
-    assert_eq!(csrf_from_cookie("v2regbstage=;Path=/"), None);
-    assert_eq!(made_up_csrf().len(), 16);
+    let line = failure_line("/api/v1/auth/login", Some(403), &blocked);
+    assert_eq!(line, "api: /api/v1/auth/login answered HTTP 403: bot-check");
+    assert!(!line.contains("me@example.com"), "the body stays out of the log");
+    let api = Error::Api { status: 500, code: None, kind: String::new(), message: "oops".into() };
+    assert_eq!(
+        failure_line("/api/v1/station/getStations", Some(500), &api),
+        "api: /api/v1/station/getStations answered HTTP 500: api"
+    );
+    assert_eq!(
+        failure_line("/api/v1/station/getStations", None, &Error::Http("Connection refused".into())),
+        "api: /api/v1/station/getStations failed: network",
+        "a dropped connection has no status to name"
+    );
+}
+
+#[test]
+fn a_cookie_is_the_name_and_value_at_the_front_of_the_header() {
+    assert_eq!(
+        cookie_from_header("csrftoken=dded938ac0c6091b;Path=/;Domain=.pandora.com;Secure"),
+        Some(("csrftoken".to_owned(), "dded938ac0c6091b".to_owned()))
+    );
+    assert_eq!(cookie_from_header("v2regbstage=;Path=/"), Some(("v2regbstage".to_owned(), String::new())));
+    assert_eq!(cookie_from_header("garbage"), None);
+    assert_eq!(cookie_from_header("=novalue"), None);
+}
+
+#[test]
+fn the_client_hints_agree_with_the_agent() {
+    // The hint brands repeat the agent's own major version, or they contradict it.
+    let (brands, platform) = chromium_hints(DEFAULT_USER_AGENT).unwrap();
+    assert!(brands.contains("\"Microsoft Edge\";v=\"152\""), "{brands}");
+    assert!(brands.contains("\"Chromium\";v=\"152\""), "{brands}");
+    assert_eq!(platform, "Linux");
+    let windows = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36";
+    let (brands, platform) = chromium_hints(windows).unwrap();
+    assert!(brands.starts_with("\"Chromium\";v=\"152\""), "Chrome, not Edge: {brands}");
+    assert_eq!(platform, "Windows");
+    // A browser that sends no client hints gets none invented for it.
+    assert_eq!(chromium_hints("Mozilla/5.0 (X11; Linux x86_64; rv:150.0) Gecko/20100101 Firefox/150.0"), None);
+    assert_eq!(chromium_hints("curl/8.5.0"), None);
+}
+
+#[test]
+fn the_sites_cookies_are_kept_and_sent_back() {
+    let (base, seen) = fake_pandora_with_cookies(
+        Box::new(|r| match r.path.as_str() {
+            "/api/v1/auth/login" => login_ok("tok"),
+            _ => (200, "{}".into()),
+        }),
+        &["csrftoken=abc123;Path=/;Secure", "_pxhd=xyz;Path=/;HttpOnly", "v2regbstage=bf;Path=/"],
+    );
+    let mut c = Client::with_base(&base, "");
+    c.login("me", "pw").unwrap();
+    let seen = seen.lock().unwrap();
+    let login = seen.iter().find(|s| s.path.ends_with("auth/login")).unwrap();
+    assert_eq!(login.header("X-CsrfToken"), Some("abc123"));
+    let cookie = login.header("Cookie").unwrap();
+    assert!(cookie.contains("csrftoken=abc123"), "{cookie}");
+    assert!(cookie.contains("_pxhd=xyz"), "the bot check's own cookie goes back too: {cookie}");
+    assert!(cookie.contains("v2regbstage=bf"), "{cookie}");
+    // The page load is a browser navigation, hints and all.
+    let head = seen.iter().find(|s| s.method == "HEAD").unwrap();
+    assert_eq!(head.header("Sec-Fetch-Mode"), Some("navigate"));
+    assert_eq!(head.header("Sec-Fetch-Dest"), Some("document"));
+    assert!(head.header("sec-ch-ua").unwrap_or_default().contains("Microsoft Edge"));
+    // The login is an XHR from the page it just loaded.
+    assert_eq!(login.header("Sec-Fetch-Mode"), Some("cors"));
+    assert_eq!(login.header("Sec-Fetch-Dest"), Some("empty"));
+}
+
+#[test]
+fn a_site_that_sends_no_csrf_cookie_gets_no_login() {
+    // The token used to be made up. A login without the site's own token can only
+    // look forged, so it is refused instead of sent.
+    let (base, seen) = fake_pandora_with_cookies(Box::new(|_| login_ok("tok")), &[]);
+    let mut c = Client::with_base(&base, "");
+    assert_eq!(c.login("me", "pw"), Err(Error::NoCsrf));
+    assert_eq!(Error::NoCsrf.kind(), "no-csrf");
+    let paths: Vec<String> = seen.lock().unwrap().iter().map(|s| s.path.clone()).collect();
+    assert_eq!(paths, ["/"], "the page load, and no login after it");
 }
 
 // --- A fake Pandora ---
@@ -156,7 +252,15 @@ impl Seen {
 type Handler = Box<dyn FnMut(&Seen) -> (u16, String) + Send>;
 
 /// Serves `handler` on localhost; answers every connection once and closes it.
-fn fake_pandora(mut handler: Handler) -> (String, Arc<Mutex<Vec<Seen>>>) {
+fn fake_pandora(handler: Handler) -> (String, Arc<Mutex<Vec<Seen>>>) {
+    fake_pandora_with_cookies(handler, &["csrftoken=fakecsrf123;Path=/;Secure"])
+}
+
+/// `fake_pandora`, with the cookies the site sets on `HEAD /` spelled out.
+fn fake_pandora_with_cookies(
+    mut handler: Handler,
+    cookies: &'static [&'static str],
+) -> (String, Arc<Mutex<Vec<Seen>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -193,8 +297,11 @@ fn fake_pandora(mut handler: Handler) -> (String, Arc<Mutex<Vec<Seen>>>) {
             let request = Seen { method, path, headers, body: serde_json::from_slice(&body).unwrap_or(Value::Null) };
             let (status, text) = handler(&request);
             log.lock().unwrap().push(request.clone());
-            let extra =
-                if request.method == "HEAD" { "Set-Cookie: csrftoken=fakecsrf123;Path=/;Secure\r\n" } else { "" };
+            let extra = if request.method == "HEAD" {
+                cookies.iter().map(|c| format!("Set-Cookie: {c}\r\n")).collect::<String>()
+            } else {
+                String::new()
+            };
             let body = if request.method == "HEAD" { String::new() } else { text };
             let _ = write!(
                 stream,
@@ -438,6 +545,13 @@ fn a_blocked_login_says_so() {
     let err = c.login("me", "pw").unwrap_err();
     assert_eq!(err, Error::BotCheck(403));
     assert!(err.to_string().contains("bot check"));
+    // The two log lines a blocked start leaves behind: the call, then the login.
+    assert_eq!(
+        failure_line("/api/v1/auth/login", Some(403), &err),
+        "api: /api/v1/auth/login answered HTTP 403: bot-check"
+    );
+    assert_eq!(err.kind(), "bot-check", "so the login line can say why, not just that it failed");
+    assert!(!failure_line("/api/v1/auth/login", Some(403), &err).contains("me@"), "no account name");
 }
 
 #[test]
@@ -580,7 +694,9 @@ fn creating_a_station_needs_an_answer_that_names_it() {
 #[test]
 #[ignore]
 fn live_site_hands_out_a_csrftoken() {
-    let token = Client::new("").site_csrf().expect("no csrftoken cookie from www.pandora.com");
+    let mut c = Client::new("");
+    c.site_cookies();
+    let token = c.cookie("csrftoken").expect("no csrftoken cookie from www.pandora.com");
     assert!(token.len() >= 8 && token.chars().all(|ch| ch.is_ascii_alphanumeric()), "{token}");
 }
 

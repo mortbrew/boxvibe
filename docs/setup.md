@@ -259,9 +259,14 @@ paths-ignore:
 
 ### `.github/workflows/release.yml`
 
-On every `v*` tag: build the Linux archives and attach them to the GitHub
-release. File names carry no version, so links can point at
-`https://github.com/mortbrew/<repo>/releases/latest/download/<file>`.
+On every `v*` tag: write the release body from `CHANGELOG.md`, build the Linux
+archives and attach them to the GitHub release. File names carry no version, so
+links can point at `https://github.com/mortbrew/<repo>/releases/latest/download/<file>`.
+
+The body comes from the changelog section for the tag, not from
+`--generate-notes`: that writes the commit list, which collapses a whole `dev`
+cycle into one "Release X by @user in #N" line. A version with no section falls
+back to `--generate-notes` with a warning, so a release still happens.
 
 ```yaml
 # On every `v*` tag: build Linux (x86_64, aarch64) and attach the archives to
@@ -289,10 +294,46 @@ jobs:
   create:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+      # The body is the changelog section for this tag. `--generate-notes` writes
+      # the commit list instead, which collapses a whole `dev` cycle into one
+      # "Release X by @user in #N" line. The version below ours in the file is
+      # the release this one follows, for the compare link.
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${TAG#v}"
+          awk -v want="## $version" '
+            index($0, want) == 1 && (length($0) == length(want) || substr($0, length(want) + 1, 1) == " ") { inside = 1; next }
+            inside && /^## / { exit }
+            inside { print }
+          ' CHANGELOG.md | sed '/./,$!d' > section.md
+          prev=$(awk -v want="## $version" '
+            index($0, want) == 1 { found = 1; next }
+            found && /^## [0-9]/ { print $2; exit }
+          ' CHANGELOG.md)
+          if [ -s section.md ]; then
+            { printf "## What's changed in %s\n\n" "$version"; cat section.md
+              if [ -n "$prev" ]; then
+                printf '\n**Full Changelog**: https://github.com/%s/compare/v%s...%s\n' "$GITHUB_REPOSITORY" "$prev" "$TAG"
+              fi
+            } > notes.md
+          else
+            echo "::warning::CHANGELOG.md has no section for $version; using the commit list"
+          fi
       - name: Release (once; the builds below add their files to it)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "<repo> $TAG"
+        run: |
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            exit 0
+          fi
+          if [ -s notes.md ]; then
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag --notes-file notes.md --title "<repo> $TAG"
+          else
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "<repo> $TAG"
+          fi
 
   linux:
     needs: create
